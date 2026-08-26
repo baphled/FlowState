@@ -1,0 +1,244 @@
+package api
+
+import (
+	"net/http"
+	"strings"
+
+	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/streaming"
+)
+
+// SSEConsumer implements streaming.StreamConsumer for server-sent event responses.
+type SSEConsumer struct {
+	w       http.ResponseWriter
+	flusher http.Flusher
+}
+
+// NewSSEConsumer creates an SSEConsumer if the ResponseWriter supports flushing.
+//
+// Expected:
+//   - w is an http.ResponseWriter that may implement http.Flusher.
+//
+// Returns:
+//   - A configured SSEConsumer and true if w supports flushing.
+//   - nil and false if w does not support flushing.
+//
+// Side effects:
+//   - None.
+func NewSSEConsumer(w http.ResponseWriter) (*SSEConsumer, bool) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return nil, false
+	}
+	return &SSEConsumer{w: w, flusher: flusher}, true
+}
+
+// WriteChunk writes a JSON-encoded content chunk as a server-sent event.
+//
+// Expected:
+//   - content is the text to send in the SSE chunk.
+//
+// Returns:
+//   - nil on success.
+//   - An error if JSON marshalling fails (unlikely for string content).
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded chunk to the response.
+//   - Flushes the response buffer.
+func (c *SSEConsumer) WriteChunk(content string) error {
+	writeSSEContent(c.w, c.flusher, content)
+	return nil
+}
+
+// WriteError writes a sanitized JSON-encoded error as a server-sent event.
+// The raw error is logged server-side with a correlation ID; only the
+// canonical category message and the ID are sent to the client.
+//
+// Severity is gated on provider.IsCriticalStreamError so callers from
+// the streaming package (which use this consumer rather than the broker
+// fan-out's writeSSEClientError directly) emit the same "stream_critical"
+// vs "stream_error" distinction the SSE seam (server.go) and WebSocket
+// consumer (websocket.go) carry. Wire shape is unchanged; clients that
+// only know "stream_error" continue to render through the existing path.
+//
+// Expected:
+//   - err is the error to report to the client.
+//
+// Side effects:
+//   - Logs the raw error server-side with a correlation ID.
+//   - Writes SSE data line with JSON-encoded sanitized error to the response.
+//   - Flushes the response buffer.
+//
+// Returns: result of WriteError.
+func (c *SSEConsumer) WriteError(err error) {
+	category := "stream_error"
+	if provider.IsCriticalStreamError(err) {
+		category = "stream_critical"
+	}
+	writeSSEClientError(c.w, c.flusher, err, category)
+}
+
+// Done writes the completion sentinel as a server-sent event.
+//
+// Side effects:
+//   - Writes SSE data line with "[DONE]" marker to the response.
+//   - Flushes the response buffer.
+//
+// Expected: parameters for Done.
+// Returns: result of Done.
+func (c *SSEConsumer) Done() {
+	writeSSEDone(c.w, c.flusher)
+}
+
+// WriteToolCall writes a JSON-encoded tool call event as a server-sent event.
+//
+// Expected:
+//   - name is the name of the tool being invoked, optionally prefixed with "skill:".
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded skill load or tool call to the response.
+//   - Flushes the response buffer.
+//
+// Returns: result of WriteToolCall.
+func (c *SSEConsumer) WriteToolCall(name string) {
+	if strings.HasPrefix(name, "skill:") {
+		writeSSESkillLoad(c.w, c.flusher, strings.TrimPrefix(name, "skill:"))
+		return
+	}
+	writeSSEToolCall(c.w, c.flusher, name, "")
+}
+
+// WriteToolResult writes a JSON-encoded tool result event as a server-sent event.
+//
+// Expected:
+//   - content is the result content from the tool execution.
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded tool result to the response.
+//   - Flushes the response buffer.
+//
+// Returns: result of WriteToolResult.
+func (c *SSEConsumer) WriteToolResult(content string) {
+	writeSSEToolResult(c.w, c.flusher, content)
+}
+
+// WriteToolError writes a JSON-encoded tool execution failure as a
+// server-sent event with type "tool_error" (distinct from "tool_result").
+// The streaming runner's deliverToolResult routes chunks whose
+// provider.ToolResultInfo.IsError is true through this channel; the
+// frontend's handleToolErrorEvent (web/src/stores/chatStore.ts) flips the
+// matching running tool_result row to status='error' in-stream so live
+// tool failures render as a dedicated error bubble instead of a normal
+// completed tool_result.
+//
+// Wire shape: {"type":"tool_error","content":"..."} — matches the
+// frontend parser at web/src/lib/sseEvent.ts:642. Empty content is
+// tolerated so the wire never throws on a malformed payload.
+//
+// Expected:
+//   - content is the error text the engine stamped on the chunk
+//     (typically prefixed with "Error: " for the Result{Error:err} tool
+//     failure shape, or rich human-readable text where the tool
+//     populated Result.Output for a recovery hint).
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded tool_error to the response.
+//   - Flushes the response buffer.
+//
+// Returns: result of WriteToolError.
+func (c *SSEConsumer) WriteToolError(content string) {
+	writeSSEToolError(c.w, c.flusher, content)
+}
+
+// WriteHarnessRetry writes a JSON-encoded harness retry event as a server-sent event.
+//
+// Expected:
+//   - content describes the validation failure and retry reason.
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded harness retry event to the response.
+//   - Flushes the response buffer.
+//
+// Returns: result of WriteHarnessRetry.
+func (c *SSEConsumer) WriteHarnessRetry(content string) {
+	writeSSEHarnessRetry(c.w, c.flusher, content)
+}
+
+// WriteAttemptStart writes a JSON-encoded harness attempt start event as a server-sent event.
+//
+// Expected:
+//   - content describes the attempt being started.
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded attempt start event to the response.
+//   - Flushes the response buffer.
+//
+// Returns: result of WriteAttemptStart.
+func (c *SSEConsumer) WriteAttemptStart(content string) {
+	writeSSEAttemptStart(c.w, c.flusher, content)
+}
+
+// WriteComplete writes a JSON-encoded harness completion event as a server-sent event.
+//
+// Expected:
+//   - content describes the evaluation outcome.
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded harness complete event to the response.
+//   - Flushes the response buffer.
+//
+// Returns: result of WriteComplete.
+func (c *SSEConsumer) WriteComplete(content string) {
+	writeSSEHarnessComplete(c.w, c.flusher, content)
+}
+
+// WriteCriticFeedback writes a JSON-encoded harness critic feedback event as a server-sent event.
+//
+// Expected:
+//   - content describes the critic's feedback on the plan.
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded critic feedback event to the response.
+//   - Flushes the response buffer.
+//
+// Returns: result of WriteCriticFeedback.
+func (c *SSEConsumer) WriteCriticFeedback(content string) {
+	writeSSECriticFeedback(c.w, c.flusher, content)
+}
+
+// WriteDelegation writes a JSON-encoded delegation event as a server-sent event.
+//
+// Expected:
+//   - event contains delegation metadata including source/target agents and status.
+//
+// Returns:
+//   - nil on success.
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded delegation event to the response.
+//   - Flushes the response buffer.
+func (c *SSEConsumer) WriteDelegation(event streaming.DelegationEvent) error {
+	writeSSEDelegation(c.w, c.flusher, event)
+	return nil
+}
+
+// WriteEvent writes a typed streaming event as a JSON-encoded server-sent event.
+//
+// Expected:
+//   - event is a non-nil Event implementation.
+//
+// Returns:
+//   - nil on success.
+//   - An error if JSON marshalling fails.
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded event to the response.
+//   - Flushes the response buffer.
+func (c *SSEConsumer) WriteEvent(event streaming.Event) error {
+	data, err := streaming.MarshalEvent(event)
+	if err != nil {
+		return err
+	}
+	writeSSE(c.w, c.flusher, string(data))
+	return nil
+}

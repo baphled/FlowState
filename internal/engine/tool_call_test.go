@@ -1,0 +1,2283 @@
+package engine_test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
+	"github.com/baphled/flowstate/internal/agent"
+	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/recall"
+	"github.com/baphled/flowstate/internal/session"
+	"github.com/baphled/flowstate/internal/tool"
+)
+
+type executableMockTool struct {
+	name        string
+	description string
+	execResult  tool.Result
+	execErr     error
+	execCalled  bool
+	execCount   int
+	lastInput   tool.Input
+}
+
+func (t *executableMockTool) Name() string        { return t.name }
+func (t *executableMockTool) Description() string { return t.description }
+func (t *executableMockTool) Execute(_ context.Context, input tool.Input) (tool.Result, error) {
+	t.execCalled = true
+	t.execCount++
+	t.lastInput = input
+	return t.execResult, t.execErr
+}
+func (t *executableMockTool) Schema() tool.Schema { return tool.Schema{} }
+
+type delayedExecutableMockTool struct {
+	name        string
+	description string
+	delay       time.Duration
+	execResult  tool.Result
+	execErr     error
+	execCalled  bool
+}
+
+func (t *delayedExecutableMockTool) Name() string        { return t.name }
+func (t *delayedExecutableMockTool) Description() string { return t.description }
+func (t *delayedExecutableMockTool) Execute(_ context.Context, _ tool.Input) (tool.Result, error) {
+	time.Sleep(t.delay)
+	t.execCalled = true
+	return t.execResult, t.execErr
+}
+func (t *delayedExecutableMockTool) Schema() tool.Schema { return tool.Schema{} }
+
+// resultOnlyErrorTool is the (Result{Error: ...}, nil) failure shape used by
+// real tools (read, bash failure path, edit, multiedit, apply_patch, invalid).
+// The Go-level error return is nil; the failure is encoded in Result.Error
+// only. The existing executableMockTool covers the (Result, err) shape; this
+// fixture covers the shape that triggers the PR5 Item 4 storm.
+type resultOnlyErrorTool struct {
+	name        string
+	description string
+	failure     error
+}
+
+func (t *resultOnlyErrorTool) Name() string        { return t.name }
+func (t *resultOnlyErrorTool) Description() string { return t.description }
+func (t *resultOnlyErrorTool) Execute(_ context.Context, _ tool.Input) (tool.Result, error) {
+	return tool.Result{Error: t.failure}, nil
+}
+func (t *resultOnlyErrorTool) Schema() tool.Schema { return tool.Schema{} }
+
+// schemaValidatingTool exposes a non-empty Schema so the engine's argument
+// validator (engine.ValidateToolArgs) runs against tool calls. Used by the
+// tool-args validation telemetry specs in eventbus_test.go and any other
+// fixture that needs the validator path to fire.
+type schemaValidatingTool struct {
+	name        string
+	description string
+	schema      tool.Schema
+	execResult  tool.Result
+	execErr     error
+	execCalled  bool
+	lastInput   tool.Input
+}
+
+func (t *schemaValidatingTool) Name() string        { return t.name }
+func (t *schemaValidatingTool) Description() string { return t.description }
+func (t *schemaValidatingTool) Execute(_ context.Context, input tool.Input) (tool.Result, error) {
+	t.execCalled = true
+	t.lastInput = input
+	return t.execResult, t.execErr
+}
+func (t *schemaValidatingTool) Schema() tool.Schema { return t.schema }
+
+type streamSequenceProvider struct {
+	name      string
+	sequences [][]provider.StreamChunk
+	callIndex int
+	// capturedRequests records the ChatRequest seen on every Stream call,
+	// in call order. Turn 1 is index 0; tool-loop continuations follow.
+	// The override-per-continuation regression guard inspects index >= 1
+	// to assert the per-stream provider/model override survives the tool
+	// loop rather than reverting to the engine default.
+	capturedRequests []provider.ChatRequest
+}
+
+func (p *streamSequenceProvider) Name() string { return p.name }
+
+func (p *streamSequenceProvider) Stream(_ context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	p.capturedRequests = append(p.capturedRequests, req)
+	if p.callIndex >= len(p.sequences) {
+		ch := make(chan provider.StreamChunk, 16)
+		close(ch)
+		return ch, nil
+	}
+
+	chunks := p.sequences[p.callIndex]
+	p.callIndex++
+
+	ch := make(chan provider.StreamChunk, len(chunks))
+	go func() {
+		defer close(ch)
+		for i := range chunks {
+			ch <- chunks[i]
+		}
+	}()
+	return ch, nil
+}
+
+func (p *streamSequenceProvider) Chat(_ context.Context, _ provider.ChatRequest) (provider.ChatResponse, error) {
+	return provider.ChatResponse{}, nil
+}
+
+func (p *streamSequenceProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
+	return []float64{0.1, 0.2, 0.3}, nil
+}
+
+func (p *streamSequenceProvider) Models() ([]provider.Model, error) {
+	return nil, nil
+}
+
+func (p *streamSequenceProvider) ToolNamesForAttempt(n int) []string {
+	if n < 1 || n > len(p.capturedRequests) {
+		return nil
+	}
+	req := p.capturedRequests[n-1]
+	names := make([]string, 0, len(req.Tools))
+	for _, t := range req.Tools {
+		names = append(names, t.Name)
+	}
+	return names
+}
+
+var _ = Describe("Engine Permission Check", func() {
+	var (
+		chatProvider *streamSequenceProvider
+		manifest     agent.Manifest
+		testTool     *executableMockTool
+		registry     *tool.Registry
+	)
+
+	BeforeEach(func() {
+		chatProvider = &streamSequenceProvider{
+			name:      "test-chat-provider",
+			sequences: [][]provider.StreamChunk{},
+		}
+
+		manifest = agent.Manifest{
+			ID:   "test-agent",
+			Name: "Test Agent",
+			Instructions: agent.Instructions{
+				SystemPrompt: "You are a helpful assistant.",
+			},
+			ContextManagement: agent.DefaultContextManagement(),
+			// PR7 (Coordinator Over-Execution, May 2026) — the
+			// runtime tool gate at executeToolCall rejects tool
+			// calls outside Capabilities.Tools. Declare the fake
+			// here so these specs exercise the permission /
+			// dispatch contracts without being intercepted by
+			// the manifest gate.
+			Capabilities: agent.Capabilities{Tools: []string{"test_tool"}},
+		}
+
+		testTool = &executableMockTool{
+			name:        "test_tool",
+			description: "A test tool",
+			execResult:  tool.Result{Output: "tool executed successfully"},
+		}
+
+		registry = tool.NewRegistry()
+		registry.Register(testTool)
+	})
+
+	Context("when tool permission is Allow", func() {
+		BeforeEach(func() {
+			registry.SetPermission("test_tool", tool.Allow)
+			chatProvider.sequences = [][]provider.StreamChunk{
+				{
+					{
+						EventType: "tool_call",
+						ToolCall: &provider.ToolCall{
+							ID:        "call_allow",
+							Name:      "test_tool",
+							Arguments: map[string]interface{}{"arg": "val"},
+						},
+					},
+				},
+				{
+					{Content: "Tool completed.", Done: true},
+				},
+			}
+		})
+
+		It("executes the tool immediately", func() {
+			eng := engine.New(engine.Config{
+				ChatProvider: chatProvider,
+				Manifest:     manifest,
+				Tools:        []tool.Tool{testTool},
+				ToolRegistry: registry,
+			})
+
+			ctx := context.Background()
+			chunks, err := eng.Stream(ctx, "test-agent", "Use the tool")
+			Expect(err).NotTo(HaveOccurred())
+
+			for v := range chunks {
+				_ = v
+			}
+
+			Expect(testTool.execCalled).To(BeTrue())
+		})
+	})
+
+	Context("when tool permission is Deny", func() {
+		BeforeEach(func() {
+			registry.SetPermission("test_tool", tool.Deny)
+			chatProvider.sequences = [][]provider.StreamChunk{
+				{
+					{
+						EventType: "tool_call",
+						ToolCall: &provider.ToolCall{
+							ID:        "call_deny",
+							Name:      "test_tool",
+							Arguments: map[string]interface{}{"arg": "val"},
+						},
+					},
+				},
+			}
+		})
+
+		It("does not execute the tool", func() {
+			eng := engine.New(engine.Config{
+				ChatProvider: chatProvider,
+				Manifest:     manifest,
+				Tools:        []tool.Tool{testTool},
+				ToolRegistry: registry,
+			})
+
+			ctx := context.Background()
+			chunks, err := eng.Stream(ctx, "test-agent", "Use the tool")
+			Expect(err).NotTo(HaveOccurred())
+
+			var lastChunk provider.StreamChunk
+			for chunk := range chunks {
+				lastChunk = chunk
+			}
+
+			Expect(testTool.execCalled).To(BeFalse())
+			Expect(lastChunk.Error).To(HaveOccurred())
+			Expect(lastChunk.Error.Error()).To(ContainSubstring("denied"))
+		})
+	})
+
+	Context("when tool permission is Ask", func() {
+		BeforeEach(func() {
+			registry.SetPermission("test_tool", tool.Ask)
+			chatProvider.sequences = [][]provider.StreamChunk{
+				{
+					{
+						EventType: "tool_call",
+						ToolCall: &provider.ToolCall{
+							ID:        "call_ask",
+							Name:      "test_tool",
+							Arguments: map[string]interface{}{"arg": "val"},
+						},
+					},
+				},
+				{
+					{Content: "Tool completed.", Done: true},
+				},
+			}
+		})
+
+		Context("when user approves", func() {
+			It("executes the tool", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        []tool.Tool{testTool},
+					ToolRegistry: registry,
+					PermissionHandler: func(req tool.PermissionRequest) (bool, error) {
+						return true, nil
+					},
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Use the tool")
+				Expect(err).NotTo(HaveOccurred())
+
+				for v := range chunks {
+					_ = v
+				}
+
+				Expect(testTool.execCalled).To(BeTrue())
+			})
+		})
+
+		Context("when user denies", func() {
+			It("does not execute the tool", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        []tool.Tool{testTool},
+					ToolRegistry: registry,
+					PermissionHandler: func(req tool.PermissionRequest) (bool, error) {
+						return false, nil
+					},
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Use the tool")
+				Expect(err).NotTo(HaveOccurred())
+
+				var lastChunk provider.StreamChunk
+				for chunk := range chunks {
+					lastChunk = chunk
+				}
+
+				Expect(testTool.execCalled).To(BeFalse())
+				Expect(lastChunk.Error).To(HaveOccurred())
+				Expect(lastChunk.Error.Error()).To(ContainSubstring("denied"))
+			})
+		})
+
+		Context("when no permission handler is configured", func() {
+			It("defaults to deny", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        []tool.Tool{testTool},
+					ToolRegistry: registry,
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Use the tool")
+				Expect(err).NotTo(HaveOccurred())
+
+				var lastChunk provider.StreamChunk
+				for chunk := range chunks {
+					lastChunk = chunk
+				}
+
+				Expect(testTool.execCalled).To(BeFalse())
+				Expect(lastChunk.Error).To(HaveOccurred())
+				Expect(lastChunk.Error.Error()).To(ContainSubstring("denied"))
+			})
+		})
+	})
+
+	Context("when permission handler receives correct request info", func() {
+		It("passes tool name and arguments to the handler", func() {
+			registry.SetPermission("test_tool", tool.Ask)
+			chatProvider.sequences = [][]provider.StreamChunk{
+				{
+					{
+						EventType: "tool_call",
+						ToolCall: &provider.ToolCall{
+							ID:        "call_info",
+							Name:      "test_tool",
+							Arguments: map[string]interface{}{"key": "value"},
+						},
+					},
+				},
+				{
+					{Content: "Done.", Done: true},
+				},
+			}
+
+			var capturedReq tool.PermissionRequest
+			eng := engine.New(engine.Config{
+				ChatProvider: chatProvider,
+				Manifest:     manifest,
+				Tools:        []tool.Tool{testTool},
+				ToolRegistry: registry,
+				PermissionHandler: func(req tool.PermissionRequest) (bool, error) {
+					capturedReq = req
+					return true, nil
+				},
+			})
+
+			ctx := context.Background()
+			chunks, err := eng.Stream(ctx, "test-agent", "Use the tool")
+			Expect(err).NotTo(HaveOccurred())
+
+			for v := range chunks {
+				_ = v
+			}
+
+			Expect(capturedReq.ToolName).To(Equal("test_tool"))
+			Expect(capturedReq.Arguments).To(HaveKeyWithValue("key", "value"))
+		})
+	})
+})
+
+var _ = Describe("Engine Tool Call Loop", func() {
+	var (
+		chatProvider *streamSequenceProvider
+		manifest     agent.Manifest
+		testTool     *executableMockTool
+	)
+
+	BeforeEach(func() {
+		chatProvider = &streamSequenceProvider{
+			name:      "test-chat-provider",
+			sequences: [][]provider.StreamChunk{},
+		}
+
+		manifest = agent.Manifest{
+			ID:   "test-agent",
+			Name: "Test Agent",
+			Instructions: agent.Instructions{
+				SystemPrompt: "You are a helpful assistant.",
+			},
+			ContextManagement: agent.DefaultContextManagement(),
+			// PR7 (Coordinator Over-Execution, May 2026) — the
+			// runtime tool gate at executeToolCall rejects tool
+			// calls outside Capabilities.Tools. Declare the
+			// superset of fakes used across this Describe
+			// (test_tool, second_tool, search_context,
+			// get_messages, read) so the specs exercise their
+			// actual contracts — dispatch, multi-call sequencing,
+			// IsError propagation, context-query dispatch —
+			// without the manifest gate intercepting.
+			Capabilities: agent.Capabilities{
+				Tools: []string{"test_tool", "second_tool", "search_context", "get_messages", "read"},
+			},
+		}
+
+		testTool = &executableMockTool{
+			name:        "test_tool",
+			description: "A test tool",
+			execResult:  tool.Result{Output: "tool executed successfully"},
+		}
+	})
+
+	Describe("ProcessToolCalls", func() {
+		Context("when stream contains a tool call", func() {
+			BeforeEach(func() {
+				chatProvider.sequences = [][]provider.StreamChunk{
+					{
+						{
+							EventType: "tool_call",
+							ToolCall: &provider.ToolCall{
+								ID:        "call_123",
+								Name:      "test_tool",
+								Arguments: map[string]interface{}{"arg1": "value1"},
+							},
+						},
+					},
+					{
+						{Content: "Tool result processed.", Done: true},
+					},
+				}
+			})
+
+			It("executes the tool when tool_call event is received", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        []tool.Tool{testTool},
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Please use the tool")
+
+				Expect(err).NotTo(HaveOccurred())
+
+				var received []provider.StreamChunk
+				for chunk := range chunks {
+					received = append(received, chunk)
+				}
+
+				Expect(chatProvider.callIndex).To(Equal(2))
+				Expect(received).NotTo(BeEmpty())
+
+				var hasContent bool
+				for _, chunk := range received {
+					if chunk.Content != "" {
+						hasContent = true
+						break
+					}
+				}
+				Expect(hasContent).To(BeTrue())
+			})
+		})
+
+		Context("when tool name is unknown", func() {
+			BeforeEach(func() {
+				chatProvider.sequences = [][]provider.StreamChunk{
+					{
+						{
+							EventType: "tool_call",
+							ToolCall: &provider.ToolCall{
+								ID:        "call_456",
+								Name:      "unknown_tool",
+								Arguments: map[string]interface{}{},
+							},
+						},
+					},
+				}
+			})
+
+			It("returns helpful suggestion in tool result, not stream error", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        []tool.Tool{testTool},
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Use unknown tool")
+
+				Expect(err).NotTo(HaveOccurred())
+
+				var toolResultChunk *provider.StreamChunk
+				for chunk := range chunks {
+					if chunk.ToolResult != nil {
+						c := chunk
+						toolResultChunk = &c
+					}
+				}
+
+				Expect(toolResultChunk).NotTo(BeNil())
+				// PR6/C1 close-out (May 2026): the chunk Content MUST
+				// carry the engine's rich tool-not-found message — the
+				// inventory + suggestion text built at
+				// `executeToolCall.availableToolNames`+`suggestTool`
+				// and surfaced through Result.Output. Pre-PR6 the chunk
+				// path stripped Output to `"Error: " + Error.Error()`
+				// (the wrapped sentinel `tool not found: X`), so the
+				// model lost both the tool inventory and (when within
+				// the Levenshtein threshold) the "Did you mean" hint.
+				// These assertions pin the post-fix shape at the
+				// consumer seam: the unknown name is named verbatim,
+				// the actually-registered tool is named so the model
+				// has something to retry against, and the helpful
+				// preamble is present.
+				//
+				// Note: `unknown_tool` is intentionally outside the
+				// fuzzy-suggest threshold against `test_tool`
+				// (Levenshtein distance 7 vs threshold len(req)/2 = 6),
+				// so no `Did you mean` clause fires. The
+				// fuzzy-suggest-fires case is pinned separately by
+				// `internal/engine/skill_redirect_test.go`'s `bashh ->
+				// bash` spec, and by the second `It` here (which
+				// asserts `Available tools:` propagates regardless of
+				// suggestion).
+				Expect(toolResultChunk.ToolResult.IsError).To(BeTrue())
+				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring("unknown_tool"),
+					"the failing name must appear in the chunk content so the model can reason about what it tried")
+				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring("test_tool"),
+					"the registered tool name must appear so the model has a recovery target")
+				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring("not found"),
+					"the failure framing must survive the chunk renderer — pre-PR6 this passed by accident via the sentinel; the rich Output keeps the human framing too")
+			})
+
+			It("returns tool result content listing available tools", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        []tool.Tool{testTool},
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Use unknown tool")
+
+				Expect(err).NotTo(HaveOccurred())
+
+				var toolResultChunk *provider.StreamChunk
+				for chunk := range chunks {
+					if chunk.ToolResult != nil {
+						c := chunk
+						toolResultChunk = &c
+					}
+				}
+
+				Expect(toolResultChunk).NotTo(BeNil())
+				// PR6/C1: the chunk MUST carry the full `Available tools: [...]`
+				// inventory the engine builds in `executeToolCall`. Pre-PR6
+				// this assertion failed because the chunk path overwrote
+				// `Result.Output` (which holds the inventory) with the wrapped
+				// sentinel `"Error: tool not found: unknown_tool"`.
+				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring("not found"))
+				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring("Available tools"))
+				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring("test_tool"))
+				Expect(toolResultChunk.Error).To(BeNil())
+			})
+
+			// PR6/C1 close-out (May 2026): pin the Item 3 skill-name
+			// redirect at the Stream chunk seam. The `executeToolCall`
+			// return-value spec at internal/engine/skill_redirect_test.go
+			// asserts the redirect populates Result.Output with the
+			// `skill_load(name="X")` recovery hint, but it never
+			// observed the chunk path that ships the value to the
+			// model. The pre-PR6 chunk renderer stripped Output to
+			// `"Error: " + Error.Error()` (the wrapped sentinel) on
+			// every IsError result, so the redirect was invisible to
+			// the model in practice — the bug-shape Critical 1 covers.
+			// This spec extends the existing tool-not-found Describe
+			// with an unknown-tool name that exact-matches a known
+			// skill, configured via the engine's KnownSkillsFunc, and
+			// pins the redirect on the chunk content directly.
+			It("propagates the skill-name redirect hint to the chunk content when the unknown tool name matches a known skill", func() {
+				chatProvider.sequences = [][]provider.StreamChunk{
+					{
+						{
+							EventType: "tool_call",
+							ToolCall: &provider.ToolCall{
+								ID:        "call_redirect",
+								Name:      "task-tracker",
+								Arguments: map[string]interface{}{},
+							},
+						},
+					},
+					{
+						{Content: "Acknowledged the redirect.", Done: true},
+					},
+				}
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        []tool.Tool{testTool},
+					KnownSkillsFunc: func() []string {
+						return []string{"task-tracker", "memory-keeper"}
+					},
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Use task-tracker as if it were a tool")
+				Expect(err).NotTo(HaveOccurred())
+
+				var toolResultChunk *provider.StreamChunk
+				for chunk := range chunks {
+					if chunk.ToolResult != nil {
+						c := chunk
+						toolResultChunk = &c
+					}
+				}
+
+				Expect(toolResultChunk).NotTo(BeNil(),
+					"engine must emit a tool_result chunk for the redirect, not abort the stream")
+				Expect(toolResultChunk.ToolResult.IsError).To(BeTrue(),
+					"the redirect is an IsError result — it signals failure even though the body is recovery guidance")
+				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring(`skill_load(name="task-tracker")`),
+					"the chunk MUST carry the canonical recovery hint; pre-PR6 the engine stripped Output to the sentinel and the model never saw the redirect")
+				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring("is a skill, not a tool"),
+					"the redirect's plain-English framing must propagate too — both halves are what the model trains against")
+				Expect(toolResultChunk.ToolResult.Content).NotTo(ContainSubstring("Available tools:"),
+					"the redirect path suppresses the generic tool inventory; only the fuzzy-suggest fallback carries it")
+			})
+		})
+
+		Context("when tool execution fails", func() {
+			BeforeEach(func() {
+				testTool.execErr = errors.New("tool execution failed")
+				chatProvider.sequences = [][]provider.StreamChunk{
+					{
+						{
+							EventType: "tool_call",
+							ToolCall: &provider.ToolCall{
+								ID:        "call_789",
+								Name:      "test_tool",
+								Arguments: map[string]interface{}{},
+							},
+						},
+					},
+					{
+						{Content: "I see the tool failed.", Done: true},
+					},
+				}
+			})
+
+			It("feeds error result back to provider", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        []tool.Tool{testTool},
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Use the tool")
+
+				Expect(err).NotTo(HaveOccurred())
+
+				for v := range chunks {
+					_ = v
+				}
+
+				Expect(chatProvider.callIndex).To(Equal(2))
+			})
+		})
+
+		// PR5 Item 4 (openaicompat tool_loop_retry storm spike, May 2026):
+		// Real tools (read, bash, edit, multiedit, apply_patch, invalid, ls,
+		// grep, ...) use the `return tool.Result{Error: someErr}, nil` shape
+		// — they encode the failure in Result.Error and return nil as the
+		// Go-level error. The engine at internal/engine/engine.go:4373-4379
+		// then runs `result.Error = err` which OVERWRITES the tool's
+		// populated Result.Error with the nil Go-return — silently stripping
+		// every failure signal these tools emit.
+		//
+		// Live evidence (captured glm-4.5 session
+		// e0c0dfdf-d3a1-4728-92b3-d3b41fe3187d): 1659 sequential `read`
+		// calls on a directory path, every tool_result persisted with empty
+		// content and role="tool_result" (not "tool_error"). The model gets
+		// no error signal back, so it retries the same call indefinitely —
+		// the surface symptom the PR5 brief describes as the
+		// "tool_loop_retry storm".
+		//
+		// Contract: when a tool returns (Result{Error: someErr}, nil), the
+		// engine MUST forward IsError=true and the error text on the
+		// tool_result chunk so the session accumulator persists tool_error
+		// and the next provider request carries the failure to the model.
+		// The pre-existing executableMockTool covers only (Result, err); a
+		// new fixture covers the (Result{Error}, nil) shape that ships.
+		Context("when tool returns Result.Error with nil Go return (read/bash/edit shape)", func() {
+			var (
+				resultErrorTool *resultOnlyErrorTool
+			)
+
+			BeforeEach(func() {
+				resultErrorTool = &resultOnlyErrorTool{
+					name:        "read",
+					description: "Read tool that mimics real Result-only failure shape",
+					failure:     errors.New("read failed: is a directory"),
+				}
+				chatProvider.sequences = [][]provider.StreamChunk{
+					{
+						{
+							EventType: "tool_call",
+							ToolCall: &provider.ToolCall{
+								ID:   "call_resonly",
+								Name: "read",
+								Arguments: map[string]interface{}{
+									"path": "/some/directory",
+								},
+							},
+						},
+					},
+					{
+						{Content: "I see the tool failed.", Done: true},
+					},
+				}
+			})
+
+			It("forwards IsError=true and the error text on the tool_result chunk", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        []tool.Tool{resultErrorTool},
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Read a directory")
+				Expect(err).NotTo(HaveOccurred())
+
+				var toolResultChunk *provider.StreamChunk
+				for chunk := range chunks {
+					if chunk.ToolResult != nil {
+						c := chunk
+						toolResultChunk = &c
+					}
+				}
+
+				Expect(toolResultChunk).NotTo(BeNil(),
+					"engine must emit a tool_result chunk for Result.Error-shaped failures")
+				Expect(toolResultChunk.ToolResult.IsError).To(BeTrue(),
+					"Result.Error set by tool MUST propagate to IsError=true; otherwise the model "+
+						"sees the failure as a success-with-empty-output and retries indefinitely")
+				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring("read failed: is a directory"),
+					"tool_result content MUST carry the Error.Error() text so the model can react to the failure")
+			})
+
+			It("persists tool_error (not tool_result) when Result.Error is set", func() {
+				// Belt-and-braces: the accumulator (internal/session/accumulator.go:617)
+				// keys on chunk.ToolResult.IsError to decide the persisted role
+				// (tool_error vs tool_result). The IsError-passing-through is the
+				// behaviour pinned above; this spec pins the downstream effect on
+				// the session message stream that captured the
+				// e0c0dfdf-d3a1-4728-92b3-d3b41fe3187d storm.
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        []tool.Tool{resultErrorTool},
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Read a directory")
+				Expect(err).NotTo(HaveOccurred())
+
+				var seenIsError bool
+				for chunk := range chunks {
+					if chunk.ToolResult != nil && chunk.ToolResult.IsError {
+						seenIsError = true
+					}
+				}
+				Expect(seenIsError).To(BeTrue(),
+					"at least one tool_result chunk MUST carry IsError=true so the session "+
+						"accumulator persists role='tool_error' and the next provider request "+
+						"surfaces the failure to the model")
+			})
+		})
+
+		Context("with multiple tool calls in sequence", func() {
+			var secondTool *executableMockTool
+
+			BeforeEach(func() {
+				secondTool = &executableMockTool{
+					name:        "second_tool",
+					description: "Another tool",
+					execResult:  tool.Result{Output: "second tool result"},
+				}
+
+				chatProvider.sequences = [][]provider.StreamChunk{
+					{
+						{
+							EventType: "tool_call",
+							ToolCall: &provider.ToolCall{
+								ID:        "call_1",
+								Name:      "test_tool",
+								Arguments: map[string]interface{}{"step": "first"},
+							},
+						},
+					},
+					{
+						{
+							EventType: "tool_call",
+							ToolCall: &provider.ToolCall{
+								ID:        "call_2",
+								Name:      "second_tool",
+								Arguments: map[string]interface{}{"step": "second"},
+							},
+						},
+					},
+					{
+						{Content: "Both tools completed.", Done: true},
+					},
+				}
+			})
+
+			It("executes both tools in sequence", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        []tool.Tool{testTool, secondTool},
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Use both tools")
+
+				Expect(err).NotTo(HaveOccurred())
+
+				for v := range chunks {
+					_ = v
+				}
+
+				Expect(testTool.execCalled).To(BeTrue())
+				Expect(secondTool.execCalled).To(BeTrue())
+				Expect(chatProvider.callIndex).To(Equal(3))
+			})
+		})
+
+		Context("with context query tools", func() {
+			var (
+				searchTool *executableMockTool
+				getMsgTool *executableMockTool
+			)
+
+			BeforeEach(func() {
+				searchTool = &executableMockTool{
+					name:        "search_context",
+					description: "Search conversation history",
+					execResult:  tool.Result{Output: "found relevant context"},
+				}
+
+				getMsgTool = &executableMockTool{
+					name:        "get_messages",
+					description: "Get messages by range",
+					execResult:  tool.Result{Output: "message content here"},
+				}
+
+				chatProvider.sequences = [][]provider.StreamChunk{
+					{
+						{
+							EventType: "tool_call",
+							ToolCall: &provider.ToolCall{
+								ID:        "call_search",
+								Name:      "search_context",
+								Arguments: map[string]interface{}{"query": "test query"},
+							},
+						},
+					},
+					{
+						{Content: "Found the context.", Done: true},
+					},
+				}
+			})
+
+			It("dispatches context query tools like regular tools", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        []tool.Tool{searchTool, getMsgTool},
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Search for something")
+
+				Expect(err).NotTo(HaveOccurred())
+
+				for v := range chunks {
+					_ = v
+				}
+
+				Expect(searchTool.execCalled).To(BeTrue())
+				Expect(searchTool.lastInput.Arguments).To(HaveKeyWithValue("query", "test query"))
+			})
+		})
+
+		Context("tool result storage", func() {
+			var (
+				tempDir string
+				store   *recall.FileContextStore
+			)
+
+			BeforeEach(func() {
+				var err error
+				tempDir, err = os.MkdirTemp("", "engine-tool-test-*")
+				Expect(err).NotTo(HaveOccurred())
+
+				storePath := filepath.Join(tempDir, "context.json")
+				store, err = recall.NewFileContextStore(storePath, "test-model")
+				Expect(err).NotTo(HaveOccurred())
+
+				chatProvider.sequences = [][]provider.StreamChunk{
+					{
+						{
+							EventType: "tool_call",
+							ToolCall: &provider.ToolCall{
+								ID:        "call_store_test",
+								Name:      "test_tool",
+								Arguments: map[string]interface{}{},
+							},
+						},
+					},
+					{
+						{Content: "Tool processed.", Done: true},
+					},
+				}
+			})
+
+			AfterEach(func() {
+				os.RemoveAll(tempDir)
+			})
+
+			It("stores tool results in context store", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        []tool.Tool{testTool},
+					Store:        store,
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Use the tool")
+
+				Expect(err).NotTo(HaveOccurred())
+
+				for v := range chunks {
+					_ = v
+				}
+
+				messages := store.AllMessages()
+				var hasToolRole bool
+				for _, msg := range messages {
+					if msg.Role == "tool" {
+						hasToolRole = true
+						break
+					}
+				}
+				Expect(hasToolRole).To(BeTrue())
+			})
+
+			It("does not embed tool results", func() {
+				embeddingProvider := &streamSequenceProvider{
+					name: "test-embed-provider",
+				}
+
+				eng := engine.New(engine.Config{
+					ChatProvider:      chatProvider,
+					EmbeddingProvider: embeddingProvider,
+					Manifest:          manifest,
+					Tools:             []tool.Tool{testTool},
+					Store:             store,
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Use the tool")
+
+				Expect(err).NotTo(HaveOccurred())
+
+				for v := range chunks {
+					_ = v
+				}
+
+				results := store.Search([]float64{0.1, 0.2, 0.3}, 10)
+				for _, result := range results {
+					Expect(result.Message.Role).NotTo(Equal("tool"))
+				}
+			})
+		})
+
+		// Path C double-Done emit (Bug C1, May 2026 bughunt). When a provider
+		// stream closes with pending tool_calls but the tool loop succeeds in
+		// opening a follow-up stream that completes normally, the consumer
+		// MUST observe exactly one Done — the natural completion Done from
+		// the follow-up stream. The intermediate close-with-pending-tools
+		// must NOT emit a synthetic Done{StopReasonTurnInterrupted}, because
+		// SSE/Vue consumers `break` on first Done and would render an
+		// "interrupted" state for a turn that actually completed.
+		//
+		// See `Bug Fixes/C1 — Path C Double-Done Emit (May 2026).md` in the
+		// FlowState vault for the forensic trace; bughunt confidence 0.85.
+		Context("when stream closes with pending tool_calls then a follow-up stream completes normally", func() {
+			BeforeEach(func() {
+				// First sequence: tool_call only, no Done — channel close
+				// drives the close-with-pending-tools branch in
+				// processStreamChunks.
+				// Second sequence: natural completion Done — the post-tool
+				// follow-up turn the tool loop opens via
+				// retryStreamForToolResult.
+				chatProvider.sequences = [][]provider.StreamChunk{
+					{
+						{
+							EventType: "tool_call",
+							ToolCall: &provider.ToolCall{
+								ID:        "call_pathc",
+								Name:      "test_tool",
+								Arguments: map[string]interface{}{"step": "first"},
+							},
+						},
+					},
+					{
+						{Content: "Final answer after tool.", Done: true},
+					},
+				}
+			})
+
+			It("forwards exactly one Done to the consumer with the natural completion stop reason", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        []tool.Tool{testTool},
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Use the tool")
+				Expect(err).NotTo(HaveOccurred())
+
+				var doneChunks []provider.StreamChunk
+				for chunk := range chunks {
+					if chunk.Done {
+						doneChunks = append(doneChunks, chunk)
+					}
+				}
+
+				Expect(doneChunks).To(HaveLen(1),
+					"consumer must observe exactly one Done across the close-with-pending-tools + retry-stream lifecycle")
+				Expect(doneChunks[0].StopReason).NotTo(Equal(session.StopReasonTurnInterrupted),
+					"the surviving Done must NOT carry turn_interrupted when the tool loop completed naturally")
+				Expect(testTool.execCalled).To(BeTrue(),
+					"tool must still execute — the fix only suppresses the spurious mid-loop Done")
+				Expect(chatProvider.callIndex).To(Equal(2),
+					"both provider streams must run: the tool-bearing close, and the follow-up retry stream")
+			})
+		})
+	})
+
+	Describe("ToolCallChunkForwarding", func() {
+		Context("when the provider emits a tool_call chunk", func() {
+			BeforeEach(func() {
+				chatProvider.sequences = [][]provider.StreamChunk{
+					{
+						{
+							EventType: "tool_call",
+							ToolCall: &provider.ToolCall{
+								ID:        "call_forward",
+								Name:      "test_tool",
+								Arguments: map[string]interface{}{"key": "value"},
+							},
+						},
+					},
+					{
+						{Content: "Tool completed.", Done: true},
+					},
+				}
+			})
+
+			It("forwards the tool_call chunk to the output channel", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        []tool.Tool{testTool},
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Use the tool")
+				Expect(err).NotTo(HaveOccurred())
+
+				var received []provider.StreamChunk
+				for chunk := range chunks {
+					received = append(received, chunk)
+				}
+
+				var toolCallChunks []provider.StreamChunk
+				for _, chunk := range received {
+					if chunk.EventType == "tool_call" && chunk.ToolCall != nil {
+						toolCallChunks = append(toolCallChunks, chunk)
+					}
+				}
+
+				Expect(toolCallChunks).To(HaveLen(1))
+				Expect(toolCallChunks[0].ToolCall.Name).To(Equal("test_tool"))
+				Expect(toolCallChunks[0].ToolCall.ID).To(Equal("call_forward"))
+			})
+		})
+
+		// Regression guard — Runtime member-model revert in the tool loop.
+		// A delegated swarm member carries a per-stream provider/model
+		// override on its dispatch ctx (session.ProviderOverrideKey /
+		// ModelOverrideKey), resolved from the member manifest's
+		// preferred_models by DelegateTool.resolveChildModelOverride. The
+		// engine's Stream() seam applies that override when it builds the
+		// FIRST turn's request — but every tool-result continuation request
+		// is built inside retryStreamForToolResult, which historically
+		// defaulted to e.LastProvider/LastModel (the engine's GLOBAL
+		// default) and never re-read the ctx override. Since members are
+		// dominated by tool-loop turns (bash/file scans), the member ran
+		// turn 1 on its preferred model (anthropic) and then silently
+		// reverted to the global default (e.g. zai/glm) for every working
+		// turn — the symptom that survived commits 04adb404 (manifests) and
+		// 7a82fba7 (preference prepend), both of which only fixed turn 1.
+		// This asserts the override survives across the tool loop at the
+		// provider boundary, which is the closest test surface to the live
+		// runtime path (engine.go retryStreamForToolResult).
+		Context("when a per-stream provider/model override is set during a tool loop", func() {
+			BeforeEach(func() {
+				chatProvider.sequences = [][]provider.StreamChunk{
+					// Turn 1: model emits a tool_call, driving the engine
+					// into retryStreamForToolResult for the continuation.
+					{
+						{
+							EventType: "tool_call",
+							ToolCall: &provider.ToolCall{
+								ID:        "call_override",
+								Name:      "test_tool",
+								Arguments: map[string]interface{}{"arg1": "value1"},
+							},
+						},
+					},
+					// Turn 2 (continuation): model returns the final answer.
+					{
+						{Content: "Tool result processed.", Done: true},
+					},
+				}
+			})
+
+			It("re-applies the override on the tool-loop continuation request, not just turn 1", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        []tool.Tool{testTool},
+				})
+
+				ctx := context.WithValue(context.Background(), session.ProviderOverrideKey{}, "anthropic")
+				ctx = context.WithValue(ctx, session.ModelOverrideKey{}, "claude-sonnet-4-20250514")
+
+				chunks, err := eng.Stream(ctx, "test-agent", "Please use the tool")
+				Expect(err).NotTo(HaveOccurred())
+				for range chunks {
+				}
+
+				// Two provider calls: turn 1 (initial) + turn 2 (continuation).
+				Expect(chatProvider.callIndex).To(Equal(2),
+					"expected an initial turn plus one tool-loop continuation")
+				Expect(chatProvider.capturedRequests).To(HaveLen(2))
+
+				// Turn 1 honoured the override — the prior fixes already
+				// covered this; pinned here so a regression on either turn
+				// is unambiguous.
+				Expect(chatProvider.capturedRequests[0].Provider).To(Equal("anthropic"))
+				Expect(chatProvider.capturedRequests[0].Model).To(Equal("claude-sonnet-4-20250514"))
+
+				// Turn 2 — the continuation — MUST still carry the override.
+				// Pre-fix this reverted to the engine's global default and
+				// the member silently ran the rest of its turns on glm.
+				Expect(chatProvider.capturedRequests[1].Provider).To(Equal("anthropic"),
+					"tool-loop continuation must keep the member's manifest provider, not revert to the engine default")
+				Expect(chatProvider.capturedRequests[1].Model).To(Equal("claude-sonnet-4-20250514"),
+					"tool-loop continuation must keep the member's manifest model, not revert to the engine default")
+			})
+		})
+	})
+})
+
+var _ = Describe("Engine tool call context store", func() {
+	It("stores assistant tool_use message before tool result in context store", func() {
+		tmpDir, err := os.MkdirTemp("", "engine-tooluse-store")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { os.RemoveAll(tmpDir) })
+
+		storePath := filepath.Join(tmpDir, "context.json")
+		store, err := recall.NewFileContextStore(storePath, "")
+		Expect(err).NotTo(HaveOccurred())
+
+		testTool := &executableMockTool{
+			name:        "test_tool",
+			description: "A test tool",
+			execResult:  tool.Result{Output: "tool output"},
+		}
+
+		registry := tool.NewRegistry()
+		registry.Register(testTool)
+		registry.SetPermission("test_tool", tool.Allow)
+
+		chatProvider := &streamSequenceProvider{
+			name: "test-provider",
+			sequences: [][]provider.StreamChunk{
+				{
+					{
+						EventType: "tool_call",
+						ToolCall: &provider.ToolCall{
+							ID:        "call_store_test",
+							Name:      "test_tool",
+							Arguments: map[string]interface{}{"key": "val"},
+						},
+					},
+				},
+				{
+					{Content: "Final response.", Done: true},
+				},
+			},
+		}
+
+		manifest := agent.Manifest{
+			ID:   "test-agent",
+			Name: "Test Agent",
+			Instructions: agent.Instructions{
+				SystemPrompt: "You are a helpful assistant.",
+			},
+			ContextManagement: agent.DefaultContextManagement(),
+			// PR7 (Coordinator Over-Execution, May 2026) — declare
+			// test_tool so the runtime gate at executeToolCall
+			// admits the dispatch path; the surrounding spec
+			// exercises a different contract (context-store, chunk
+			// dispatch, result emission) and the gate must not
+			// intercept it.
+			Capabilities: agent.Capabilities{Tools: []string{"test_tool"}},
+		}
+
+		eng := engine.New(engine.Config{
+			ChatProvider: chatProvider,
+			Manifest:     manifest,
+			Tools:        []tool.Tool{testTool},
+			ToolRegistry: registry,
+		})
+		eng.SetContextStore(store, "test-session")
+
+		chunks, streamErr := eng.Stream(context.Background(), "test-agent", "Use the tool")
+		Expect(streamErr).NotTo(HaveOccurred())
+
+		for chunk := range chunks {
+			_ = chunk
+		}
+
+		msgs := store.AllMessages()
+		Expect(len(msgs)).To(BeNumerically(">=", 4))
+
+		var roles []string
+		for _, m := range msgs {
+			roles = append(roles, m.Role)
+		}
+
+		Expect(roles).To(ContainElement("assistant"))
+		Expect(roles).To(ContainElement("tool"))
+
+		assistantToolUseIdx := -1
+		toolResultIdx := -1
+		for idx, m := range msgs {
+			if m.Role == "assistant" && len(m.ToolCalls) > 0 && m.ToolCalls[0].Name == "test_tool" {
+				assistantToolUseIdx = idx
+			}
+			if m.Role == "tool" && len(m.ToolCalls) > 0 && m.ToolCalls[0].ID == "call_store_test" {
+				toolResultIdx = idx
+			}
+		}
+
+		Expect(assistantToolUseIdx).NotTo(Equal(-1))
+		Expect(toolResultIdx).NotTo(Equal(-1))
+		Expect(assistantToolUseIdx).To(BeNumerically("<", toolResultIdx))
+
+		assistantMsg := msgs[assistantToolUseIdx]
+		Expect(assistantMsg.ToolCalls[0].ID).To(Equal("call_store_test"))
+		Expect(assistantMsg.ToolCalls[0].Name).To(Equal("test_tool"))
+	})
+
+	// This spec pins the persistence contract for the tool-result message
+	// (Role: "tool"). The persisted ToolCall on a tool-result message MUST
+	// carry both the upstream tool_use ID AND the tool name — the Name field
+	// is load-bearing for downstream consumers (validator, session rehydration,
+	// cross-provider failover correlation, audit trails). The live repro is
+	// ~/.local/share/flowstate/sessions/validate-plan-writer-1776726758.json
+	// where an Anthropic-origin tool_use message has Name="list_allowed_directories"
+	// but the paired tool-result message persists {ID: "toolu_01...", Name: ""}.
+	// The validator surfaces this as "WARNING: N tool_call(s) with empty Name —
+	// provider may have emitted unnamed tool_use blocks", though the bug is
+	// not upstream: the engine's storeToolResult call site drops the name on
+	// the way into the context store.
+	It("persists the tool name on the tool-result message ToolCall, not just the ID", func() {
+		tmpDir, err := os.MkdirTemp("", "engine-toolresult-name-store")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { os.RemoveAll(tmpDir) })
+
+		storePath := filepath.Join(tmpDir, "context.json")
+		store, err := recall.NewFileContextStore(storePath, "")
+		Expect(err).NotTo(HaveOccurred())
+
+		testTool := &executableMockTool{
+			name:        "list_allowed_directories",
+			description: "A test tool",
+			execResult:  tool.Result{Output: "/tmp\n/home"},
+		}
+
+		registry := tool.NewRegistry()
+		registry.Register(testTool)
+		registry.SetPermission("list_allowed_directories", tool.Allow)
+
+		chatProvider := &streamSequenceProvider{
+			name: "anthropic-shape-provider",
+			sequences: [][]provider.StreamChunk{
+				{
+					{
+						EventType: "tool_call",
+						ToolCall: &provider.ToolCall{
+							ID:        "toolu_01Vu38ZEB6SQLEb59vtUXnTH",
+							Name:      "list_allowed_directories",
+							Arguments: map[string]interface{}{},
+						},
+					},
+				},
+				{
+					{Content: "Done.", Done: true},
+				},
+			},
+		}
+
+		manifest := agent.Manifest{
+			ID:   "test-agent",
+			Name: "Test Agent",
+			Instructions: agent.Instructions{
+				SystemPrompt: "You are a helpful assistant.",
+			},
+			ContextManagement: agent.DefaultContextManagement(),
+			// PR7 (Coordinator Over-Execution, May 2026) — declare
+			// test_tool so the runtime gate at executeToolCall
+			// admits the dispatch path; the surrounding spec
+			// exercises a different contract (context-store, chunk
+			// dispatch, result emission) and the gate must not
+			// intercept it.
+			Capabilities: agent.Capabilities{Tools: []string{"test_tool"}},
+		}
+
+		eng := engine.New(engine.Config{
+			ChatProvider: chatProvider,
+			Manifest:     manifest,
+			Tools:        []tool.Tool{testTool},
+			ToolRegistry: registry,
+		})
+		eng.SetContextStore(store, "test-session-toolresult-name")
+
+		chunks, streamErr := eng.Stream(context.Background(), "test-agent", "List the allowed dirs")
+		Expect(streamErr).NotTo(HaveOccurred())
+		for chunk := range chunks {
+			_ = chunk
+		}
+
+		var toolResultMsg *provider.Message
+		for i := range store.AllMessages() {
+			m := store.AllMessages()[i]
+			if m.Role == "tool" && len(m.ToolCalls) > 0 &&
+				m.ToolCalls[0].ID == "toolu_01Vu38ZEB6SQLEb59vtUXnTH" {
+				msgs := store.AllMessages()
+				toolResultMsg = &msgs[i]
+				break
+			}
+		}
+
+		Expect(toolResultMsg).NotTo(BeNil(),
+			"expected a tool-role message paired with the upstream tool_use ID; "+
+				"store contents: %+v", store.AllMessages())
+		Expect(toolResultMsg.ToolCalls[0].ID).To(Equal("toolu_01Vu38ZEB6SQLEb59vtUXnTH"),
+			"tool-result message must preserve the upstream tool_use ID for correlation")
+		Expect(toolResultMsg.ToolCalls[0].Name).To(Equal("list_allowed_directories"),
+			"tool-result message must persist the tool name alongside the ID; "+
+				"dropping Name on Role=\"tool\" messages is the bug surfaced by "+
+				"scripts/validate-harness.sh as \"WARNING: N tool_call(s) with empty Name\". "+
+				"The paired assistant tool_use message carries Name, so the persistence "+
+				"layer, not the upstream provider, is the fault line.")
+	})
+})
+
+var _ = Describe("Engine tool call dispatch by chunk shape", func() {
+	// These specs pin the engine's tool-call gate to the StreamChunk.ToolCall
+	// field rather than a conjunction with EventType. The openaicompat provider
+	// emits tool-call chunks without setting EventType (see
+	// internal/provider/openaicompat/openaicompat.go), and the engine previously
+	// silently dropped those, producing the 3-minute stall observed in
+	// session-1775944430840782553. The session accumulator already dispatches
+	// by shape (internal/session/accumulator.go:98); the engine must match.
+	//
+	It("dispatches a tool call when the chunk carries ToolCall but no EventType", func() {
+		chatProvider := &streamSequenceProvider{
+			name: "shape-dispatch-provider",
+			sequences: [][]provider.StreamChunk{
+				{
+					{
+						// EventType deliberately empty: mirrors openaicompat's
+						// current (broken) emission shape.
+						ToolCall: &provider.ToolCall{
+							ID:        "call_shape",
+							Name:      "test_tool",
+							Arguments: map[string]interface{}{"arg": "value"},
+						},
+					},
+				},
+				{
+					{Content: "Tool result observed.", Done: true},
+				},
+			},
+		}
+
+		testTool := &executableMockTool{
+			name:        "test_tool",
+			description: "A test tool",
+			execResult:  tool.Result{Output: "shape-dispatched result"},
+		}
+
+		manifest := agent.Manifest{
+			ID:   "test-agent",
+			Name: "Test Agent",
+			Instructions: agent.Instructions{
+				SystemPrompt: "You are a helpful assistant.",
+			},
+			ContextManagement: agent.DefaultContextManagement(),
+			// PR7 (Coordinator Over-Execution, May 2026) — declare
+			// test_tool so the runtime gate at executeToolCall
+			// admits the dispatch path; the surrounding spec
+			// exercises a different contract (context-store, chunk
+			// dispatch, result emission) and the gate must not
+			// intercept it.
+			Capabilities: agent.Capabilities{Tools: []string{"test_tool"}},
+		}
+
+		eng := engine.New(engine.Config{
+			ChatProvider: chatProvider,
+			Manifest:     manifest,
+			Tools:        []tool.Tool{testTool},
+		})
+
+		ctx := context.Background()
+		chunks, err := eng.Stream(ctx, "test-agent", "Use the tool")
+		Expect(err).NotTo(HaveOccurred())
+
+		for v := range chunks {
+			_ = v
+		}
+
+		Expect(testTool.execCalled).To(BeTrue(),
+			"engine must dispatch tool calls by StreamChunk.ToolCall shape, "+
+				"not by EventType == \"tool_call\"; this is the fix for "+
+				"non-anthropic providers that omit EventType")
+		Expect(chatProvider.callIndex).To(Equal(2),
+			"after dispatching the tool the engine must re-enter the stream loop "+
+				"so the provider produces a follow-up response")
+	})
+})
+
+var _ = Describe("Engine tool result emission", func() {
+	It("emits tool result chunks on outChan after tool execution", func() {
+		tmpDir, err := os.MkdirTemp("", "engine-toolresult-emit")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { os.RemoveAll(tmpDir) })
+
+		storePath := filepath.Join(tmpDir, "context.json")
+		store, err := recall.NewFileContextStore(storePath, "")
+		Expect(err).NotTo(HaveOccurred())
+
+		testTool := &executableMockTool{
+			name:        "test_tool",
+			description: "A test tool",
+			execResult:  tool.Result{Output: "tool output here"},
+		}
+
+		registry := tool.NewRegistry()
+		registry.Register(testTool)
+		registry.SetPermission("test_tool", tool.Allow)
+
+		chatProvider := &streamSequenceProvider{
+			name: "test-provider",
+			sequences: [][]provider.StreamChunk{
+				{
+					{
+						EventType: "tool_call",
+						ToolCall: &provider.ToolCall{
+							ID:        "call_emit_test",
+							Name:      "test_tool",
+							Arguments: map[string]interface{}{"key": "val"},
+						},
+					},
+				},
+				{
+					{Content: "Final response.", Done: true},
+				},
+			},
+		}
+
+		manifest := agent.Manifest{
+			ID:   "test-agent",
+			Name: "Test Agent",
+			Instructions: agent.Instructions{
+				SystemPrompt: "You are a helpful assistant.",
+			},
+			ContextManagement: agent.DefaultContextManagement(),
+			// PR7 (Coordinator Over-Execution, May 2026) — declare
+			// test_tool so the runtime gate at executeToolCall
+			// admits the dispatch path; the surrounding spec
+			// exercises a different contract (context-store, chunk
+			// dispatch, result emission) and the gate must not
+			// intercept it.
+			Capabilities: agent.Capabilities{Tools: []string{"test_tool"}},
+		}
+
+		eng := engine.New(engine.Config{
+			ChatProvider: chatProvider,
+			Manifest:     manifest,
+			Tools:        []tool.Tool{testTool},
+			ToolRegistry: registry,
+		})
+		eng.SetContextStore(store, "test-session")
+
+		chunks, streamErr := eng.Stream(context.Background(), "test-agent", "Use the tool")
+		Expect(streamErr).NotTo(HaveOccurred())
+
+		var receivedChunks []provider.StreamChunk
+		for chunk := range chunks {
+			receivedChunks = append(receivedChunks, chunk)
+		}
+
+		var toolResultChunk *provider.StreamChunk
+		for i := range receivedChunks {
+			if receivedChunks[i].EventType == "tool_result" && receivedChunks[i].ToolResult != nil {
+				toolResultChunk = &receivedChunks[i]
+				break
+			}
+		}
+
+		Expect(toolResultChunk).NotTo(BeNil())
+		Expect(toolResultChunk.ToolResult.Content).To(Equal("tool output here"))
+		Expect(toolResultChunk.ToolResult.IsError).To(BeFalse())
+	})
+})
+
+// These specs pin the canonical assistant-turn artefact ordering documented
+// across the FlowState vault (Chat TUI Message Rendering Order Fix, Session
+// Rendering Consistency, ADR - Swarm Activity Event Model):
+//
+//	thinking (buffered, flushed at structural boundaries) -> assistant text
+//	(streamed) -> tool_use -> tool_result -> next text / done
+//
+// The invariant at the engine's public Stream seam: the consumer MUST observe
+// at least one content or thinking artefact for a turn before the first
+// tool_use chunk of that turn is surfaced. Expressed at the consumer's
+// channel, the index of the first chunk carrying a non-empty Content or
+// Thinking field must be strictly less than the index of the first chunk
+// carrying a non-nil ToolCall. A turn that starts with a bare tool_use
+// (content="" and thinking="" up to that point) violates the invariant.
+//
+// This is consumer-agnostic: TUI, CLI, SSE, and WS all share this seam, so
+// the guarantee is pinned here rather than inside any one consumer.
+var _ = Describe("Engine assistant turn artefact ordering", func() {
+	var (
+		chatProvider *streamSequenceProvider
+		manifest     agent.Manifest
+		testTool     *executableMockTool
+	)
+
+	BeforeEach(func() {
+		chatProvider = &streamSequenceProvider{
+			name:      "ordering-provider",
+			sequences: [][]provider.StreamChunk{},
+		}
+
+		manifest = agent.Manifest{
+			ID:   "test-agent",
+			Name: "Test Agent",
+			Instructions: agent.Instructions{
+				SystemPrompt: "You are a helpful assistant.",
+			},
+			ContextManagement: agent.DefaultContextManagement(),
+			// PR7 (Coordinator Over-Execution, May 2026) — declare
+			// test_tool so the new runtime gate admits the dispatch
+			// path; this Describe asserts result-emission ordering,
+			// not the manifest gate, and the fake must reach Execute.
+			Capabilities: agent.Capabilities{Tools: []string{"test_tool"}},
+		}
+
+		testTool = &executableMockTool{
+			name:        "test_tool",
+			description: "A test tool",
+			execResult:  tool.Result{Output: "tool output"},
+		}
+	})
+
+	Context("when the provider's very first chunk is a tool_call with no preceding content or thinking", func() {
+		BeforeEach(func() {
+			chatProvider.sequences = [][]provider.StreamChunk{
+				{
+					{
+						// No prior Content or Thinking chunk has been emitted
+						// for this turn. This mirrors the openaicompat
+						// accumulator behaviour and the reported bug: the
+						// model's first observable artefact is a tool_use.
+						EventType: "tool_call",
+						ToolCall: &provider.ToolCall{
+							ID:        "call_bare_first",
+							Name:      "test_tool",
+							Arguments: map[string]interface{}{"arg": "value"},
+						},
+					},
+				},
+				{
+					{Content: "Tool completed.", Done: true},
+				},
+			}
+		})
+
+		It("must not surface the tool_call as the first consumer-observed chunk of the turn", func() {
+			eng := engine.New(engine.Config{
+				ChatProvider: chatProvider,
+				Manifest:     manifest,
+				Tools:        []tool.Tool{testTool},
+			})
+
+			ctx := context.Background()
+			chunks, err := eng.Stream(ctx, "test-agent", "Use the tool straight away")
+			Expect(err).NotTo(HaveOccurred())
+
+			var received []provider.StreamChunk
+			for chunk := range chunks {
+				received = append(received, chunk)
+			}
+			Expect(received).NotTo(BeEmpty())
+
+			firstToolUseIdx := -1
+			firstTextOrThinkingIdx := -1
+			for i, chunk := range received {
+				if firstToolUseIdx == -1 && chunk.ToolCall != nil {
+					firstToolUseIdx = i
+				}
+				if firstTextOrThinkingIdx == -1 && (chunk.Content != "" || chunk.Thinking != "") {
+					firstTextOrThinkingIdx = i
+				}
+			}
+
+			Expect(firstToolUseIdx).NotTo(Equal(-1),
+				"expected the turn to eventually carry a tool_use chunk once the "+
+					"ordering gate has released it")
+			Expect(firstTextOrThinkingIdx).NotTo(Equal(-1),
+				"the consumer must observe at least one text or thinking artefact "+
+					"for the turn before the first tool_use; a turn whose only "+
+					"pre-tool_use content is empty violates the canonical "+
+					"thinking/text -> tool_use ordering documented in the vault")
+			Expect(firstTextOrThinkingIdx).To(BeNumerically("<", firstToolUseIdx),
+				"tool_use must not be the first consumer-observed artefact of a turn; "+
+					"saw tool_use at index %d with no preceding content or thinking "+
+					"(received=%+v)", firstToolUseIdx, received)
+		})
+	})
+
+	Context("when thinking and text precede the tool_call (canonical anthropic-shape turn)", func() {
+		BeforeEach(func() {
+			chatProvider.sequences = [][]provider.StreamChunk{
+				{
+					{Thinking: "I should call the tool to answer this."},
+					{Content: "Looking that up for you."},
+					{
+						EventType: "tool_call",
+						ToolCall: &provider.ToolCall{
+							ID:        "call_after_text",
+							Name:      "test_tool",
+							Arguments: map[string]interface{}{"arg": "value"},
+						},
+					},
+				},
+				{
+					{Content: "Done.", Done: true},
+				},
+			}
+		})
+
+		It("forwards thinking then text before the tool_use and preserves that ordering", func() {
+			eng := engine.New(engine.Config{
+				ChatProvider: chatProvider,
+				Manifest:     manifest,
+				Tools:        []tool.Tool{testTool},
+			})
+
+			ctx := context.Background()
+			chunks, err := eng.Stream(ctx, "test-agent", "Please answer")
+			Expect(err).NotTo(HaveOccurred())
+
+			var received []provider.StreamChunk
+			for chunk := range chunks {
+				received = append(received, chunk)
+			}
+
+			firstToolUseIdx := -1
+			firstThinkingIdx := -1
+			firstContentIdx := -1
+			for i, chunk := range received {
+				if firstToolUseIdx == -1 && chunk.ToolCall != nil {
+					firstToolUseIdx = i
+				}
+				if firstThinkingIdx == -1 && chunk.Thinking != "" {
+					firstThinkingIdx = i
+				}
+				if firstContentIdx == -1 && chunk.Content != "" {
+					firstContentIdx = i
+				}
+			}
+
+			Expect(firstThinkingIdx).NotTo(Equal(-1), "thinking chunk must be forwarded to the consumer")
+			Expect(firstContentIdx).NotTo(Equal(-1), "content chunk must be forwarded to the consumer")
+			Expect(firstToolUseIdx).NotTo(Equal(-1), "tool_use chunk must be forwarded to the consumer")
+			Expect(firstThinkingIdx).To(BeNumerically("<", firstContentIdx),
+				"thinking must precede assistant text in the consumer-observed order")
+			Expect(firstContentIdx).To(BeNumerically("<", firstToolUseIdx),
+				"assistant text must precede tool_use in the consumer-observed order")
+		})
+	})
+
+	Context("when a user turn is consumed from input through to the first observed event", func() {
+		BeforeEach(func() {
+			// Provider opens the turn with a bare tool_use. The engine must
+			// not let the consumer's very first observation of this turn be
+			// a tool_use.
+			chatProvider.sequences = [][]provider.StreamChunk{
+				{
+					{
+						EventType: "tool_call",
+						ToolCall: &provider.ToolCall{
+							ID:        "call_first_event",
+							Name:      "test_tool",
+							Arguments: map[string]interface{}{"arg": "value"},
+						},
+					},
+				},
+				{
+					{Content: "Tool completed.", Done: true},
+				},
+			}
+		})
+
+		It("the first consumer-observed event of the turn is text or thinking, never a bare tool_use", func() {
+			eng := engine.New(engine.Config{
+				ChatProvider: chatProvider,
+				Manifest:     manifest,
+				Tools:        []tool.Tool{testTool},
+			})
+
+			ctx := context.Background()
+			chunks, err := eng.Stream(ctx, "test-agent", "Start the turn")
+			Expect(err).NotTo(HaveOccurred())
+
+			var firstObserved provider.StreamChunk
+			var gotFirst bool
+			var rest []provider.StreamChunk
+			for chunk := range chunks {
+				if !gotFirst {
+					// Skip any purely metadata chunks with no observable
+					// artefact (no content, no thinking, no tool_use, no
+					// tool_result, no terminal error). If the first
+					// artefact-bearing chunk is a tool_use, the invariant
+					// is violated.
+					hasArtefact := chunk.Content != "" || chunk.Thinking != "" ||
+						chunk.ToolCall != nil || chunk.ToolResult != nil || chunk.Error != nil
+					if !hasArtefact {
+						continue
+					}
+					firstObserved = chunk
+					gotFirst = true
+					continue
+				}
+				rest = append(rest, chunk)
+			}
+			Expect(gotFirst).To(BeTrue(),
+				"expected the turn to produce at least one consumer-observable chunk")
+
+			Expect(firstObserved.ToolCall).To(BeNil(),
+				"the first consumer-observed artefact of a turn must be text or thinking, "+
+					"never a bare tool_use; firstObserved=%+v, rest=%+v",
+				firstObserved, rest)
+			Expect(firstObserved.Content != "" || firstObserved.Thinking != "").To(BeTrue(),
+				"the first consumer-observed artefact of a turn must carry Content or Thinking; "+
+					"firstObserved=%+v", firstObserved)
+		})
+	})
+})
+
+// sleepingTool is a tool double whose Execute blocks for sleepFor or until
+// ctx is cancelled — whichever fires first. It records the observed ctx
+// error so specs can distinguish "ran to completion" from "cancelled by
+// engine-injected deadline" from "cancelled by parent".
+type sleepingTool struct {
+	name     string
+	sleepFor time.Duration
+	// observed captures ctx.Err() seen after the sleep / cancellation.
+	observed error
+}
+
+func (t *sleepingTool) Name() string        { return t.name }
+func (t *sleepingTool) Description() string { return "sleeps" }
+func (t *sleepingTool) Schema() tool.Schema { return tool.Schema{} }
+func (t *sleepingTool) Execute(ctx context.Context, _ tool.Input) (tool.Result, error) {
+	select {
+	case <-time.After(t.sleepFor):
+		t.observed = ctx.Err()
+		return tool.Result{Output: "slept"}, nil
+	case <-ctx.Done():
+		t.observed = ctx.Err()
+		return tool.Result{}, ctx.Err()
+	}
+}
+
+// sleepingToolWithOverride implements tool.TimeoutOverrider: a positive
+// override grants a per-tool budget, a zero override signals "inherit
+// parent ctx — no engine-injected deadline at all" (the delegate case).
+type sleepingToolWithOverride struct {
+	sleepingTool
+	override time.Duration
+}
+
+func (t *sleepingToolWithOverride) Timeout() time.Duration { return t.override }
+
+var _ = Describe("Engine per-tool execution timeout", Label("tool-timeout"), func() {
+	var (
+		chatProvider *streamSequenceProvider
+		manifest     agent.Manifest
+	)
+
+	BeforeEach(func() {
+		chatProvider = &streamSequenceProvider{name: "test-chat-provider"}
+		manifest = agent.Manifest{
+			ID:   "test-agent",
+			Name: "Test Agent",
+			Instructions: agent.Instructions{
+				SystemPrompt: "You are a helpful assistant.",
+			},
+			ContextManagement: agent.DefaultContextManagement(),
+			// PR7 (Coordinator Over-Execution, May 2026) — the
+			// timeout specs drive fake tool names (slow_shell,
+			// delegate_like, long_tool, cancellable_delegate)
+			// through the dispatch path to assert per-tool budget
+			// behaviour. The new runtime gate rejects unknown
+			// names, so the manifest must declare the supeset.
+			Capabilities: agent.Capabilities{
+				Tools: []string{"slow_shell", "delegate_like", "long_tool", "cancellable_delegate"},
+			},
+		}
+	})
+
+	toolCallSequenceFor := func(toolName string) [][]provider.StreamChunk {
+		return [][]provider.StreamChunk{
+			{
+				{
+					EventType: "tool_call",
+					ToolCall: &provider.ToolCall{
+						ID:        "call_" + toolName,
+						Name:      toolName,
+						Arguments: map[string]interface{}{},
+					},
+				},
+			},
+			{
+				{Content: "done", Done: true},
+			},
+		}
+	}
+
+	Context("when a tool without a TimeoutOverrider sleeps past the engine default", func() {
+		It("cancels the tool with DeadlineExceeded and does not apply the override path", func() {
+			slow := &sleepingTool{name: "slow_shell", sleepFor: 300 * time.Millisecond}
+			chatProvider.sequences = toolCallSequenceFor("slow_shell")
+
+			eng := engine.New(engine.Config{
+				ChatProvider:  chatProvider,
+				Manifest:      manifest,
+				Tools:         []tool.Tool{slow},
+				ToolTimeout:   50 * time.Millisecond,
+				StreamTimeout: 5 * time.Second,
+			})
+
+			ctx := context.Background()
+			chunks, err := eng.Stream(ctx, "test-agent", "use slow shell")
+			Expect(err).NotTo(HaveOccurred())
+			for v := range chunks {
+				_ = v
+			}
+
+			Expect(slow.observed).To(Equal(context.DeadlineExceeded),
+				"shell tools without TimeoutOverrider must still be killed by the engine default timeout")
+		})
+	})
+
+	Context("when a tool declares TimeoutOverrider returning 0 (inherit parent)", func() {
+		It("does not inject an engine-level deadline, so long-running execution completes", func() {
+			// sleepFor far exceeds the default ToolTimeout (50ms) — if the
+			// engine injected its default, this would be DeadlineExceeded.
+			// The override of 0 means "inherit parent ctx" so the tool
+			// runs to completion under the parent's budget.
+			inherit := &sleepingToolWithOverride{
+				sleepingTool: sleepingTool{name: "delegate_like", sleepFor: 200 * time.Millisecond},
+				// override left at zero value — signals "inherit"
+			}
+			chatProvider.sequences = toolCallSequenceFor("delegate_like")
+
+			eng := engine.New(engine.Config{
+				ChatProvider:  chatProvider,
+				Manifest:      manifest,
+				Tools:         []tool.Tool{inherit},
+				ToolTimeout:   50 * time.Millisecond,
+				StreamTimeout: 5 * time.Second,
+			})
+
+			ctx := context.Background()
+			chunks, err := eng.Stream(ctx, "test-agent", "delegate something")
+			Expect(err).NotTo(HaveOccurred())
+			for v := range chunks {
+				_ = v
+			}
+
+			Expect(inherit.observed).NotTo(HaveOccurred(),
+				"a tool declaring Timeout()==0 must inherit the parent context and run to completion "+
+					"even when its duration exceeds the engine's default tool timeout; observed=%v",
+				inherit.observed)
+		})
+	})
+
+	Context("when a tool declares TimeoutOverrider returning a larger budget than the engine default", func() {
+		It("uses the tool's budget, allowing execution longer than the engine default", func() {
+			extended := &sleepingToolWithOverride{
+				sleepingTool: sleepingTool{name: "long_tool", sleepFor: 200 * time.Millisecond},
+				override:     2 * time.Second,
+			}
+			chatProvider.sequences = toolCallSequenceFor("long_tool")
+
+			eng := engine.New(engine.Config{
+				ChatProvider:  chatProvider,
+				Manifest:      manifest,
+				Tools:         []tool.Tool{extended},
+				ToolTimeout:   50 * time.Millisecond,
+				StreamTimeout: 5 * time.Second,
+			})
+
+			ctx := context.Background()
+			chunks, err := eng.Stream(ctx, "test-agent", "run long")
+			Expect(err).NotTo(HaveOccurred())
+			for v := range chunks {
+				_ = v
+			}
+
+			Expect(extended.observed).NotTo(HaveOccurred(),
+				"a tool declaring Timeout() > engine default must run to completion under its own budget")
+		})
+	})
+
+	Context("when the parent context is cancelled during a long inherit-budget tool", func() {
+		It("propagates cancellation into the tool's ctx", func() {
+			inherit := &sleepingToolWithOverride{
+				sleepingTool: sleepingTool{name: "cancellable_delegate", sleepFor: 2 * time.Second},
+				// override == 0 → inherit parent
+			}
+			chatProvider.sequences = toolCallSequenceFor("cancellable_delegate")
+
+			eng := engine.New(engine.Config{
+				ChatProvider:  chatProvider,
+				Manifest:      manifest,
+				Tools:         []tool.Tool{inherit},
+				ToolTimeout:   50 * time.Millisecond,
+				StreamTimeout: 5 * time.Second,
+			})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			chunks, err := eng.Stream(ctx, "test-agent", "delegate and cancel")
+			Expect(err).NotTo(HaveOccurred())
+
+			// Cancel shortly after the tool starts sleeping.
+			go func() {
+				time.Sleep(50 * time.Millisecond)
+				cancel()
+			}()
+
+			for v := range chunks {
+				_ = v
+			}
+			cancel()
+
+			Expect(inherit.observed).To(Equal(context.Canceled),
+				"parent cancellation must cascade into the inherit-budget tool; observed=%v",
+				inherit.observed)
+		})
+	})
+})
+
+var _ = Describe("suggestTool", func() {
+	DescribeTable("suggests close matches",
+		func(available []string, requested, expected string) {
+			Expect(engine.SuggestToolForTest(available, requested)).To(Equal(expected))
+		},
+		Entry("exact prefix match", []string{"delegate", "bash", "skill_load"}, "delegat", "delegate"),
+		Entry("close edit distance", []string{"delegate", "bash", "skill_load"}, "delegae", "delegate"),
+		Entry("task suggests closest match bash", []string{"delegate", "bash", "skill_load"}, "task", "bash"),
+		Entry("single char tool name matches close", []string{"a"}, "x", "a"),
+		Entry("no close match returns empty", []string{"bash", "read", "write"}, "zzzzzzzz", ""),
+		Entry("empty available returns empty", []string{}, "anything", ""),
+		Entry("very different name returns empty", []string{"delegate", "bash", "skill_load"}, "zzzzzzzz", ""),
+	)
+})
+
+var _ = Describe("tool call deduplication in stream", func() {
+	var (
+		chatProvider *streamSequenceProvider
+		manifest     agent.Manifest
+		testTool     *executableMockTool
+		registry     *tool.Registry
+	)
+
+	BeforeEach(func() {
+		manifest = agent.Manifest{
+			ID:   "test-agent",
+			Name: "Test Agent",
+			Instructions: agent.Instructions{
+				SystemPrompt: "You are a helpful assistant.",
+			},
+			ContextManagement: agent.DefaultContextManagement(),
+			Capabilities:      agent.Capabilities{Tools: []string{"test_tool"}},
+		}
+
+		testTool = &executableMockTool{
+			name:        "test_tool",
+			description: "A test tool",
+			execResult:  tool.Result{Output: "ok"},
+		}
+
+		registry = tool.NewRegistry()
+		registry.Register(testTool)
+		registry.SetPermission("test_tool", tool.Allow)
+	})
+
+	It("deduplicates identical tool calls within a single turn", func() {
+		chatProvider = &streamSequenceProvider{
+			name: "test-chat-provider",
+			sequences: [][]provider.StreamChunk{
+				{
+					{EventType: "tool_call", ToolCall: &provider.ToolCall{ID: "call_a", Name: "test_tool", Arguments: map[string]any{"key": "v"}}},
+					{EventType: "tool_call", ToolCall: &provider.ToolCall{ID: "call_b", Name: "test_tool", Arguments: map[string]any{"key": "v"}}},
+					{EventType: "tool_call", ToolCall: &provider.ToolCall{ID: "call_c", Name: "test_tool", Arguments: map[string]any{"key": "v"}}},
+					{Done: true, StopReason: "tool_use"},
+				},
+				{
+					{Content: "Done after dedup", Done: true, StopReason: "end_turn"},
+				},
+			},
+		}
+
+		eng := engine.New(engine.Config{
+			ChatProvider: chatProvider,
+			Manifest:     manifest,
+			Tools:        []tool.Tool{testTool},
+		})
+
+		ctx := context.Background()
+		chunks, err := eng.Stream(ctx, "test-agent", "Run the tool three times")
+		Expect(err).NotTo(HaveOccurred())
+
+		var toolResults int
+		var doneChunks []provider.StreamChunk
+		var collected string
+		for chunk := range chunks {
+			if chunk.EventType == "tool_result" {
+				toolResults++
+			}
+			if chunk.Done {
+				doneChunks = append(doneChunks, chunk)
+			}
+			collected += chunk.Content
+		}
+
+		Expect(testTool.execCount).To(Equal(1),
+			"identical tool calls must be deduplicated to a single execution")
+		Expect(toolResults).To(Equal(3),
+			"all three tool calls must emit tool_result chunks with correct IDs")
+		Expect(doneChunks).To(HaveLen(1))
+		Expect(collected).To(ContainSubstring("Done after dedup"))
+	})
+
+	It("does not deduplicate distinct tool calls", func() {
+		chatProvider = &streamSequenceProvider{
+			name: "test-chat-provider",
+			sequences: [][]provider.StreamChunk{
+				{
+					{EventType: "tool_call", ToolCall: &provider.ToolCall{ID: "call_a", Name: "test_tool", Arguments: map[string]any{"key": "a"}}},
+					{EventType: "tool_call", ToolCall: &provider.ToolCall{ID: "call_b", Name: "test_tool", Arguments: map[string]any{"key": "b"}}},
+					{Done: true, StopReason: "tool_use"},
+				},
+				{
+					{Content: "Distinct results", Done: true, StopReason: "end_turn"},
+				},
+			},
+		}
+
+		eng := engine.New(engine.Config{
+			ChatProvider: chatProvider,
+			Manifest:     manifest,
+			Tools:        []tool.Tool{testTool},
+		})
+
+		ctx := context.Background()
+		chunks, err := eng.Stream(ctx, "test-agent", "Run two different calls")
+		Expect(err).NotTo(HaveOccurred())
+
+		var toolResults int
+		var collected string
+		for chunk := range chunks {
+			if chunk.EventType == "tool_result" {
+				toolResults++
+			}
+			collected += chunk.Content
+		}
+
+		Expect(testTool.execCount).To(Equal(2),
+			"distinct tool calls must each execute separately")
+		Expect(toolResults).To(Equal(2),
+			"each tool call must emit its own tool_result")
+	})
+})
+
+var _ = Describe("deduplicateToolCalls", func() {
+	DescribeTable("deduplicates identical tool calls",
+		func(toolCalls []*provider.ToolCall, wantUnique int, wantMapping []int) {
+			uniq, mapping := engine.DeduplicateToolCallsForTest(toolCalls)
+			Expect(uniq).To(HaveLen(wantUnique))
+			if wantMapping != nil {
+				Expect(mapping).To(Equal(wantMapping))
+			}
+		},
+		Entry("empty input returns nil slices", []*provider.ToolCall{}, 0, nil),
+		Entry("single call is unchanged",
+			[]*provider.ToolCall{{ID: "call_001", Name: "todo_update", Arguments: map[string]any{}}},
+			1, []int{0},
+		),
+		Entry("two identical calls collapse to one",
+			[]*provider.ToolCall{
+				{ID: "call_001", Name: "todo_update", Arguments: map[string]any{}},
+				{ID: "call_002", Name: "todo_update", Arguments: map[string]any{}},
+			},
+			1, []int{0, 0},
+		),
+		Entry("two different calls stay distinct",
+			[]*provider.ToolCall{
+				{ID: "call_001", Name: "todo_update", Arguments: map[string]any{"task": "foo"}},
+				{ID: "call_002", Name: "todo_update", Arguments: map[string]any{"task": "bar"}},
+			},
+			2, []int{0, 1},
+		),
+		Entry("nine identical calls collapse to one",
+			func() []*provider.ToolCall {
+				calls := make([]*provider.ToolCall, 9)
+				for i := 0; i < 9; i++ {
+					calls[i] = &provider.ToolCall{
+						ID:        fmt.Sprintf("call_%03d", i+1),
+						Name:      "todo_update",
+						Arguments: map[string]any{},
+					}
+				}
+				return calls
+			}(),
+			1, []int{0, 0, 0, 0, 0, 0, 0, 0, 0},
+		),
+		Entry("mixed duplicates and unique calls",
+			[]*provider.ToolCall{
+				{ID: "call_a", Name: "read", Arguments: map[string]any{"path": "/a"}},
+				{ID: "call_b", Name: "todo_update", Arguments: map[string]any{}},
+				{ID: "call_c", Name: "read", Arguments: map[string]any{"path": "/a"}},
+				{ID: "call_d", Name: "bash", Arguments: map[string]any{"cmd": "ls"}},
+				{ID: "call_e", Name: "todo_update", Arguments: map[string]any{}},
+			},
+			3, []int{0, 1, 0, 2, 1},
+		),
+		Entry("different tool names with same args are not duplicates",
+			[]*provider.ToolCall{
+				{ID: "call_001", Name: "read", Arguments: map[string]any{"path": "/x"}},
+				{ID: "call_002", Name: "write", Arguments: map[string]any{"path": "/x"}},
+			},
+			2, []int{0, 1},
+		),
+	)
+
+	It("preserves the first occurrence when deduplicating", func() {
+		calls := []*provider.ToolCall{
+			{ID: "call_001", Name: "todo_update", Arguments: map[string]any{"task": "foo"}},
+			{ID: "call_002", Name: "todo_update", Arguments: map[string]any{"task": "bar"}},
+			{ID: "call_003", Name: "todo_update", Arguments: map[string]any{"task": "foo"}},
+		}
+		uniq, mapping := engine.DeduplicateToolCallsForTest(calls)
+		Expect(uniq).To(HaveLen(2))
+		Expect(uniq[0].ID).To(Equal("call_001"))
+		Expect(uniq[1].ID).To(Equal("call_002"))
+		Expect(mapping).To(Equal([]int{0, 1, 0}))
+	})
+
+	It("handles nil tool calls in the batch without interfering with dedup", func() {
+		calls := []*provider.ToolCall{
+			{ID: "call_001", Name: "read", Arguments: map[string]any{"path": "/a"}},
+			nil,
+			{ID: "call_002", Name: "read", Arguments: map[string]any{"path": "/a"}},
+		}
+		uniq, mapping := engine.DeduplicateToolCallsForTest(calls)
+		Expect(uniq).To(HaveLen(2))
+		Expect(mapping).To(Equal([]int{0, 1, 0}))
+	})
+})
+
+var _ = Describe("levenshtein", func() {
+	DescribeTable("computes edit distance",
+		func(a, b string, expected int) {
+			Expect(engine.LevenshteinForTest(a, b)).To(Equal(expected))
+		},
+		Entry("identical strings", "delegate", "delegate", 0),
+		Entry("empty to non-empty", "", "abc", 3),
+		Entry("non-empty to empty", "abc", "", 3),
+		Entry("single substitution", "delegate", "delegafe", 1),
+		Entry("single insertion", "task", "tasks", 1),
+		Entry("completely different", "abc", "xyz", 3),
+	)
+})

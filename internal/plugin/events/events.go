@@ -1,0 +1,2069 @@
+package events
+
+import (
+	"encoding/json"
+	"time"
+
+	"github.com/baphled/flowstate/internal/provider"
+)
+
+// Event is the interface implemented by all event types for the plugin EventBus.
+//
+// Expected:
+//   - EventType returns the event's type string.
+//   - Timestamp returns the event's creation time.
+//
+// Returns: interface for event types.
+// Side effects: none.
+type Event interface {
+	// EventType returns the event's type string.
+	// Expected: Returns a string identifying the event type.
+	// Returns: event type string.
+	// Side effects: none.
+	EventType() string
+	// Timestamp returns the event's creation time.
+	// Expected: Returns the time the event was created.
+	// Returns: event creation time.
+	// Side effects: none.
+	Timestamp() time.Time
+}
+
+// BaseEvent provides common fields for all events.
+//
+// Expected:
+//   - Embeddable in all event types.
+//   - Stores event type and timestamp.
+//
+// Returns: struct for embedding in events.
+// Side effects: none.
+type BaseEvent struct {
+	eventType string
+	timestamp time.Time
+}
+
+// EventType returns the event's type string.
+//
+// Expected: returns the event type string.
+// Returns: event type string.
+// Side effects: none.
+func (e *BaseEvent) EventType() string { return e.eventType }
+
+// Timestamp returns the event's creation time.
+//
+// Expected: returns the event creation time.
+// Returns: event creation time.
+// Side effects: none.
+func (e *BaseEvent) Timestamp() time.Time { return e.timestamp }
+
+// SessionEventData holds data for session events.
+//
+// Expected: used as payload for SessionEvent.
+// Returns: struct with session event fields.
+// Side effects: none.
+type SessionEventData struct {
+	SessionID string
+	UserID    string
+	Action    string
+	Details   map[string]any
+}
+
+// SessionEvent represents a session-related event.
+//
+// Expected:
+//   - Embeds BaseEvent.
+//   - Data contains session event details.
+//
+// Returns: struct for session events.
+// Side effects: none.
+type SessionEvent struct {
+	BaseEvent
+	Data SessionEventData
+}
+
+// NewSessionEvent creates a new SessionEvent.
+//
+// KNOWN DIVERGENCE: EventType() returns "session" but this event is published
+// to topic "session.created" or "session.ended" depending on the action.
+// Do not change EventType() — it affects serialised JSONL format.
+//
+// Expected:
+//   - Sets eventType to "session".
+//   - Sets timestamp to now if zero.
+//
+// Returns: pointer to new SessionEvent.
+// Side effects: none.
+func NewSessionEvent(data SessionEventData, ts ...time.Time) *SessionEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &SessionEvent{
+		BaseEvent: BaseEvent{eventType: "session", timestamp: t},
+		Data:      data,
+	}
+}
+
+// ToolEventData holds data for tool events.
+//
+// Expected: used as payload for ToolEvent.
+// Returns: struct with tool event fields.
+// Side effects: none.
+//
+// ToolCallID and InternalToolCallID are correlation identifiers added by
+// Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026). ToolCallID is
+// the upstream provider wire id (P14b audit trail); InternalToolCallID is
+// the FlowState session-scoped canonical id stable across provider failover
+// (P14). Both are populated by the engine at the publishToolBeforeEvent /
+// publishToolAfterEvent seams; both are `omitempty` so pre-bridge
+// `events.jsonl` recordings decode byte-identical and post-bridge
+// recordings carry the IDs whenever the engine knows them.
+type ToolEventData struct {
+	SessionID          string
+	ToolName           string
+	Args               map[string]any
+	Result             any
+	Error              error
+	ToolCallID         string
+	InternalToolCallID string
+}
+
+// MarshalJSON serialises ToolEventData while preserving error messages.
+//
+// Expected:
+//   - The receiver contains tool event data ready for serialisation.
+//
+// Returns:
+//   - JSON bytes for the event payload.
+//   - An error if serialisation fails.
+//
+// Side effects:
+//   - None.
+func (d ToolEventData) MarshalJSON() ([]byte, error) {
+	type payload struct {
+		SessionID          string         `json:"session_id,omitempty"`
+		ToolName           string         `json:"tool_name"`
+		Args               map[string]any `json:"args,omitempty"`
+		Result             any            `json:"result,omitempty"`
+		Error              string         `json:"error,omitempty"`
+		ToolCallID         string         `json:"tool_call_id,omitempty"`
+		InternalToolCallID string         `json:"internal_tool_call_id,omitempty"`
+	}
+
+	data := payload{
+		SessionID:          d.SessionID,
+		ToolName:           d.ToolName,
+		Args:               d.Args,
+		Result:             d.Result,
+		ToolCallID:         d.ToolCallID,
+		InternalToolCallID: d.InternalToolCallID,
+	}
+	if d.Error != nil {
+		data.Error = d.Error.Error()
+	}
+
+	return json.Marshal(data)
+}
+
+// ToolEvent represents a tool-related event.
+//
+// Expected:
+//   - Embeds BaseEvent.
+//   - Data contains tool event details.
+//
+// Returns: struct for tool events.
+// Side effects: none.
+type ToolEvent struct {
+	BaseEvent
+	Data ToolEventData
+}
+
+// NewToolEvent creates a new ToolEvent.
+//
+// KNOWN DIVERGENCE: EventType() returns "tool" but this event is published
+// to topic "tool.execute.before" or "tool.execute.after" depending on the phase.
+// Do not change EventType() — it affects serialised JSONL format.
+//
+// Expected:
+//   - Sets eventType to "tool".
+//   - Sets timestamp to now if zero.
+//
+// Returns: pointer to new ToolEvent.
+// Side effects: none.
+func NewToolEvent(data ToolEventData, ts ...time.Time) *ToolEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &ToolEvent{
+		BaseEvent: BaseEvent{eventType: "tool", timestamp: t},
+		Data:      data,
+	}
+}
+
+// ProviderEventData holds data for provider events.
+//
+// Expected: used as payload for ProviderEvent.
+// Returns: struct with provider event fields.
+// Side effects: none.
+type ProviderEventData struct {
+	SessionID    string
+	ProviderName string
+	Request      any
+	Response     any
+	Error        error
+}
+
+// MarshalJSON serialises ProviderEventData while preserving error messages.
+//
+// Expected:
+//   - The receiver contains provider event data ready for serialisation.
+//
+// Returns:
+//   - JSON bytes for the event payload.
+//   - An error if serialisation fails.
+//
+// Side effects:
+//   - None.
+func (d ProviderEventData) MarshalJSON() ([]byte, error) {
+	type payload struct {
+		SessionID    string `json:"session_id,omitempty"`
+		ProviderName string `json:"provider_name"`
+		Request      any    `json:"request,omitempty"`
+		Response     any    `json:"response,omitempty"`
+		Error        string `json:"error,omitempty"`
+	}
+
+	data := payload{
+		SessionID:    d.SessionID,
+		ProviderName: d.ProviderName,
+		Request:      d.Request,
+		Response:     d.Response,
+	}
+	if d.Error != nil {
+		data.Error = d.Error.Error()
+	}
+
+	return json.Marshal(data)
+}
+
+// ProviderEvent represents a provider-related event.
+//
+// Expected:
+//   - Embeds BaseEvent.
+//   - Data contains provider event details.
+//
+// Returns: struct for provider events.
+// Side effects: none.
+type ProviderEvent struct {
+	BaseEvent
+	Data ProviderEventData
+}
+
+// NewProviderEvent creates a new ProviderEvent.
+//
+// KNOWN DIVERGENCE: EventType() returns "provider" but this event is published
+// to topic "provider.rate_limited".
+// Do not change EventType() — it affects serialised JSONL format.
+//
+// Expected:
+//   - Sets eventType to "provider".
+//   - Sets timestamp to now if zero.
+//
+// Returns: pointer to new ProviderEvent.
+// Side effects: none.
+func NewProviderEvent(data ProviderEventData, ts ...time.Time) *ProviderEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &ProviderEvent{
+		BaseEvent: BaseEvent{eventType: "provider", timestamp: t},
+		Data:      data,
+	}
+}
+
+// ProviderRequestEventData holds data for outbound provider request events.
+//
+// Expected: used as payload for ProviderRequestEvent.
+// Returns: struct with provider request fields.
+// Side effects: none.
+type ProviderRequestEventData struct {
+	SessionID    string
+	AgentID      string
+	ProviderName string
+	ModelName    string
+	Request      provider.ChatRequest
+}
+
+// ProviderRequestEvent represents an outbound request to a provider.
+//
+// Expected:
+//   - Embeds BaseEvent.
+//   - Data contains the full ChatRequest being sent.
+//
+// Returns: struct for provider request events.
+// Side effects: none.
+type ProviderRequestEvent struct {
+	BaseEvent
+	Data ProviderRequestEventData
+}
+
+// NewProviderRequestEvent creates a new ProviderRequestEvent.
+//
+// Expected:
+//   - Sets eventType to "provider.request".
+//   - Sets timestamp to now if zero.
+//
+// Returns: pointer to new ProviderRequestEvent.
+// Side effects: none.
+func NewProviderRequestEvent(data ProviderRequestEventData, ts ...time.Time) *ProviderRequestEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &ProviderRequestEvent{
+		BaseEvent: BaseEvent{eventType: "provider.request", timestamp: t},
+		Data:      data,
+	}
+}
+
+// AgentSwitchedEventData holds data for agent switch events.
+type AgentSwitchedEventData struct {
+	SessionID string
+	FromAgent string
+	ToAgent   string
+}
+
+// AgentSwitchedEvent represents an agent switch event.
+type AgentSwitchedEvent struct {
+	BaseEvent
+	Data AgentSwitchedEventData
+}
+
+// NewAgentSwitchedEvent creates a new AgentSwitchedEvent.
+//
+// Expected:
+//   - data contains the agent switch metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - An AgentSwitchedEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewAgentSwitchedEvent(data AgentSwitchedEventData, ts ...time.Time) *AgentSwitchedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &AgentSwitchedEvent{
+		BaseEvent: BaseEvent{eventType: "agent.switched", timestamp: t},
+		Data:      data,
+	}
+}
+
+// PromptEventData holds data for prompt observation events.
+//
+// Expected: used as payload for PromptEvent.
+// Returns: struct with prompt event fields.
+// Side effects: none.
+type PromptEventData struct {
+	SessionID  string
+	AgentID    string
+	FullPrompt string
+	TokenCount int
+	Truncated  bool
+	Sources    []string
+}
+
+// PromptEvent represents a prompt observation event emitted when the system
+// prompt is assembled for a model call.
+//
+// Expected:
+//   - Embeds BaseEvent.
+//   - Data contains prompt event details.
+//
+// Returns: struct for prompt events.
+// Side effects: none.
+type PromptEvent struct {
+	BaseEvent
+	Data PromptEventData
+}
+
+// NewPromptEvent creates a new PromptEvent.
+//
+// KNOWN DIVERGENCE: EventType() returns "prompt" but this event is published
+// to topic "prompt.generated".
+// Do not change EventType() — it affects serialised JSONL format.
+//
+// Expected:
+//   - Sets eventType to "prompt".
+//   - Sets timestamp to now if not provided.
+//
+// Returns: pointer to new PromptEvent.
+// Side effects: none.
+func NewPromptEvent(data PromptEventData, ts ...time.Time) *PromptEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &PromptEvent{
+		BaseEvent: BaseEvent{eventType: "prompt", timestamp: t},
+		Data:      data,
+	}
+}
+
+// ContextWindowEventData holds data for context window observation events.
+//
+// Expected: used as payload for ContextWindowEvent.
+// Returns: struct with context window event fields.
+// Side effects: none.
+type ContextWindowEventData struct {
+	SessionID       string
+	AgentID         string
+	TokenBudget     int
+	TokensUsed      int
+	BudgetRemaining int
+	MessageCount    int
+	Truncated       bool
+}
+
+// ContextWindowEvent represents a context window state event emitted after
+// the context window is built for a model call.
+//
+// Expected:
+//   - Embeds BaseEvent.
+//   - Data contains context window event details.
+//
+// Returns: struct for context window events.
+// Side effects: none.
+type ContextWindowEvent struct {
+	BaseEvent
+	Data ContextWindowEventData
+}
+
+// NewContextWindowEvent creates a new ContextWindowEvent.
+//
+// KNOWN DIVERGENCE: EventType() returns "context.window" but this event is published
+// to topic "context.window.built".
+// Do not change EventType() — it affects serialised JSONL format.
+//
+// Expected:
+//   - Sets eventType to "context.window".
+//   - Sets timestamp to now if not provided.
+//
+// Returns: pointer to new ContextWindowEvent.
+// Side effects: none.
+func NewContextWindowEvent(data ContextWindowEventData, ts ...time.Time) *ContextWindowEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &ContextWindowEvent{
+		BaseEvent: BaseEvent{eventType: "context.window", timestamp: t},
+		Data:      data,
+	}
+}
+
+// ToolReasoningEventData holds data for tool reasoning observation events.
+//
+// Expected: used as payload for ToolReasoningEvent.
+// Returns: struct with tool reasoning event fields.
+// Side effects: none.
+type ToolReasoningEventData struct {
+	SessionID        string
+	AgentID          string
+	ToolName         string
+	ReasoningContent string
+}
+
+// ToolReasoningEvent represents a tool reasoning observation event emitted
+// when the model produces text output before choosing a tool call.
+//
+// Expected:
+//   - Embeds BaseEvent.
+//   - Data contains tool reasoning event details.
+//
+// Returns: struct for tool reasoning events.
+// Side effects: none.
+type ToolReasoningEvent struct {
+	BaseEvent
+	Data ToolReasoningEventData
+}
+
+// NewToolReasoningEvent creates a new ToolReasoningEvent.
+//
+// Expected:
+//   - Sets eventType to "tool.reasoning".
+//   - Sets timestamp to now if not provided.
+//
+// Returns: pointer to new ToolReasoningEvent.
+// Side effects: none.
+func NewToolReasoningEvent(data ToolReasoningEventData, ts ...time.Time) *ToolReasoningEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &ToolReasoningEvent{
+		BaseEvent: BaseEvent{eventType: "tool.reasoning", timestamp: t},
+		Data:      data,
+	}
+}
+
+// BackgroundTaskEventData holds data for background task lifecycle events.
+type BackgroundTaskEventData struct {
+	SessionID string
+	TaskID    string
+	Name      string
+	Status    string // running, completed, failed
+	Error     string // non-empty if failed
+}
+
+// BackgroundTaskStartedEvent represents a background task start event.
+type BackgroundTaskStartedEvent struct {
+	BaseEvent
+	Data BackgroundTaskEventData
+}
+
+// NewBackgroundTaskStartedEvent creates a new background task started event.
+//
+// Expected:
+//   - data contains the background task metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A BackgroundTaskStartedEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewBackgroundTaskStartedEvent(data BackgroundTaskEventData, ts ...time.Time) *BackgroundTaskStartedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &BackgroundTaskStartedEvent{
+		BaseEvent: BaseEvent{eventType: EventBackgroundTaskStarted, timestamp: t},
+		Data:      data,
+	}
+}
+
+// BackgroundTaskCompletedEvent represents a background task completion event.
+type BackgroundTaskCompletedEvent struct {
+	BaseEvent
+	Data BackgroundTaskEventData
+}
+
+// NewBackgroundTaskCompletedEvent creates a new background task completed event.
+//
+// Expected:
+//   - data contains the background task metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A BackgroundTaskCompletedEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewBackgroundTaskCompletedEvent(data BackgroundTaskEventData, ts ...time.Time) *BackgroundTaskCompletedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &BackgroundTaskCompletedEvent{
+		BaseEvent: BaseEvent{eventType: EventBackgroundTaskCompleted, timestamp: t},
+		Data:      data,
+	}
+}
+
+// BackgroundTaskFailedEvent represents a background task failure event.
+type BackgroundTaskFailedEvent struct {
+	BaseEvent
+	Data BackgroundTaskEventData
+}
+
+// NewBackgroundTaskFailedEvent creates a new background task failed event.
+//
+// Expected:
+//   - data contains the background task metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A BackgroundTaskFailedEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewBackgroundTaskFailedEvent(data BackgroundTaskEventData, ts ...time.Time) *BackgroundTaskFailedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &BackgroundTaskFailedEvent{
+		BaseEvent: BaseEvent{eventType: EventBackgroundTaskFailed, timestamp: t},
+		Data:      data,
+	}
+}
+
+// BackgroundTaskCancelledEvent represents a background task cancellation event.
+type BackgroundTaskCancelledEvent struct {
+	BaseEvent
+	Data BackgroundTaskEventData
+}
+
+// NewBackgroundTaskCancelledEvent creates a new background task cancelled event.
+//
+// Expected:
+//   - data contains the background task metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A BackgroundTaskCancelledEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewBackgroundTaskCancelledEvent(data BackgroundTaskEventData, ts ...time.Time) *BackgroundTaskCancelledEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &BackgroundTaskCancelledEvent{
+		BaseEvent: BaseEvent{eventType: EventBackgroundTaskCancelled, timestamp: t},
+		Data:      data,
+	}
+}
+
+// DelegationEventData holds data for delegation lifecycle events emitted by
+// the engine's DelegateTool at the seam where the child session is known.
+//
+// This payload is in-process: the bus delivers it to subscribers (the API SSE
+// handler and the chat-intent subscriber) which project it to the on-the-wire
+// streaming.SwarmEvent shape consumed by surfaces. The struct mirrors
+// BackgroundTaskEventData (its closest structural analog — both are lifecycle
+// events with started/completed/failed triplets) and uses Error string rather
+// than error so default JSON marshalling suffices without a bespoke
+// MarshalJSON method.
+//
+// Fields populated only on terminal events (completed/failed) are explicitly
+// noted; subscribers must guard reads on Status.
+type DelegationEventData struct {
+	// ChainID is the canonical FlowState-assigned delegation identifier;
+	// matches DelegationInfo.ChainID and survives provider failover.
+	ChainID string
+	// ParentSessionID is the session that issued the delegate tool call.
+	ParentSessionID string
+	// ChildSessionID is the session created or resumed for the delegate;
+	// always populated because the publisher fires post-resolve.
+	ChildSessionID string
+	// SourceAgent is the agent issuing the delegation.
+	SourceAgent string
+	// TargetAgent is the agent being delegated to.
+	TargetAgent string
+	// Status is one of "started", "completed", or "failed".
+	Status string
+	// ModelName carries the resolved model name; populated on
+	// completed/failed when known, empty on started.
+	ModelName string
+	// ProviderName carries the resolved provider name; populated on
+	// completed/failed when known, empty on started.
+	ProviderName string
+	// Description mirrors DelegationInfo.Description for surface rendering.
+	Description string
+	// ToolCalls is the count of tool invocations the child session made;
+	// populated on completed/failed.
+	ToolCalls int
+	// LastTool is the most recently invoked tool name on the child;
+	// populated on completed/failed.
+	LastTool string
+	// StartedAt is the wall-clock start time, set on started and copied
+	// through to completed/failed.
+	StartedAt time.Time
+	// CompletedAt is the wall-clock terminal time, set on completed/failed.
+	CompletedAt *time.Time
+	// Error carries the failure message; non-empty only on failed events.
+	Error string
+	// LoadSkills is the raw user-supplied list of skill names the delegate
+	// tool was invoked with, before any allow-list filtering. Populated on
+	// started/completed/failed events when the caller passed a non-empty
+	// load_skills argument; empty otherwise. The Vue DelegationPanel
+	// renders one chip per name on the delegation card so the user can
+	// audit which knowledge context the child session was given. The raw
+	// (pre-filter) list is preferred over the resolved post-allow-list
+	// slice because the UI's purpose is to surface what the user asked
+	// for, not what the engine accepted.
+	LoadSkills []string
+}
+
+// DelegationStartedEvent represents a delegation start event, published by the
+// engine after the child session has been resolved and before the stream
+// begins.
+type DelegationStartedEvent struct {
+	BaseEvent
+	Data DelegationEventData
+}
+
+// NewDelegationStartedEvent creates a new delegation started event.
+//
+// Expected:
+//   - data carries the delegation metadata. ChildSessionID must be populated
+//     because the publisher fires post-resolve.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A DelegationStartedEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewDelegationStartedEvent(data DelegationEventData, ts ...time.Time) *DelegationStartedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &DelegationStartedEvent{
+		BaseEvent: BaseEvent{eventType: EventDelegationStarted, timestamp: t},
+		Data:      data,
+	}
+}
+
+// DelegationCompletedEvent represents a delegation completion event, published
+// after the stream drains cleanly and the post-member gate (where present)
+// passes.
+type DelegationCompletedEvent struct {
+	BaseEvent
+	Data DelegationEventData
+}
+
+// NewDelegationCompletedEvent creates a new delegation completed event.
+//
+// Expected:
+//   - data carries the delegation metadata. ModelName, ProviderName,
+//     ToolCalls, LastTool and CompletedAt are populated when known.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A DelegationCompletedEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewDelegationCompletedEvent(data DelegationEventData, ts ...time.Time) *DelegationCompletedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &DelegationCompletedEvent{
+		BaseEvent: BaseEvent{eventType: EventDelegationCompleted, timestamp: t},
+		Data:      data,
+	}
+}
+
+// DelegationFailedEvent represents a delegation failure event, published on
+// any error path — pre-swarm gate failure, pre-member gate failure, runner
+// error, post-member gate failure.
+type DelegationFailedEvent struct {
+	BaseEvent
+	Data DelegationEventData
+}
+
+// NewDelegationFailedEvent creates a new delegation failed event.
+//
+// Expected:
+//   - data carries the delegation metadata. Error is populated with the
+//     failing path's error message.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A DelegationFailedEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewDelegationFailedEvent(data DelegationEventData, ts ...time.Time) *DelegationFailedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &DelegationFailedEvent{
+		BaseEvent: BaseEvent{eventType: EventDelegationFailed, timestamp: t},
+		Data:      data,
+	}
+}
+
+// DelegationProgressEvent represents a periodic delegation progress
+// heartbeat, published while the child stream is executing. Restores
+// parent-side visibility during long delegations without forwarding
+// child content (which the tee gate suppresses by default since the
+// July 2026 content-leak fix).
+type DelegationProgressEvent struct {
+	BaseEvent
+	Data DelegationEventData
+}
+
+// NewDelegationProgressEvent creates a new delegation progress heartbeat
+// event.
+//
+// Expected:
+//   - data carries the delegation metadata. StartedAt lets consumers
+//     compute elapsed time.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A DelegationProgressEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewDelegationProgressEvent(data DelegationEventData, ts ...time.Time) *DelegationProgressEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &DelegationProgressEvent{
+		BaseEvent: BaseEvent{eventType: EventDelegationProgress, timestamp: t},
+		Data:      data,
+	}
+}
+
+// GateEventData holds data for swarm gate lifecycle events emitted by
+// the engine's DelegateTool at the seam where gate batches dispatch.
+//
+// This payload is in-process: the bus delivers it to subscribers (the
+// API SSE handler and the chat-intent subscriber) which project it to
+// wire shapes consumed by surfaces. Mirrors the DelegationEventData
+// shape — one struct, three wrapper types — and uses `Reason string`
+// + `Cause string` so default JSON marshalling suffices without a
+// bespoke MarshalJSON method.
+//
+// Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026):
+//   - GateEvaluating events carry a non-zero GateCount and an empty
+//     GateName/GateKind/Reason/Cause/CoordStoreKeys.
+//   - GatePassed events also carry GateCount and empty per-gate
+//     fields — the batch-level pass policy means individual gate
+//     passes do NOT publish.
+//   - GateFailed events carry the per-gate fields populated from the
+//     typed *swarm.GateError; GateCount is zero on failure events.
+//
+// Halt-class failures only — continue-class and warn-class do not
+// publish on the bus today; surfaces render only halt-class.
+type GateEventData struct {
+	// SwarmID is the active swarm context's identifier; non-empty.
+	SwarmID string
+	// SessionID is the parent session that issued the swarm dispatch.
+	// Subscribers filter on this to scope events to their pane.
+	SessionID string
+	// Lifecycle is one of "pre" | "post" | "pre-member" | "post-member"
+	// (matches swarm.LifecyclePreSwarm / LifecyclePostSwarm /
+	// LifecyclePreMember / LifecyclePostMember).
+	Lifecycle string
+	// MemberID names the swarm member when Lifecycle is "pre-member"
+	// or "post-member"; empty for swarm-level lifecycle points.
+	MemberID string
+	// GateName is the manifest-supplied name of the failing gate.
+	// Empty on Evaluating / Passed events (batch-level), populated on
+	// Failed events (per-gate).
+	GateName string
+	// GateKind is the kind string (e.g. "ext:relevance-gate",
+	// "builtin:result-schema"). Empty on Evaluating / Passed.
+	GateKind string
+	// Reason is the typed *swarm.GateError.Reason; empty on
+	// Evaluating / Passed events.
+	Reason string
+	// Cause is the *swarm.GateError.Cause's Error() string; empty
+	// when the typed error has no cause (e.g. a clean halt rather
+	// than a runner crash).
+	Cause string
+	// CoordStoreKeys is the slice of keys the gate read from the
+	// coordination store (when the gate has Inputs declared per
+	// the Multi-Key Gate Inputs plan); empty on legacy single-key
+	// gates and on Passed/Evaluating events. Surfaces render this
+	// for the operator's "what was checked?" affordance.
+	CoordStoreKeys []string
+	// GateCount is the number of gates in the batch (Evaluating /
+	// Passed events only); zero on Failed events.
+	GateCount int
+}
+
+// GateEvaluatingEvent represents a swarm gate batch about to run.
+// Published once per `swarm.Dispatch` call when at least one gate
+// matches the lifecycle; carries the count of gates and the lifecycle
+// point so the activity pane can render an "evaluating gates…"
+// affordance without per-gate noise.
+type GateEvaluatingEvent struct {
+	BaseEvent
+	Data GateEventData
+}
+
+// NewGateEvaluatingEvent creates a new gate evaluating event.
+//
+// Expected:
+//   - data carries the lifecycle marker payload (GateCount > 0).
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A GateEvaluatingEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewGateEvaluatingEvent(data GateEventData, ts ...time.Time) *GateEvaluatingEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &GateEvaluatingEvent{
+		BaseEvent: BaseEvent{eventType: EventGateEvaluating, timestamp: t},
+		Data:      data,
+	}
+}
+
+// GatePassedEvent represents a clean swarm gate batch — every gate in
+// the batch returned without halting. Single event per `swarm.Dispatch`;
+// per-gate pass events are deliberately suppressed by the pass-event
+// policy.
+type GatePassedEvent struct {
+	BaseEvent
+	Data GateEventData
+}
+
+// NewGatePassedEvent creates a new gate passed event.
+//
+// Expected:
+//   - data carries the batch-level summary (GateCount > 0).
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A GatePassedEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewGatePassedEvent(data GateEventData, ts ...time.Time) *GatePassedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &GatePassedEvent{
+		BaseEvent: BaseEvent{eventType: EventGatePassed, timestamp: t},
+		Data:      data,
+	}
+}
+
+// GateFailedEvent represents a halt-class swarm gate failure. One event
+// per failing gate; carries the typed *swarm.GateError fields as plain
+// strings so subscribers do not need to thread the error type across
+// the bus boundary.
+type GateFailedEvent struct {
+	BaseEvent
+	Data GateEventData
+}
+
+// NewGateFailedEvent creates a new gate failed event.
+//
+// Expected:
+//   - data carries the per-gate failure payload (GateName populated).
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A GateFailedEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewGateFailedEvent(data GateEventData, ts ...time.Time) *GateFailedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &GateFailedEvent{
+		BaseEvent: BaseEvent{eventType: EventGateFailed, timestamp: t},
+		Data:      data,
+	}
+}
+
+// StreamingHeartbeatEventData holds data for streaming heartbeat events
+// emitted by the engine during a turn (Streaming Coherence — Slice F,
+// May 2026).
+//
+// The engine publishes one event at most every ~15s during a turn so
+// the chat UI's stall watchdog re-arms even when the provider pauses
+// content emission. The payload's Phase discriminant lets the
+// frontend's adaptive watchdog pick a per-phase threshold:
+//   - "generating" — model is producing content tokens.
+//   - "thinking" — model is producing reasoning tokens (no content).
+//   - "tool_executing" — engine is running a tool, waiting for its
+//     result before resuming the model.
+//   - "queued" — engine is waiting on an upstream queue (rate-limit
+//     backoff, sandbox queue, model warmup).
+//
+// SessionID identifies the session the heartbeat is bound to;
+// downstream consumers (api/SSE bridge) project it onto the SSE wire
+// for that session only.
+//
+// TokenCount carries the in-flight turn's cumulative output_tokens as
+// reported by the provider's most recent UsageDelta (Anthropic
+// message_delta, openaicompat trailing-chunk usage). The chat UI's
+// streaming chrome reads this to render "1,247 tokens · 42 t/s"
+// next to the working-on label and compute tokens-per-second from
+// the delta-vs-prev-tick at the documented 15s cadence (UI Parity
+// PR5, May 2026). Zero is the legitimate pre-first-UsageDelta value;
+// the frontend gates the counter render on >0 so a fresh turn does
+// not flash a misleading "0 tokens".
+type StreamingHeartbeatEventData struct {
+	SessionID  string
+	AgentID    string
+	Phase      string
+	TokenCount int64
+}
+
+// StreamingHeartbeatEvent represents a one-tick liveness signal from
+// the engine during a turn. See StreamingHeartbeatEventData for the
+// per-phase semantics.
+type StreamingHeartbeatEvent struct {
+	BaseEvent
+	Data StreamingHeartbeatEventData
+}
+
+// NewStreamingHeartbeatEvent creates a streaming heartbeat event.
+//
+// Expected:
+//   - data carries the heartbeat payload (SessionID populated; Phase from
+//     the closed vocabulary above).
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A StreamingHeartbeatEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewStreamingHeartbeatEvent(data StreamingHeartbeatEventData, ts ...time.Time) *StreamingHeartbeatEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &StreamingHeartbeatEvent{
+		BaseEvent: BaseEvent{eventType: EventStreamingHeartbeat, timestamp: t},
+		Data:      data,
+	}
+}
+
+// ProviderResponseEventData holds data for provider response events emitted
+// when a streaming provider call completes successfully.
+//
+// Expected: used as payload for ProviderResponseEvent.
+// Returns: struct with provider response fields.
+// Side effects: none.
+type ProviderResponseEventData struct {
+	SessionID       string
+	AgentID         string
+	ProviderName    string
+	ModelName       string
+	ResponseContent string
+	ToolCalls       int
+	DurationMS      int64
+}
+
+// ProviderResponseEvent represents a completed provider response event.
+//
+// Expected:
+//   - Embeds BaseEvent.
+//   - Data contains the provider response details.
+//
+// Returns: struct for provider response events.
+// Side effects: none.
+type ProviderResponseEvent struct {
+	BaseEvent
+	Data ProviderResponseEventData
+}
+
+// NewProviderResponseEvent creates a new ProviderResponseEvent.
+//
+// Expected:
+//   - data contains the provider response metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A ProviderResponseEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewProviderResponseEvent(data ProviderResponseEventData, ts ...time.Time) *ProviderResponseEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &ProviderResponseEvent{
+		BaseEvent: BaseEvent{eventType: "provider.response", timestamp: t},
+		Data:      data,
+	}
+}
+
+// ProviderErrorEventData holds data for provider error events emitted
+// when a provider call fails during streaming or failover.
+//
+// Expected: used as payload for ProviderErrorEvent.
+// Returns: struct with provider error fields.
+// Side effects: none.
+type ProviderErrorEventData struct {
+	SessionID    string
+	AgentID      string
+	ProviderName string
+	ModelName    string
+	Error        error
+	Phase        string
+	Stage        string
+	// ErrorType is the semantic classification of the error.
+	ErrorType string
+	// ErrorCode is the provider-specific error code.
+	ErrorCode string
+	// HTTPStatus is the HTTP response status code, or zero if unavailable.
+	HTTPStatus int
+	// IsRetriable indicates whether the caller should retry with the same provider.
+	IsRetriable bool
+	// DurationMS is how long the failed attempt ran before surfacing the error.
+	DurationMS int64
+	// TimeoutMS is the attempt timeout budget when the failure path was
+	// governed by a timeout.
+	TimeoutMS int64
+	// ParentDeadlineClamped reports whether the attempt timeout was shortened by
+	// an earlier parent context deadline.
+	ParentDeadlineClamped bool
+	// MessageCount is the number of messages present on the failed request.
+	MessageCount int
+	// RequestBytes is the JSON-serialised size of the failed request.
+	RequestBytes int
+	// EstimatedInputTokens is the engine-side estimate of prompt tokens when
+	// available.
+	EstimatedInputTokens int
+	// InFlight is the active concurrency-limiter in-flight count when known.
+	InFlight int
+	// QueueDepth is the active concurrency-limiter queue depth when known.
+	QueueDepth int
+	// MaxConcurrent is the concurrency cap when the provider is locally limited.
+	MaxConcurrent int
+	// ConsecutiveFails is the consecutive failure count for this provider/model pair.
+	ConsecutiveFails int
+	// LastCooldownMs is the last applied cooldown duration in milliseconds.
+	LastCooldownMs int64
+}
+
+// MarshalJSON serialises ProviderErrorEventData while preserving error messages.
+//
+// Expected:
+//   - The receiver contains provider error data ready for serialisation.
+//
+// Returns:
+//   - JSON bytes for the event payload.
+//   - An error if serialisation fails.
+//
+// Side effects:
+//   - None.
+func (d ProviderErrorEventData) MarshalJSON() ([]byte, error) {
+	type payload struct {
+		SessionID             string `json:"session_id,omitempty"`
+		AgentID               string `json:"agent_id,omitempty"`
+		ProviderName          string `json:"provider_name"`
+		ModelName             string `json:"model_name,omitempty"`
+		Error                 string `json:"error,omitempty"`
+		Phase                 string `json:"phase,omitempty"`
+		Stage                 string `json:"stage,omitempty"`
+		ErrorType             string `json:"error_type,omitempty"`
+		ErrorCode             string `json:"error_code,omitempty"`
+		HTTPStatus            int    `json:"http_status,omitempty"`
+		IsRetriable           bool   `json:"is_retriable,omitempty"`
+		DurationMS            int64  `json:"duration_ms,omitempty"`
+		TimeoutMS             int64  `json:"timeout_ms,omitempty"`
+		ParentDeadlineClamped bool   `json:"parent_deadline_clamped,omitempty"`
+		MessageCount          int    `json:"message_count,omitempty"`
+		RequestBytes          int    `json:"request_bytes,omitempty"`
+		EstimatedInputTokens  int    `json:"estimated_input_tokens,omitempty"`
+		InFlight              int    `json:"in_flight,omitempty"`
+		QueueDepth            int    `json:"queue_depth,omitempty"`
+		MaxConcurrent         int    `json:"max_concurrent,omitempty"`
+	}
+
+	data := payload{
+		SessionID:             d.SessionID,
+		AgentID:               d.AgentID,
+		ProviderName:          d.ProviderName,
+		ModelName:             d.ModelName,
+		Phase:                 d.Phase,
+		Stage:                 d.Stage,
+		ErrorType:             d.ErrorType,
+		ErrorCode:             d.ErrorCode,
+		HTTPStatus:            d.HTTPStatus,
+		IsRetriable:           d.IsRetriable,
+		DurationMS:            d.DurationMS,
+		TimeoutMS:             d.TimeoutMS,
+		ParentDeadlineClamped: d.ParentDeadlineClamped,
+		MessageCount:          d.MessageCount,
+		RequestBytes:          d.RequestBytes,
+		EstimatedInputTokens:  d.EstimatedInputTokens,
+		InFlight:              d.InFlight,
+		QueueDepth:            d.QueueDepth,
+		MaxConcurrent:         d.MaxConcurrent,
+	}
+	if d.Error != nil {
+		data.Error = d.Error.Error()
+	}
+
+	return json.Marshal(data)
+}
+
+// ProviderErrorEvent represents a provider error event.
+//
+// Expected:
+//   - Embeds BaseEvent.
+//   - Data contains the provider error details.
+//
+// Returns: struct for provider error events.
+// Side effects: none.
+type ProviderErrorEvent struct {
+	BaseEvent
+	Data ProviderErrorEventData
+}
+
+// NewProviderErrorEvent creates a new ProviderErrorEvent.
+//
+// Expected:
+//   - data contains the provider error metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A ProviderErrorEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewProviderErrorEvent(data ProviderErrorEventData, ts ...time.Time) *ProviderErrorEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &ProviderErrorEvent{
+		BaseEvent: BaseEvent{eventType: "provider.error", timestamp: t},
+		Data:      data,
+	}
+}
+
+// SessionResumedEventData holds data for session resumed events.
+type SessionResumedEventData struct {
+	SessionID string
+	UserID    string
+	Action    string
+	Details   map[string]any
+}
+
+// SessionResumedEvent represents a session resumed event.
+type SessionResumedEvent struct {
+	BaseEvent
+	Data SessionResumedEventData `json:"data"`
+}
+
+// NewSessionResumedEvent creates a new SessionResumedEvent.
+//
+// Expected:
+//   - data contains the session resumed metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A SessionResumedEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewSessionResumedEvent(data SessionResumedEventData, ts ...time.Time) *SessionResumedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &SessionResumedEvent{
+		BaseEvent: BaseEvent{eventType: EventSessionResumed, timestamp: t},
+		Data:      data,
+	}
+}
+
+// ToolExecuteErrorEventData holds data for tool execution error events.
+//
+// ToolCallID and InternalToolCallID are correlation identifiers added by
+// Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026); see
+// ToolEventData for semantics.
+type ToolExecuteErrorEventData struct {
+	SessionID          string
+	ToolName           string
+	Args               map[string]any
+	Error              error
+	ToolCallID         string
+	InternalToolCallID string
+}
+
+// MarshalJSON serialises ToolExecuteErrorEventData while preserving error messages.
+//
+// Expected:
+//   - The receiver contains tool execution error data ready for serialisation.
+//
+// Returns:
+//   - JSON bytes for the event payload.
+//   - An error if serialisation fails.
+//
+// Side effects:
+//   - None.
+func (d ToolExecuteErrorEventData) MarshalJSON() ([]byte, error) {
+	type payload struct {
+		SessionID          string         `json:"session_id,omitempty"`
+		ToolName           string         `json:"tool_name"`
+		Args               map[string]any `json:"args,omitempty"`
+		Error              string         `json:"error,omitempty"`
+		ToolCallID         string         `json:"tool_call_id,omitempty"`
+		InternalToolCallID string         `json:"internal_tool_call_id,omitempty"`
+	}
+	data := payload{
+		SessionID:          d.SessionID,
+		ToolName:           d.ToolName,
+		Args:               d.Args,
+		ToolCallID:         d.ToolCallID,
+		InternalToolCallID: d.InternalToolCallID,
+	}
+	if d.Error != nil {
+		data.Error = d.Error.Error()
+	}
+	return json.Marshal(data)
+}
+
+// ToolExecuteErrorEvent represents a tool execution error event.
+type ToolExecuteErrorEvent struct {
+	BaseEvent
+	Data ToolExecuteErrorEventData
+}
+
+// NewToolExecuteErrorEvent creates a new ToolExecuteErrorEvent.
+//
+// Expected:
+//   - data contains the tool execution error metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A ToolExecuteErrorEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewToolExecuteErrorEvent(data ToolExecuteErrorEventData, ts ...time.Time) *ToolExecuteErrorEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &ToolExecuteErrorEvent{
+		BaseEvent: BaseEvent{eventType: EventToolExecuteError, timestamp: t},
+		Data:      data,
+	}
+}
+
+// ToolExecuteResultEventData holds data for tool execution result events.
+//
+// ToolCallID and InternalToolCallID are correlation identifiers added by
+// Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026); see
+// ToolEventData for semantics.
+type ToolExecuteResultEventData struct {
+	SessionID          string         `json:"session_id,omitempty"`
+	ToolName           string         `json:"tool_name"`
+	Args               map[string]any `json:"args,omitempty"`
+	Result             any            `json:"result,omitempty"`
+	ToolCallID         string         `json:"tool_call_id,omitempty"`
+	InternalToolCallID string         `json:"internal_tool_call_id,omitempty"`
+}
+
+// ToolExecuteResultEvent represents a tool execution result event.
+type ToolExecuteResultEvent struct {
+	BaseEvent
+	Data ToolExecuteResultEventData
+}
+
+// NewToolExecuteResultEvent creates a new ToolExecuteResultEvent.
+//
+// Expected:
+//   - data contains the tool execution result metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A ToolExecuteResultEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewToolExecuteResultEvent(data ToolExecuteResultEventData, ts ...time.Time) *ToolExecuteResultEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &ToolExecuteResultEvent{
+		BaseEvent: BaseEvent{eventType: EventToolExecuteResult, timestamp: t},
+		Data:      data,
+	}
+}
+
+// ProviderRequestRetryEventData holds data for provider request retry events.
+type ProviderRequestRetryEventData struct {
+	SessionID    string `json:"session_id,omitempty"`
+	AgentID      string `json:"agent_id,omitempty"`
+	ProviderName string `json:"provider_name"`
+	ModelName    string `json:"model_name,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+	Attempt      int    `json:"attempt"`
+}
+
+// ProviderRequestRetryEvent represents a provider request retry event.
+type ProviderRequestRetryEvent struct {
+	BaseEvent
+	Data ProviderRequestRetryEventData
+}
+
+// NewProviderRequestRetryEvent creates a new ProviderRequestRetryEvent.
+//
+// Expected:
+//   - data contains the provider request retry metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A ProviderRequestRetryEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewProviderRequestRetryEvent(data ProviderRequestRetryEventData, ts ...time.Time) *ProviderRequestRetryEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &ProviderRequestRetryEvent{
+		BaseEvent: BaseEvent{eventType: EventProviderRequestRetry, timestamp: t},
+		Data:      data,
+	}
+}
+
+// RecallEmbeddingStoredEventData describes the data for a recall embedding stored event.
+type RecallEmbeddingStoredEventData struct {
+	SessionID  string
+	MessageID  string
+	Dimensions int
+	LatencyMS  int64
+}
+
+// RecallEmbeddingStoredEvent represents an event when a recall embedding is stored.
+type RecallEmbeddingStoredEvent struct {
+	BaseEvent
+	Data RecallEmbeddingStoredEventData
+}
+
+// NewRecallEmbeddingStoredEvent creates a new RecallEmbeddingStoredEvent.
+//
+// Expected:
+//   - data contains the embedding storage metadata.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A RecallEmbeddingStoredEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewRecallEmbeddingStoredEvent(data RecallEmbeddingStoredEventData, ts ...time.Time) *RecallEmbeddingStoredEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &RecallEmbeddingStoredEvent{
+		BaseEvent: BaseEvent{eventType: EventRecallEmbeddingStored, timestamp: t},
+		Data:      data,
+	}
+}
+
+// RecallSearchEvent and RecallChainSearchEvent (May 2026) were
+// removed by Bug Hunt #63 (May 11 2026). Both event types and their
+// `EventRecallSearched` / `EventRecallChainSearched` constants had
+// zero non-test subscribers anywhere in the tree. The engine's
+// existing `tool.execute.result` event already carries the
+// tool-level latency / args / result count for the search_context
+// and chain_search tool invocations that previously emitted these
+// recall-specific topics, so the dedicated events were pure log
+// volume.
+//
+// RecallChainSearchFailedEvent (M9, May 2026) was removed by F4
+// (Bug Hunt Findings May 11 2026). The dedicated event type and
+// `EventRecallChainSearchFailed` constant had zero non-test
+// subscribers. The typed `recall.ErrAllSourcesFailed` sentinel and
+// the engine's existing `tool.execute.error` propagation remain the
+// canonical signals for a genuine recall chain-search failure.
+
+// RecallSummarizedEventData describes the data for a recall summarized event.
+type RecallSummarizedEventData struct {
+	SessionID      string
+	OriginalTokens int
+	SummaryTokens  int
+	LatencyMS      int64
+}
+
+// RecallSummarizedEvent represents an event when recall data is summarized.
+type RecallSummarizedEvent struct {
+	BaseEvent
+	Data RecallSummarizedEventData
+}
+
+// NewRecallSummarizedEvent creates a new RecallSummarizedEvent.
+//
+// Expected:
+//   - data contains the summarisation metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A RecallSummarizedEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewRecallSummarizedEvent(data RecallSummarizedEventData, ts ...time.Time) *RecallSummarizedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &RecallSummarizedEvent{
+		BaseEvent: BaseEvent{eventType: EventRecallSummarized, timestamp: t},
+		Data:      data,
+	}
+}
+
+// ContextCompactedEventData holds the payload for an L2 auto-compaction
+// event emitted by the engine after a successful compaction pass. The
+// fields mirror streaming.ContextCompactedEvent so a single set of
+// subscribers can decode either the internal bus event or the wire
+// event without adapting field names.
+//
+// Phase-5 Slice α added the Trigger discriminant so subscribers can
+// attribute the cause (ratio | gate_proximity | model_switch |
+// tool_result_wave). Slice δ surfaces the value across the
+// engine→bus→bridge→Vue plumbing onto the chip's hover tooltip; Slice
+// α and Slice γ stamp the new values internally so the wire shape
+// only carries an authoritative figure once δ lands.
+type ContextCompactedEventData struct {
+	SessionID      string
+	AgentID        string
+	OriginalTokens int
+	SummaryTokens  int
+	LatencyMS      int64
+	// Trigger identifies the path that fired compaction. Closed
+	// vocabulary: "ratio" | "gate_proximity" | "model_switch" |
+	// "tool_result_wave". Empty string is tolerated by subscribers
+	// (defence in depth — historical events that pre-date the field
+	// remain decodable) but is never produced by current emit sites.
+	Trigger string
+	// PrunedToolOutputs counts how many tool-result messages had their
+	// Content truncated by the Stage-1 prune pass (OpenCode-shape
+	// auto-compact, May 2026 rename bundle). The prune pass runs
+	// BEFORE the LLM summariser inside maybeAutoCompact and reclaims
+	// tokens from old, large tool outputs cheaply; pruning alone may
+	// be sufficient to drop below the threshold, in which case the
+	// summariser is skipped and SummaryGenerated is false.
+	//
+	// Zero is the default for events emitted before the prune stage
+	// landed AND for fires where no tool-result message was eligible
+	// for pruning (all under the 2000-char ceiling, or all protected
+	// by name). Subscribers MUST tolerate zero — defence in depth.
+	PrunedToolOutputs int
+	// SummaryGenerated is true when the LLM summariser was actually
+	// invoked on this compaction, false when the Stage-1 prune pass
+	// alone reclaimed enough tokens to drop below the threshold and
+	// the summariser was skipped. The chip / observability surface
+	// can branch on this to show "pruned X tool outputs, no summary
+	// needed" vs "pruned + summarised". Always true on the manual
+	// /compact and force-fire paths (gate_proximity, model_switch,
+	// tool_result_wave) because those bypass the ratio gate and want
+	// a fresh summary regardless of pruning savings.
+	SummaryGenerated bool
+}
+
+// ContextCompactedEvent is published when auto-compaction produces a
+// validated summary. Distinct from RecallSummarizedEvent per
+// [[ADR - Tool-Call Atomicity in Context Compaction]].
+type ContextCompactedEvent struct {
+	BaseEvent
+	Data ContextCompactedEventData
+}
+
+// NewContextCompactedEvent constructs a ContextCompactedEvent with the
+// current timestamp unless an override is supplied.
+//
+// Expected:
+//   - data contains the compaction statistics to include in the event.
+//   - ts is optional and, when provided with a non-zero value, uses the
+//     first entry as the event timestamp.
+//
+// Returns:
+//   - A ContextCompactedEvent ready to publish. Never nil.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewContextCompactedEvent(data ContextCompactedEventData, ts ...time.Time) *ContextCompactedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &ContextCompactedEvent{
+		BaseEvent: BaseEvent{eventType: EventContextCompacted, timestamp: t},
+		Data:      data,
+	}
+}
+
+// DiscoveryPublishedEventData holds the data for a discovery published event.
+type DiscoveryPublishedEventData struct {
+	ID        string
+	Summary   string
+	Kind      string
+	Priority  string
+	Tags      []string
+	Timestamp time.Time
+}
+
+// DiscoveryPublishedEvent is published when an agent discovery is completed.
+type DiscoveryPublishedEvent struct {
+	BaseEvent
+	Data DiscoveryPublishedEventData
+}
+
+// NewDiscoveryPublishedEvent creates a new DiscoveryPublishedEvent.
+//
+// Expected:
+//   - data contains the discovery metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A DiscoveryPublishedEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewDiscoveryPublishedEvent(data DiscoveryPublishedEventData, ts ...time.Time) *DiscoveryPublishedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &DiscoveryPublishedEvent{
+		BaseEvent: BaseEvent{eventType: EventDiscoveryPublished, timestamp: t},
+		Data:      data,
+	}
+}
+
+// LearningRecordedEventData holds the data for a learning recorded event.
+type LearningRecordedEventData struct {
+	AgentID     string
+	UserMessage string
+	Outcome     string
+	ToolsUsed   []string
+	Timestamp   time.Time
+}
+
+// LearningRecordedEvent is published when learning is recorded.
+type LearningRecordedEvent struct {
+	BaseEvent
+	Data LearningRecordedEventData
+}
+
+// NewLearningRecordedEvent creates a new LearningRecordedEvent.
+//
+// Expected:
+//   - data contains the learning metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A LearningRecordedEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewLearningRecordedEvent(data LearningRecordedEventData, ts ...time.Time) *LearningRecordedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &LearningRecordedEvent{
+		BaseEvent: BaseEvent{eventType: EventLearningRecorded, timestamp: t},
+		Data:      data,
+	}
+}
+
+// Compile-time interface checks.
+//
+// Expected: ensures event types implement Event interface.
+// Returns: none.
+// Side effects: none.
+var (
+	_ Event = (*SessionEvent)(nil)
+	_ Event = (*ToolEvent)(nil)
+	_ Event = (*ProviderEvent)(nil)
+	_ Event = (*PromptEvent)(nil)
+	_ Event = (*ContextWindowEvent)(nil)
+	_ Event = (*ToolReasoningEvent)(nil)
+	_ Event = (*ProviderRequestEvent)(nil)
+	_ Event = (*ProviderResponseEvent)(nil)
+	_ Event = (*ProviderErrorEvent)(nil)
+	_ Event = (*AgentSwitchedEvent)(nil)
+	_ Event = (*BackgroundTaskStartedEvent)(nil)
+	_ Event = (*BackgroundTaskCompletedEvent)(nil)
+	_ Event = (*BackgroundTaskFailedEvent)(nil)
+	_ Event = (*BackgroundTaskCancelledEvent)(nil)
+	_ Event = (*DelegationStartedEvent)(nil)
+	_ Event = (*DelegationCompletedEvent)(nil)
+	_ Event = (*DelegationFailedEvent)(nil)
+	_ Event = (*SessionResumedEvent)(nil)
+	_ Event = (*ToolExecuteErrorEvent)(nil)
+	_ Event = (*ToolExecuteResultEvent)(nil)
+	_ Event = (*ProviderRequestRetryEvent)(nil)
+	_ Event = (*RecallEmbeddingStoredEvent)(nil)
+	// RecallSearchEvent + RecallChainSearchEvent removed by Bug Hunt
+	// #63 (May 11 2026). RecallChainSearchFailedEvent removed by F4
+	// (Bug Hunt May 11 2026).
+	_ Event = (*RecallSummarizedEvent)(nil)
+	_ Event = (*ContextCompactedEvent)(nil)
+	_ Event = (*DiscoveryPublishedEvent)(nil)
+	_ Event = (*LearningRecordedEvent)(nil)
+	_ Event = (*GateEvaluatingEvent)(nil)
+	_ Event = (*GatePassedEvent)(nil)
+	_ Event = (*GateFailedEvent)(nil)
+	_ Event = (*StreamingHeartbeatEvent)(nil)
+	_ Event = (*ToolArgsValidationFailedEvent)(nil)
+	_ Event = (*PermissionRequiredEvent)(nil)
+	_ Event = (*PermissionGrantedEvent)(nil)
+	_ Event = (*PermissionDeniedEvent)(nil)
+	_ Event = (*PermissionTimeoutEvent)(nil)
+)
+
+// ToolArgsValidationFailedEventData holds data for tool-args validation
+// failure events. Published by the engine's executeToolCall site when
+// internal/engine/ValidateToolArgs rejects a tool call's arguments.
+//
+// Recommendation E from the May 2026 codebase-explorer investigation of
+// the glm-4.6 `librarian` mis-call — the validator already produces an
+// IsError=true tool_result that the model self-corrects against. This
+// event lets observability dashboards count + attribute the failures so
+// we can spot provider/model patterns (e.g. glm-4.6 sustains this) and
+// decide on provider-side mitigation later.
+//
+// ToolCallID and InternalToolCallID propagate from the engine's
+// publishToolBeforeEvent seam so dashboards can correlate the validation
+// failure with the surrounding tool.execute.before / tool.execute.error
+// pair on the same call.
+type ToolArgsValidationFailedEventData struct {
+	SessionID            string
+	AgentID              string
+	ProviderName         string
+	ModelName            string
+	ToolName             string
+	ValidationErrorClass string
+	UnknownKeys          []string
+	MissingKeys          []string
+	ExpectedKeys         []string
+	Error                error
+	ToolCallID           string
+	InternalToolCallID   string
+}
+
+// MarshalJSON serialises ToolArgsValidationFailedEventData while preserving
+// error messages. Field shapes mirror the other tool.execute.* events for
+// consistency in the JSONL recordings the eventlogger writes.
+//
+// Expected:
+//   - The receiver carries validation-failure metadata ready for serialisation.
+//
+// Returns:
+//   - JSON bytes for the event payload.
+//   - An error if serialisation fails.
+//
+// Side effects: none.
+func (d ToolArgsValidationFailedEventData) MarshalJSON() ([]byte, error) {
+	type payload struct {
+		SessionID            string   `json:"session_id,omitempty"`
+		AgentID              string   `json:"agent_id,omitempty"`
+		ProviderName         string   `json:"provider_name,omitempty"`
+		ModelName            string   `json:"model_name,omitempty"`
+		ToolName             string   `json:"tool_name"`
+		ValidationErrorClass string   `json:"validation_error_class"`
+		UnknownKeys          []string `json:"unknown_keys,omitempty"`
+		MissingKeys          []string `json:"missing_keys,omitempty"`
+		ExpectedKeys         []string `json:"expected_keys,omitempty"`
+		Error                string   `json:"error,omitempty"`
+		ToolCallID           string   `json:"tool_call_id,omitempty"`
+		InternalToolCallID   string   `json:"internal_tool_call_id,omitempty"`
+	}
+	data := payload{
+		SessionID:            d.SessionID,
+		AgentID:              d.AgentID,
+		ProviderName:         d.ProviderName,
+		ModelName:            d.ModelName,
+		ToolName:             d.ToolName,
+		ValidationErrorClass: d.ValidationErrorClass,
+		UnknownKeys:          d.UnknownKeys,
+		MissingKeys:          d.MissingKeys,
+		ExpectedKeys:         d.ExpectedKeys,
+		ToolCallID:           d.ToolCallID,
+		InternalToolCallID:   d.InternalToolCallID,
+	}
+	if d.Error != nil {
+		data.Error = d.Error.Error()
+	}
+	return json.Marshal(data)
+}
+
+// ToolArgsValidationFailedEvent represents a tool-args validation failure
+// event.
+type ToolArgsValidationFailedEvent struct {
+	BaseEvent
+	Data ToolArgsValidationFailedEventData
+}
+
+// NewToolArgsValidationFailedEvent creates a new ToolArgsValidationFailedEvent.
+//
+// Expected:
+//   - data contains the validation-failure metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A ToolArgsValidationFailedEvent configured with the supplied data.
+//
+// Side effects: uses the current time when no timestamp override is supplied.
+func NewToolArgsValidationFailedEvent(data ToolArgsValidationFailedEventData, ts ...time.Time) *ToolArgsValidationFailedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &ToolArgsValidationFailedEvent{
+		BaseEvent: BaseEvent{eventType: EventToolArgsValidationFailed, timestamp: t},
+		Data:      data,
+	}
+}
+
+// PermissionRequiredEventData holds the metadata published when the
+// engine or pathguard suspends a tool call awaiting an operator grant
+// under ModeAskUser. Permission Mode ModeAskUser Extension plan (May
+// 2026) Slice 2.
+//
+// RequestID is the registry key the operator HTTP handler will call
+// Resolve(...) on (Slice 3). ToolName + Resource describe the call;
+// AgentName + DenialReason explain the why; Provider + Model + SessionID
+// + ChainID + Mode pin the context for dashboards and forensic logs.
+type PermissionRequiredEventData struct {
+	RequestID string
+	ToolName  string
+	AgentName string
+	Resource  string
+	// ResourceKind disambiguates the Resource field — "path" for
+	// filesystem-tool denials (Slice 2 + pathguard), "mcp_server" for
+	// MCP-server-tool denials (Slice 5). Empty string is treated as
+	// "path" by readers for backward compatibility with payloads
+	// emitted before Slice 5. Permission Mode ModeAskUser Extension
+	// plan (May 2026).
+	ResourceKind string
+	DenialReason string
+	Provider     string
+	Model        string
+	SessionID    string
+	ChainID      string
+	Mode         string
+}
+
+// MarshalJSON serialises PermissionRequiredEventData for the
+// eventlogger JSONL stream. Field shapes mirror the other tool /
+// provider event payloads for consistency in recordings.
+//
+// Expected: parameters for MarshalJSON.
+// Returns: result of MarshalJSON.
+// Side effects: None.
+func (d PermissionRequiredEventData) MarshalJSON() ([]byte, error) {
+	type payload struct {
+		RequestID    string `json:"request_id"`
+		ToolName     string `json:"tool_name"`
+		AgentName    string `json:"agent_name,omitempty"`
+		Resource     string `json:"resource,omitempty"`
+		ResourceKind string `json:"resource_kind,omitempty"`
+		DenialReason string `json:"denial_reason,omitempty"`
+		Provider     string `json:"provider,omitempty"`
+		Model        string `json:"model,omitempty"`
+		SessionID    string `json:"session_id,omitempty"`
+		ChainID      string `json:"chain_id,omitempty"`
+		Mode         string `json:"mode,omitempty"`
+	}
+	return json.Marshal(payload(d))
+}
+
+// PermissionRequiredEvent is the bus event published when pathguard /
+// engine suspends a tool call awaiting an operator grant.
+type PermissionRequiredEvent struct {
+	BaseEvent
+	Data PermissionRequiredEventData
+}
+
+// NewPermissionRequiredEvent constructs a PermissionRequiredEvent
+// stamped with the canonical event-type constant. Optional timestamp
+// argument follows the same shape as the sibling event constructors.
+//
+// Expected: parameters for NewPermissionRequiredEvent.
+// Returns: result of NewPermissionRequiredEvent.
+// Side effects: None.
+func NewPermissionRequiredEvent(data PermissionRequiredEventData, ts ...time.Time) *PermissionRequiredEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &PermissionRequiredEvent{
+		BaseEvent: BaseEvent{eventType: EventPermissionRequired, timestamp: t},
+		Data:      data,
+	}
+}
+
+// PermissionResolutionEventData is the shared payload for the three
+// terminal events of a permission-request lifecycle: granted, denied,
+// and timeout. RequestID and SessionID are the load-bearing fields the
+// observability gauge subscriber reads (it decrements
+// permission_pending on every resolution regardless of cause).
+//
+// Scope is populated on Granted / Denied (the operator's chosen scope
+// or the constant "deny"); empty on Timeout. The string-typed scope
+// field deliberately mirrors permissionrequest.Scope ("once" /
+// "session" / "forever" / "deny") without importing the registry
+// package — the events package stays zero-dep on the registry.
+type PermissionResolutionEventData struct {
+	RequestID string
+	SessionID string
+	ToolName  string
+	AgentName string
+	Resource  string
+	Scope     string
+	Mode      string
+}
+
+// MarshalJSON serialises PermissionResolutionEventData for the JSONL
+// recording stream. Field shapes mirror PermissionRequiredEventData
+// so dashboards can pair the request and the resolution.
+//
+// Expected: parameters for MarshalJSON.
+// Returns: result of MarshalJSON.
+// Side effects: None.
+func (d PermissionResolutionEventData) MarshalJSON() ([]byte, error) {
+	type payload struct {
+		RequestID string `json:"request_id"`
+		SessionID string `json:"session_id,omitempty"`
+		ToolName  string `json:"tool_name,omitempty"`
+		AgentName string `json:"agent_name,omitempty"`
+		Resource  string `json:"resource,omitempty"`
+		Scope     string `json:"scope,omitempty"`
+		Mode      string `json:"mode,omitempty"`
+	}
+	return json.Marshal(payload(d))
+}
+
+// PermissionGrantedEvent is published when an operator clicks one of
+// the three "allow" scopes (once / session / forever) on the inline
+// prompt. Slice 3 wires the HTTP handler that emits this; Slice 2
+// declares the wire shape so the observability subscriber can subscribe
+// today.
+type PermissionGrantedEvent struct {
+	BaseEvent
+	Data PermissionResolutionEventData
+}
+
+// NewPermissionGrantedEvent constructs a PermissionGrantedEvent.
+//
+// Expected: parameters for NewPermissionGrantedEvent.
+// Returns: result of NewPermissionGrantedEvent.
+// Side effects: None.
+func NewPermissionGrantedEvent(data PermissionResolutionEventData, ts ...time.Time) *PermissionGrantedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &PermissionGrantedEvent{
+		BaseEvent: BaseEvent{eventType: EventPermissionGranted, timestamp: t},
+		Data:      data,
+	}
+}
+
+// PermissionDeniedEvent is published when an operator clicks Deny on
+// the inline prompt. The suspended tool call resumes with the original
+// access-denied error path (IsError=true tool_result).
+type PermissionDeniedEvent struct {
+	BaseEvent
+	Data PermissionResolutionEventData
+}
+
+// NewPermissionDeniedEvent constructs a PermissionDeniedEvent.
+//
+// Expected: parameters for NewPermissionDeniedEvent.
+// Returns: result of NewPermissionDeniedEvent.
+// Side effects: None.
+func NewPermissionDeniedEvent(data PermissionResolutionEventData, ts ...time.Time) *PermissionDeniedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &PermissionDeniedEvent{
+		BaseEvent: BaseEvent{eventType: EventPermissionDenied, timestamp: t},
+		Data:      data,
+	}
+}
+
+// ProviderStatusChangedEventData holds the payload for a provider
+// status transition event.
+type ProviderStatusChangedEventData struct {
+	// Provider is the provider ID (e.g. "anthropic").
+	Provider string
+
+	// Model is the model ID (e.g. "claude-sonnet-4-20250514").
+	Model string
+
+	// PreviousStatus is the status value before this transition.
+	// Empty string on the first observation (no prior state known).
+	PreviousStatus string
+
+	// Status is the new status value: "healthy", "rate_limited",
+	// "exhausted", or "spent". ADR 002.
+	Status string
+
+	// RateLimitedUntil is the cooldown expiry. Zero when the
+	// provider/model is not currently rate-limited by the failover
+	// system.
+	RateLimitedUntil time.Time
+
+	// ObservedAt is when the transition was detected.
+	ObservedAt time.Time
+}
+
+// ProviderStatusChangedEvent is published when a provider's quota/cooldown
+// status transitions. The API layer subscribes to this and fans it out to
+// SSE clients connected to GET /api/v1/providers/status/stream.
+//
+// ADR 002 — Provider Status SSE Side-Channel (July 2026).
+type ProviderStatusChangedEvent struct {
+	BaseEvent
+	Data ProviderStatusChangedEventData
+}
+
+// NewProviderStatusChangedEvent creates a new ProviderStatusChangedEvent.
+//
+// Expected: parameters for NewProviderStatusChangedEvent.
+// Returns: result of NewProviderStatusChangedEvent.
+// Side effects: None.
+func NewProviderStatusChangedEvent(data ProviderStatusChangedEventData, ts ...time.Time) *ProviderStatusChangedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &ProviderStatusChangedEvent{
+		BaseEvent: BaseEvent{eventType: EventProviderStatusChanged, timestamp: t},
+		Data:      data,
+	}
+}
+
+// PermissionTimeoutEvent is published when the 5-minute suspension
+// timer fires before the operator responds. The suspended tool call
+// resumes with the access-denied error path; the UI may render the
+// timeout state distinctly from a manual Deny (Slice 3).
+type PermissionTimeoutEvent struct {
+	BaseEvent
+	Data PermissionResolutionEventData
+}
+
+// NewPermissionTimeoutEvent constructs a PermissionTimeoutEvent.
+//
+// Expected: parameters for NewPermissionTimeoutEvent.
+// Returns: result of NewPermissionTimeoutEvent.
+// Side effects: None.
+func NewPermissionTimeoutEvent(data PermissionResolutionEventData, ts ...time.Time) *PermissionTimeoutEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &PermissionTimeoutEvent{
+		BaseEvent: BaseEvent{eventType: EventPermissionTimeout, timestamp: t},
+		Data:      data,
+	}
+}

@@ -1,0 +1,571 @@
+package agent
+
+import (
+	"errors"
+	"fmt"
+	"io/fs"
+	"regexp"
+	"sort"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Violation describes one rule failure surfaced by ValidateManifestSet.
+// The triple (Manifest, Rule, Detail) is stable so callers (CLI table
+// rendering, CI reports) can pivot on it without re-parsing the
+// detail string.
+type Violation struct {
+	// Manifest is the base name of the offending file (e.g.
+	// "Senior-Engineer.md"). Bare name rather than full path so the
+	// validator stays portable across embedded fs.FS and on-disk
+	// directories.
+	Manifest string
+	// Rule is the stable identifier of the broken rule. Callers grep
+	// CI output for this — keep the set small and the names
+	// hyphenated. Current taxonomy:
+	//   - tool-canonical
+	//   - tools-empty
+	//   - delegate-tool-required
+	//   - role-write-capability-mismatch
+	//   - category-required-tool
+	//   - category-forbidden-tool
+	Rule string
+	// Detail is a one-line human-readable elaboration. Free-form;
+	// CLI renders it after the manifest + rule columns.
+	Detail string
+}
+
+// ValidateManifestSet walks every .md manifest in dir under root and
+// applies the rule table below. Returns the violation slice plus an
+// error only when the directory itself cannot be enumerated.
+//
+// Expected:
+//   - root is a non-nil fs.FS. The most common producers are
+//     app.EmbeddedAgentsFS() for the bundled set and os.DirFS for
+//     on-disk validation.
+//   - dir is the directory inside root that holds the manifests
+//     (typically "agents").
+//
+// Returns:
+//   - A possibly-empty Violation slice ordered by (manifest, rule).
+//   - A non-nil error only when root/dir cannot be enumerated.
+//
+// Side effects:
+//   - Reads files from root.
+func ValidateManifestSet(root fs.FS, dir string) ([]Violation, error) {
+	entries, err := fs.ReadDir(root, dir)
+	if err != nil {
+		return nil, fmt.Errorf("reading agents directory %q: %w", dir, err)
+	}
+
+	var violations []Violation
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		// fs.ReadFile contract requires unrooted, forward-slash paths
+		// per io/fs.ValidPath: callers cannot pass "./X" or "/X".
+		// When dir == "." we read the entry name directly; otherwise
+		// we join with a single forward slash.
+		var path string
+		if dir == "" || dir == "." {
+			path = e.Name()
+		} else {
+			path = dir + "/" + e.Name()
+		}
+		data, readErr := fs.ReadFile(root, path)
+		if readErr != nil {
+			return nil, fmt.Errorf("reading manifest %q: %w", path, readErr)
+		}
+		violations = append(violations, validateOneManifest(e.Name(), data)...)
+	}
+
+	sort.SliceStable(violations, func(i, j int) bool {
+		if violations[i].Manifest != violations[j].Manifest {
+			return violations[i].Manifest < violations[j].Manifest
+		}
+		return violations[i].Rule < violations[j].Rule
+	})
+	return violations, nil
+}
+
+// validateOneManifest parses a manifest's YAML frontmatter and applies
+// every rule against it. The function is exported only via
+// ValidateManifestSet to keep the per-file parse logic out of the
+// caller's hands; tests cover behaviour at the set level.
+//
+// Expected: parameters for validateOneManifest.
+// Returns: result of validateOneManifest.
+// Side effects: None.
+func validateOneManifest(name string, data []byte) []Violation {
+	frontmatter, parseErr := extractFrontmatterOrEmpty(string(data))
+	if parseErr != nil {
+		return []Violation{{Manifest: name, Rule: "frontmatter-parse", Detail: parseErr.Error()}}
+	}
+
+	var probe validatorManifestProbe
+	if err := yaml.Unmarshal([]byte(frontmatter), &probe); err != nil {
+		return []Violation{{Manifest: name, Rule: "frontmatter-parse", Detail: err.Error()}}
+	}
+
+	var out []Violation
+	out = append(out, ruleToolCanonical(name, probe)...)
+	out = append(out, ruleToolsEmpty(name, probe)...)
+	out = append(out, ruleDelegateToolRequired(name, probe)...)
+	out = append(out, ruleRoleWriteCapability(name, probe)...)
+	out = append(out, ruleCategoryRequired(name, probe)...)
+	out = append(out, ruleCategoryForbidden(name, probe)...)
+	return out
+}
+
+// validatorManifestProbe is the narrow YAML shape the validator
+// touches. Decoupled from agent.Manifest because the validator
+// deliberately reads raw frontmatter — applyDefaults and the loader's
+// embedding-model normalisation must not run, or the rule "category
+// X requires tool Y" loses sight of operator intent.
+type validatorManifestProbe struct {
+	Metadata struct {
+		Role string `yaml:"role"`
+	} `yaml:"metadata"`
+	Capabilities struct {
+		Tools     []string `yaml:"tools"`
+		ToolsDeny []string `yaml:"tools_deny"`
+	} `yaml:"capabilities"`
+	Delegation struct {
+		CanDelegate bool `yaml:"can_delegate"`
+	} `yaml:"delegation"`
+	OrchestratorMeta struct {
+		Category string `yaml:"category"`
+	} `yaml:"orchestrator_meta"`
+}
+
+// canonicalTools is the static set of tool names the validator
+// accepts without further question. It mirrors the names hardcoded
+// in internal/engine/engine.go:buildAllowedToolSetFor and the tool
+// packages registered under internal/tool/*. Two pseudo-tools live
+// here too:
+//
+//   - "file"      — engine bundle alias expanding to read+write.
+//   - "delegate"  — engine bundle alias expanding to delegate +
+//     background_output + background_cancel. (Pre-commit-3 it also
+//     silently expanded into autoresearch_run + autoresearch_prune;
+//     commit 3 Gap B narrowed the bundle so coordinators that need
+//     autoresearch_* declare it explicitly.)
+//
+// MCP tools are accepted via the mcp_* prefix rather than being
+// enumerated — the MCP set is discovered at runtime and any static
+// list would drift the moment an operator wires a new server.
+// DefaultBaseTools is the toolset every agent inherits regardless of
+// manifest declaration (D1 in Agent Runtime Quality plan, May 2026).
+// Convergent precedent: Claude Code subagents omit `tools:` to inherit
+// the full belt; OpenCode hard-codes a built-in tool set.
+//
+// FlowState's pre-D1 fail-closed semantics meant a manifest that did
+// not declare todowrite / todo_update / skill_load silently lost
+// access to the discipline + observability surface every agent
+// depends on. The base set restores that floor; per-agent
+// Capabilities.ToolsDeny opts back out for the rare manifest that
+// genuinely needs the denial. Todo_clear is included because every
+// agent manifest's system prompt instructs the agent to retire a
+// finished list via todo_clear; omitting it from the inherited floor
+// hid the tool from the schema filter so agents could not reach the
+// tool they were told to call.
+//
+// Hard-coded rather than YAML-config per D1 rationale (zero user-
+// stated benefit to a per-environment override matrix today; YAML
+// upgrade path is straightforward when a second use case lands).
+var defaultBaseTools = []string{
+	"todowrite",
+	"todo_update",
+	"todo_append",
+	"todo_insert",
+	"todo_clear",
+	"skill_load",
+}
+
+// DefaultBaseTools exposes the inherit-by-default base toolset for
+// callers outside the agent package (validators, registries, debug
+// surfaces). Returns a fresh copy so callers cannot mutate the
+// package-level constant.
+//
+// Returns: result of DefaultBaseTools.
+// Side effects: None.
+func DefaultBaseTools() []string {
+	out := make([]string, len(defaultBaseTools))
+	copy(out, defaultBaseTools)
+	return out
+}
+
+var canonicalTools = map[string]bool{
+	// Engine bundle aliases (see buildAllowedToolSetFor).
+	"file":     true,
+	"delegate": true,
+	// Always-on escape hatch (P12).
+	"suggest_delegate": true,
+
+	// Core filesystem + shell tools.
+	"bash":      true,
+	"read":      true,
+	"write":     true,
+	"edit":      true,
+	"multiedit": true,
+	"glob":      true,
+	"grep":      true,
+	"ls":        true,
+	"lsp":       true,
+
+	// Coordination + delegation infrastructure.
+	"coordination_store": true,
+	"background_output":  true,
+	"background_cancel":  true,
+	"autoresearch_run":   true,
+	"autoresearch_prune": true,
+	"todowrite":          true,
+	"todo_update":        true,
+
+	// Knowledge / skill / plan tools.
+	"skill_load": true,
+	"plan_list":  true,
+	"plan_read":  true,
+	"plan_write": true,
+	"plan_enter": true,
+	"plan_exit":  true,
+
+	// Memory MCP-shaped natives (registered directly in toolset.AppendMemoryTools).
+	"search_nodes":       true,
+	"open_nodes":         true,
+	"chain_search":       true,
+	"chain_get_messages": true,
+
+	// Swarm and vault tools.
+	"swarm_list":     true,
+	"swarm_info":     true,
+	"swarm_validate": true,
+	"vault_index":    true,
+	"vault_sync":     true,
+
+	// Other registered tools.
+	"web":         true,
+	"websearch":   true,
+	"question":    true,
+	"apply_patch": true,
+	"batch":       true,
+	"display":     true,
+	"truncate":    true,
+	"invalid":     true,
+}
+
+// roleWritePattern matches role prose that promises write capability.
+// Used by ruleRoleWriteCapability to catch the "writes documentation"
+// agent that ships with read-only tools.
+var roleWritePattern = regexp.MustCompile(`(?i)\b(writes?|edits?|curates?)\b`)
+
+// implementationRequired, documentationRequired, qualityRequired,
+// infrastructureRequired, orchestrationRequired are the
+// category→tools tables enforced by ruleCategoryRequired.
+//
+// The values were chosen from the actual shipped manifests rather than
+// invented up-front: every implementation/documentation manifest
+// already declares the bash/read/write/edit/grep/glob set, and the
+// validator pins that consensus so the next "shipped with empty
+// tools[]" regression surfaces at the CI gate.
+var (
+	implementationRequired = []string{"bash", "read", "write", "edit", "grep", "glob"}
+	documentationRequired  = []string{"bash", "read", "write", "edit", "grep", "glob"}
+	qualityRequired        = []string{"bash", "read", "grep", "glob"}
+	infrastructureRequired = []string{"bash", "read", "grep", "glob"}
+	orchestrationRequired  = []string{"delegate"}
+)
+
+// orchestrationForbidden is the upper-bound rule table for the
+// orchestration / coordination categories. These agents exist to route
+// work onward via `delegate`; declaring an implementation surface
+// (bash, filesystem, autoresearch) lets the model do the work itself
+// instead of delegating — the exact failure mode that motivated commits
+// f35162a9 (swarm-target dispatch fix) and 92d52fdc (UI fix). The lower-
+// bound rule (orchestrationRequired) proves the agent CAN delegate; the
+// upper-bound rule below proves it doesn't ALSO hold the tools that
+// would let it bypass delegation entirely.
+//
+// Categories outside this table are unenforced — implementation /
+// documentation / quality / infrastructure agents need these surfaces
+// to do their work, and any blanket upper bound would over-fit.
+var orchestrationForbidden = []string{
+	"bash",
+	"read",
+	"write",
+	"edit",
+	"grep",
+	"glob",
+	"autoresearch_run",
+	"autoresearch_prune",
+}
+
+// ruleToolCanonical fires on any tool name not in canonicalTools and
+// not prefixed mcp_. One violation per offending name keeps the
+// detail strings short and the CI output greppable.
+//
+// D3 (Agent Runtime Quality plan, May 2026): Capabilities.ToolsDeny
+// entries are checked against the same registry so a typo in the
+// deny list ("bash" misspelt "bashh") surfaces at the CI gate rather
+// than silently failing to deny anything at runtime. Empty/nil
+// ToolsDeny is the pre-D3 zero value and trips no violation.
+//
+// Expected: parameters for ruleToolCanonical.
+// Returns: result of ruleToolCanonical.
+// Side effects: None.
+func ruleToolCanonical(name string, probe validatorManifestProbe) []Violation {
+	var out []Violation
+	for _, t := range probe.Capabilities.Tools {
+		if canonicalTools[t] || strings.HasPrefix(t, "mcp_") {
+			continue
+		}
+		out = append(out, Violation{
+			Manifest: name,
+			Rule:     "tool-canonical",
+			Detail:   fmt.Sprintf("unknown tool name %q (not in canonical set, not mcp_*-prefixed)", t),
+		})
+	}
+	for _, t := range probe.Capabilities.ToolsDeny {
+		if canonicalTools[t] || strings.HasPrefix(t, "mcp_") {
+			continue
+		}
+		out = append(out, Violation{
+			Manifest: name,
+			Rule:     "tool-canonical",
+			Detail:   fmt.Sprintf("unknown tool_deny name %q (not in canonical set, not mcp_*-prefixed)", t),
+		})
+	}
+	return out
+}
+
+// ruleToolsEmpty fires on an explicit empty list AND on a missing
+// frontmatter key. Under D1 (Agent Runtime Quality plan, May 2026)
+// the engine inherits the DefaultBaseTools floor, so an agent with
+// empty Tools is no longer literally stuck — it still has
+// todowrite/todo_update/skill_load. The rule persists because the
+// historical "shipped with empty tools[]" failure mode usually
+// signalled operator intent gone missing (engineering agent shipped
+// with no implementation surfaces), and the load-time CI gate is the
+// earliest place we can surface it. The detail message reflects the
+// post-D1 reality.
+//
+// Expected: parameters for ruleToolsEmpty.
+// Returns: result of ruleToolsEmpty.
+// Side effects: None.
+func ruleToolsEmpty(name string, probe validatorManifestProbe) []Violation {
+	if len(probe.Capabilities.Tools) > 0 {
+		return nil
+	}
+	return []Violation{{
+		Manifest: name,
+		Rule:     "tools-empty",
+		Detail: "capabilities.tools is empty — under D1 the agent inherits only the default base " +
+			"toolset (todowrite, todo_update, todo_append, todo_insert, todo_clear, skill_load); if " +
+			"more capability is intended, declare it (see ecbe59d3 / b17038c2 for the historical " +
+			"fail-closed regression this rule originally caught)",
+	}}
+}
+
+// ruleDelegateToolRequired fires when delegation.can_delegate is true
+// but the tools allowlist omits delegate. Without delegate the agent
+// cannot call its only documented onward-routing tool, so the
+// "coordinator" prose contradicts the capability wiring.
+//
+// Expected: parameters for ruleDelegateToolRequired.
+// Returns: result of ruleDelegateToolRequired.
+// Side effects: None.
+func ruleDelegateToolRequired(name string, probe validatorManifestProbe) []Violation {
+	if !probe.Delegation.CanDelegate {
+		return nil
+	}
+	for _, t := range probe.Capabilities.Tools {
+		if t == "delegate" {
+			return nil
+		}
+	}
+	return []Violation{{
+		Manifest: name,
+		Rule:     "delegate-tool-required",
+		Detail:   "delegation.can_delegate=true but tools[] omits \"delegate\" — agent cannot route work onward",
+	}}
+}
+
+// ruleRoleWriteCapability fires when metadata.role promises write
+// capability ("writes X", "edits Y", "curates Z") but neither write
+// nor edit appears in tools. This is the regression that motivated
+// b17038c2 — Knowledge-Base-Curator's role said "curates" but the
+// shipped manifest had no write tool wired.
+//
+// Expected: parameters for ruleRoleWriteCapability.
+// Returns: result of ruleRoleWriteCapability.
+// Side effects: None.
+func ruleRoleWriteCapability(name string, probe validatorManifestProbe) []Violation {
+	if !roleWritePattern.MatchString(probe.Metadata.Role) {
+		return nil
+	}
+	hasWrite, hasEdit := false, false
+	for _, t := range probe.Capabilities.Tools {
+		switch t {
+		case "write":
+			hasWrite = true
+		case "edit":
+			hasEdit = true
+		case "file":
+			// engine bundle expands "file" to read+write, so accept it.
+			hasWrite = true
+		}
+	}
+	if hasWrite || hasEdit {
+		return nil
+	}
+	return []Violation{{
+		Manifest: name,
+		Rule:     "role-write-capability-mismatch",
+		Detail:   fmt.Sprintf("metadata.role claims write capability (%q) but tools[] declares neither write nor edit", probe.Metadata.Role),
+	}}
+}
+
+// ruleCategoryRequired fires when the orchestrator_meta.category is
+// in the rules table and one or more required tools are missing.
+// Categories outside the table are not enforced — domain/specialist/
+// research/exploration/advisor categories vary widely and any blanket
+// rule would over-fit.
+//
+// Expected: parameters for ruleCategoryRequired.
+// Returns: result of ruleCategoryRequired.
+// Side effects: None.
+func ruleCategoryRequired(name string, probe validatorManifestProbe) []Violation {
+	cat := strings.TrimSpace(probe.OrchestratorMeta.Category)
+	required := requirementsForCategory(cat)
+	if required == nil {
+		return nil
+	}
+	declared := make(map[string]bool, len(probe.Capabilities.Tools))
+	for _, t := range probe.Capabilities.Tools {
+		declared[t] = true
+		// Engine bundle aliases expand at runtime; mirror that here
+		// so a manifest declaring "file" satisfies "read"+"write".
+		switch t {
+		case "file":
+			declared["read"] = true
+			declared["write"] = true
+		case "delegate":
+			declared["delegate"] = true
+		}
+	}
+	var missing []string
+	for _, req := range required {
+		if !declared[req] {
+			missing = append(missing, req)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return []Violation{{
+		Manifest: name,
+		Rule:     "category-required-tool",
+		Detail: fmt.Sprintf(
+			"category %q requires %v but tools[] is missing %v",
+			cat, required, missing,
+		),
+	}}
+}
+
+// ruleCategoryForbidden fires when the orchestrator_meta.category is
+// orchestration or coordination AND capabilities.tools declares one of
+// the implementation surfaces that an orchestrator should never need
+// (bash / read / write / edit / grep / glob / autoresearch_run /
+// autoresearch_prune). Pairs with ruleCategoryRequired's lower bound
+// to close the "coordinator silently shells out" failure mode at the
+// CI gate.
+//
+// Categories outside the orchestration / coordination set are
+// unenforced — the file alias and other implementation surfaces are
+// expected on implementation / documentation agents.
+//
+// One violation per offending tool keeps the detail string greppable
+// and the operator's fix mechanical (the detail enumerates every
+// forbidden tool the manifest declares so the next loader-cycle pass
+// can resolve them all together).
+//
+// Expected: parameters for ruleCategoryForbidden.
+// Returns: result of ruleCategoryForbidden.
+// Side effects: None.
+func ruleCategoryForbidden(name string, probe validatorManifestProbe) []Violation {
+	cat := strings.TrimSpace(probe.OrchestratorMeta.Category)
+	if cat != "orchestration" && cat != "coordination" {
+		return nil
+	}
+	forbiddenSet := make(map[string]bool, len(orchestrationForbidden))
+	for _, f := range orchestrationForbidden {
+		forbiddenSet[f] = true
+	}
+	// Also flag the file bundle alias — it expands to read + write at
+	// runtime, which would defeat the rule if accepted verbatim.
+	forbiddenSet["file"] = true
+
+	var offenders []string
+	for _, t := range probe.Capabilities.Tools {
+		if forbiddenSet[t] {
+			offenders = append(offenders, t)
+		}
+	}
+	if len(offenders) == 0 {
+		return nil
+	}
+	return []Violation{{
+		Manifest: name,
+		Rule:     "category-forbidden-tool",
+		Detail: fmt.Sprintf(
+			"category %q must not declare implementation surfaces; offending tools: %v "+
+				"(orchestrators route work onward via delegate, never invoke implementation "+
+				"surfaces themselves)",
+			cat, offenders,
+		),
+	}}
+}
+
+// requirementsForCategory returns the static rule table entry for the
+// given category, or nil if the category is unenforced.
+//
+// Expected: parameters for requirementsForCategory.
+// Returns: result of requirementsForCategory.
+// Side effects: None.
+func requirementsForCategory(category string) []string {
+	switch category {
+	case "implementation":
+		return implementationRequired
+	case "documentation":
+		return documentationRequired
+	case "quality":
+		return qualityRequired
+	case "infrastructure":
+		return infrastructureRequired
+	case "orchestration", "coordination":
+		return orchestrationRequired
+	default:
+		return nil
+	}
+}
+
+// extractFrontmatterOrEmpty is a forgiving variant of the loader's
+// extractFrontmatter. It returns ("", nil) on missing frontmatter so
+// the validator can decide whether absence is itself a violation
+// (rule-table choice) rather than aborting the whole walk.
+//
+// Expected: parameters for extractFrontmatterOrEmpty.
+// Returns: result of extractFrontmatterOrEmpty.
+// Side effects: None.
+func extractFrontmatterOrEmpty(content string) (string, error) {
+	if !strings.HasPrefix(content, "---") {
+		return "", nil
+	}
+	parts := strings.SplitN(content[3:], "---", 2)
+	if len(parts) < 2 {
+		return "", errors.New("invalid frontmatter: missing closing ---")
+	}
+	return strings.TrimSpace(parts[0]), nil
+}

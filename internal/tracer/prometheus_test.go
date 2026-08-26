@@ -1,0 +1,324 @@
+package tracer_test
+
+import (
+	"fmt"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
+
+	"github.com/baphled/flowstate/internal/tracer"
+)
+
+var _ = Describe("PrometheusRecorder", func() {
+	var (
+		reg *prometheus.Registry
+		rec tracer.Recorder
+	)
+
+	BeforeEach(func() {
+		reg = prometheus.NewRegistry()
+		rec = tracer.NewPrometheusRecorder(reg)
+	})
+
+	Describe("RecordRetry", func() {
+		It("increments the retry counter for the given agent", func() {
+			rec.RecordRetry("agent-1")
+			rec.RecordRetry("agent-1")
+			rec.RecordRetry("agent-2")
+
+			val := counterValue(reg, "flowstate_harness_retries_total", prometheus.Labels{"agent_id": "agent-1"})
+			Expect(val).To(Equal(2.0))
+
+			val = counterValue(reg, "flowstate_harness_retries_total", prometheus.Labels{"agent_id": "agent-2"})
+			Expect(val).To(Equal(1.0))
+		})
+	})
+
+	Describe("RecordValidationScore", func() {
+		It("records the score in the histogram", func() {
+			rec.RecordValidationScore("agent-1", 0.85)
+			rec.RecordValidationScore("agent-1", 0.92)
+
+			count := histogramCount(reg, "flowstate_validation_score", prometheus.Labels{"agent_id": "agent-1"})
+			Expect(count).To(Equal(uint64(2)))
+		})
+
+		It("records the sum of observed scores", func() {
+			rec.RecordValidationScore("agent-1", 0.5)
+			rec.RecordValidationScore("agent-1", 0.3)
+
+			sum := histogramSum(reg, "flowstate_validation_score", prometheus.Labels{"agent_id": "agent-1"})
+			Expect(sum).To(BeNumerically("~", 0.8, 0.001))
+		})
+	})
+
+	Describe("RecordCriticResult", func() {
+		It("increments the counter with passed=true label", func() {
+			rec.RecordCriticResult("agent-1", true)
+			rec.RecordCriticResult("agent-1", true)
+
+			val := counterValue(reg, "flowstate_critic_results_total", prometheus.Labels{
+				"agent_id": "agent-1",
+				"passed":   "true",
+			})
+			Expect(val).To(Equal(2.0))
+		})
+
+		It("increments the counter with passed=false label", func() {
+			rec.RecordCriticResult("agent-1", false)
+
+			val := counterValue(reg, "flowstate_critic_results_total", prometheus.Labels{
+				"agent_id": "agent-1",
+				"passed":   "false",
+			})
+			Expect(val).To(Equal(1.0))
+		})
+	})
+
+	Describe("RecordProviderLatency", func() {
+		It("records latency in the histogram", func() {
+			rec.RecordProviderLatency("anthropic", "stream", 150.0)
+			rec.RecordProviderLatency("anthropic", "chat", 200.0)
+
+			count := histogramCount(reg, "flowstate_provider_latency_ms", prometheus.Labels{
+				"provider": "anthropic",
+				"method":   "stream",
+			})
+			Expect(count).To(Equal(uint64(1)))
+
+			sum := histogramSum(reg, "flowstate_provider_latency_ms", prometheus.Labels{
+				"provider": "anthropic",
+				"method":   "chat",
+			})
+			Expect(sum).To(Equal(200.0))
+		})
+	})
+
+	Describe("RecordContextWindowTokens", func() {
+		It("sets the gauge to the most recent observation per agent", func() {
+			rec.RecordContextWindowTokens("agent-1", 1234)
+			rec.RecordContextWindowTokens("agent-1", 2048)
+			rec.RecordContextWindowTokens("agent-2", 512)
+
+			// Gauge semantics: last-write-wins, not cumulative.
+			val := gaugeValue(reg, "flowstate_context_window_tokens", prometheus.Labels{"agent_id": "agent-1"})
+			Expect(val).To(Equal(2048.0))
+
+			val = gaugeValue(reg, "flowstate_context_window_tokens", prometheus.Labels{"agent_id": "agent-2"})
+			Expect(val).To(Equal(512.0))
+		})
+
+		It("keeps a separate gauge series per agent label", func() {
+			rec.RecordContextWindowTokens("agent-a", 100)
+			rec.RecordContextWindowTokens("agent-b", 200)
+
+			family := gatherMetricFamily(reg, "flowstate_context_window_tokens")
+			Expect(family.GetMetric()).To(HaveLen(2))
+		})
+	})
+
+	Describe("RecordCompressionTokensSaved", func() {
+		It("accumulates tokens saved per agent", func() {
+			rec.RecordCompressionTokensSaved("agent-1", 300)
+			rec.RecordCompressionTokensSaved("agent-1", 450)
+			rec.RecordCompressionTokensSaved("agent-2", 100)
+
+			val := counterValue(reg, "flowstate_compression_tokens_saved_total", prometheus.Labels{"agent_id": "agent-1"})
+			Expect(val).To(Equal(750.0))
+
+			val = counterValue(reg, "flowstate_compression_tokens_saved_total", prometheus.Labels{"agent_id": "agent-2"})
+			Expect(val).To(Equal(100.0))
+		})
+
+		It("ignores non-positive deltas so noisy call sites do not corrupt the counter", func() {
+			rec.RecordCompressionTokensSaved("agent-1", 100)
+			rec.RecordCompressionTokensSaved("agent-1", 0)
+			rec.RecordCompressionTokensSaved("agent-1", -50)
+
+			val := counterValue(reg, "flowstate_compression_tokens_saved_total", prometheus.Labels{"agent_id": "agent-1"})
+			Expect(val).To(Equal(100.0))
+		})
+
+		// M3 — the counter Help text must honestly describe the
+		// semantics operators see: overhead compactions are neither
+		// counted nor subtracted. Without this, dashboard authors have
+		// no way to know whether a flat counter means "compaction off"
+		// or "compaction running but every pass is net-costing tokens".
+		It("documents the counter semantics in the metric Help text", func() {
+			rec.RecordCompressionTokensSaved("agent-1", 1)
+			family := gatherMetricFamily(reg, "flowstate_compression_tokens_saved_total")
+
+			Expect(family.GetHelp()).To(ContainSubstring("net saving"))
+			Expect(family.GetHelp()).To(ContainSubstring("non-positive"))
+		})
+
+		// M3 — calling the recorder with a non-positive delta must be a
+		// silent no-op. Prometheus counters panic when decremented, so
+		// a future caller passing a raw overhead delta would crash the
+		// process. This test pins the no-panic contract explicitly.
+		It("does not panic when called with a negative delta", func() {
+			Expect(func() {
+				rec.RecordCompressionTokensSaved("agent-1", -999)
+			}).NotTo(Panic())
+		})
+	})
+
+	// Item 5 — RecordCompressionOverheadTokens is the pair to
+	// RecordCompressionTokensSaved. It fires only when the L2 delta is
+	// net-negative so operators can distinguish "layer idle" from "layer
+	// actively costing tokens" in a flat tokens_saved counter.
+	Describe("RecordCompressionOverheadTokens", func() {
+		It("accumulates overhead tokens per agent", func() {
+			rec.RecordCompressionOverheadTokens("agent-1", 40)
+			rec.RecordCompressionOverheadTokens("agent-1", 10)
+			rec.RecordCompressionOverheadTokens("agent-2", 25)
+
+			val := counterValue(reg, "flowstate_compression_overhead_tokens_total", prometheus.Labels{"agent_id": "agent-1"})
+			Expect(val).To(Equal(50.0))
+
+			val = counterValue(reg, "flowstate_compression_overhead_tokens_total", prometheus.Labels{"agent_id": "agent-2"})
+			Expect(val).To(Equal(25.0))
+		})
+
+		It("ignores non-positive overheads to keep the counter monotonic", func() {
+			rec.RecordCompressionOverheadTokens("agent-1", 30)
+			rec.RecordCompressionOverheadTokens("agent-1", 0)
+			rec.RecordCompressionOverheadTokens("agent-1", -7)
+
+			val := counterValue(reg, "flowstate_compression_overhead_tokens_total", prometheus.Labels{"agent_id": "agent-1"})
+			Expect(val).To(Equal(30.0))
+		})
+
+		It("documents the paired semantics in the metric Help text", func() {
+			rec.RecordCompressionOverheadTokens("agent-1", 1)
+			family := gatherMetricFamily(reg, "flowstate_compression_overhead_tokens_total")
+
+			Expect(family.GetHelp()).To(ContainSubstring("ADDED"))
+			Expect(family.GetHelp()).To(ContainSubstring("negative"))
+		})
+	})
+
+	// Permission Mode ModeAskUser Extension plan (May 2026) §11 R4.
+	// The permission_pending gauge is the production-visible signal
+	// for "stuck suspended requests" — the slice 2 wiring pairs
+	// Inc on PermissionPrompter.Register with Dec on every grant /
+	// deny / timeout subscriber call.
+	Describe("Permission pending gauge", func() {
+		It("tracks Inc/Dec correctly and clamps to zero at rest", func() {
+			rec.IncPermissionPending()
+			rec.IncPermissionPending()
+			rec.IncPermissionPending()
+			val := gaugeNoLabels(reg, "flowstate_permission_pending")
+			Expect(val).To(Equal(3.0),
+				"three Inc calls MUST land as a gauge reading of 3 — the gauge is the operator's at-a-glance signal of in-flight prompts")
+
+			rec.DecPermissionPending()
+			val = gaugeNoLabels(reg, "flowstate_permission_pending")
+			Expect(val).To(Equal(2.0))
+
+			rec.DecPermissionPending()
+			rec.DecPermissionPending()
+			val = gaugeNoLabels(reg, "flowstate_permission_pending")
+			Expect(val).To(Equal(0.0),
+				"after equal Inc/Dec pairs the gauge MUST return to zero — paired wiring is the load-bearing invariant the subscriber/grant handler maintains")
+		})
+
+		It("documents the diagnostic intent in the Help text", func() {
+			rec.IncPermissionPending()
+			rec.DecPermissionPending()
+			family := gatherMetricFamily(reg, "flowstate_permission_pending")
+			Expect(family.GetHelp()).To(ContainSubstring("ModeAskUser"),
+				"the Help text MUST tell operators the gauge is tied to ModeAskUser so dashboards can correlate spikes with mode-dial activity")
+			Expect(family.GetHelp()).To(ContainSubstring("5-minute"),
+				"the Help text MUST mention the 5-minute auto-deny timeout so on-call engineers know when sustained accumulation is genuinely anomalous")
+		})
+	})
+})
+
+// gaugeNoLabels returns the value of an unlabelled gauge metric.
+// Distinct from counterValue because the permission_pending gauge is
+// daemon-wide (no label cardinality).
+func gaugeNoLabels(reg *prometheus.Registry, name string) float64 {
+	family := gatherMetricFamily(reg, name)
+	metrics := family.GetMetric()
+	if len(metrics) == 0 {
+		Fail(fmt.Sprintf("no metric samples for %q", name))
+		return 0
+	}
+	if g := metrics[0].GetGauge(); g != nil {
+		return g.GetValue()
+	}
+	Fail(fmt.Sprintf("metric %q is not a gauge", name))
+	return 0
+}
+
+func gatherMetricFamily(reg *prometheus.Registry, name string) *dto.MetricFamily {
+	families, err := reg.Gather()
+	ExpectWithOffset(1, err).NotTo(HaveOccurred())
+	for _, f := range families {
+		if f.GetName() == name {
+			return f
+		}
+	}
+	Fail(fmt.Sprintf("metric family %q not found", name))
+	return nil
+}
+
+func matchLabels(m *dto.Metric, labels prometheus.Labels) bool {
+	if len(m.GetLabel()) != len(labels) {
+		return false
+	}
+	for _, lp := range m.GetLabel() {
+		expected, ok := labels[lp.GetName()]
+		if !ok || lp.GetValue() != expected {
+			return false
+		}
+	}
+	return true
+}
+
+func counterValue(reg *prometheus.Registry, name string, labels prometheus.Labels) float64 {
+	family := gatherMetricFamily(reg, name)
+	for _, m := range family.GetMetric() {
+		if matchLabels(m, labels) {
+			return m.GetCounter().GetValue()
+		}
+	}
+	Fail(fmt.Sprintf("counter metric %q with labels %v not found", name, labels))
+	return 0
+}
+
+func histogramCount(reg *prometheus.Registry, name string, labels prometheus.Labels) uint64 {
+	family := gatherMetricFamily(reg, name)
+	for _, m := range family.GetMetric() {
+		if matchLabels(m, labels) {
+			return m.GetHistogram().GetSampleCount()
+		}
+	}
+	Fail(fmt.Sprintf("histogram metric %q with labels %v not found", name, labels))
+	return 0
+}
+
+func histogramSum(reg *prometheus.Registry, name string, labels prometheus.Labels) float64 {
+	family := gatherMetricFamily(reg, name)
+	for _, m := range family.GetMetric() {
+		if matchLabels(m, labels) {
+			return m.GetHistogram().GetSampleSum()
+		}
+	}
+	Fail(fmt.Sprintf("histogram metric %q with labels %v not found", name, labels))
+	return 0
+}
+
+func gaugeValue(reg *prometheus.Registry, name string, labels prometheus.Labels) float64 {
+	family := gatherMetricFamily(reg, name)
+	for _, m := range family.GetMetric() {
+		if matchLabels(m, labels) {
+			return m.GetGauge().GetValue()
+		}
+	}
+	Fail(fmt.Sprintf("gauge metric %q with labels %v not found", name, labels))
+	return 0
+}

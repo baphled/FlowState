@@ -1,75 +1,79 @@
-Feature: Provider Setup with OAuth
-  As a user
-  I want to choose between API key and OAuth authentication
-  So that I can use the most convenient and secure method for each provider
+@oauth @tui @provider-setup
+Feature: TUI OAuth Flow for Provider Configuration
+  As a FlowState user
+  I want to authenticate via OAuth in the TUI
+  So I can configure providers without leaving the application
 
   Background:
     Given FlowState is running
-    And I am in provider setup
+    And the provider setup screen is shown
 
-  @smoke
-  Scenario: Choose authentication method for OAuth-capable provider
-    Given I select "GitHub Copilot" as provider
-    Then I should see authentication options:
-      | Option    |
-      | API Key   |
-      | OAuth     |
-    When I select "OAuth"
-    Then the OAuth device flow should be initiated
+  @oauth-tui-select
+  Scenario: Select GitHub provider for OAuth
+    Given I am on the providers step
+    When I select "GitHub Copilot" provider
+    Then I should see "OAuth" as an authentication option
+    And I should see "API Key" as an alternative option
 
-  Scenario: API key authentication remains available
-    Given I select "GitHub Copilot" as provider
-    When I select "API Key" authentication
-    Then I should see an input field for the API key
-    And I should not see OAuth-related UI
-    When I enter a valid API key
-    Then the provider should be configured
-    And no OAuth token should be stored
+  @oauth-tui-initiate
+  Scenario: Initiate OAuth from TUI
+    Given I have selected "GitHub Copilot" provider
+    When I choose the OAuth authentication option
+    Then I should see the OAuth flow initiated message
+    And I should be shown the user code to enter
+    And I should be shown the verification URL
 
-  Scenario: OAuth not available for API-key-only providers
-    Given I select "Anthropic Claude" as provider
-    Then I should only see "API Key" authentication option
-    And I should not see "OAuth" option
+  @oauth-tui-url-launch
+  Scenario: URL is displayed for easy access
+    Given OAuth flow is initiated
+    Then the verification URL should be prominently displayed
+    And the user should be instructed to visit the URL
 
-  Scenario: Display OAuth progress indicator
-    Given I have initiated OAuth device flow
-    When token polling is in progress
-    Then I should see a progress indicator
-    And I should see "Waiting for authorization..."
-    And I should see elapsed time
-    And I should be able to cancel
+  @oauth-tui-code-display
+  Scenario: User code is clearly displayed
+    Given OAuth flow is initiated
+    Then the user code should be in a monospace font
+    And the user code should be highlighted for easy copying
 
-  Scenario: Cancel OAuth flow mid-process
-    Given I have initiated OAuth device flow
-    And I see the device code
-    When I press Escape
-    Then the OAuth flow should be cancelled
-    And I should return to provider setup
-    And no token should be stored
+  @oauth-tui-polling
+  Scenario: TUI polls for authorization status
+    Given OAuth flow is initiated
+    When I approve in browser
+    Then the TUI should detect the approval
+    And I should see a success message
 
-  Scenario: Switch between authentication methods
-    Given I have configured "GitHub Copilot" with API key
-    When I edit the provider configuration
-    Then I should see "Switch to OAuth" option
-    When I select "Switch to OAuth"
-    Then the API key should be cleared
-    And the OAuth device flow should be initiated
+  @oauth-tui-success
+  Scenario: OAuth success is indicated
+    Given OAuth authentication completes
+    Then I should see "Authentication successful"
+    And GitHub Copilot should be marked as configured
+    And I should be able to return to provider list
 
-  Scenario: Previously authenticated OAuth provider
-    Given I have a stored OAuth token for "GitHub Copilot"
-    When I view provider settings
-    Then I should see "Authenticated via OAuth" status
-    And I should see token expiry information
-    And I should see options to:
-      | Option              |
-      | Refresh token       |
-      | Revoke access       |
-      | Switch to API key   |
+  @oauth-tui-timeout
+  Scenario: OAuth timeout is handled gracefully
+    Given OAuth flow is initiated
+    And the authorization times out
+    When the polling detects timeout
+    Then I should see a timeout error message
+    And I should be given the option to retry
 
-  Scenario: OAuth device code display formatting
-    Given I have initiated OAuth device flow
-    When the device code is displayed
-    Then the code should be large and readable
-    And the code should be visually distinct
-    And the verification URL should be a clickable hint
-    And copy-to-clipboard hint should be shown
+  @oauth-tui-manual-fallback
+  Scenario: Can fall back to API key from OAuth screen
+    Given OAuth flow is in progress
+    When I choose to cancel OAuth
+    Then I should be given the option to enter an API key instead
+    And I should see the API key input field
+
+  @oauth-tui-error
+  Scenario: OAuth errors are displayed clearly
+    Given OAuth flow encounters an error
+    Then I should see a clear error message
+    And I should be given the option to retry
+    And the error should not crash the TUI
+
+  @oauth-tui-copilot-enabled
+  Scenario: Copilot is enabled after OAuth success
+    Given OAuth authentication completes for GitHub Copilot
+    When I exit the provider setup
+    Then GitHub Copilot should appear as enabled in the provider list
+    And the Copilot provider should be ready to use

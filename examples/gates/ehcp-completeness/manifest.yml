@@ -1,0 +1,6 @@
+name: ehcp-completeness
+description: Validates that all 11 EHCP sections A–K are present and non-empty in the drafter's output before the compliance checker runs.
+version: "0.1.0"
+exec: ./gate.py
+timeout: 10s
+policy: {}

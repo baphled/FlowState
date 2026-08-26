@@ -1,0 +1,749 @@
+// Package recall provides Recall Memory for FlowState agents.
+package recall
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/events"
+	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/session"
+	"github.com/baphled/flowstate/internal/tool"
+)
+
+// SearchContextTool searches conversation history semantically using embeddings.
+// SearchContextTool provides semantic search over the context store.
+type SearchContextTool struct {
+	store    *FileContextStore
+	embedder provider.Provider
+	topK     int
+	bus      *eventbus.EventBus
+}
+
+// NewSearchContextTool creates a new SearchContextTool with the given store and embedder.
+//
+// Expected:
+//   - store is a valid, non-nil FileContextStore.
+//   - embedder is a valid Provider supporting embeddings.
+//   - topK is a positive integer.
+//
+// Returns:
+//   - A pointer to an initialised SearchContextTool.
+//
+// Side effects:
+//   - None.
+func NewSearchContextTool(store *FileContextStore, embedder provider.Provider, topK int, bus *eventbus.EventBus) *SearchContextTool {
+	return &SearchContextTool{
+		store:    store,
+		embedder: embedder,
+		topK:     topK,
+		bus:      bus,
+	}
+}
+
+// Name returns the tool name.
+//
+// Returns:
+//   - The string "search_context".
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for Name.
+func (t *SearchContextTool) Name() string {
+	return "search_context"
+}
+
+// Description returns a description of what the tool does.
+//
+// Returns:
+//   - A human-readable description of the tool's purpose.
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for Description.
+func (t *SearchContextTool) Description() string {
+	return "Search conversation history semantically"
+}
+
+// Schema returns the tool's input schema.
+//
+// Returns:
+//   - A Schema describing the expected input format.
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for Schema.
+func (t *SearchContextTool) Schema() tool.Schema {
+	return tool.Schema{
+		Type: "object",
+		Properties: map[string]tool.Property{
+			"query": {Type: "string", Description: "Search query"},
+		},
+		Required: []string{"query"},
+	}
+}
+
+// Execute runs the semantic search against conversation history.
+//
+// Expected:
+//   - ctx is a valid context.
+//   - input contains a "query" string argument.
+//
+// Returns:
+//   - A Result containing formatted matching messages.
+//   - An error if the search fails.
+//
+// Side effects:
+//   - Makes embedding API calls.
+func (t *SearchContextTool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
+	query, ok := input.Arguments["query"].(string)
+	if !ok || query == "" {
+		return t.fallbackToRecent()
+	}
+
+	vector, err := t.embedder.Embed(ctx, provider.EmbedRequest{
+		Input: query,
+		Model: t.store.model,
+	})
+	if err != nil {
+		return t.fallbackToRecent()
+	}
+
+	results := t.store.Search(vector, t.topK)
+
+	// Bug Hunt #63 (May 11 2026): the recall.searched bus event was
+	// retired here — high-frequency (every tool call) with zero
+	// non-test subscribers anywhere in the tree. The engine's
+	// existing tool.execute.result event already carries the
+	// tool-level latency / args / result count for SearchContextTool
+	// invocations and IS subscribed by eventlogger.
+
+	if len(results) == 0 {
+		return tool.Result{Output: ""}, nil
+	}
+
+	return tool.Result{Output: formatMessages(extractMessages(results))}, nil
+}
+
+// fallbackToRecent retrieves the most recent messages when semantic search fails or is unavailable.
+//
+// Returns:
+//   - A Result containing formatted recent messages.
+//   - nil error.
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for fallbackToRecent.
+func (t *SearchContextTool) fallbackToRecent() (tool.Result, error) {
+	messages := t.store.GetRecent(t.topK)
+	if len(messages) == 0 {
+		return tool.Result{Output: ""}, nil
+	}
+	return tool.Result{Output: formatMessages(messages)}, nil
+}
+
+// extractMessages converts a slice of SearchResult into a slice of provider.Message.
+//
+// Expected:
+//   - results is a slice of SearchResult to extract messages from.
+//
+// Returns:
+//   - A slice of provider.Message extracted from the search results.
+//
+// Side effects:
+//   - None.
+func extractMessages(results []SearchResult) []provider.Message {
+	messages := make([]provider.Message, len(results))
+	for i, r := range results {
+		messages[i] = r.Message
+	}
+	return messages
+}
+
+// formatMessages converts a slice of provider.Message into a formatted string representation.
+//
+// Expected:
+//   - messages is a slice of provider.Message to format.
+//
+// Returns:
+//   - A string with messages formatted as "role: content" separated by newlines and dashes.
+//
+// Side effects:
+//   - None.
+func formatMessages(messages []provider.Message) string {
+	var parts []string
+	for _, m := range messages {
+		parts = append(parts, fmt.Sprintf("%s: %s", m.Role, m.Content))
+	}
+	return strings.Join(parts, "\n---\n")
+}
+
+// GetMessagesTool retrieves messages by range or recent count.
+type GetMessagesTool struct {
+	store *FileContextStore
+}
+
+// NewGetMessagesTool creates a new GetMessagesTool with the given store.
+//
+// Expected:
+//   - store is a valid, non-nil FileContextStore.
+//
+// Returns:
+//   - A pointer to an initialised GetMessagesTool.
+//
+// Side effects:
+//   - None.
+func NewGetMessagesTool(store *FileContextStore) *GetMessagesTool {
+	return &GetMessagesTool{store: store}
+}
+
+// Name returns the tool name.
+//
+// Returns:
+//   - The string "get_messages".
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for Name.
+func (t *GetMessagesTool) Name() string {
+	return "get_messages"
+}
+
+// Description returns a description of what the tool does.
+//
+// Returns:
+//   - A human-readable description of the tool's purpose.
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for Description.
+func (t *GetMessagesTool) Description() string {
+	return "Retrieve messages by range or recent count"
+}
+
+// Schema returns the tool's input schema.
+//
+// Returns:
+//   - A Schema describing the expected input format.
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for Schema.
+func (t *GetMessagesTool) Schema() tool.Schema {
+	return tool.Schema{
+		Type: "object",
+		Properties: map[string]tool.Property{
+			"count": {Type: "integer", Description: "Number of recent messages to retrieve"},
+			"start": {Type: "integer", Description: "Start index for range"},
+			"end":   {Type: "integer", Description: "End index for range"},
+		},
+		Required: []string{},
+	}
+}
+
+// Execute retrieves messages based on the input parameters.
+//
+// Expected:
+//   - ctx is a valid context.
+//   - input may contain "count", "start", and "end" integer arguments.
+//
+// Returns:
+//   - A Result containing formatted messages.
+//   - nil error (this tool does not fail).
+//
+// Side effects:
+//   - None.
+func (t *GetMessagesTool) Execute(_ context.Context, input tool.Input) (tool.Result, error) {
+	count := extractInt(input.Arguments, "count", 0)
+	start := extractInt(input.Arguments, "start", -1)
+	end := extractInt(input.Arguments, "end", -1)
+
+	var messages []provider.Message
+	if count > 0 {
+		messages = t.store.GetRecent(count)
+	} else if start >= 0 && end >= 0 {
+		messages = t.store.GetRange(start, end)
+	} else {
+		messages = t.store.GetRecent(10)
+	}
+
+	return tool.Result{Output: formatMessages(messages)}, nil
+}
+
+// TruncateContextTool truncates the oldest unpinned messages to stay within a token budget.
+type TruncateContextTool struct {
+	store *FileContextStore
+}
+
+// NewTruncateContextTool creates a new TruncateContextTool with the given store.
+//
+// Expected:
+//   - store is a valid, non-nil FileContextStore.
+//
+// Returns:
+//   - A pointer to an initialised TruncateContextTool.
+//
+// Side effects:
+//   - None.
+func NewTruncateContextTool(store *FileContextStore) *TruncateContextTool {
+	return &TruncateContextTool{store: store}
+}
+
+// Name returns the tool name.
+//
+// Returns:
+//   - The string "truncate_context".
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for Name.
+func (t *TruncateContextTool) Name() string {
+	return "truncate_context"
+}
+
+// Description returns a description of what the tool does.
+//
+// Returns:
+//   - A human-readable description of the tool's purpose.
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for Description.
+func (t *TruncateContextTool) Description() string {
+	return "Truncate oldest unpinned messages until token budget is met"
+}
+
+// Schema returns the tool's input schema.
+//
+// Returns:
+//   - A Schema describing the expected input format.
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for Schema.
+func (t *TruncateContextTool) Schema() tool.Schema {
+	return tool.Schema{
+		Type: "object",
+		Properties: map[string]tool.Property{
+			"limit": {Type: "integer", Description: "Token limit to truncate to"},
+		},
+		Required: []string{"limit"},
+	}
+}
+
+// Execute runs the truncate context tool.
+//
+// Expected:
+//   - ctx is a valid context.
+//   - input contains a "limit" integer argument.
+//
+// Returns:
+//   - A Result indicating how many tokens were removed.
+//   - nil error (this tool does not fail).
+//
+// Side effects:
+//   - Removes oldest unpinned messages from the store.
+func (t *TruncateContextTool) Execute(_ context.Context, input tool.Input) (tool.Result, error) {
+	limit := extractInt(input.Arguments, "limit", 0)
+	if limit <= 0 {
+		return tool.Result{Output: "limit must be positive"}, nil
+	}
+
+	removed := t.store.TruncateToTokens(limit)
+	return tool.Result{
+		Output: fmt.Sprintf("Truncated %d estimated tokens", removed),
+	}, nil
+}
+
+// PinMessageTool pins or unpins a message by index to protect it from truncation.
+type PinMessageTool struct {
+	store *FileContextStore
+}
+
+// NewPinMessageTool creates a new PinMessageTool with the given store.
+//
+// Expected:
+//   - store is a valid, non-nil FileContextStore.
+//
+// Returns:
+//   - A pointer to an initialised PinMessageTool.
+//
+// Side effects:
+//   - None.
+func NewPinMessageTool(store *FileContextStore) *PinMessageTool {
+	return &PinMessageTool{store: store}
+}
+
+// Name returns the tool name.
+//
+// Returns:
+//   - The string "pin_message".
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for Name.
+func (t *PinMessageTool) Name() string {
+	return "pin_message"
+}
+
+// Description returns a description of what the tool does.
+//
+// Returns:
+//   - A human-readable description of the tool's purpose.
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for Description.
+func (t *PinMessageTool) Description() string {
+	return "Pin or unpin a message by index to protect from truncation"
+}
+
+// Schema returns the tool's input schema.
+//
+// Returns:
+//   - A Schema describing the expected input format.
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for Schema.
+func (t *PinMessageTool) Schema() tool.Schema {
+	return tool.Schema{
+		Type: "object",
+		Properties: map[string]tool.Property{
+			"index": {Type: "integer", Description: "Message index to pin or unpin"},
+			"pin":   {Type: "boolean", Description: "True to pin, false to unpin"},
+		},
+		Required: []string{"index", "pin"},
+	}
+}
+
+// Execute runs the pin message tool.
+//
+// Expected:
+//   - ctx is a valid context.
+//   - input contains "index" integer and "pin" boolean arguments.
+//
+// Returns:
+//   - A Result indicating success or failure.
+//   - nil error (this tool does not fail).
+//
+// Side effects:
+//   - Toggles the Pinned flag on the target message in the store.
+func (t *PinMessageTool) Execute(_ context.Context, input tool.Input) (tool.Result, error) {
+	index := extractInt(input.Arguments, "index", -1)
+	pin, ok := input.Arguments["pin"].(bool)
+	if !ok || index < 0 {
+		return tool.Result{Output: "invalid arguments: index must be non-negative and pin must be a boolean"}, nil
+	}
+
+	var success bool
+	if pin {
+		success = t.store.PinMessage(index)
+	} else {
+		success = t.store.UnpinMessage(index)
+	}
+
+	if !success {
+		return tool.Result{Output: fmt.Sprintf("Message at index %d not found", index)}, nil
+	}
+
+	action := "pinned"
+	if !pin {
+		action = "unpinned"
+	}
+	return tool.Result{
+		Output: fmt.Sprintf("Message at index %d %s", index, action),
+	}, nil
+}
+
+// extractInt retrieves an integer value from a map of arguments, converting from float64 if necessary.
+//
+// Expected:
+//   - args is a map of string keys to interface{} values.
+//   - key is the argument key to retrieve.
+//   - defaultVal is the value to return if the key is missing or cannot be converted.
+//
+// Returns:
+//   - The integer value if found and convertible, otherwise the default value.
+//
+// Side effects:
+//   - None.
+func extractInt(args map[string]interface{}, key string, defaultVal int) int {
+	val, ok := args[key]
+	if !ok {
+		return defaultVal
+	}
+	floatVal, ok := val.(float64)
+	if !ok {
+		return defaultVal
+	}
+	return int(floatVal)
+}
+
+// SummarizeContextTool recursively summarizes conversation history.
+type SummarizeContextTool struct {
+	store    *FileContextStore
+	provider provider.Provider
+	maxDepth int
+	counter  TokenCounter
+	model    string
+	bus      *eventbus.EventBus
+}
+
+// TokenCounter defines methods for counting tokens in text.
+type TokenCounter interface {
+	// Count returns the number of tokens in the given text.
+	Count(text string) int
+	// ModelLimit returns the token limit for the given model.
+	ModelLimit(model string) int
+}
+
+// NewSummarizeContextTool creates a new SummarizeContextTool with the given configuration.
+//
+// Expected:
+//   - store is a valid, non-nil FileContextStore.
+//   - p is a valid Provider supporting chat completions.
+//   - maxDepth is a positive integer.
+//   - counter is a valid TokenCounter.
+//   - model is a non-empty model identifier.
+//
+// Returns:
+//   - A pointer to an initialised SummarizeContextTool.
+//
+// Side effects:
+//   - None.
+func NewSummarizeContextTool(
+	store *FileContextStore, p provider.Provider, maxDepth int,
+	counter TokenCounter, model string,
+) *SummarizeContextTool {
+	return &SummarizeContextTool{
+		store:    store,
+		provider: p,
+		maxDepth: maxDepth,
+		counter:  counter,
+		model:    model,
+	}
+}
+
+// SetEventBus configures the event bus for recall event emission.
+//
+// Expected:
+//   - bus may be nil to disable emission.
+//
+// Side effects:
+//   - Replaces the tool's bus reference; subsequent summarisation
+//     observations will fan out through this bus.
+//
+// Returns: result of SetEventBus.
+func (t *SummarizeContextTool) SetEventBus(bus *eventbus.EventBus) {
+	t.bus = bus
+}
+
+// Name returns the tool name.
+//
+// Returns:
+//   - The string "summarize_context".
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for Name.
+func (t *SummarizeContextTool) Name() string {
+	return "summarize_context"
+}
+
+// Description returns a description of what the tool does.
+//
+// Returns:
+//   - A human-readable description of the tool's purpose.
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for Description.
+func (t *SummarizeContextTool) Description() string {
+	return "Recursively summarize conversation history"
+}
+
+// Schema returns the tool's input schema.
+//
+// Returns:
+//   - A Schema describing the expected input format.
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for Schema.
+func (t *SummarizeContextTool) Schema() tool.Schema {
+	return tool.Schema{
+		Type: "object",
+		Properties: map[string]tool.Property{
+			"focus": {Type: "string", Description: "Optional focus area for summarization"},
+			"depth": {Type: "integer", Description: "Recursion depth (default 1)"},
+			"start": {Type: "integer", Description: "Start index for range"},
+			"end":   {Type: "integer", Description: "End index for range"},
+		},
+		Required: []string{},
+	}
+}
+
+// Execute runs the summarize context tool.
+//
+// Expected:
+//   - ctx is a valid context.
+//   - input may contain "focus", "depth", "start", and "end" arguments.
+//
+// Returns:
+//   - A Result containing the summary.
+//   - An error if summarisation fails.
+//
+// Side effects:
+//   - Makes LLM API calls.
+func (t *SummarizeContextTool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
+	focus, ok := input.Arguments["focus"].(string)
+	if !ok {
+		focus = ""
+	}
+	depth := extractInt(input.Arguments, "depth", 1)
+	startIdx := extractInt(input.Arguments, "start", -1)
+	endIdx := extractInt(input.Arguments, "end", -1)
+
+	if depth > t.maxDepth {
+		depth = t.maxDepth
+	}
+	if depth < 1 {
+		depth = 1
+	}
+
+	var messages []provider.Message
+	if startIdx >= 0 && endIdx >= 0 {
+		messages = t.store.GetRange(startIdx, endIdx)
+	} else {
+		messages = t.store.AllMessages()
+	}
+
+	if len(messages) == 0 {
+		return tool.Result{Output: "No conversation history"}, nil
+	}
+
+	originalTokens := t.counter.Count(formatMessages(messages))
+	start := time.Now()
+
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	result, err := t.summarize(ctx, messages, focus, depth)
+	if err != nil {
+		return result, err
+	}
+
+	if t.bus != nil {
+		sid, ok := ctx.Value(session.IDKey{}).(string)
+		if !ok {
+			sid = ""
+		}
+		t.bus.Publish(events.EventRecallSummarized, events.NewRecallSummarizedEvent(events.RecallSummarizedEventData{
+			SessionID:      sid,
+			OriginalTokens: originalTokens,
+			SummaryTokens:  t.counter.Count(result.Output),
+			LatencyMS:      time.Since(start).Milliseconds(),
+		}))
+	}
+
+	return result, nil
+}
+
+// summarize recursively summarises conversation messages using the provider's chat API.
+//
+// Expected:
+//   - ctx is a valid context.Context.
+//   - messages is a non-empty slice of provider.Message to summarise.
+//   - focus is an optional focus area for the summary; may be empty.
+//   - depth is the recursion depth; must be positive.
+//
+// Returns:
+//   - A Result containing the summary text.
+//   - An error if the chat API call fails.
+//
+// Side effects:
+//   - Makes LLM API calls via the provider.
+//   - May recursively call itself if the summary is too long.
+func (t *SummarizeContextTool) summarize(
+	ctx context.Context, messages []provider.Message, focus string, depth int,
+) (tool.Result, error) {
+	content := formatMessages(messages)
+	inputTokens := t.counter.Count(content)
+
+	prompt := "Summarize the following conversation:\n\n" + content
+	if focus != "" {
+		prompt += "\n\nFocus on: " + focus
+	}
+
+	resp, err := t.provider.Chat(ctx, provider.ChatRequest{
+		Model: t.model,
+		Messages: []provider.Message{
+			{Role: "system", Content: "You are a helpful assistant that summarizes conversations concisely."},
+			{Role: "user", Content: prompt},
+		},
+	})
+	if err != nil {
+		return tool.Result{}, fmt.Errorf("summarizing context: %w", err)
+	}
+
+	summary := resp.Message.Content
+	summaryTokens := t.counter.Count(summary)
+
+	if float64(summaryTokens) >= float64(inputTokens)*0.9 {
+		return tool.Result{Output: summary}, nil
+	}
+
+	if depth > 1 {
+		return t.summarize(ctx, []provider.Message{{Role: "assistant", Content: summary}}, focus, depth-1)
+	}
+
+	return tool.Result{Output: summary}, nil
+}
+
+// QueryTools provides combined context query operations.
+type QueryTools struct {
+	Search    *SearchContextTool
+	GetMsgs   *GetMessagesTool
+	Summarize *SummarizeContextTool
+}
+
+// NewContextQueryTools creates a new context query tools instance.
+//
+// Expected:
+//   - store is a valid, non-nil FileContextStore.
+//   - p is a valid Provider.
+//   - counter is a valid TokenCounter.
+//   - summaryModel is a non-empty model identifier.
+//
+// Returns:
+//   - A pointer to an initialised QueryTools.
+//
+// Side effects:
+//   - None.
+func NewContextQueryTools(store *FileContextStore, p provider.Provider, counter TokenCounter, summaryModel string) *QueryTools {
+	return &QueryTools{
+		Search:    NewSearchContextTool(store, p, 5, nil),
+		GetMsgs:   NewGetMessagesTool(store),
+		Summarize: NewSummarizeContextTool(store, p, 2, counter, summaryModel),
+	}
+}

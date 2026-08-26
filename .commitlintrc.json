@@ -1,5 +1,7 @@
 {
-  "extends": ["@commitlint/config-conventional"],
+  "extends": [
+    "@commitlint/config-conventional"
+  ],
   "rules": {
     "type-enum": [
       2,
@@ -44,15 +46,42 @@
         "session",
         "mcp",
         "engine",
-        "streaming"
+        "streaming",
+        "voice"
       ]
     ],
-    "scope-empty": [1, "never"],
-    "subject-case": [2, "always", "lower-case"],
-    "subject-empty": [2, "never"],
-    "subject-max-length": [2, "always", 72],
-    "header-max-length": [2, "always", 100],
-    "body-max-line-length": [2, "always", 200],
-    "footer-max-line-length": [2, "always", 200]
+    "scope-empty": [
+      1,
+      "never"
+    ],
+    "subject-case": [
+      2,
+      "always",
+      "lower-case"
+    ],
+    "subject-empty": [
+      2,
+      "never"
+    ],
+    "subject-max-length": [
+      2,
+      "always",
+      72
+    ],
+    "header-max-length": [
+      2,
+      "always",
+      100
+    ],
+    "body-max-line-length": [
+      2,
+      "always",
+      200
+    ],
+    "footer-max-line-length": [
+      2,
+      "always",
+      200
+    ]
   }
 }

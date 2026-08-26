@@ -1,0 +1,5 @@
+name: echo-pass
+description: Test fixture — always returns pass:true regardless of payload.
+version: "0.1.0"
+exec: ./gate.sh
+timeout: 5s

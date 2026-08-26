@@ -1,0 +1,34 @@
+{
+  "chunks": [
+    {
+      "content": "Hello"
+    },
+    {
+      "content": "!"
+    },
+    {
+      "content": " How"
+    },
+    {
+      "content": " can"
+    },
+    {
+      "content": " I"
+    },
+    {
+      "content": " assist"
+    },
+    {
+      "content": " you"
+    },
+    {
+      "content": " today"
+    },
+    {
+      "content": "?"
+    },
+    {
+      "done": true
+    }
+  ]
+}

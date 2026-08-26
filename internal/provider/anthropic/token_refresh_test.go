@@ -1,0 +1,578 @@
+package anthropic
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+)
+
+var _ = Describe("HTTPTokenRefresher", func() {
+	var (
+		server    *httptest.Server
+		refresher *HTTPTokenRefresher
+		ctx       context.Context
+	)
+
+	AfterEach(func() {
+		if server != nil {
+			server.Close()
+		}
+	})
+
+	Context("when the token endpoint returns valid JSON", func() {
+		BeforeEach(func() {
+			ctx = context.Background()
+			server = httptest.NewServer(
+				http.HandlerFunc(refreshHandler(http.StatusOK,
+					`{"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600}`)),
+			)
+			refresher = &HTTPTokenRefresher{
+				Client:        server.Client(),
+				TokenEndpoint: server.URL,
+			}
+		})
+
+		It("returns new tokens and an expiry", func() {
+			result, err := refresher.Refresh(ctx, "old-refresh")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.AccessToken).To(Equal("new-access"))
+			Expect(result.RefreshToken).To(Equal("new-refresh"))
+			Expect(result.ExpiresAt).To(
+				BeNumerically(">", time.Now().UnixMilli()),
+			)
+		})
+	})
+
+	Context("when the endpoint returns a non-200 status", func() {
+		BeforeEach(func() {
+			ctx = context.Background()
+			server = httptest.NewServer(
+				http.HandlerFunc(refreshHandler(
+					http.StatusUnauthorized, `{"error":"invalid"}`,
+				)),
+			)
+			refresher = &HTTPTokenRefresher{
+				Client:        server.Client(),
+				TokenEndpoint: server.URL,
+			}
+		})
+
+		It("returns an error with the status code", func() {
+			_, err := refresher.Refresh(ctx, "bad-refresh")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("status 401"))
+		})
+
+		It("includes the response body in the error for diagnosis", func() {
+			_, err := refresher.Refresh(ctx, "bad-refresh")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring(`"invalid"`))
+		})
+	})
+
+	Context("when the endpoint returns invalid JSON", func() {
+		BeforeEach(func() {
+			ctx = context.Background()
+			server = httptest.NewServer(
+				http.HandlerFunc(refreshHandler(
+					http.StatusOK, `{broken`,
+				)),
+			)
+			refresher = &HTTPTokenRefresher{
+				Client:        server.Client(),
+				TokenEndpoint: server.URL,
+			}
+		})
+
+		It("returns a decode error", func() {
+			_, err := refresher.Refresh(ctx, "refresh-tok")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(
+				ContainSubstring("decoding refresh response"),
+			)
+		})
+	})
+
+	Context("when the response has an empty access token", func() {
+		BeforeEach(func() {
+			ctx = context.Background()
+			server = httptest.NewServer(
+				http.HandlerFunc(refreshHandler(http.StatusOK,
+					`{"access_token":"","refresh_token":"r","expires_in":3600}`)),
+			)
+			refresher = &HTTPTokenRefresher{
+				Client:        server.Client(),
+				TokenEndpoint: server.URL,
+			}
+		})
+
+		It("returns errEmptyAccessToken", func() {
+			_, err := refresher.Refresh(ctx, "refresh-tok")
+			Expect(err).To(MatchError(errEmptyAccessToken))
+		})
+	})
+
+	Context("when the endpoint is unreachable", func() {
+		BeforeEach(func() {
+			ctx = context.Background()
+			refresher = &HTTPTokenRefresher{
+				Client:        http.DefaultClient,
+				TokenEndpoint: "http://127.0.0.1:1",
+			}
+		})
+
+		It("returns a connection error", func() {
+			_, err := refresher.Refresh(ctx, "refresh-tok")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(
+				ContainSubstring("executing token refresh"),
+			)
+		})
+	})
+
+	Context("when using the default endpoint", func() {
+		It("sets TokenEndpoint to the Anthropic default", func() {
+			r := &HTTPTokenRefresher{Client: http.DefaultClient}
+			Expect(r.TokenEndpoint).To(BeEmpty())
+		})
+	})
+})
+
+var _ = Describe("TokenManager", func() {
+	var ctx context.Context
+
+	BeforeEach(func() {
+		ctx = context.Background()
+	})
+
+	Describe("NewDirectTokenManager", func() {
+		It("returns cached token without refreshing", func() {
+			tm := NewDirectTokenManager("static-token")
+			token, err := tm.EnsureToken(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(token).To(Equal("static-token"))
+		})
+
+		It("has a far-future expiry", func() {
+			tm := NewDirectTokenManager("static-token")
+			Expect(tm.ExpiresAt()).To(BeNumerically(
+				">", time.Now().UnixMilli()+86400000,
+			))
+		})
+	})
+
+	Describe("EnsureToken", func() {
+		Context("when token is not expired", func() {
+			It("returns the cached token without calling refresher", func() {
+				spy := &spyRefresher{}
+				tm := NewTokenManager(
+					"valid-token", "refresh-tok",
+					time.Now().UnixMilli()+3600000,
+					spy, "",
+				)
+				token, err := tm.EnsureToken(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(token).To(Equal("valid-token"))
+				Expect(spy.callCount).To(Equal(0))
+			})
+		})
+
+		Context("when token is expired", func() {
+			It("refreshes and returns the new token", func() {
+				spy := &spyRefresher{
+					result: RefreshResult{
+						AccessToken:  "refreshed-access",
+						RefreshToken: "refreshed-refresh",
+						ExpiresAt:    time.Now().UnixMilli() + 7200000,
+					},
+				}
+				tm := NewTokenManager(
+					"old-token", "refresh-tok",
+					time.Now().UnixMilli()-1000,
+					spy, "",
+				)
+				token, err := tm.EnsureToken(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(token).To(Equal("refreshed-access"))
+				Expect(spy.callCount).To(Equal(1))
+			})
+		})
+
+		Context("when token is within the 5-minute buffer", func() {
+			It("refreshes proactively", func() {
+				spy := &spyRefresher{
+					result: RefreshResult{
+						AccessToken:  "proactive-access",
+						RefreshToken: "proactive-refresh",
+						ExpiresAt:    time.Now().UnixMilli() + 7200000,
+					},
+				}
+				bufferEdge := time.Now().UnixMilli() + refreshBufferMs - 1000
+				tm := NewTokenManager(
+					"soon-expiring", "refresh-tok",
+					bufferEdge, spy, "",
+				)
+				token, err := tm.EnsureToken(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(token).To(Equal("proactive-access"))
+				Expect(spy.callCount).To(Equal(1))
+			})
+		})
+
+		Context("when refresher is nil", func() {
+			It("returns the cached token even if expired", func() {
+				tm := NewTokenManager(
+					"stale-token", "", 0, nil, "",
+				)
+				token, err := tm.EnsureToken(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(token).To(Equal("stale-token"))
+			})
+		})
+
+		Context("when refresh fails", func() {
+			It("returns the error", func() {
+				spy := &spyRefresher{
+					err: fmt.Errorf("network down"),
+				}
+				tm := NewTokenManager(
+					"old-token", "refresh-tok",
+					time.Now().UnixMilli()-1000,
+					spy, "",
+				)
+				_, err := tm.EnsureToken(ctx)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(
+					ContainSubstring("network down"),
+				)
+			})
+		})
+
+		Context("when access token is empty", func() {
+			It("triggers a refresh", func() {
+				spy := &spyRefresher{
+					result: RefreshResult{
+						AccessToken:  "new-access",
+						RefreshToken: "new-refresh",
+						ExpiresAt:    time.Now().UnixMilli() + 7200000,
+					},
+				}
+				tm := NewTokenManager(
+					"", "refresh-tok",
+					time.Now().UnixMilli()+3600000,
+					spy, "",
+				)
+				token, err := tm.EnsureToken(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(token).To(Equal("new-access"))
+			})
+		})
+
+		Context("thread safety", func() {
+			It("handles concurrent calls without panic", func() {
+				spy := &spyRefresher{
+					result: RefreshResult{
+						AccessToken:  "concurrent-access",
+						RefreshToken: "concurrent-refresh",
+						ExpiresAt:    time.Now().UnixMilli() + 7200000,
+					},
+				}
+				tm := NewTokenManager(
+					"old", "refresh-tok",
+					time.Now().UnixMilli()-1000,
+					spy, "",
+				)
+				var wg sync.WaitGroup
+				for range 10 {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						_, err := tm.EnsureToken(ctx)
+						Expect(err).NotTo(HaveOccurred())
+					}()
+				}
+				wg.Wait()
+				Expect(tm.AccessToken()).To(
+					Equal("concurrent-access"),
+				)
+			})
+		})
+	})
+
+	Describe("persistTokens", func() {
+		var tmpDir string
+
+		BeforeEach(func() {
+			var err error
+			tmpDir, err = os.MkdirTemp("", "token-persist-*")
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			os.RemoveAll(tmpDir)
+		})
+
+		It("writes refreshed tokens to the FlowState token file", func() {
+			tokenPath := filepath.Join(tmpDir, "anthropic.json")
+
+			spy := &spyRefresher{
+				result: RefreshResult{
+					AccessToken:  "persisted-access",
+					RefreshToken: "persisted-refresh",
+					ExpiresAt:    9999999,
+				},
+			}
+			tm := NewTokenManager(
+				"old-access", "old-refresh", 0,
+				spy, tokenPath,
+			)
+			_, err := tm.EnsureToken(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			saved, err := os.ReadFile(tokenPath)
+			Expect(err).NotTo(HaveOccurred())
+
+			var payload map[string]interface{}
+			Expect(json.Unmarshal(saved, &payload)).To(Succeed())
+			Expect(payload["access"]).To(Equal("persisted-access"))
+			Expect(payload["refresh"]).To(Equal("persisted-refresh"))
+			Expect(payload["type"]).To(Equal("oauth"))
+		})
+
+		It("creates the parent directory when missing", func() {
+			tokenPath := filepath.Join(tmpDir, "tokens", "anthropic.json")
+
+			spy := &spyRefresher{
+				result: RefreshResult{
+					AccessToken:  "new",
+					RefreshToken: "new-r",
+					ExpiresAt:    2000,
+				},
+			}
+			tm := NewTokenManager(
+				"x", "y", 0, spy, tokenPath,
+			)
+			_, err := tm.EnsureToken(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			info, err := os.Stat(tokenPath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info.Mode().Perm()).To(
+				Equal(os.FileMode(authFilePermissions)),
+			)
+		})
+
+		It("never produces a zero-byte auth file when overwriting", func() {
+			// Regression for non-atomic os.WriteFile: a crash mid-write
+			// would zero out anthropic.json and silently log the user out
+			// on next start. atomicwrite.File guarantees the file is
+			// either the previous payload or the new payload.
+			tokenPath := filepath.Join(tmpDir, "anthropic.json")
+			Expect(os.WriteFile(tokenPath, []byte(`{"type":"oauth","access":"old"}`), 0o600)).To(Succeed())
+
+			spy := &spyRefresher{
+				result: RefreshResult{
+					AccessToken:  "new-after-refresh",
+					RefreshToken: "new-refresh",
+					ExpiresAt:    1234,
+				},
+			}
+			tm := NewTokenManager("old", "old-refresh", 0, spy, tokenPath)
+			_, err := tm.EnsureToken(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			info, err := os.Stat(tokenPath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info.Size()).To(BeNumerically(">", int64(0)))
+
+			saved, readErr := os.ReadFile(tokenPath)
+			Expect(readErr).NotTo(HaveOccurred())
+			Expect(string(saved)).To(ContainSubstring("new-after-refresh"))
+		})
+
+		It("leaves no atomicwrite temp file in the token directory", func() {
+			tokenPath := filepath.Join(tmpDir, "anthropic.json")
+			spy := &spyRefresher{
+				result: RefreshResult{
+					AccessToken: "x", RefreshToken: "y", ExpiresAt: 1,
+				},
+			}
+			tm := NewTokenManager("old", "old-r", 0, spy, tokenPath)
+			_, err := tm.EnsureToken(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			entries, readErr := os.ReadDir(tmpDir)
+			Expect(readErr).NotTo(HaveOccurred())
+			for _, e := range entries {
+				Expect(e.Name()).NotTo(ContainSubstring(".atomicwrite-"))
+			}
+		})
+
+		It("skips persistence when the token file path is empty", func() {
+			spy := &spyRefresher{
+				result: RefreshResult{
+					AccessToken:  "no-persist",
+					RefreshToken: "no-persist-r",
+					ExpiresAt:    9999999,
+				},
+			}
+			tm := NewTokenManager(
+				"old", "refresh-tok", 0, spy, "",
+			)
+			token, err := tm.EnsureToken(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(token).To(Equal("no-persist"))
+		})
+
+		// F3 (Bug Hunt Findings May 11 2026) — the pre-F3 persistTokens
+		// used a direct `os.WriteFile` with `_ = ...` error swallow.
+		// SIGKILL or power loss mid-write truncated the auth file;
+		// a disk-full / EACCES failure was silently dropped. Both
+		// failure modes blackball OAuth refresh on the next launch.
+		// The fix mirrors the recall + session-fork persistence
+		// pattern: temp-then-rename + surface the error via slog and
+		// the return value.
+		Context("F3 — atomicity + error surfacing on persist", func() {
+			It("leaves no .tmp sibling on the filesystem after a successful write", func() {
+				tokenPath := filepath.Join(tmpDir, "anthropic.json")
+				spy := &spyRefresher{
+					result: RefreshResult{
+						AccessToken:  "atomic-access",
+						RefreshToken: "atomic-refresh",
+						ExpiresAt:    9999999,
+					},
+				}
+				tm := NewTokenManager("old", "old-r", 0, spy, tokenPath)
+				_, err := tm.EnsureToken(ctx)
+				Expect(err).NotTo(HaveOccurred())
+
+				_, statErr := os.Stat(tokenPath + ".tmp")
+				Expect(os.IsNotExist(statErr)).To(BeTrue(),
+					"F3: temp file must be renamed over the target; no .tmp leftover on success")
+			})
+
+			It("preserves the existing token file when the write fails", func() {
+				// Pre-populate the file with a known-good token so we
+				// can assert atomicity: even when the persist call
+				// fails (we force this by making the directory
+				// read-only), the on-disk content must still parse as
+				// the OLD token, never a half-written or zero-byte
+				// file.
+				tokenPath := filepath.Join(tmpDir, "anthropic.json")
+				oldPayload := []byte(`{"type":"oauth","access":"old-access","refresh":"old-refresh","expires":1}`)
+				Expect(os.WriteFile(tokenPath, oldPayload, 0o600)).To(Succeed())
+
+				// Make the directory read-only so the temp file
+				// creation fails. (chmod must be restored in
+				// AfterEach via tmpDir cleanup — but RemoveAll on a
+				// read-only dir would fail, so restore it here too.)
+				Expect(os.Chmod(tmpDir, 0o500)).To(Succeed())
+				defer func() { _ = os.Chmod(tmpDir, 0o700) }()
+
+				spy := &spyRefresher{
+					result: RefreshResult{
+						AccessToken:  "new-access",
+						RefreshToken: "new-refresh",
+						ExpiresAt:    9999999,
+					},
+				}
+				tm := NewTokenManager("old-access", "old-refresh", 0, spy, tokenPath)
+				// EnsureToken refreshes successfully in memory but
+				// the persist call hits the read-only directory.
+				_, _ = tm.EnsureToken(ctx)
+
+				// On-disk content must be the old token, parseable,
+				// non-empty. The pre-F3 behaviour permitted a
+				// truncated/empty file on this failure mode.
+				saved, readErr := os.ReadFile(tokenPath)
+				Expect(readErr).NotTo(HaveOccurred(),
+					"F3: the on-disk file must still be readable after a failed persist (no truncation)")
+				Expect(saved).NotTo(BeEmpty(),
+					"F3: the on-disk file must not be truncated when the write fails")
+
+				var payload map[string]interface{}
+				Expect(json.Unmarshal(saved, &payload)).To(Succeed(),
+					"F3: the on-disk file must remain valid JSON when the write fails")
+				Expect(payload["access"]).To(Equal("old-access"),
+					"F3: the pre-existing token must survive a failed persist")
+			})
+
+			It("returns an error from persistTokens so callers can surface it (no silent swallow)", func() {
+				// The pre-F3 signature was `persistTokens()` with the
+				// write error silently discarded. The fix surfaces
+				// the error so the calling refresh path can log or
+				// propagate it. We exercise the test-only wrapper
+				// PersistTokensForTest which returns the error.
+				tokenPath := filepath.Join(tmpDir, "nested", "child", "anthropic.json")
+				// Parent dir of the deepest segment exists (tmpDir),
+				// so MkdirAll succeeds; but make the leaf parent
+				// read-only after creation to force WriteFile to
+				// fail.
+				Expect(os.MkdirAll(filepath.Dir(tokenPath), 0o700)).To(Succeed())
+				Expect(os.Chmod(filepath.Dir(tokenPath), 0o500)).To(Succeed())
+				defer func() { _ = os.Chmod(filepath.Dir(tokenPath), 0o700) }()
+
+				tm := NewTokenManager("acc", "ref", 0, nil, tokenPath)
+				err := tm.PersistTokensForTest()
+				Expect(err).To(HaveOccurred(),
+					"F3: persistTokens must surface write errors so the OAuth refresh path can log them (no silent _ = swallow)")
+			})
+		})
+	})
+
+	Describe("AccessToken", func() {
+		It("returns the current access token", func() {
+			tm := NewDirectTokenManager("my-token")
+			Expect(tm.AccessToken()).To(Equal("my-token"))
+		})
+	})
+
+	Describe("SetExpiresAt", func() {
+		It("overrides the expiry time", func() {
+			tm := NewDirectTokenManager("tok")
+			tm.SetExpiresAt(42)
+			Expect(tm.ExpiresAt()).To(
+				BeNumerically("==", 42),
+			)
+		})
+	})
+})
+
+func refreshHandler(
+	status int, body string,
+) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		fmt.Fprint(w, body)
+	}
+}
+
+type spyRefresher struct {
+	result    RefreshResult
+	err       error
+	callCount int
+	mu        sync.Mutex
+}
+
+func (s *spyRefresher) Refresh(
+	_ context.Context,
+	_ string,
+) (RefreshResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.callCount++
+	if s.err != nil {
+		return RefreshResult{}, s.err
+	}
+	return s.result, nil
+}

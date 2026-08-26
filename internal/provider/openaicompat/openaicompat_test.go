@@ -1,0 +1,2895 @@
+package openaicompat_test
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"time"
+
+	anthropicAPI "github.com/anthropics/anthropic-sdk-go"
+	ollamaAPI "github.com/ollama/ollama/api"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	openaiAPI "github.com/openai/openai-go"
+	"github.com/openai/openai-go/option"
+
+	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/provider/openaicompat"
+)
+
+// GO: errors.As survives fmt.Errorf wrapping for all three SDKs.
+// OpenAI exposes *openai.Error with StatusCode, Code, RawJSON(), DumpRequest(), and DumpResponse().
+// Anthropic exposes *anthropic.Error with StatusCode, RequestID, RawJSON(), DumpRequest(), and DumpResponse(); the body must be parsed for error type/message.
+// Ollama exposes *api.StatusError and *api.AuthorizationError with StatusCode plus Status/ErrorMessage or SigninURL; there is no raw body field.
+var _ = Describe("OpenAI Compat", func() {
+	Describe("BuildMessages", func() {
+		Context("characterisation: role and content mapping", func() {
+			It("maps user role and content to OpenAI UserMessage", func() {
+				msgs := []provider.Message{{Role: "user", Content: "hello world"}}
+				result := openaicompat.BuildMessages(msgs)
+				Expect(result).To(HaveLen(1))
+				Expect(result[0].OfUser).NotTo(BeNil())
+				Expect(result[0].OfUser.Content.OfString.Value).To(Equal("hello world"))
+			})
+
+			It("maps assistant role and content to OpenAI AssistantMessage", func() {
+				msgs := []provider.Message{{Role: "assistant", Content: "hi there"}}
+				result := openaicompat.BuildMessages(msgs)
+				Expect(result).To(HaveLen(1))
+				Expect(result[0].OfAssistant).NotTo(BeNil())
+				Expect(result[0].OfAssistant.Content.OfString.Value).To(Equal("hi there"))
+			})
+
+			It("maps system role and content to OpenAI SystemMessage", func() {
+				msgs := []provider.Message{{Role: "system", Content: "you are helpful"}}
+				result := openaicompat.BuildMessages(msgs)
+				Expect(result).To(HaveLen(1))
+				Expect(result[0].OfSystem).NotTo(BeNil())
+				Expect(result[0].OfSystem.Content.OfString.Value).To(Equal("you are helpful"))
+			})
+
+			It("maps tool role using ToolCalls[0].ID for the OpenAI ToolMessage", func() {
+				msgs := []provider.Message{{
+					Role:      "tool",
+					Content:   "tool result",
+					ToolCalls: []provider.ToolCall{{ID: "call_123"}},
+				}}
+				result := openaicompat.BuildMessages(msgs)
+				Expect(result).To(HaveLen(1))
+				Expect(result[0].OfTool).NotTo(BeNil())
+				Expect(result[0].OfTool.Content.OfString.Value).To(Equal("tool result"))
+				Expect(result[0].OfTool.ToolCallID).To(Equal("call_123"))
+			})
+		})
+
+		It("converts user messages correctly", func() {
+			msgs := []provider.Message{{Role: "user", Content: "hello"}}
+			result := openaicompat.BuildMessages(msgs)
+			Expect(result).To(HaveLen(1))
+		})
+
+		It("converts assistant messages correctly", func() {
+			msgs := []provider.Message{{Role: "assistant", Content: "hi there"}}
+			result := openaicompat.BuildMessages(msgs)
+			Expect(result).To(HaveLen(1))
+		})
+
+		It("converts system messages correctly", func() {
+			msgs := []provider.Message{{Role: "system", Content: "you are helpful"}}
+			result := openaicompat.BuildMessages(msgs)
+			Expect(result).To(HaveLen(1))
+		})
+
+		It("converts tool messages with ToolCalls ID", func() {
+			msgs := []provider.Message{{
+				Role:      "tool",
+				Content:   "tool result",
+				ToolCalls: []provider.ToolCall{{ID: "call_123"}},
+			}}
+			result := openaicompat.BuildMessages(msgs)
+			Expect(result).To(HaveLen(1))
+		})
+
+		It("returns empty slice for empty input", func() {
+			result := openaicompat.BuildMessages([]provider.Message{})
+			Expect(result).To(BeEmpty())
+		})
+
+		It("skips unknown roles", func() {
+			msgs := []provider.Message{
+				{Role: "user", Content: "hello"},
+				{Role: "unknown", Content: "ignored"},
+				{Role: "assistant", Content: "hi"},
+			}
+			result := openaicompat.BuildMessages(msgs)
+			Expect(result).To(HaveLen(2))
+		})
+
+		// Role-canonicalisation safety net (June 2026): the manager seam at
+		// session/manager.go now canonicalises every persisted role before
+		// it reaches BuildMessages. The wire layer still silently skips
+		// anything outside {user, assistant, system, tool} as a regression
+		// backstop. This test uses a truly unknown role to verify the
+		// Warn is emitted — tool_error, tool_result, tool_call, thinking,
+		// delegation, and delegation_started are all canonicalised before
+		// they reach this point.
+		It("logs a Warn naming the unknown role when one slips past the manager seam", func() {
+			prev := slog.Default()
+			DeferCleanup(func() { slog.SetDefault(prev) })
+
+			var buf bytes.Buffer
+			handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})
+			slog.SetDefault(slog.New(handler))
+
+			msgs := []provider.Message{
+				{Role: "user", Content: "hello"},
+				{Role: "bogus_role", Content: "uncanonicalised legacy"},
+			}
+			result := openaicompat.BuildMessages(msgs)
+			Expect(result).To(HaveLen(1),
+				"silent-drop behaviour must be preserved — the log is observability, not a behaviour change")
+
+			out := buf.String()
+			Expect(out).To(ContainSubstring("openaicompat"),
+				"log must name the package so operators can grep by provider — log was: %s", out)
+			Expect(out).To(ContainSubstring("unknown role"),
+				"log must declare the condition with a single greppable phrase — log was: %s", out)
+			Expect(out).To(ContainSubstring("role=bogus_role"),
+				"log must name the rogue role string so the regression site is identifiable — log was: %s", out)
+		})
+
+		It("skips tool messages without ToolCalls", func() {
+			msgs := []provider.Message{{Role: "tool", Content: "orphan result"}}
+			result := openaicompat.BuildMessages(msgs)
+			Expect(result).To(BeEmpty())
+		})
+
+		It("preserves tool calls on assistant messages", func() {
+			msgs := []provider.Message{{
+				Role:    "assistant",
+				Content: "Let me check the weather",
+				ToolCalls: []provider.ToolCall{{
+					ID:        "call_abc",
+					Name:      "get_weather",
+					Arguments: map[string]interface{}{"city": "London"},
+				}},
+			}}
+			result := openaicompat.BuildMessages(msgs)
+			Expect(result).To(HaveLen(1))
+			toolCalls := result[0].GetToolCalls()
+			Expect(toolCalls).To(HaveLen(1))
+			Expect(toolCalls[0].ID).To(Equal("call_abc"))
+			Expect(toolCalls[0].Function.Name).To(Equal("get_weather"))
+		})
+
+		It("preserves tool calls on assistant message with empty content", func() {
+			msgs := []provider.Message{{
+				Role:    "assistant",
+				Content: "",
+				ToolCalls: []provider.ToolCall{{
+					ID:        "call_xyz",
+					Name:      "search",
+					Arguments: map[string]interface{}{"query": "golang"},
+				}},
+			}}
+			result := openaicompat.BuildMessages(msgs)
+			Expect(result).To(HaveLen(1))
+			toolCalls := result[0].GetToolCalls()
+			Expect(toolCalls).To(HaveLen(1))
+			Expect(toolCalls[0].ID).To(Equal("call_xyz"))
+			Expect(toolCalls[0].Function.Name).To(Equal("search"))
+		})
+
+		It("converts multiple mixed messages", func() {
+			msgs := []provider.Message{
+				{Role: "system", Content: "be helpful"},
+				{Role: "user", Content: "hello"},
+				{Role: "assistant", Content: "hi"},
+			}
+			result := openaicompat.BuildMessages(msgs)
+			Expect(result).To(HaveLen(3))
+		})
+
+		// Plan "Chat Attachments Backend (May 2026)" §6 task-11 / task-12 —
+		// when a user message carries image Attachments, BuildMessages
+		// lifts them into the OpenAI multimodal content-part shape ahead
+		// of the text part. Anthropic-supported types (jpeg/png/gif/webp)
+		// are passed through verbatim — model-level support is the
+		// upstream model's responsibility, not the translator's.
+		Context("image attachment threading (PR3 task-11 / task-12)", func() {
+			pngBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+			jpgBytes := []byte{0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46}
+
+			It("preserves the legacy string UserMessage shape when no attachments are present", func() {
+				msgs := []provider.Message{{Role: "user", Content: "hello"}}
+				result := openaicompat.BuildMessages(msgs)
+				Expect(result).To(HaveLen(1))
+				Expect(result[0].OfUser).NotTo(BeNil())
+				// Back-compat: with no attachments the union still
+				// carries the simple string content, not an array.
+				Expect(result[0].OfUser.Content.OfString.Value).To(Equal("hello"))
+				Expect(result[0].OfUser.Content.OfArrayOfContentParts).To(BeNil())
+			})
+
+			It("converts a single PNG attachment to an image_url content part ahead of the text part", func() {
+				msgs := []provider.Message{
+					{Role: "user", Content: "describe this", Attachments: []provider.Attachment{
+						{ID: "a", MediaType: "image/png", Data: pngBytes, SizeBytes: int64(len(pngBytes))},
+					}},
+				}
+				result := openaicompat.BuildMessages(msgs)
+				Expect(result).To(HaveLen(1))
+				Expect(result[0].OfUser).NotTo(BeNil())
+				parts := result[0].OfUser.Content.OfArrayOfContentParts
+				Expect(parts).To(HaveLen(2))
+				// Image part first.
+				Expect(parts[0].OfImageURL).NotTo(BeNil())
+				Expect(parts[0].OfImageURL.ImageURL.URL).To(HavePrefix("data:image/png;base64,"))
+				// Text part second.
+				Expect(parts[1].OfText).NotTo(BeNil())
+				Expect(parts[1].OfText.Text).To(Equal("describe this"))
+			})
+
+			It("preserves order across multiple image attachments", func() {
+				msgs := []provider.Message{
+					{Role: "user", Content: "look at these", Attachments: []provider.Attachment{
+						{ID: "a", MediaType: "image/png", Data: pngBytes},
+						{ID: "b", MediaType: "image/jpeg", Data: jpgBytes},
+					}},
+				}
+				result := openaicompat.BuildMessages(msgs)
+				parts := result[0].OfUser.Content.OfArrayOfContentParts
+				Expect(parts).To(HaveLen(3))
+				Expect(parts[0].OfImageURL).NotTo(BeNil())
+				Expect(parts[0].OfImageURL.ImageURL.URL).To(HavePrefix("data:image/png;base64,"))
+				Expect(parts[1].OfImageURL).NotTo(BeNil())
+				Expect(parts[1].OfImageURL.ImageURL.URL).To(HavePrefix("data:image/jpeg;base64,"))
+				Expect(parts[2].OfText.Text).To(Equal("look at these"))
+			})
+
+			It("skips incomplete entries (empty MediaType or empty Data) and falls back to string when none remain", func() {
+				msgs := []provider.Message{
+					{Role: "user", Content: "fallback", Attachments: []provider.Attachment{
+						{ID: "empty-type", MediaType: "", Data: pngBytes},
+						{ID: "empty-data", MediaType: "image/png", Data: nil},
+					}},
+				}
+				result := openaicompat.BuildMessages(msgs)
+				// With every attachment skipped the helper returns nil
+				// parts, so the caller emits the legacy string union.
+				Expect(result[0].OfUser.Content.OfString.Value).To(Equal("fallback"))
+				Expect(result[0].OfUser.Content.OfArrayOfContentParts).To(BeNil())
+			})
+
+			It("preserves an empty text part when content is empty but attachments exist", func() {
+				msgs := []provider.Message{
+					{Role: "user", Content: "", Attachments: []provider.Attachment{
+						{ID: "a", MediaType: "image/png", Data: pngBytes},
+					}},
+				}
+				result := openaicompat.BuildMessages(msgs)
+				parts := result[0].OfUser.Content.OfArrayOfContentParts
+				Expect(parts).To(HaveLen(2))
+				Expect(parts[0].OfImageURL).NotTo(BeNil())
+				Expect(parts[1].OfText).NotTo(BeNil())
+				Expect(parts[1].OfText.Text).To(Equal(""))
+			})
+
+			It("encodes the image bytes via base64 in the data: URL", func() {
+				msgs := []provider.Message{
+					{Role: "user", Content: "x", Attachments: []provider.Attachment{
+						{ID: "a", MediaType: "image/png", Data: pngBytes},
+					}},
+				}
+				result := openaicompat.BuildMessages(msgs)
+				parts := result[0].OfUser.Content.OfArrayOfContentParts
+				url := parts[0].OfImageURL.ImageURL.URL
+				// data:image/png;base64,<encoded>
+				Expect(url).To(HavePrefix("data:image/png;base64,"))
+				encoded := strings.TrimPrefix(url, "data:image/png;base64,")
+				decoded, decErr := base64.StdEncoding.DecodeString(encoded)
+				Expect(decErr).NotTo(HaveOccurred())
+				Expect(decoded).To(Equal(pngBytes))
+			})
+		})
+
+		// Plan §6 task-15 — defence-in-depth document skip. PDFs that
+		// reach the openaicompat translator (covers openai, copilot,
+		// openzen, zai, ollamacloud — anything wrapping openaicompat)
+		// are dropped with a structured slog.Warn. The upload-time
+		// gate is the primary defence; this closes R13's
+		// model-switch-mid-staging window.
+		Context("defence-in-depth document-skip (PR4 task-15, AC-15-LogShape-Pinned)", func() {
+			pdfBytes := []byte("%PDF-1.4\n%fake-pdf-body\n")
+			pngBytes := []byte{0x89, 0x50, 0x4e, 0x47}
+
+			It("drops a Kind=document attachment from the request body", func() {
+				msgs := []provider.Message{
+					{Role: "user", Content: "discuss this", Attachments: []provider.Attachment{
+						{ID: "doc-1", Kind: "document", MediaType: "application/pdf", Data: pdfBytes},
+					}},
+				}
+				result := openaicompat.BuildMessages(msgs)
+				Expect(result).To(HaveLen(1))
+				// No documents got into the parts array — the message
+				// falls back to the legacy string-shaped user content.
+				Expect(result[0].OfUser).NotTo(BeNil())
+				Expect(result[0].OfUser.Content.OfString.Value).To(Equal("discuss this"))
+				Expect(result[0].OfUser.Content.OfArrayOfContentParts).To(BeNil())
+			})
+
+			It("mixed image+PDF: ships image, drops PDF, request still well-formed", func() {
+				msgs := []provider.Message{
+					{Role: "user", Content: "look", Attachments: []provider.Attachment{
+						{ID: "img-1", Kind: "image", MediaType: "image/png", Data: pngBytes},
+						{ID: "doc-1", Kind: "document", MediaType: "application/pdf", Data: pdfBytes},
+					}},
+				}
+				result := openaicompat.BuildMessages(msgs)
+				parts := result[0].OfUser.Content.OfArrayOfContentParts
+				// Image + text only — PDF is silently dropped.
+				Expect(parts).To(HaveLen(2))
+				Expect(parts[0].OfImageURL).NotTo(BeNil())
+				Expect(parts[1].OfText.Text).To(Equal("look"))
+			})
+
+			It("emits slog.Warn with the AC-15-LogShape-Pinned 4-field schema", func() {
+				// Capture slog output to a buffer-backed handler so we
+				// can assert the exact message + keys.
+				var buf bytes.Buffer
+				handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})
+				prev := slog.Default()
+				slog.SetDefault(slog.New(handler))
+				defer slog.SetDefault(prev)
+
+				msgs := []provider.Message{
+					{Role: "user", Content: "x", Attachments: []provider.Attachment{
+						{ID: "doc-xyz", Kind: "document", MediaType: "application/pdf", Data: pdfBytes},
+					}},
+				}
+				_ = openaicompat.BuildMessages(msgs)
+
+				var entry map[string]any
+				Expect(json.Unmarshal(buf.Bytes(), &entry)).To(Succeed())
+				Expect(entry).To(HaveKeyWithValue("msg",
+					"attachment_dropped: provider does not support documents"))
+				Expect(entry).To(HaveKeyWithValue("provider", "openaicompat"))
+				Expect(entry).To(HaveKeyWithValue("attachment_id", "doc-xyz"))
+				Expect(entry).To(HaveKeyWithValue("kind", "document"))
+				Expect(entry).To(HaveKeyWithValue("media_type", "application/pdf"))
+				Expect(entry).To(HaveKeyWithValue("level", "WARN"))
+			})
+		})
+	})
+
+	Describe("GateAttachmentRequestSize", func() {
+		// Plan "Chat Attachments Backend (May 2026)" §6 task-11 / task-12
+		// — pre-flight gate that mirrors the Anthropic provider's 25 MB
+		// ceiling check (lifted to the shared seam in PR3 task-10).
+		// Returns nil when within ceiling, wrapped sentinel when over.
+		pngBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+
+		It("returns nil for an empty request", func() {
+			req := provider.ChatRequest{}
+			Expect(openaicompat.GateAttachmentRequestSize(req)).To(BeNil())
+		})
+
+		It("returns nil for messages without attachments", func() {
+			req := provider.ChatRequest{
+				Messages: []provider.Message{
+					{Role: "user", Content: "hello"},
+					{Role: "assistant", Content: "hi"},
+				},
+			}
+			Expect(openaicompat.GateAttachmentRequestSize(req)).To(BeNil())
+		})
+
+		It("returns nil when attachments are under the ceiling", func() {
+			under := make([]byte, 1024*1024) // 1 MB
+			copy(under, pngBytes)
+			req := provider.ChatRequest{
+				Messages: []provider.Message{
+					{Role: "user", Content: "ok", Attachments: []provider.Attachment{
+						{ID: "a", MediaType: "image/png", Data: under},
+					}},
+				},
+			}
+			Expect(openaicompat.GateAttachmentRequestSize(req)).To(BeNil())
+		})
+
+		It("returns ErrAttachmentRequestTooLarge when attachments exceed the ceiling", func() {
+			big := make([]byte, provider.MaxAttachmentRequestBytes())
+			copy(big, pngBytes)
+			extra := make([]byte, 1024*1024) // 1 MB over the 25 MB cap
+			req := provider.ChatRequest{
+				Messages: []provider.Message{
+					{Role: "user", Content: "first", Attachments: []provider.Attachment{
+						{ID: "a", MediaType: "image/png", Data: big},
+					}},
+					{Role: "user", Content: "second", Attachments: []provider.Attachment{
+						{ID: "b", MediaType: "image/png", Data: extra},
+					}},
+				},
+			}
+			err := openaicompat.GateAttachmentRequestSize(req)
+			Expect(err).To(HaveOccurred())
+			Expect(errors.Is(err, provider.ErrAttachmentRequestTooLarge)).To(BeTrue())
+			Expect(err.Error()).To(ContainSubstring("openaicompat"))
+		})
+	})
+
+	Describe("BuildTools", func() {
+		Context("characterisation: multi-property schema mapping", func() {
+			It("preserves all properties and required fields in the OpenAI parameters wrapper", func() {
+				tools := []provider.Tool{{
+					Name:        "search",
+					Description: "Search for items",
+					Schema: provider.ToolSchema{
+						Type: "object",
+						Properties: map[string]interface{}{
+							"query": map[string]interface{}{"type": "string"},
+							"limit": map[string]interface{}{"type": "integer"},
+						},
+						Required: []string{"query", "limit"},
+					},
+				}}
+				result := openaicompat.BuildTools(tools)
+				Expect(result).To(HaveLen(1))
+				Expect(result[0].Function.Name).To(Equal("search"))
+				Expect(result[0].Function.Description.Value).To(Equal("Search for items"))
+				params := result[0].Function.Parameters
+				Expect(params).To(HaveKey("properties"))
+				Expect(params).To(HaveKey("required"))
+				Expect(params["required"]).To(ConsistOf("query", "limit"))
+			})
+		})
+
+		It("returns nil for empty tools slice", func() {
+			result := openaicompat.BuildTools([]provider.Tool{})
+			Expect(result).To(BeNil())
+		})
+
+		It("returns nil for nil tools slice", func() {
+			result := openaicompat.BuildTools(nil)
+			Expect(result).To(BeNil())
+		})
+
+		It("converts a single tool with all schema fields", func() {
+			tools := []provider.Tool{{
+				Name:        "get_weather",
+				Description: "Get the weather",
+				Schema: provider.ToolSchema{
+					Type: "object",
+					Properties: map[string]interface{}{
+						"location": map[string]interface{}{"type": "string"},
+					},
+					Required: []string{"location"},
+				},
+			}}
+			result := openaicompat.BuildTools(tools)
+			Expect(result).To(HaveLen(1))
+			Expect(result[0].Function.Name).To(Equal("get_weather"))
+		})
+
+		It("converts multiple tools", func() {
+			tools := []provider.Tool{
+				{
+					Name:        "tool_a",
+					Description: "First tool",
+					Schema:      provider.ToolSchema{Type: "object"},
+				},
+				{
+					Name:        "tool_b",
+					Description: "Second tool",
+					Schema:      provider.ToolSchema{Type: "object"},
+				},
+			}
+			result := openaicompat.BuildTools(tools)
+			Expect(result).To(HaveLen(2))
+			Expect(result[0].Function.Name).To(Equal("tool_a"))
+			Expect(result[1].Function.Name).To(Equal("tool_b"))
+		})
+	})
+
+	Describe("BuildParams", func() {
+		It("sets model and messages", func() {
+			req := provider.ChatRequest{
+				Model: "gpt-4o",
+				Messages: []provider.Message{
+					{Role: "user", Content: "hello"},
+				},
+			}
+			params := openaicompat.BuildParams(req)
+			Expect(params.Model).To(Equal("gpt-4o"))
+			Expect(params.Messages).To(HaveLen(1))
+		})
+
+		It("sets MaxTokens to the fallback when omitted", func() {
+			req := provider.ChatRequest{
+				Model:    "gpt-4o",
+				Messages: []provider.Message{{Role: "user", Content: "hello"}},
+			}
+			params := openaicompat.BuildParams(req)
+			Expect(params.MaxTokens).NotTo(BeNil())
+			Expect(params.MaxTokens.Value).To(Equal(int64(8192)))
+		})
+
+		It("includes tools when present", func() {
+			req := provider.ChatRequest{
+				Model: "gpt-4o",
+				Messages: []provider.Message{
+					{Role: "user", Content: "hello"},
+				},
+				Tools: []provider.Tool{{
+					Name:        "my_tool",
+					Description: "A tool",
+					Schema:      provider.ToolSchema{Type: "object"},
+				}},
+			}
+			params := openaicompat.BuildParams(req)
+			Expect(params.Tools).To(HaveLen(1))
+		})
+
+		It("omits tools when empty", func() {
+			req := provider.ChatRequest{
+				Model:    "gpt-4o",
+				Messages: []provider.Message{{Role: "user", Content: "hi"}},
+			}
+			params := openaicompat.BuildParams(req)
+			Expect(params.Tools).To(BeNil())
+		})
+
+		Context("tool_choice mapping (forced-tool corrective retry)", func() {
+			It("leaves tool_choice unset when ToolChoice is empty", func() {
+				req := provider.ChatRequest{
+					Model:    "gpt-4o",
+					Messages: []provider.Message{{Role: "user", Content: "hi"}},
+				}
+				params := openaicompat.BuildParams(req)
+				Expect(params.ToolChoice.OfAuto.Valid()).To(BeFalse())
+				Expect(params.ToolChoice.OfChatCompletionNamedToolChoice).To(BeNil())
+			})
+
+			It("maps tool:NAME onto the named-function forcing union", func() {
+				// The synthesis-hang corrective retry forces the member to
+				// emit the coordination_store write. zai routes through
+				// openaicompat, so BuildParams MUST carry the named-tool
+				// forcing onto the wire — a bare provider.ChatRequest.ToolChoice
+				// that BuildParams drops is the bug this guards.
+				req := provider.ChatRequest{
+					Model:      "glm-4.5",
+					Messages:   []provider.Message{{Role: "user", Content: "hi"}},
+					ToolChoice: "tool:coordination_store",
+				}
+				params := openaicompat.BuildParams(req)
+				Expect(params.ToolChoice.OfChatCompletionNamedToolChoice).NotTo(BeNil())
+				Expect(params.ToolChoice.OfChatCompletionNamedToolChoice.Function.Name).
+					To(Equal("coordination_store"))
+			})
+
+			It("maps any onto required", func() {
+				req := provider.ChatRequest{
+					Model:      "glm-4.5",
+					Messages:   []provider.Message{{Role: "user", Content: "hi"}},
+					ToolChoice: "any",
+				}
+				params := openaicompat.BuildParams(req)
+				Expect(params.ToolChoice.OfAuto.Or("")).To(Equal("required"))
+			})
+
+			It("maps auto and none onto their string sentinels", func() {
+				autoParams := openaicompat.BuildParams(provider.ChatRequest{
+					Model:      "glm-4.5",
+					Messages:   []provider.Message{{Role: "user", Content: "hi"}},
+					ToolChoice: "auto",
+				})
+				Expect(autoParams.ToolChoice.OfAuto.Or("")).To(Equal("auto"))
+
+				noneParams := openaicompat.BuildParams(provider.ChatRequest{
+					Model:      "glm-4.5",
+					Messages:   []provider.Message{{Role: "user", Content: "hi"}},
+					ToolChoice: "none",
+				})
+				Expect(noneParams.ToolChoice.OfAuto.Or("")).To(Equal("none"))
+			})
+		})
+	})
+
+	Describe("ExtractToolCalls", func() {
+		It("returns nil for empty slice", func() {
+			result := openaicompat.ExtractToolCalls([]openaiAPI.ChatCompletionMessageToolCall{})
+			Expect(result).To(BeNil())
+		})
+
+		It("returns nil for nil slice", func() {
+			result := openaicompat.ExtractToolCalls(nil)
+			Expect(result).To(BeNil())
+		})
+
+		It("converts a single tool call with ID, Name, and Arguments", func() {
+			tc := unmarshalToolCall(`{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"London\"}"}}`)
+			result := openaicompat.ExtractToolCalls([]openaiAPI.ChatCompletionMessageToolCall{tc})
+			Expect(result).To(HaveLen(1))
+			Expect(result[0].ID).To(Equal("call_1"))
+			Expect(result[0].Name).To(Equal("get_weather"))
+			Expect(result[0].Arguments).To(HaveKeyWithValue("city", "London"))
+		})
+
+		It("converts multiple tool calls", func() {
+			tc1 := unmarshalToolCall(`{"id":"call_1","type":"function","function":{"name":"tool_a","arguments":"{}"}}`)
+			tc2 := unmarshalToolCall(`{"id":"call_2","type":"function","function":{"name":"tool_b","arguments":"{\"x\":1}"}}`)
+			result := openaicompat.ExtractToolCalls([]openaiAPI.ChatCompletionMessageToolCall{tc1, tc2})
+			Expect(result).To(HaveLen(2))
+			Expect(result[0].ID).To(Equal("call_1"))
+			Expect(result[0].Name).To(Equal("tool_a"))
+			Expect(result[1].ID).To(Equal("call_2"))
+			Expect(result[1].Name).To(Equal("tool_b"))
+		})
+	})
+
+	Describe("ParseChatResponse", func() {
+		It("returns ErrNoChoices for nil response", func() {
+			_, err := openaicompat.ParseChatResponse(nil)
+			Expect(err).To(MatchError(provider.ErrNoChoices))
+		})
+
+		It("returns ErrNoChoices for empty choices", func() {
+			resp := unmarshalCompletion(`{"id":"cmpl-1","model":"gpt-4o","choices":[],"object":"chat.completion","created":1}`)
+			_, err := openaicompat.ParseChatResponse(resp)
+			Expect(err).To(MatchError(provider.ErrNoChoices))
+		})
+
+		It("parses text response with role, content, and usage", func() {
+			resp := unmarshalCompletion(`{
+				"id":"cmpl-1","model":"gpt-4o","object":"chat.completion","created":1,
+				"choices":[{"index":0,"message":{"role":"assistant","content":"Hello there"},"finish_reason":"stop"}],
+				"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}
+			}`)
+			result, err := openaicompat.ParseChatResponse(resp)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Message.Role).To(Equal("assistant"))
+			Expect(result.Message.Content).To(Equal("Hello there"))
+			Expect(result.Usage.PromptTokens).To(Equal(10))
+			Expect(result.Usage.CompletionTokens).To(Equal(5))
+			Expect(result.Usage.TotalTokens).To(Equal(15))
+		})
+
+		It("parses response with tool calls", func() {
+			resp := unmarshalCompletion(`{
+				"id":"cmpl-1","model":"gpt-4o","object":"chat.completion","created":1,
+				"choices":[{"index":0,"message":{
+					"role":"assistant","content":"",
+					"tool_calls":[{"id":"call_abc","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Paris\"}"}}]
+				},"finish_reason":"tool_calls"}],
+				"usage":{"prompt_tokens":20,"completion_tokens":10,"total_tokens":30}
+			}`)
+			result, err := openaicompat.ParseChatResponse(resp)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Message.Role).To(Equal("assistant"))
+			Expect(result.Message.ToolCalls).To(HaveLen(1))
+			Expect(result.Message.ToolCalls[0].ID).To(Equal("call_abc"))
+			Expect(result.Message.ToolCalls[0].Name).To(Equal("get_weather"))
+			Expect(result.Message.ToolCalls[0].Arguments).To(HaveKeyWithValue("city", "Paris"))
+		})
+
+		It("returns nil tool calls when response has no tool calls", func() {
+			resp := unmarshalCompletion(`{
+				"id":"cmpl-1","model":"gpt-4o","object":"chat.completion","created":1,
+				"choices":[{"index":0,"message":{"role":"assistant","content":"plain text"},"finish_reason":"stop"}],
+				"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}
+			}`)
+			result, err := openaicompat.ParseChatResponse(resp)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Message.ToolCalls).To(BeNil())
+		})
+	})
+})
+
+var _ = Describe("Spike: SDK error type introspection", func() {
+	It("extracts OpenAI typed errors through wrapping", func() {
+		err := newOpenAIError(`{"message":"invalid request","param":"model","type":"invalid_request_error","code":"invalid_model"}`, http.StatusBadRequest)
+		var extracted *openaiAPI.Error
+		Expect(errors.As(fmt.Errorf("openai provider: %w", err), &extracted)).To(BeTrue())
+		if extracted == nil {
+			Fail("expected OpenAI error to be extracted")
+		}
+		Expect(extracted.StatusCode).To(Equal(http.StatusBadRequest))
+		Expect(extracted.Code).To(Equal("invalid_model"))
+		Expect(extracted.RawJSON()).To(ContainSubstring(`"code":"invalid_model"`))
+	})
+
+	It("extracts Anthropic typed errors through wrapping", func() {
+		err := newAnthropicError(`{"message":"rate limited","type":"rate_limit_error"}`, http.StatusTooManyRequests, "req_123")
+		var extracted *anthropicAPI.Error
+		Expect(errors.As(fmt.Errorf("anthropic provider: %w", err), &extracted)).To(BeTrue())
+		if extracted == nil {
+			Fail("expected Anthropic error to be extracted")
+		}
+		Expect(extracted.StatusCode).To(Equal(http.StatusTooManyRequests))
+		Expect(extracted.RequestID).To(Equal("req_123"))
+		Expect(extracted.RawJSON()).To(ContainSubstring(`"rate_limit_error"`))
+	})
+
+	It("extracts Ollama typed errors through wrapping", func() {
+		err := &ollamaAPI.StatusError{StatusCode: http.StatusNotFound, Status: "404 Not Found", ErrorMessage: "model not found"}
+		var extracted *ollamaAPI.StatusError
+		Expect(errors.As(fmt.Errorf("ollama provider: %w", err), &extracted)).To(BeTrue())
+		if extracted == nil {
+			Fail("expected Ollama status error to be extracted")
+		}
+		Expect(extracted.StatusCode).To(Equal(http.StatusNotFound))
+		Expect(extracted.ErrorMessage).To(Equal("model not found"))
+	})
+
+	It("extracts Ollama authorisation errors through wrapping", func() {
+		err := &ollamaAPI.AuthorizationError{StatusCode: http.StatusUnauthorized, Status: "401 Unauthorized", SigninURL: "https://ollama.com/signin"}
+		var extracted *ollamaAPI.AuthorizationError
+		Expect(errors.As(fmt.Errorf("ollama provider: %w", err), &extracted)).To(BeTrue())
+		if extracted == nil {
+			Fail("expected Ollama authorisation error to be extracted")
+		}
+		Expect(extracted.StatusCode).To(Equal(http.StatusUnauthorized))
+		Expect(extracted.SigninURL).To(Equal("https://ollama.com/signin"))
+	})
+})
+
+// ---
+// RunStream streaming specs.
+var _ = Describe("RunStream", func() {
+	var server *httptest.Server
+
+	AfterEach(func() {
+		if server != nil {
+			server.Close()
+		}
+	})
+
+	It("streams text content chunks", func() {
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			chunks := []string{
+				`{"id":"chatcmpl-1","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-1","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"content":" world!"},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-1","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			}
+			for _, chunk := range chunks {
+				fmt.Fprintf(w, "data: %s\n\n", chunk)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}))
+		client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+		ctx := context.Background()
+		params := openaicompat.BuildParams(provider.ChatRequest{
+			Model:    "gpt-4o",
+			Messages: []provider.Message{{Role: "user", Content: "Hello"}},
+		})
+		ch := openaicompat.RunStream(ctx, client, params, "test-provider")
+		var chunks []provider.StreamChunk
+		for chunk := range ch {
+			chunks = append(chunks, chunk)
+		}
+		// Bug K (May 2026) added a stop_reason chunk on finish — the
+		// expected wire-shape is now [content, content, stop_reason, Done].
+		Expect(chunks).To(HaveLen(4))
+		Expect(chunks[0].Content).To(Equal("Hello"))
+		Expect(chunks[1].Content).To(Equal(" world!"))
+		Expect(chunks[2].EventType).To(Equal("stop_reason"))
+		Expect(chunks[2].StopReason).To(Equal("end_turn"))
+		Expect(chunks[3].Done).To(BeTrue())
+	})
+
+	It("streams tool call chunks", func() {
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			chunks := []string{
+				`{"id":"chatcmpl-2","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_abc","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"London\"}"}}]},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-2","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			}
+			for _, chunk := range chunks {
+				fmt.Fprintf(w, "data: %s\n\n", chunk)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}))
+		client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+		ctx := context.Background()
+		params := openaicompat.BuildParams(provider.ChatRequest{
+			Model:    "gpt-4o",
+			Messages: []provider.Message{{Role: "user", Content: "Weather?"}},
+		})
+		ch := openaicompat.RunStream(ctx, client, params, "test-provider")
+		var chunks []provider.StreamChunk
+		for chunk := range ch {
+			chunks = append(chunks, chunk)
+		}
+		// Bug K (May 2026) added a stop_reason chunk on finish — the
+		// expected wire-shape is now [tool_call, stop_reason, Done].
+		Expect(chunks).To(HaveLen(3))
+		Expect(chunks[0].ToolCall).NotTo(BeNil())
+		Expect(chunks[0].ToolCall.ID).To(Equal("call_abc"))
+		Expect(chunks[0].ToolCall.Name).To(Equal("get_weather"))
+		Expect(chunks[0].ToolCall.Arguments).To(HaveKeyWithValue("city", "London"))
+		Expect(chunks[1].EventType).To(Equal("stop_reason"))
+		Expect(chunks[1].StopReason).To(Equal("tool_use"))
+		Expect(chunks[2].Done).To(BeTrue())
+	})
+
+	It("emits tool calls when the terminal chunk combines delta and finish_reason (github-copilot shape)", func() {
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			chunks := []string{
+				`{"id":"chatcmpl-copilot","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_x","type":"function","function":{"name":"delegate","arguments":""}}]},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-copilot","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"agent\":\"Explore\"}"}}]},"finish_reason":"tool_calls"}]}`,
+			}
+			for _, chunk := range chunks {
+				fmt.Fprintf(w, "data: %s\n\n", chunk)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}))
+		client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+		ctx := context.Background()
+		params := openaicompat.BuildParams(provider.ChatRequest{
+			Model:    "gpt-4o",
+			Messages: []provider.Message{{Role: "user", Content: "delegate please"}},
+		})
+		ch := openaicompat.RunStream(ctx, client, params, "test-provider")
+		var collected []provider.StreamChunk
+		for chunk := range ch {
+			collected = append(collected, chunk)
+		}
+		var toolCalls []provider.ToolCall
+		for _, c := range collected {
+			if c.ToolCall != nil {
+				toolCalls = append(toolCalls, *c.ToolCall)
+			}
+		}
+		Expect(toolCalls).To(HaveLen(1))
+		Expect(toolCalls[0].Name).To(Equal("delegate"))
+		Expect(toolCalls[0].ID).To(Equal("call_x"))
+		Expect(toolCalls[0].Arguments).To(HaveKeyWithValue("agent", "Explore"))
+	})
+
+	It("emits tool calls when every chunk carries empty content alongside tool_calls (zai shape)", func() {
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			chunks := []string{
+				`{"id":"chatcmpl-zai","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"","tool_calls":[{"index":0,"id":"call_y","type":"function","function":{"name":"read_file","arguments":""}}]},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-zai","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"","tool_calls":[{"index":0,"function":{"arguments":"{\"path\":\"x.txt\"}"}}]},"finish_reason":"tool_calls"}]}`,
+			}
+			for _, chunk := range chunks {
+				fmt.Fprintf(w, "data: %s\n\n", chunk)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}))
+		client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+		ctx := context.Background()
+		params := openaicompat.BuildParams(provider.ChatRequest{
+			Model:    "gpt-4o",
+			Messages: []provider.Message{{Role: "user", Content: "read file"}},
+		})
+		ch := openaicompat.RunStream(ctx, client, params, "test-provider")
+		var collected []provider.StreamChunk
+		for chunk := range ch {
+			collected = append(collected, chunk)
+		}
+		var toolCalls []provider.ToolCall
+		for _, c := range collected {
+			if c.ToolCall != nil {
+				toolCalls = append(toolCalls, *c.ToolCall)
+			}
+		}
+		Expect(toolCalls).To(HaveLen(1))
+		Expect(toolCalls[0].Name).To(Equal("read_file"))
+		Expect(toolCalls[0].ID).To(Equal("call_y"))
+		Expect(toolCalls[0].Arguments).To(HaveKeyWithValue("path", "x.txt"))
+	})
+
+	It("stamps EventType=\"tool_call\" on chunks emitted by the main streaming loop", func() {
+		// Regression pin: without EventType set, the engine tool-loop gate at
+		// internal/engine/engine.go:907 silently drops the tool call, producing
+		// the 3-minute stall observed for github-copilot/zai/openzen/openai in
+		// session-1775944430840782553. Anthropic and Ollama both stamp this
+		// field; openaicompat must do the same for the JustFinishedToolCall
+		// happy path (the main RunStream loop).
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			chunks := []string{
+				`{"id":"chatcmpl-eventtype","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_et","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"London\"}"}}]},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-eventtype","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			}
+			for _, chunk := range chunks {
+				fmt.Fprintf(w, "data: %s\n\n", chunk)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}))
+		client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+		ctx := context.Background()
+		params := openaicompat.BuildParams(provider.ChatRequest{
+			Model:    "gpt-4o",
+			Messages: []provider.Message{{Role: "user", Content: "Weather?"}},
+		})
+		ch := openaicompat.RunStream(ctx, client, params, "test-provider")
+		var toolCallChunks []provider.StreamChunk
+		for chunk := range ch {
+			if chunk.ToolCall != nil {
+				toolCallChunks = append(toolCallChunks, chunk)
+			}
+		}
+		Expect(toolCallChunks).To(HaveLen(1))
+		Expect(toolCallChunks[0].EventType).To(Equal("tool_call"),
+			"tool-call chunks from the main RunStream loop must carry EventType=\"tool_call\" "+
+				"so the engine tool loop dispatches them; omitting the stamp caused the "+
+				"non-anthropic silent-stall bug")
+	})
+
+	// Drop #1 — openaicompat reasoning_content emission.
+	//
+	// glm-4.6 (zai) and DeepSeek-R1 emit OpenAI-shaped chunks where the
+	// reasoning tokens arrive as a non-standard `reasoning_content` field on
+	// the delta — NOT the typed `content` field. The Go SDK's
+	// ChatCompletionChunkChoiceDelta has no `Reasoning` member, so the data
+	// only survives in `delta.RawJSON()` / `delta.JSON.ExtraFields`. Pre this
+	// fix the dispatcher checked `delta.Content != ""` and silently dropped
+	// every reasoning chunk; we measured 586 dropped deltas across a single
+	// 92-second glm-4.6 call in the Phase 1d capture (live SSE wire idle for
+	// the full 52-second reasoning phase).
+	//
+	// Contract: when a delta carries `reasoning_content`, RunStream MUST
+	// emit a `provider.StreamChunk{Thinking: <text>}` whose Thinking field
+	// holds the reasoning text. Existing content/tool-call paths are
+	// unchanged. Providers that never emit reasoning_content (openai,
+	// ollama, github-copilot text streams) are unaffected — the extraction
+	// is a no-op when the field is absent.
+	It("routes reasoning_content to visible Content when provider is zai (glm-4.6 shape)", func() {
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			// Real-shape glm-4.6 chunk: reasoning_content arrives in deltas
+			// with empty content. After several reasoning chunks the model
+			// switches to content. Under the zai provider ALL reasoning is
+			// routed to visible Content (matching OpenClaw's compat approach).
+			chunks := []string{
+				`{"id":"chatcmpl-r1","object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Let me think about this. "},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-r1","object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"reasoning_content":"The user is asking..."},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-r1","object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"content":"The answer is 42."},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-r1","object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			}
+			for _, chunk := range chunks {
+				fmt.Fprintf(w, "data: %s\n\n", chunk)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}))
+		client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+		ctx := context.Background()
+		params := openaicompat.BuildParams(provider.ChatRequest{
+			Model:    "glm-4.6",
+			Messages: []provider.Message{{Role: "user", Content: "What is the meaning of life?"}},
+		})
+		ch := openaicompat.RunStream(ctx, client, params, "zai")
+		var collected []provider.StreamChunk
+		for chunk := range ch {
+			collected = append(collected, chunk)
+		}
+
+		var thinkingChunks []provider.StreamChunk
+		var contentChunks []provider.StreamChunk
+		for _, c := range collected {
+			if c.Thinking != "" {
+				thinkingChunks = append(thinkingChunks, c)
+			}
+			if c.Content != "" {
+				contentChunks = append(contentChunks, c)
+			}
+		}
+
+		// With providerName=="zai", ALL reasoning_content routes to Content
+		// (matching OpenClaw's compat.thinkingFormat === "zai" behaviour).
+		Expect(thinkingChunks).To(BeEmpty(),
+			"zai provider MUST NOT emit thinking chunks; reasoning goes to visible Content")
+		Expect(contentChunks).To(HaveLen(3),
+			"zai provider routes reasoning + final content to content chunks; "+
+				"got %d content chunks across collected=%v", len(contentChunks), collected)
+		Expect(contentChunks[0].Content).To(Equal("Let me think about this. "))
+		Expect(contentChunks[1].Content).To(Equal("The user is asking..."))
+		Expect(contentChunks[2].Content).To(Equal("The answer is 42."))
+	})
+
+	It("does not emit Thinking chunks for plain OpenAI providers (no reasoning_content field)", func() {
+		// Providers that never emit reasoning_content (openai, github-copilot
+		// text mode, ollama) MUST be unaffected by Drop #1 — the extraction
+		// is a no-op when the field is absent. Without this guard, a regression
+		// in the extraction logic could spuriously emit empty thinking chunks
+		// and re-arm the watchdog from non-existent reasoning.
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			chunks := []string{
+				`{"id":"chatcmpl-plain","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-plain","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			}
+			for _, chunk := range chunks {
+				fmt.Fprintf(w, "data: %s\n\n", chunk)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}))
+		client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+		ctx := context.Background()
+		params := openaicompat.BuildParams(provider.ChatRequest{
+			Model:    "gpt-4o",
+			Messages: []provider.Message{{Role: "user", Content: "Hi"}},
+		})
+		ch := openaicompat.RunStream(ctx, client, params, "openai")
+		var collected []provider.StreamChunk
+		for chunk := range ch {
+			collected = append(collected, chunk)
+		}
+
+		for _, c := range collected {
+			Expect(c.Thinking).To(BeEmpty(),
+				"plain OpenAI providers MUST NOT emit Thinking chunks: %+v", c)
+		}
+	})
+
+	It("stamps EventType=\"tool_call\" on chunks emitted by flushAccumulatedToolCalls (github-copilot shape)", func() {
+		// Regression pin for the flush path: github-copilot combines the final
+		// tool_calls delta with finish_reason in one chunk, so JustFinishedToolCall
+		// never fires and flushAccumulatedToolCalls is the only emitter. It must
+		// also stamp EventType so the engine tool loop dispatches the call.
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			chunks := []string{
+				`{"id":"chatcmpl-flush","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_flush","type":"function","function":{"name":"delegate","arguments":""}}]},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-flush","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"agent\":\"Explore\"}"}}]},"finish_reason":"tool_calls"}]}`,
+			}
+			for _, chunk := range chunks {
+				fmt.Fprintf(w, "data: %s\n\n", chunk)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}))
+		client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+		ctx := context.Background()
+		params := openaicompat.BuildParams(provider.ChatRequest{
+			Model:    "gpt-4o",
+			Messages: []provider.Message{{Role: "user", Content: "delegate please"}},
+		})
+		ch := openaicompat.RunStream(ctx, client, params, "test-provider")
+		var toolCallChunks []provider.StreamChunk
+		for chunk := range ch {
+			if chunk.ToolCall != nil {
+				toolCallChunks = append(toolCallChunks, chunk)
+			}
+		}
+		Expect(toolCallChunks).To(HaveLen(1))
+		Expect(toolCallChunks[0].EventType).To(Equal("tool_call"),
+			"tool-call chunks from flushAccumulatedToolCalls must carry EventType=\"tool_call\" "+
+				"so the engine tool loop dispatches them; this is the github-copilot code path")
+	})
+
+	// Inline-XML tool-call recovery from the reasoning_content stream.
+	//
+	// glm-4.5 / glm-4.6 (zai) sometimes emit tool calls as a literal
+	// `<tool_call>...</tool_call>` block inside the reasoning_content channel
+	// instead of populating the structured `tool_calls` array. The model then
+	// stops, expecting a tool result; the runtime, having parsed nothing, sees
+	// an empty assistant turn and shows the soft-error affordance "The model
+	// worked through this turn but stopped before replying. Try sending the
+	// prompt again." That affordance is treating a symptom — the underlying
+	// defect is that we drop a tool call the model actually emitted.
+	//
+	// Reproducer: session 718b5d51-f01b-45f0-80bb-31329a9d44e7 message 9.
+	// Persisted Thinking text was:
+	//
+	//   "\n<think>\n<tool_call>bash\n<arg_key>command</arg_key>\n"+
+	//   "<arg_value>find /home/baphled/vaults -name \"*.md\" -type f | "+
+	//   "grep -i \"baphled\" | head -20</arg_value>\n</tool_call>"
+	//
+	// Content empty, ToolCalls null, no Done. After the recovery RunStream
+	// MUST extract the embedded tool call and emit it as a structured
+	// StreamChunk with EventType="tool_call" so the engine tool-loop runs
+	// the call as normal.
+	Context("inline-XML tool-call recovery (glm-4.5/4.6 reasoning-stream variant)", func() {
+		It("emits a structured ToolCall when reasoning_content carries a paired-arg <tool_call> block", func() {
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				// Real-shape: zai/glm-4.5 streams reasoning_content with an
+				// inline tool_call block, then closes finish_reason="stop"
+				// (NOT "tool_calls") because the structured tool_calls array
+				// is empty.
+				chunks := []string{
+					`{"id":"chatcmpl-r1","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"\n<think>\n<tool_call>bash\n<arg_key>command</arg_key>\n<arg_value>find /home/baphled/vaults -name \"*.md\" -type f | grep -i \"baphled\" | head -20</arg_value>\n</tool_call>"},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-r1","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+				}
+				for _, chunk := range chunks {
+					fmt.Fprintf(w, "data: %s\n\n", chunk)
+					if f, ok := w.(http.Flusher); ok {
+						f.Flush()
+					}
+				}
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+			ctx := context.Background()
+			params := openaicompat.BuildParams(provider.ChatRequest{
+				Model:    "glm-4.5",
+				Messages: []provider.Message{{Role: "user", Content: "find baphled notes"}},
+			})
+			ch := openaicompat.RunStream(ctx, client, params, "zai")
+			var collected []provider.StreamChunk
+			for chunk := range ch {
+				collected = append(collected, chunk)
+			}
+
+			var toolCallChunks []provider.StreamChunk
+			for _, c := range collected {
+				if c.ToolCall != nil {
+					toolCallChunks = append(toolCallChunks, c)
+				}
+			}
+			Expect(toolCallChunks).To(HaveLen(1),
+				"the embedded <tool_call> block MUST be recovered as a structured ToolCall "+
+					"chunk so the engine tool-loop runs the call; without recovery the model "+
+					"appears to stop with no reply (session 718b5d51 message 9)")
+
+			tc := toolCallChunks[0].ToolCall
+			Expect(tc.Name).To(Equal("bash"),
+				"the tool name is the first non-attribute token inside the <tool_call> body")
+			Expect(tc.Arguments).To(HaveKeyWithValue("command",
+				"find /home/baphled/vaults -name \"*.md\" -type f | grep -i \"baphled\" | head -20"),
+				"the <arg_key>/<arg_value> pair MUST be parsed into the structured args map verbatim")
+			Expect(tc.ID).NotTo(BeEmpty(),
+				"a synthetic tool-call id MUST be generated so the engine tool-loop and "+
+					"failover correlator can track the call across providers")
+			Expect(toolCallChunks[0].EventType).To(Equal("tool_call"),
+				"the recovered chunk MUST carry EventType=\"tool_call\" so the engine tool "+
+					"loop dispatches it (matches every other tool_call emission path in this file)")
+			Expect(toolCallChunks[0].ToolCallID).To(Equal(tc.ID),
+				"the chunk-level ToolCallID MUST mirror the inner ToolCall.ID for downstream "+
+					"correlation, matching the JustFinishedToolCall path")
+
+			// The original markup MUST be stripped from the Thinking text so
+			// the UI does not double-render: the structured ToolCall is the
+			// canonical surface, and leaving the raw <tool_call>...</tool_call>
+			// in the visible reasoning would replay the symptom in a new shape.
+			var thinkingText strings.Builder
+			for _, c := range collected {
+				if c.Thinking != "" {
+					thinkingText.WriteString(c.Thinking)
+				}
+			}
+			Expect(thinkingText.String()).NotTo(ContainSubstring("<tool_call>"),
+				"after recovery the markup MUST be stripped from downstream Thinking; "+
+					"otherwise the UI double-renders (raw markup + executed tool result)")
+			Expect(thinkingText.String()).NotTo(ContainSubstring("</tool_call>"),
+				"closing tag must also be stripped")
+			Expect(thinkingText.String()).NotTo(ContainSubstring("<arg_key>"),
+				"arg markup must also be stripped")
+		})
+
+		It("emits multiple structured ToolCalls when reasoning_content carries two <tool_call> blocks", func() {
+			// Multi-call sanity: a single reasoning_content payload containing
+			// two closed tool_call blocks MUST yield two ToolCall chunks in
+			// emission order. Without this, models that batch parallel tool
+			// calls in one reasoning emission would still stall after the
+			// first.
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				chunks := []string{
+					`{"id":"chatcmpl-r2","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"<tool_call>bash\n<arg_key>command</arg_key>\n<arg_value>ls /tmp</arg_value>\n</tool_call>\nthen\n<tool_call>read\n<arg_key>path</arg_key>\n<arg_value>/etc/hosts</arg_value>\n</tool_call>"},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-r2","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+				}
+				for _, chunk := range chunks {
+					fmt.Fprintf(w, "data: %s\n\n", chunk)
+					if f, ok := w.(http.Flusher); ok {
+						f.Flush()
+					}
+				}
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+			ctx := context.Background()
+			params := openaicompat.BuildParams(provider.ChatRequest{
+				Model:    "glm-4.5",
+				Messages: []provider.Message{{Role: "user", Content: "two calls"}},
+			})
+			ch := openaicompat.RunStream(ctx, client, params, "zai")
+			var toolCallChunks []provider.StreamChunk
+			for chunk := range ch {
+				if chunk.ToolCall != nil {
+					toolCallChunks = append(toolCallChunks, chunk)
+				}
+			}
+			Expect(toolCallChunks).To(HaveLen(2),
+				"both inline tool_call blocks MUST be recovered, in order")
+			Expect(toolCallChunks[0].ToolCall.Name).To(Equal("bash"))
+			Expect(toolCallChunks[0].ToolCall.Arguments).To(HaveKeyWithValue("command", "ls /tmp"))
+			Expect(toolCallChunks[1].ToolCall.Name).To(Equal("read"))
+			Expect(toolCallChunks[1].ToolCall.Arguments).To(HaveKeyWithValue("path", "/etc/hosts"))
+			Expect(toolCallChunks[0].ToolCall.ID).NotTo(Equal(toolCallChunks[1].ToolCall.ID),
+				"each recovered call MUST get a distinct synthetic id so downstream "+
+					"correlation and result-pairing keep them apart")
+		})
+
+		It("recovers a <tool_call> block with multiple <arg_key>/<arg_value> pairs", func() {
+			// Multi-pair body: a single tool_call with two arg pairs (the
+			// shape observed in session 45d39c27 message 19's would-be call,
+			// where the upstream JSON-args mangling we still see today only
+			// happens BECAUSE the attribute-form is malformed; the well-
+			// formed paired body is the canonical multi-arg shape).
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				chunks := []string{
+					`{"id":"chatcmpl-r3","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"<tool_call>delegate\n<arg_key>subagent_type</arg_key>\n<arg_value>explorer</arg_value>\n<arg_key>message</arg_key>\n<arg_value>Search the vault</arg_value>\n</tool_call>"},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-r3","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+				}
+				for _, chunk := range chunks {
+					fmt.Fprintf(w, "data: %s\n\n", chunk)
+					if f, ok := w.(http.Flusher); ok {
+						f.Flush()
+					}
+				}
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+			ctx := context.Background()
+			params := openaicompat.BuildParams(provider.ChatRequest{
+				Model:    "glm-4.5",
+				Messages: []provider.Message{{Role: "user", Content: "delegate"}},
+			})
+			ch := openaicompat.RunStream(ctx, client, params, "zai")
+			var toolCallChunks []provider.StreamChunk
+			for chunk := range ch {
+				if chunk.ToolCall != nil {
+					toolCallChunks = append(toolCallChunks, chunk)
+				}
+			}
+			Expect(toolCallChunks).To(HaveLen(1))
+			tc := toolCallChunks[0].ToolCall
+			Expect(tc.Name).To(Equal("delegate"))
+			Expect(tc.Arguments).To(HaveKeyWithValue("subagent_type", "explorer"))
+			Expect(tc.Arguments).To(HaveKeyWithValue("message", "Search the vault"))
+		})
+
+		It("does not emit a ToolCall when reasoning_content has no inline-XML markup", func() {
+			// Negative: a normal reasoning stream without any <tool_call>
+			// markup MUST be unchanged byte-for-byte downstream — no
+			// spurious ToolCalls, no Thinking-text mutation. Without this
+			// guard a regression in the parser could spuriously fire on
+			// substrings that resemble the markup.
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				chunks := []string{
+					`{"id":"chatcmpl-r4","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Let me think about how to answer this."},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-r4","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{"reasoning_content":" The user wants the weather."},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-r4","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{"content":"It is sunny."},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-r4","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+				}
+				for _, chunk := range chunks {
+					fmt.Fprintf(w, "data: %s\n\n", chunk)
+					if f, ok := w.(http.Flusher); ok {
+						f.Flush()
+					}
+				}
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+			ctx := context.Background()
+			params := openaicompat.BuildParams(provider.ChatRequest{
+				Model:    "glm-4.5",
+				Messages: []provider.Message{{Role: "user", Content: "weather?"}},
+			})
+			ch := openaicompat.RunStream(ctx, client, params, "zai")
+			var collected []provider.StreamChunk
+			for chunk := range ch {
+				collected = append(collected, chunk)
+			}
+			var toolCallChunks []provider.StreamChunk
+			var contentText strings.Builder
+			for _, c := range collected {
+				if c.ToolCall != nil {
+					toolCallChunks = append(toolCallChunks, c)
+				}
+				if c.Content != "" {
+					contentText.WriteString(c.Content)
+				}
+			}
+			Expect(toolCallChunks).To(BeEmpty(),
+				"plain reasoning text MUST NOT produce spurious tool calls")
+			Expect(contentText.String()).To(Equal("Let me think about how to answer this. The user wants the weather.It is sunny."),
+				"plain reasoning text MUST flow downstream unchanged byte-for-byte")
+		})
+
+		It("preserves an unclosed <tool_call> block verbatim and emits no ToolCall (malformed-soft-error path)", func() {
+			// Malformed/unclosed: the existing soft-error affordance still
+			// has a job for genuinely broken markup. We MUST NOT half-parse
+			// an unclosed tool_call — that would drop a ToolCall chunk the
+			// engine will then dispatch with garbage args. Better to leave
+			// the markup in Thinking and let the placeholder/affordance
+			// surface the failure to the user.
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				chunks := []string{
+					`{"id":"chatcmpl-r5","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"<tool_call>bash\n<arg_key>command</arg_key>\n<arg_value>echo hi"},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-r5","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+				}
+				for _, chunk := range chunks {
+					fmt.Fprintf(w, "data: %s\n\n", chunk)
+					if f, ok := w.(http.Flusher); ok {
+						f.Flush()
+					}
+				}
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+			ctx := context.Background()
+			params := openaicompat.BuildParams(provider.ChatRequest{
+				Model:    "glm-4.5",
+				Messages: []provider.Message{{Role: "user", Content: "broken"}},
+			})
+			ch := openaicompat.RunStream(ctx, client, params, "zai")
+			var collected []provider.StreamChunk
+			for chunk := range ch {
+				collected = append(collected, chunk)
+			}
+			var toolCallChunks []provider.StreamChunk
+			var thinkingText strings.Builder
+			for _, c := range collected {
+				if c.ToolCall != nil {
+					toolCallChunks = append(toolCallChunks, c)
+				}
+				if c.Thinking != "" {
+					thinkingText.WriteString(c.Thinking)
+				}
+			}
+			Expect(toolCallChunks).To(BeEmpty(),
+				"an unclosed <tool_call> MUST NOT yield a structured ToolCall; "+
+					"genuinely broken markup stays on the soft-error path")
+			Expect(thinkingText.String()).To(ContainSubstring("<tool_call>bash"),
+				"unparsed markup MUST be preserved in Thinking so the user/affordance "+
+					"can surface the failure")
+			Expect(thinkingText.String()).To(ContainSubstring("echo hi"),
+				"the partial body MUST also be preserved verbatim")
+		})
+
+		It("does not double-emit when a structured tool_calls delta look-alike string sits in reasoning_content", func() {
+			// Cross-check: providers that emit BOTH a structured tool_calls
+			// (the happy OpenAI shape) AND a reasoning_content with the same
+			// substring must not produce two ToolCalls. This guards against
+			// a race where the recovery path fires on text that the SDK has
+			// already turned into a structured call.
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				chunks := []string{
+					`{"id":"chatcmpl-r6","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"I will call: <tool_call>bash\n<arg_key>command</arg_key>\n<arg_value>ls</arg_value>\n</tool_call>","tool_calls":[{"id":"call_real","type":"function","function":{"name":"bash","arguments":"{\"command\":\"ls\"}"}}]},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-r6","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+				}
+				for _, chunk := range chunks {
+					fmt.Fprintf(w, "data: %s\n\n", chunk)
+					if f, ok := w.(http.Flusher); ok {
+						f.Flush()
+					}
+				}
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+			ctx := context.Background()
+			params := openaicompat.BuildParams(provider.ChatRequest{
+				Model:    "glm-4.5",
+				Messages: []provider.Message{{Role: "user", Content: "ls"}},
+			})
+			ch := openaicompat.RunStream(ctx, client, params, "zai")
+			var toolCallChunks []provider.StreamChunk
+			for chunk := range ch {
+				if chunk.ToolCall != nil {
+					toolCallChunks = append(toolCallChunks, chunk)
+				}
+			}
+			// When the SDK already parsed a structured tool call, recovery
+			// MUST defer — emitting a second call would drive the engine to
+			// double-execute. The structured call is canonical.
+			Expect(toolCallChunks).To(HaveLen(1),
+				"recovery MUST NOT fire when the structured tool_calls path "+
+					"already produced a ToolCall — that would double-execute")
+			Expect(toolCallChunks[0].ToolCall.ID).To(Equal("call_real"),
+				"the structured call wins; recovery is the fallback only")
+		})
+
+		It("assembles a <tool_call> block split across multiple reasoning_content chunks", func() {
+			// Stream-boundary safety: the buffer MUST hold a partial
+			// tool_call across chunk boundaries and only emit the structured
+			// ToolCall once the closing tag arrives. A naive per-chunk
+			// scanner would miss the call if the opening and closing tags
+			// land in different chunks.
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				chunks := []string{
+					`{"id":"chatcmpl-r7","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"<tool_call>bash\n"},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-r7","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{"reasoning_content":"<arg_key>command</arg_key>\n<arg_value>"},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-r7","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{"reasoning_content":"echo hello</arg_value>\n"},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-r7","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{"reasoning_content":"</tool_call>"},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-r7","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+				}
+				for _, chunk := range chunks {
+					fmt.Fprintf(w, "data: %s\n\n", chunk)
+					if f, ok := w.(http.Flusher); ok {
+						f.Flush()
+					}
+				}
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+			ctx := context.Background()
+			params := openaicompat.BuildParams(provider.ChatRequest{
+				Model:    "glm-4.5",
+				Messages: []provider.Message{{Role: "user", Content: "split"}},
+			})
+			ch := openaicompat.RunStream(ctx, client, params, "zai")
+			var toolCallChunks []provider.StreamChunk
+			var thinkingText strings.Builder
+			for chunk := range ch {
+				if chunk.ToolCall != nil {
+					toolCallChunks = append(toolCallChunks, chunk)
+				}
+				if chunk.Thinking != "" {
+					thinkingText.WriteString(chunk.Thinking)
+				}
+			}
+			Expect(toolCallChunks).To(HaveLen(1),
+				"a <tool_call> block split across chunks MUST be assembled in the buffer "+
+					"and emitted exactly once on close-tag")
+			Expect(toolCallChunks[0].ToolCall.Name).To(Equal("bash"))
+			Expect(toolCallChunks[0].ToolCall.Arguments).To(HaveKeyWithValue("command", "echo hello"))
+			Expect(thinkingText.String()).NotTo(ContainSubstring("<tool_call>"),
+				"all markup MUST be stripped from Thinking once recovery completes, "+
+					"even when the markup arrived across multiple chunks")
+		})
+	})
+
+	It("propagates server errors", func() {
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			resp := map[string]interface{}{
+				"error": map[string]interface{}{
+					"message": "internal server error",
+					"type":    "server_error",
+				},
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+		}))
+		client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+		ctx := context.Background()
+		params := openaicompat.BuildParams(provider.ChatRequest{
+			Model:    "gpt-4o",
+			Messages: []provider.Message{{Role: "user", Content: "fail"}},
+		})
+		ch := openaicompat.RunStream(ctx, client, params, "test-provider")
+		var lastChunk provider.StreamChunk
+		for chunk := range ch {
+			lastChunk = chunk
+		}
+		Expect(lastChunk.Error).To(HaveOccurred())
+		Expect(lastChunk.Done).To(BeTrue())
+	})
+
+	It("respects context cancellation", func() {
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			for range 10 {
+				fmt.Fprintf(w, "data: %s\n\n", `{"id":"chatcmpl-3","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"chunk"},"finish_reason":null}]}`)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}))
+		client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		params := openaicompat.BuildParams(provider.ChatRequest{
+			Model:    "gpt-4o",
+			Messages: []provider.Message{{Role: "user", Content: "cancel"}},
+		})
+		ch := openaicompat.RunStream(ctx, client, params, "test-provider")
+		var gotCancel bool
+		for chunk := range ch {
+			if chunk.Error != nil && ctx.Err() != nil {
+				gotCancel = true
+			}
+		}
+		Expect(gotCancel).To(BeTrue())
+	})
+
+	It("handles empty stream", func() {
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}))
+		client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+		ctx := context.Background()
+		params := openaicompat.BuildParams(provider.ChatRequest{
+			Model:    "gpt-4o",
+			Messages: []provider.Message{{Role: "user", Content: "empty"}},
+		})
+		ch := openaicompat.RunStream(ctx, client, params, "test-provider")
+		var chunks []provider.StreamChunk
+		for chunk := range ch {
+			chunks = append(chunks, chunk)
+		}
+		Expect(chunks).To(BeEmpty())
+	})
+
+	// Streaming spend tracking: per OpenAI's stream_options.include_usage
+	// contract, the upstream emits a terminal chunk (empty choices,
+	// populated `usage` block) carrying the request-level token totals.
+	// The openai-go ChatCompletionAccumulator sums these into acc.Usage,
+	// and RunStream must surface them as a `StreamChunk{EventType:"usage"}`
+	// carrying a `provider.UsageDelta` BEFORE the terminal `Done` chunk.
+	// Without this, every provider that wraps openaicompat (openai,
+	// openzen, zai, ollamacloud, github-copilot) has zero streaming
+	// spend visibility — the non-stream `ParseChatResponse` path
+	// already populates `provider.Usage` correctly, the stream path
+	// silently dropped it.
+	It("emits a UsageDelta chunk with cumulative tokens before Done", func() {
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			chunks := []string{
+				`{"id":"chatcmpl-usage","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-usage","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+				// Terminal usage chunk per OpenAI streaming spec —
+				// empty choices, populated `usage` block. Only sent
+				// when the request set `stream_options.include_usage`.
+				`{"id":"chatcmpl-usage","object":"chat.completion.chunk","model":"gpt-4o","choices":[],"usage":{"prompt_tokens":42,"completion_tokens":17,"total_tokens":59}}`,
+			}
+			for _, chunk := range chunks {
+				fmt.Fprintf(w, "data: %s\n\n", chunk)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}))
+		client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+		ctx := context.Background()
+		params := openaicompat.BuildParams(provider.ChatRequest{
+			Model:    "gpt-4o",
+			Messages: []provider.Message{{Role: "user", Content: "hi"}},
+		})
+		ch := openaicompat.RunStream(ctx, client, params, "test-provider")
+		var collected []provider.StreamChunk
+		for chunk := range ch {
+			collected = append(collected, chunk)
+		}
+
+		// Locate the usage chunk and the Done chunk by inspection so
+		// the assertion does not depend on the exact ordering of any
+		// intervening content chunks.
+		var usageIdx, doneIdx int
+		usageIdx, doneIdx = -1, -1
+		for i, c := range collected {
+			if c.EventType == "usage" && usageIdx == -1 {
+				usageIdx = i
+			}
+			if c.Done && doneIdx == -1 {
+				doneIdx = i
+			}
+		}
+
+		Expect(usageIdx).To(BeNumerically(">=", 0),
+			"RunStream must emit a UsageDelta chunk when the upstream "+
+				"includes a terminal usage block (stream_options.include_usage). "+
+				"Without it every openaicompat-backed provider has zero "+
+				"streaming spend visibility.")
+		Expect(doneIdx).To(BeNumerically(">=", 0), "RunStream must emit a Done chunk")
+		Expect(usageIdx).To(BeNumerically("<", doneIdx),
+			"the usage chunk must precede Done so downstream consumers "+
+				"that stop reading on Done still observe the token totals")
+
+		usage := collected[usageIdx].Usage
+		Expect(usage).NotTo(BeNil(),
+			"the usage chunk must carry a populated *provider.UsageDelta")
+		Expect(usage.InputTokens).To(Equal(int64(42)),
+			"InputTokens must reflect the upstream's prompt_tokens")
+		Expect(usage.OutputTokens).To(Equal(int64(17)),
+			"OutputTokens must reflect the upstream's completion_tokens")
+	})
+
+	// Sister-spec: streams that finish without a trailing usage block
+	// (older mocks, providers that do not honour the include_usage flag)
+	// must NOT synthesise a zero-value usage chunk. The contract is
+	// "carry tokens when known, stay quiet otherwise" so downstream
+	// telemetry does not get poisoned with bogus zeros.
+	It("does not emit a UsageDelta chunk when the upstream omits usage data", func() {
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			chunks := []string{
+				`{"id":"chatcmpl-nousage","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-nousage","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			}
+			for _, chunk := range chunks {
+				fmt.Fprintf(w, "data: %s\n\n", chunk)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}))
+		client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+		ctx := context.Background()
+		params := openaicompat.BuildParams(provider.ChatRequest{
+			Model:    "gpt-4o",
+			Messages: []provider.Message{{Role: "user", Content: "hi"}},
+		})
+		ch := openaicompat.RunStream(ctx, client, params, "test-provider")
+		var collected []provider.StreamChunk
+		for chunk := range ch {
+			collected = append(collected, chunk)
+		}
+		for _, c := range collected {
+			Expect(c.EventType).NotTo(Equal("usage"),
+				"no usage chunk must be emitted when the upstream "+
+					"sent no usage data")
+		}
+	})
+
+	// Error classification specs. These exercise the fix for the silent
+	// retry-classification degrade on non-anthropic providers: `stream.Err()`
+	// was previously emitted raw as the `Error` field on a `StreamChunk`,
+	// so `errors.As(err, &providerErr)` in the engine retry path returned
+	// false and the engine fell back to `ErrorTypeUnknown`. Post-fix,
+	// RunStream must route the error through `WrapChatError` (plus a
+	// fallback for unclassifiable stream-decoder errors) so the downstream
+	// chunk carries a `*provider.Error` with a populated `ErrorType`,
+	// `HTTPStatus`, and `Provider` field matching the name passed into
+	// RunStream.
+	//
+	// RED NOTE: these specs currently call the pre-fix three-argument
+	// RunStream signature and assert classification on the raw error
+	// surfaced on chunk.Error. They fail because the current code emits
+	// the raw SDK error and errors.As(*provider.Error) returns false.
+	// When the fix lands (four-argument RunStream that takes a provider
+	// name), the call sites and the Provider-field assertions will be
+	// updated in the same commit as the implementation.
+	Describe("error classification", func() {
+		It("wraps a 429 pre-stream error as *provider.Error with ErrorTypeRateLimit", func() {
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"error": map[string]interface{}{
+						"message": "rate limited",
+						"type":    "rate_limit",
+						"code":    "rate_limit_exceeded",
+					},
+				})
+			}))
+			client := openaiAPI.NewClient(
+				option.WithAPIKey("test-key"),
+				option.WithBaseURL(server.URL),
+				option.WithMaxRetries(0),
+			)
+			ctx := context.Background()
+			params := openaicompat.BuildParams(provider.ChatRequest{
+				Model:    "gpt-4o",
+				Messages: []provider.Message{{Role: "user", Content: "rate me"}},
+			})
+			ch := openaicompat.RunStream(ctx, client, params, "test-provider")
+
+			var lastChunk provider.StreamChunk
+			for chunk := range ch {
+				lastChunk = chunk
+			}
+			Expect(lastChunk.Error).To(HaveOccurred())
+			Expect(lastChunk.Done).To(BeTrue())
+
+			var provErr *provider.Error
+			Expect(errors.As(lastChunk.Error, &provErr)).To(BeTrue(),
+				"stream error must unwrap to *provider.Error so the engine retry path can classify it")
+			Expect(provErr.ErrorType).To(Equal(provider.ErrorTypeRateLimit))
+			Expect(provErr.HTTPStatus).To(Equal(http.StatusTooManyRequests))
+			Expect(provErr.IsRetriable).To(BeTrue())
+			Expect(provErr.Provider).To(Equal("test-provider"))
+		})
+
+		It("wraps a 500 pre-stream error as *provider.Error with ErrorTypeServerError", func() {
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"error": map[string]interface{}{
+						"message": "internal server error",
+						"type":    "server_error",
+					},
+				})
+			}))
+			client := openaiAPI.NewClient(
+				option.WithAPIKey("test-key"),
+				option.WithBaseURL(server.URL),
+				option.WithMaxRetries(0),
+			)
+			ctx := context.Background()
+			params := openaicompat.BuildParams(provider.ChatRequest{
+				Model:    "gpt-4o",
+				Messages: []provider.Message{{Role: "user", Content: "boom"}},
+			})
+			ch := openaicompat.RunStream(ctx, client, params, "test-provider")
+
+			var lastChunk provider.StreamChunk
+			for chunk := range ch {
+				lastChunk = chunk
+			}
+			Expect(lastChunk.Error).To(HaveOccurred())
+
+			var provErr *provider.Error
+			Expect(errors.As(lastChunk.Error, &provErr)).To(BeTrue())
+			Expect(provErr.ErrorType).To(Equal(provider.ErrorTypeServerError))
+			Expect(provErr.HTTPStatus).To(Equal(http.StatusInternalServerError))
+			Expect(provErr.IsRetriable).To(BeTrue())
+			Expect(provErr.Provider).To(Equal("test-provider"))
+		})
+
+		It("wraps a mid-stream SSE error payload as *provider.Error with a populated ErrorType", func() {
+			// openai-go's ssestream decoder turns mid-stream `error` payloads
+			// into `fmt.Errorf("received error while streaming: %s", ...)`.
+			// These are bare error values — neither *openaiAPI.Error nor
+			// *url.Error — so the current RunStream code path surfaces them
+			// raw, and engine `errors.As` classification fails. Post-fix,
+			// RunStream must still produce a *provider.Error so the engine
+			// gets a non-zero ErrorType (even if only ErrorTypeUnknown).
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				// First emit a valid content chunk so the SDK enters the
+				// streaming loop, then inject an error payload mid-stream.
+				fmt.Fprintf(w, "data: %s\n\n",
+					`{"id":"chatcmpl-err","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				fmt.Fprintf(w, "data: %s\n\n",
+					`{"error":{"message":"upstream exploded","type":"server_error"}}`)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}))
+			client := openaiAPI.NewClient(
+				option.WithAPIKey("test-key"),
+				option.WithBaseURL(server.URL),
+				option.WithMaxRetries(0),
+			)
+			ctx := context.Background()
+			params := openaicompat.BuildParams(provider.ChatRequest{
+				Model:    "gpt-4o",
+				Messages: []provider.Message{{Role: "user", Content: "stream error"}},
+			})
+			ch := openaicompat.RunStream(ctx, client, params, "test-provider")
+
+			var lastChunk provider.StreamChunk
+			for chunk := range ch {
+				if chunk.Error != nil {
+					lastChunk = chunk
+				}
+			}
+			Expect(lastChunk.Error).To(HaveOccurred(),
+				"mid-stream SSE error payloads must surface as chunk.Error")
+
+			var provErr *provider.Error
+			Expect(errors.As(lastChunk.Error, &provErr)).To(BeTrue(),
+				"even bare mid-stream errors must unwrap to *provider.Error so the engine retry path has structured metadata to key on")
+			Expect(provErr.ErrorType).NotTo(BeEmpty(),
+				"ErrorType must be populated — even ErrorTypeUnknown is better than the empty-string silent-degrade behaviour")
+			Expect(provErr.Provider).To(Equal("test-provider"))
+		})
+	})
+
+	// Bug K (May 2026): openaicompat-routed providers (openai, openzen,
+	// zai, ollamacloud, github-copilot) never persisted the upstream
+	// stop_reason on the assistant message. Live evidence from session
+	// 7dfdb197-ce21-45a2-b5da-f2fa62dd293b shows 35/35 parent assistant
+	// messages with unset stopReason; the synthetic
+	// thinking_only / fabricated_completion / empty_turn values are the
+	// only stop reasons that ever made it to disk for these providers.
+	//
+	// The Anthropic provider mirrors message_delta's stop_reason into a
+	// dedicated StreamChunk (anthropic/streaming.go:166-188 — EventType
+	// "stop_reason", StopReason carries the parsed value), which the
+	// session accumulator consumes at accumulator.go:517-523. openaicompat
+	// observes FinishReason on the terminal chunk at openaicompat.go:486
+	// but never emits the equivalent stop_reason chunk, so the engine
+	// cannot distinguish a normal end_turn from a max-tokens truncation
+	// or a tool_use turn.
+	//
+	// Mirror the Anthropic shape, mapping OpenAI's vocabulary
+	// (stop / length / tool_calls / content_filter / function_call) to
+	// the Anthropic vocabulary the rest of the engine + UI already gate
+	// on (end_turn / max_tokens / tool_use / refusal).
+	Context("Bug K — stop_reason persistence (openaicompat finish_reason → stop_reason chunk)", func() {
+		// Spec helper: drive a single-chunk stream that finishes with the
+		// requested OpenAI finish_reason, collect every emitted chunk,
+		// and return the StopReason carried on the stop_reason chunk
+		// (or empty if none was emitted).
+		runStreamWithFinishReason := func(finishReason string) (string, []provider.StreamChunk) {
+			GinkgoHelper()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				chunks := []string{
+					`{"id":"chatcmpl-stop","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"done"},"finish_reason":null}]}`,
+					fmt.Sprintf(
+						`{"id":"chatcmpl-stop","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":%q}]}`,
+						finishReason,
+					),
+				}
+				for _, chunk := range chunks {
+					fmt.Fprintf(w, "data: %s\n\n", chunk)
+					if f, ok := w.(http.Flusher); ok {
+						f.Flush()
+					}
+				}
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			DeferCleanup(server.Close)
+			client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+			ctx := context.Background()
+			params := openaicompat.BuildParams(provider.ChatRequest{
+				Model:    "gpt-4o",
+				Messages: []provider.Message{{Role: "user", Content: "hi"}},
+			})
+			ch := openaicompat.RunStream(ctx, client, params, "test-provider")
+			var collected []provider.StreamChunk
+			for chunk := range ch {
+				collected = append(collected, chunk)
+			}
+			var stopReason string
+			for _, c := range collected {
+				if c.EventType == "stop_reason" && c.StopReason != "" {
+					stopReason = c.StopReason
+					break
+				}
+			}
+			return stopReason, collected
+		}
+
+		It("emits a stop_reason chunk carrying end_turn when upstream finish_reason=stop", func() {
+			stopReason, chunks := runStreamWithFinishReason("stop")
+			Expect(stopReason).To(Equal("end_turn"),
+				"RunStream must mirror the Anthropic vocabulary (end_turn) for OpenAI's finish_reason=stop "+
+					"so consumers that already gate on Anthropic stop reasons (engine hop-counter, session "+
+					"fabrication-completion guard, MessageBubble banner) see the same shape regardless of provider")
+			var stopIdx, doneIdx int
+			stopIdx, doneIdx = -1, -1
+			for i, c := range chunks {
+				if c.EventType == "stop_reason" && stopIdx == -1 {
+					stopIdx = i
+				}
+				if c.Done && doneIdx == -1 {
+					doneIdx = i
+				}
+			}
+			Expect(stopIdx).To(BeNumerically(">=", 0), "RunStream must emit a stop_reason chunk")
+			Expect(doneIdx).To(BeNumerically(">=", 0), "RunStream must emit a Done chunk")
+			Expect(stopIdx).To(BeNumerically("<", doneIdx),
+				"the stop_reason chunk must precede Done so downstream consumers that stop "+
+					"reading on Done still observe the turn's stop reason")
+		})
+
+		It("emits stop_reason=tool_use when upstream finish_reason=tool_calls", func() {
+			stopReason, _ := runStreamWithFinishReason("tool_calls")
+			Expect(stopReason).To(Equal("tool_use"),
+				"tool_calls is the OpenAI vocabulary for what Anthropic calls tool_use — "+
+					"engine hop-counter and downstream gates key on tool_use")
+		})
+
+		It("emits stop_reason=max_tokens when upstream finish_reason=length", func() {
+			stopReason, _ := runStreamWithFinishReason("length")
+			Expect(stopReason).To(Equal("max_tokens"),
+				"length is the OpenAI vocabulary for what Anthropic calls max_tokens — "+
+					"the chat UI banner gates on max_tokens to surface truncation")
+		})
+
+		It("emits stop_reason=refusal when upstream finish_reason=content_filter", func() {
+			stopReason, _ := runStreamWithFinishReason("content_filter")
+			Expect(stopReason).To(Equal("refusal"),
+				"content_filter is the OpenAI vocabulary for what Anthropic calls refusal — "+
+					"both signal a model-side hard stop the UI must distinguish from end_turn")
+		})
+
+		It("falls back to the raw finish_reason when the upstream uses an unrecognised vocabulary", func() {
+			// Forward-compat: an upstream-specific finish_reason (e.g. a
+			// future OpenAI value, or a vendor extension) must still
+			// flow through verbatim rather than be silently dropped.
+			stopReason, _ := runStreamWithFinishReason("vendor_specific_reason")
+			Expect(stopReason).To(Equal("vendor_specific_reason"),
+				"unknown finish_reason values must still surface verbatim — silent-drop "+
+					"hides the very signal we are trying to plumb through")
+		})
+	})
+
+	// Bug J (May 2026) — stray </think> leak from reasoning channel into
+	// user-facing content.
+	//
+	// Live reproducer: parent of session 7dfdb197 had two assistant
+	// messages whose Content carried a literal "</think>" delimiter:
+	//   17:09:59 — "Let me write the master bug report to the vault now.</think>--- ✅ ..."
+	//   19:49:18 — "I have the full report content. Let me ... has filesystem access.</think>"
+	// Both messages had thinkingBlocks already extracted (non-empty) and
+	// the leak was the closing marker only — no paired <think> opener.
+	// Cause: glm-4.6 occasionally emits the closing </think> tag as a
+	// content delta after switching from reasoning_content back to the
+	// content channel. The structured reasoning extraction has already
+	// recovered the thinking body, so the closing marker is a literal
+	// artefact that must not reach user-facing content.
+	//
+	// Contract: when delta.Content carries a stray </think> (or <think>)
+	// tag, openaicompat MUST strip it before emitting the StreamChunk so
+	// downstream consumers never see the raw delimiter. Plain prose
+	// without the tag flows unchanged.
+	Context("stray <think>/</think> tag stripping from content channel (Bug J)", func() {
+		It("strips a trailing </think> closing marker from delta.Content (glm-4.6 zai shape)", func() {
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				// Real-shape: zai/glm-4.6 streamed reasoning_content in earlier
+				// chunks, then emitted a stray "</think>" as a content delta
+				// before the actual user-facing prose started.
+				chunks := []string{
+					`{"id":"chatcmpl-think","object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Let me write the master bug report to the vault now."},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-think","object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"content":"</think>---\n\n"},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-think","object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"content":"Master bug report written"},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-think","object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+				}
+				for _, chunk := range chunks {
+					fmt.Fprintf(w, "data: %s\n\n", chunk)
+					if f, ok := w.(http.Flusher); ok {
+						f.Flush()
+					}
+				}
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+			ctx := context.Background()
+			params := openaicompat.BuildParams(provider.ChatRequest{
+				Model:    "glm-4.6",
+				Messages: []provider.Message{{Role: "user", Content: "do work"}},
+			})
+			ch := openaicompat.RunStream(ctx, client, params, "zai")
+			var contentChunks []provider.StreamChunk
+			for chunk := range ch {
+				if chunk.Content != "" {
+					contentChunks = append(contentChunks, chunk)
+				}
+			}
+			// The aggregate user-facing content must NOT contain the
+			// literal closing-marker.
+			var aggregate strings.Builder
+			for _, c := range contentChunks {
+				aggregate.WriteString(c.Content)
+			}
+			Expect(aggregate.String()).NotTo(ContainSubstring("</think>"),
+				"the literal </think> closing marker MUST be stripped from content chunks — "+
+					"the reasoning body has already been recovered via reasoning_content; "+
+					"the stray closing tag is a wire artefact, not user-facing prose")
+			Expect(aggregate.String()).To(ContainSubstring("Master bug report written"),
+				"prose AFTER the stripped marker MUST flow through verbatim — the strip "+
+					"removes only the tag, not surrounding content")
+			Expect(aggregate.String()).To(ContainSubstring("---"),
+				"prose attached to the marker in the SAME content delta MUST survive — "+
+					"the strip targets the tag literally, not the entire delta")
+		})
+
+		It("strips a </think> tag that appears mid-content with prose on both sides", func() {
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				// Single content delta with the tag sandwiched between prose.
+				chunks := []string{
+					`{"id":"chatcmpl-mid","object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"role":"assistant","content":"I have the full report content. Let me store it with the path and delegate a writer that has filesystem access.</think>"},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-mid","object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+				}
+				for _, chunk := range chunks {
+					fmt.Fprintf(w, "data: %s\n\n", chunk)
+					if f, ok := w.(http.Flusher); ok {
+						f.Flush()
+					}
+				}
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+			ctx := context.Background()
+			params := openaicompat.BuildParams(provider.ChatRequest{
+				Model:    "glm-4.6",
+				Messages: []provider.Message{{Role: "user", Content: "tell me more"}},
+			})
+			ch := openaicompat.RunStream(ctx, client, params, "zai")
+			var aggregate strings.Builder
+			for chunk := range ch {
+				if chunk.Content != "" {
+					aggregate.WriteString(chunk.Content)
+				}
+			}
+			Expect(aggregate.String()).NotTo(ContainSubstring("</think>"),
+				"the stray closing marker MUST be stripped wherever it appears in content — "+
+					"trailing, leading, or mid-delta")
+			Expect(aggregate.String()).To(ContainSubstring("filesystem access"),
+				"the surrounding prose MUST survive the strip — only the literal tag is removed")
+		})
+
+		It("strips a stray <think> opening marker the same way", func() {
+			// Symmetry: while the dominant reproducer is closing-only, a
+			// stray opening tag in the content channel is the same wire
+			// artefact and must be stripped on the same code path.
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				chunks := []string{
+					`{"id":"chatcmpl-open","object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"role":"assistant","content":"<think>Let me reason then continue."},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-open","object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+				}
+				for _, chunk := range chunks {
+					fmt.Fprintf(w, "data: %s\n\n", chunk)
+					if f, ok := w.(http.Flusher); ok {
+						f.Flush()
+					}
+				}
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+			ctx := context.Background()
+			params := openaicompat.BuildParams(provider.ChatRequest{
+				Model:    "glm-4.6",
+				Messages: []provider.Message{{Role: "user", Content: "hi"}},
+			})
+			ch := openaicompat.RunStream(ctx, client, params, "zai")
+			var aggregate strings.Builder
+			for chunk := range ch {
+				if chunk.Content != "" {
+					aggregate.WriteString(chunk.Content)
+				}
+			}
+			Expect(aggregate.String()).NotTo(ContainSubstring("<think>"),
+				"a stray opening <think> in the content channel is the same wire "+
+					"artefact as a stray closing tag and MUST be stripped")
+			Expect(aggregate.String()).To(ContainSubstring("reason then continue"),
+				"surrounding content MUST survive — only the literal tag is removed")
+		})
+
+		It("leaves plain content without think tags unchanged", func() {
+			// Negative case: providers that never emit stray tags MUST be
+			// unaffected — the strip is precise, not a blanket filter.
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				chunks := []string{
+					`{"id":"chatcmpl-plain","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello world."},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-plain","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+				}
+				for _, chunk := range chunks {
+					fmt.Fprintf(w, "data: %s\n\n", chunk)
+					if f, ok := w.(http.Flusher); ok {
+						f.Flush()
+					}
+				}
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+			ctx := context.Background()
+			params := openaicompat.BuildParams(provider.ChatRequest{
+				Model:    "gpt-4o",
+				Messages: []provider.Message{{Role: "user", Content: "hi"}},
+			})
+			ch := openaicompat.RunStream(ctx, client, params, "openai")
+			var aggregate strings.Builder
+			for chunk := range ch {
+				if chunk.Content != "" {
+					aggregate.WriteString(chunk.Content)
+				}
+			}
+			Expect(aggregate.String()).To(Equal("Hello world."),
+				"plain content with no stray tags MUST flow verbatim — the strip is "+
+					"precise and never mutates content that does not need it")
+		})
+	})
+})
+
+var _ = Describe("ParseProviderError", func() {
+	const testProvider = "test-provider"
+
+	Context("when error is nil", func() {
+		It("returns nil", func() {
+			Expect(openaicompat.ParseProviderError(testProvider, nil)).To(Succeed())
+		})
+	})
+
+	Context("when error is an OpenAI SDK error", func() {
+		It("classifies 429 as rate limit and retriable", func() {
+			err := newOpenAIError(`{"message":"rate limited","type":"rate_limit","code":"rate_limit_exceeded"}`, http.StatusTooManyRequests)
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.HTTPStatus).To(Equal(http.StatusTooManyRequests))
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeRateLimit))
+			Expect(result.IsRetriable).To(BeTrue())
+			Expect(result.Provider).To(Equal(testProvider))
+			Expect(result.ErrorCode).To(Equal("rate_limit_exceeded"))
+			Expect(result.Message).To(Equal("rate limited"))
+			Expect(result.RawError).To(Equal(err))
+		})
+
+		It("classifies 429 insufficient_quota as billing and not retriable", func() {
+			err := newOpenAIError(`{"message":"You exceeded your current quota","type":"rate_limit_error","code":"insufficient_quota"}`, http.StatusTooManyRequests)
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.HTTPStatus).To(Equal(http.StatusTooManyRequests))
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeBilling))
+			Expect(result.IsRetriable).To(BeFalse())
+			Expect(result.Provider).To(Equal(testProvider))
+			Expect(result.ErrorCode).To(Equal("insufficient_quota"))
+			Expect(result.Message).To(Equal("You exceeded your current quota"))
+			Expect(result.RawError).To(Equal(err))
+		})
+
+		It("classifies 401 as auth failure and not retriable", func() {
+			err := newOpenAIError(`{"message":"invalid key","type":"auth","code":"invalid_api_key"}`, http.StatusUnauthorized)
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeAuthFailure))
+			Expect(result.IsRetriable).To(BeFalse())
+		})
+
+		It("classifies 403 as auth failure and not retriable", func() {
+			err := newOpenAIError(`{"message":"forbidden","type":"auth","code":"forbidden"}`, http.StatusForbidden)
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeAuthFailure))
+			Expect(result.IsRetriable).To(BeFalse())
+		})
+
+		It("classifies 404 as model not found and not retriable", func() {
+			err := newOpenAIError(`{"message":"model not found","type":"not_found","code":"model_not_found"}`, http.StatusNotFound)
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeModelNotFound))
+			Expect(result.IsRetriable).To(BeFalse())
+		})
+
+		It("classifies 500 as server error and retriable", func() {
+			err := newOpenAIError(`{"message":"internal error","type":"server_error","code":"server_error"}`, http.StatusInternalServerError)
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeServerError))
+			Expect(result.IsRetriable).To(BeTrue())
+		})
+
+		It("classifies 503 as server error and retriable", func() {
+			err := newOpenAIError(`{"message":"unavailable","type":"server_error","code":"unavailable"}`, http.StatusServiceUnavailable)
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeServerError))
+			Expect(result.IsRetriable).To(BeTrue())
+		})
+
+		It("survives fmt.Errorf wrapping", func() {
+			inner := newOpenAIError(`{"message":"rate limited","type":"rate_limit","code":"rate_limit"}`, http.StatusTooManyRequests)
+			wrapped := fmt.Errorf("provider call: %w", inner)
+			result := openaicompat.ParseProviderError(testProvider, wrapped)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeRateLimit))
+		})
+
+		It("classifies unknown status as unknown and not retriable", func() {
+			err := newOpenAIError(`{"message":"teapot","type":"unknown","code":"teapot"}`, http.StatusTeapot)
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeUnknown))
+			Expect(result.IsRetriable).To(BeFalse())
+		})
+	})
+
+	Context("when error is a network error", func() {
+		It("classifies url.Error as network error and retriable", func() {
+			netErr := &url.Error{Op: "Post", URL: "https://api.openai.com/v1/chat", Err: errors.New("connection refused")}
+			result := openaicompat.ParseProviderError(testProvider, netErr)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeNetworkError))
+			Expect(result.IsRetriable).To(BeTrue())
+			Expect(result.Provider).To(Equal(testProvider))
+		})
+	})
+
+	Context("when error is unrecognised", func() {
+		It("returns nil for a plain error", func() {
+			Expect(openaicompat.ParseProviderError(testProvider, errors.New("something"))).To(Succeed())
+		})
+	})
+
+	Context("when the 400 response indicates context-window overflow", func() {
+		It("classifies 400 with code context_length_exceeded as context-window overflow", func() {
+			err := newOpenAIError(
+				`{"message":"This model's maximum context length is 4096 tokens","type":"invalid_request_error","code":"context_length_exceeded"}`,
+				http.StatusBadRequest,
+			)
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeContextWindowExceeded))
+			Expect(result.IsRetriable).To(BeFalse())
+		})
+
+		It("classifies 400 with message containing 'context window' as context-window overflow", func() {
+			err := newOpenAIError(
+				`{"message":"This model's context window is 4096 tokens and you requested more","type":"invalid_request_error","code":"invalid_request_error"}`,
+				http.StatusBadRequest,
+			)
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeContextWindowExceeded))
+			Expect(result.IsRetriable).To(BeFalse())
+		})
+
+		It("classifies 400 with message containing 'context length' as context-window overflow", func() {
+			err := newOpenAIError(
+				`{"message":"Maximum context length exceeded for this model","type":"invalid_request_error","code":"invalid_request_error"}`,
+				http.StatusBadRequest,
+			)
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeContextWindowExceeded))
+			Expect(result.IsRetriable).To(BeFalse())
+		})
+
+		It("classifies 400 with message containing 'prompt is too long' as context-window overflow", func() {
+			err := newOpenAIError(
+				`{"message":"The prompt is too long for this model","type":"invalid_request_error","code":"invalid_request_error"}`,
+				http.StatusBadRequest,
+			)
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeContextWindowExceeded))
+			Expect(result.IsRetriable).To(BeFalse())
+		})
+
+		It("keeps 400 with unrelated message as unknown", func() {
+			err := newOpenAIError(
+				`{"message":"Invalid request: unknown field 'foo'","type":"invalid_request_error","code":"invalid_request_error"}`,
+				http.StatusBadRequest,
+			)
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeUnknown))
+			Expect(result.IsRetriable).To(BeFalse())
+		})
+
+		It("keeps 400 with unrelated code and message as unknown", func() {
+			err := newOpenAIError(
+				`{"message":"Invalid parameter value for field temperature","type":"invalid_request_error","code":"invalid_request_error"}`,
+				http.StatusBadRequest,
+			)
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeUnknown))
+			Expect(result.IsRetriable).To(BeFalse())
+		})
+	})
+
+	// Sibling follow-up to anthropic Phase 3 #3 — OpenAI exposes
+	// `retry-after` and `x-ratelimit-*` on 429 errors; Z.AI also
+	// returns `retry-after` on 429 / 1001. Capturing them here on
+	// every openaicompat-routed provider lets the failover hook
+	// honour the carrier-issued back-off instead of the per-error
+	// cooldown table. Mirrors the anthropic pattern in
+	// internal/provider/anthropic/anthropic_test.go.
+	Context("when the error response carries rate-limit headers", func() {
+		It("populates RateLimit.RetryAfter from a numeric retry-after", func() {
+			headers := http.Header{}
+			headers.Set("retry-after", "30")
+			err := newOpenAIErrorWithHeaders(
+				`{"message":"rate limited","type":"rate_limit","code":"rate_limit_exceeded"}`,
+				http.StatusTooManyRequests, headers,
+			)
+
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.RateLimit).NotTo(BeNil(),
+				"a 429 with retry-after must carry the parsed metadata so failover can back off precisely")
+			Expect(result.RateLimit.RetryAfter).To(Equal(30 * time.Second))
+		})
+
+		It("populates RateLimit.RetryAfter from an HTTP-date retry-after", func() {
+			// Some openaicompat backends emit retry-after as an
+			// HTTP-date instead of an int — the spec permits both.
+			future := time.Now().UTC().Add(45 * time.Second).Truncate(time.Second)
+			headers := http.Header{}
+			headers.Set("retry-after", future.Format(http.TimeFormat))
+			err := newOpenAIErrorWithHeaders(
+				`{"message":"rate limited","type":"rate_limit","code":"rate_limit"}`,
+				http.StatusTooManyRequests, headers,
+			)
+
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result.RateLimit).NotTo(BeNil())
+			// Allow a small drift; the exact difference depends on
+			// when time.Until is evaluated relative to the test
+			// clock.
+			Expect(result.RateLimit.RetryAfter).To(BeNumerically("~", 45*time.Second, 5*time.Second))
+		})
+
+		It("captures the OpenAI x-ratelimit-* requests/tokens triples", func() {
+			// OpenAI emits reset values as duration strings ("1s",
+			// "10ms"); convert to wall-clock time so the failover
+			// hook can compare against time.Now().
+			headers := http.Header{}
+			headers.Set("x-ratelimit-limit-requests", "1000")
+			headers.Set("x-ratelimit-remaining-requests", "0")
+			headers.Set("x-ratelimit-reset-requests", "1s")
+			headers.Set("x-ratelimit-limit-tokens", "40000")
+			headers.Set("x-ratelimit-remaining-tokens", "1500")
+			headers.Set("x-ratelimit-reset-tokens", "10ms")
+			headers.Set("x-request-id", "req_abc123")
+			err := newOpenAIErrorWithHeaders(
+				`{"message":"rate limited","type":"rate_limit","code":"rate_limit"}`,
+				http.StatusTooManyRequests, headers,
+			)
+
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result.RateLimit).NotTo(BeNil())
+			rl := result.RateLimit
+			Expect(rl.RequestsLimit).To(Equal(1000))
+			Expect(rl.RequestsRemaining).To(Equal(0))
+			Expect(rl.RequestsReset.IsZero()).To(BeFalse())
+			Expect(rl.TokensLimit).To(Equal(40000))
+			Expect(rl.TokensRemaining).To(Equal(1500))
+			Expect(rl.TokensReset.IsZero()).To(BeFalse())
+			Expect(rl.RequestID).To(Equal("req_abc123"))
+		})
+
+		It("captures Z.AI-style integer-seconds reset values", func() {
+			// Z.AI emits x-ratelimit-reset-* as seconds-until-reset
+			// (an integer), not the OpenAI duration-string form.
+			// The parser must accept both shapes since openaicompat
+			// is shared by zai, openai, and other backends.
+			headers := http.Header{}
+			headers.Set("x-ratelimit-limit-requests", "60")
+			headers.Set("x-ratelimit-remaining-requests", "0")
+			headers.Set("x-ratelimit-reset-requests", "60")
+			headers.Set("request-id", "zai_req_xyz")
+			err := newOpenAIErrorWithHeaders(
+				`{"message":"rate limited","type":"rate_limit","code":"1001"}`,
+				http.StatusTooManyRequests, headers,
+			)
+
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result.RateLimit).NotTo(BeNil())
+			Expect(result.RateLimit.RequestsLimit).To(Equal(60))
+			Expect(result.RateLimit.RequestsRemaining).To(Equal(0))
+			Expect(result.RateLimit.RequestsReset.IsZero()).To(BeFalse())
+			Expect(result.RateLimit.RequestID).To(Equal("zai_req_xyz"))
+		})
+
+		It("uses -1 sentinels for windows that were not reported", func() {
+			headers := http.Header{}
+			headers.Set("retry-after", "5")
+			err := newOpenAIErrorWithHeaders(
+				`{"message":"rate limited","type":"rate_limit","code":"rate_limit"}`,
+				http.StatusTooManyRequests, headers,
+			)
+
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result.RateLimit).NotTo(BeNil())
+			Expect(result.RateLimit.RequestsRemaining).To(Equal(-1))
+			Expect(result.RateLimit.TokensRemaining).To(Equal(-1))
+			Expect(result.RateLimit.InputTokensRemaining).To(Equal(-1))
+			Expect(result.RateLimit.OutputTokensRemaining).To(Equal(-1))
+			Expect(result.RateLimit.RequestsReset.IsZero()).To(BeTrue())
+			Expect(result.RateLimit.TokensReset.IsZero()).To(BeTrue())
+		})
+	})
+
+	Context("when the error response carries no rate-limit headers", func() {
+		It("leaves RateLimit nil for a 500 server error", func() {
+			err := newOpenAIErrorWithHeaders(
+				`{"message":"boom","type":"server_error","code":"server_error"}`,
+				http.StatusInternalServerError, http.Header{},
+			)
+
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeServerError))
+			Expect(result.RateLimit).To(BeNil(),
+				"absent rate-limit headers must surface as nil so failover falls back to the default cooldown")
+		})
+
+		It("leaves RateLimit nil when retry-after is unparseable", func() {
+			headers := http.Header{}
+			headers.Set("retry-after", "not-a-number")
+			err := newOpenAIErrorWithHeaders(
+				`{"message":"rate limited","type":"rate_limit","code":"rate_limit"}`,
+				http.StatusTooManyRequests, headers,
+			)
+
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.RateLimit).To(BeNil(),
+				"a malformed header must not crash and must not synthesise a phantom 0s back-off")
+		})
+	})
+})
+
+var _ = Describe("WrapChatError", func() {
+	const testProvider = "test-provider"
+
+	It("returns nil for nil error", func() {
+		Expect(openaicompat.WrapChatError(testProvider, nil)).To(Succeed())
+	})
+
+	It("wraps an OpenAI SDK error as *provider.Error", func() {
+		inner := newOpenAIError(`{"message":"rate limited","type":"rate_limit","code":"rate_limit"}`, http.StatusTooManyRequests)
+		result := openaicompat.WrapChatError(testProvider, inner)
+		Expect(result).To(HaveOccurred())
+		var provErr *provider.Error
+		Expect(errors.As(result, &provErr)).To(BeTrue())
+		Expect(provErr.ErrorType).To(Equal(provider.ErrorTypeRateLimit))
+	})
+
+	It("returns the original error when unrecognised", func() {
+		plain := errors.New("something unexpected")
+		result := openaicompat.WrapChatError(testProvider, plain)
+		Expect(result).To(Equal(plain))
+	})
+})
+
+// Cross-provider failover: when session history contains tool-call IDs
+// emitted by Anthropic ("toolu_..."), the OpenAI-compat request builder
+// must translate them to call_-prefixed IDs so OpenAI-style providers accept them.
+// Bug #1: tool_use_id mismatch after failover.
+var _ = Describe("cross-provider failover id translation (OpenAI-compat target)", func() {
+	It("rewrites a foreign toolu_-style id to a call_-prefixed id in tool message", func() {
+		msgs := []provider.Message{{
+			Role:      "tool",
+			Content:   "result from previously-anthropic tool call",
+			ToolCalls: []provider.ToolCall{{ID: "toolu_01FOREIGN"}},
+		}}
+		result := openaicompat.BuildMessages(msgs)
+		Expect(result).To(HaveLen(1))
+		Expect(result[0].OfTool).NotTo(BeNil())
+		Expect(result[0].OfTool.ToolCallID).To(HavePrefix("call_"))
+		Expect(result[0].OfTool.ToolCallID).NotTo(Equal("toolu_01FOREIGN"))
+	})
+
+	It("rewrites a foreign toolu_-style id in assistant tool_calls", func() {
+		msgs := []provider.Message{{
+			Role:    "assistant",
+			Content: "calling",
+			ToolCalls: []provider.ToolCall{{
+				ID:        "toolu_01FOREIGN",
+				Name:      "get_weather",
+				Arguments: map[string]any{"city": "London"},
+			}},
+		}}
+		result := openaicompat.BuildMessages(msgs)
+		Expect(result).To(HaveLen(1))
+		toolCalls := result[0].GetToolCalls()
+		Expect(toolCalls).To(HaveLen(1))
+		Expect(toolCalls[0].ID).To(HavePrefix("call_"))
+		Expect(toolCalls[0].ID).NotTo(Equal("toolu_01FOREIGN"))
+	})
+
+	It("preserves pairing: assistant tool_calls id matches subsequent tool message id after translation", func() {
+		foreign := "toolu_01ORIGINAL_FROM_ANTHROPIC"
+		msgs := []provider.Message{
+			{Role: "user", Content: "what is the weather"},
+			{Role: "assistant", Content: "", ToolCalls: []provider.ToolCall{{
+				ID: foreign, Name: "get_weather", Arguments: map[string]any{"city": "London"},
+			}}},
+			{Role: "tool", Content: "15c", ToolCalls: []provider.ToolCall{{ID: foreign}}},
+		}
+		result := openaicompat.BuildMessages(msgs)
+		Expect(result).To(HaveLen(3))
+		assistantCalls := result[1].GetToolCalls()
+		Expect(assistantCalls).To(HaveLen(1))
+		Expect(assistantCalls[0].ID).To(HavePrefix("call_"))
+		Expect(result[2].OfTool).NotTo(BeNil())
+		// Load-bearing contract: ids must match intra-request.
+		Expect(result[2].OfTool.ToolCallID).To(Equal(assistantCalls[0].ID))
+	})
+
+	It("leaves native call_-prefixed ids unchanged", func() {
+		msgs := []provider.Message{{
+			Role:      "tool",
+			Content:   "ok",
+			ToolCalls: []provider.ToolCall{{ID: "call_NATIVE_abc"}},
+		}}
+		result := openaicompat.BuildMessages(msgs)
+		Expect(result).To(HaveLen(1))
+		Expect(result[0].OfTool.ToolCallID).To(Equal("call_NATIVE_abc"))
+	})
+})
+
+// Secondary fix: when a tool message bundles multiple tool calls, BuildMessages
+// must emit a ToolMessage per tool-call ID, not silently drop indices >= 1.
+var _ = Describe("BuildMessages multi-tool-call tool-role handling", func() {
+	It("emits one tool message per tool call id, preserving ordering", func() {
+		msgs := []provider.Message{{
+			Role:    "tool",
+			Content: "shared result payload",
+			ToolCalls: []provider.ToolCall{
+				{ID: "call_first"},
+				{ID: "call_second"},
+				{ID: "call_third"},
+			},
+		}}
+		result := openaicompat.BuildMessages(msgs)
+		Expect(result).To(HaveLen(3))
+		Expect(result[0].OfTool).NotTo(BeNil())
+		Expect(result[0].OfTool.ToolCallID).To(Equal("call_first"))
+		Expect(result[1].OfTool).NotTo(BeNil())
+		Expect(result[1].OfTool.ToolCallID).To(Equal("call_second"))
+		Expect(result[2].OfTool).NotTo(BeNil())
+		Expect(result[2].OfTool.ToolCallID).To(Equal("call_third"))
+	})
+})
+
+// fullOpenAIRateLimitHeaders builds an http.Header carrying all six
+// documented openai-compat rate-limit window headers + scalar
+// request-id / retry-after. Used by the PR3 success-path lift specs.
+func fullOpenAIRateLimitHeaders() http.Header {
+	h := http.Header{}
+	h.Set("x-request-id", "req_success_2xx")
+	h.Set("retry-after", "30")
+	h.Set("x-ratelimit-limit-requests", "1000")
+	h.Set("x-ratelimit-remaining-requests", "999")
+	h.Set("x-ratelimit-reset-requests", "1s")
+	h.Set("x-ratelimit-limit-tokens", "100000")
+	h.Set("x-ratelimit-remaining-tokens", "75000")
+	h.Set("x-ratelimit-reset-tokens", "60s")
+	return h
+}
+
+var _ = Describe("openaicompat success-path RateLimit lift (Quota Plan PR3, plan lines 113-114, 427)", func() {
+	Context("ExtractRateLimitHeadersFromResponse — the success-path-callable helper", func() {
+		It("parses all six documented openai-compat rate-limit headers on a 2xx-style header set", func() {
+			rl := openaicompat.ExtractRateLimitHeadersFromResponse(fullOpenAIRateLimitHeaders())
+
+			Expect(rl).NotTo(BeNil(),
+				"a header set with all six rate-limit headers must produce a populated RateLimit")
+
+			Expect(rl.RequestID).To(Equal("req_success_2xx"))
+			Expect(rl.RetryAfter).To(Equal(30 * time.Second))
+
+			Expect(rl.RequestsLimit).To(Equal(1000))
+			Expect(rl.RequestsRemaining).To(Equal(999))
+			Expect(rl.RequestsReset.After(time.Now())).To(BeTrue(),
+				"reset is parsed as a future wall-clock time")
+
+			Expect(rl.TokensLimit).To(Equal(100000))
+			Expect(rl.TokensRemaining).To(Equal(75000))
+		})
+
+		It("returns nil when the response carries no rate-limit headers", func() {
+			Expect(openaicompat.ExtractRateLimitHeadersFromResponse(http.Header{})).To(BeNil())
+		})
+
+		It("returns nil when headers contain only non-rate-limit entries", func() {
+			h := http.Header{}
+			h.Set("content-type", "application/json")
+			h.Set("x-arbitrary", "noise")
+			Expect(openaicompat.ExtractRateLimitHeadersFromResponse(h)).To(BeNil(),
+				"a header set containing only non-rate-limit headers must produce nil")
+		})
+
+		It("returns nil when headers map itself is nil", func() {
+			Expect(openaicompat.ExtractRateLimitHeadersFromResponse(nil)).To(BeNil())
+		})
+
+		It("populates only the fields present (-1 sentinels for absent window triples)", func() {
+			h := http.Header{}
+			h.Set("x-ratelimit-limit-requests", "500")
+			h.Set("x-ratelimit-remaining-requests", "499")
+			rl := openaicompat.ExtractRateLimitHeadersFromResponse(h)
+			Expect(rl).NotTo(BeNil())
+			Expect(rl.RequestsLimit).To(Equal(500))
+			Expect(rl.RequestsRemaining).To(Equal(499))
+			// Tokens window stays at -1 sentinel.
+			Expect(rl.TokensLimit).To(Equal(-1))
+			Expect(rl.TokensRemaining).To(Equal(-1))
+			// Anthropic-style input/output stay at -1 sentinel too —
+			// openai-compat doesn't emit them but the RateLimit shape
+			// is shared across providers.
+			Expect(rl.InputTokensLimit).To(Equal(-1))
+			Expect(rl.OutputTokensRemaining).To(Equal(-1))
+		})
+
+		It("accepts Z.AI dialect (seconds-int reset) as well as OpenAI dialect (duration-string reset)", func() {
+			// Z.AI emits a bare seconds-int.
+			zaiHeaders := http.Header{}
+			zaiHeaders.Set("x-ratelimit-limit-requests", "60")
+			zaiHeaders.Set("x-ratelimit-remaining-requests", "50")
+			zaiHeaders.Set("x-ratelimit-reset-requests", "120")
+			rl := openaicompat.ExtractRateLimitHeadersFromResponse(zaiHeaders)
+			Expect(rl).NotTo(BeNil())
+			Expect(rl.RequestsReset.After(time.Now())).To(BeTrue())
+		})
+	})
+
+	Context("Regression — existing error-path RateLimit extraction unchanged (AC: openaicompat populates RateLimit on Error)", func() {
+		It("returns the same populated RateLimit the error path always produced (no regression on 429)", func() {
+			err := newOpenAIErrorWithHeaders(
+				`{"message":"rate limited","type":"rate_limit","code":"rate_limit"}`,
+				http.StatusTooManyRequests, fullOpenAIRateLimitHeaders(),
+			)
+			result := openaicompat.ParseProviderError("test", err)
+			Expect(result).NotTo(BeNil())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeRateLimit))
+			Expect(result.RateLimit).NotTo(BeNil(),
+				"error-path RateLimit extraction MUST continue to populate post-refactor (PR3 success-path lift is purely additive)")
+			Expect(result.RateLimit.RequestsRemaining).To(Equal(999))
+			Expect(result.RateLimit.RequestID).To(Equal("req_success_2xx"))
+		})
+
+		It("leaves RateLimit nil for a 500 server error with no rate-limit headers (unchanged)", func() {
+			err := newOpenAIErrorWithHeaders(
+				`{"message":"boom","type":"server_error","code":"server_error"}`,
+				http.StatusInternalServerError, http.Header{},
+			)
+			result := openaicompat.ParseProviderError("test", err)
+			Expect(result).NotTo(BeNil())
+			Expect(result.RateLimit).To(BeNil(),
+				"absent rate-limit headers must surface as nil — no synthesised metadata")
+		})
+	})
+})
+
+var _ = Describe("RunStreamWithObserver — streaming success-path observer hook (Quota Plan PR3)", func() {
+	// A minimal SSE response that completes one delta + finish_reason +
+	// terminal usage block — exercises the full RunStream loop including
+	// the deferred `Done` epilogue.
+	const sseHappy = "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hi\"},\"finish_reason\":null}]}\n\n" +
+		"data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n" +
+		"data: [DONE]\n\n"
+
+	newSSEServer := func(headers http.Header, status int, body string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			for k, vs := range headers {
+				for _, v := range vs {
+					w.Header().Add(k, v)
+				}
+			}
+			w.Header().Set("content-type", "text/event-stream")
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(body))
+		}))
+	}
+
+	drain := func(ch <-chan provider.StreamChunk) []provider.StreamChunk {
+		var out []provider.StreamChunk
+		for c := range ch {
+			out = append(out, c)
+		}
+		return out
+	}
+
+	It("fires the observer once on a 2xx streaming handshake with the response headers", func() {
+		server := newSSEServer(fullOpenAIRateLimitHeaders(), http.StatusOK, sseHappy)
+		defer server.Close()
+
+		client := openaiAPI.NewClient(
+			option.WithAPIKey("test-key"),
+			option.WithBaseURL(server.URL),
+		)
+
+		var seenHeaders http.Header
+		callCount := 0
+		observer := func(h http.Header) {
+			callCount++
+			seenHeaders = h
+		}
+
+		params := openaiAPI.ChatCompletionNewParams{
+			Model:    "gpt-4o",
+			Messages: openaicompat.BuildMessages([]provider.Message{{Role: "user", Content: "hi"}}),
+		}
+		ch := openaicompat.RunStreamWithObserver(context.Background(), client, params, "openai", observer)
+		_ = drain(ch)
+
+		Expect(callCount).To(Equal(1),
+			"observer MUST fire exactly once per stream — the SDK populates rawResp on handshake; future re-issues must not double-fire")
+		Expect(seenHeaders).NotTo(BeNil())
+		Expect(seenHeaders.Get("x-ratelimit-remaining-requests")).To(Equal("999"),
+			"observer MUST receive the rate-limit headers verbatim so the quota adapter can parse them")
+		Expect(seenHeaders.Get("x-request-id")).To(Equal("req_success_2xx"))
+	})
+
+	It("does NOT fire the observer on a 5xx response (error-path stays sole owner of error-status RateLimit)", func() {
+		server := newSSEServer(http.Header{}, http.StatusInternalServerError, `{"error":{"message":"boom","type":"server_error"}}`)
+		defer server.Close()
+
+		client := openaiAPI.NewClient(
+			option.WithAPIKey("test-key"),
+			option.WithBaseURL(server.URL),
+			option.WithMaxRetries(0),
+		)
+
+		called := false
+		observer := func(http.Header) {
+			called = true
+		}
+
+		params := openaiAPI.ChatCompletionNewParams{
+			Model:    "gpt-4o",
+			Messages: openaicompat.BuildMessages([]provider.Message{{Role: "user", Content: "hi"}}),
+		}
+		ch := openaicompat.RunStreamWithObserver(context.Background(), client, params, "openai", observer)
+		chunks := drain(ch)
+
+		Expect(called).To(BeFalse(),
+			"observer MUST NOT fire on a 5xx — the existing error-path RateLimit extraction owns 4xx/5xx; this guarantee prevents double-recording when both paths run")
+		// Sanity: error surfaced through the channel.
+		hasError := false
+		for _, c := range chunks {
+			if c.Error != nil {
+				hasError = true
+				break
+			}
+		}
+		Expect(hasError).To(BeTrue(), "5xx must surface as a StreamChunk.Error")
+	})
+
+	It("RunStream (nil-observer wrapper) is identical to RunStream — no behavioural change for callers that don't bind a quota adapter", func() {
+		server := newSSEServer(http.Header{}, http.StatusOK, sseHappy)
+		defer server.Close()
+
+		client := openaiAPI.NewClient(
+			option.WithAPIKey("test-key"),
+			option.WithBaseURL(server.URL),
+		)
+		params := openaiAPI.ChatCompletionNewParams{
+			Model:    "gpt-4o",
+			Messages: openaicompat.BuildMessages([]provider.Message{{Role: "user", Content: "hi"}}),
+		}
+
+		// RunStream (the legacy entry) must still flow content, finish,
+		// usage, Done — the pre-PR3 contract is unchanged.
+		ch := openaicompat.RunStream(context.Background(), client, params, "openai")
+		chunks := drain(ch)
+
+		var sawContent, sawUsage, sawDone bool
+		for _, c := range chunks {
+			if c.Content != "" {
+				sawContent = true
+			}
+			if c.EventType == "usage" {
+				sawUsage = true
+			}
+			if c.Done {
+				sawDone = true
+			}
+		}
+		Expect(sawContent).To(BeTrue())
+		Expect(sawUsage).To(BeTrue(),
+			"AC-12-UsageDelta-No-Regress (Chat Attachments PR3) — RunStream MUST continue to emit a usage chunk on stream-end")
+		Expect(sawDone).To(BeTrue())
+	})
+})
+
+func unmarshalToolCall(raw string) openaiAPI.ChatCompletionMessageToolCall {
+	var tc openaiAPI.ChatCompletionMessageToolCall
+	if err := json.Unmarshal([]byte(raw), &tc); err != nil {
+		panic("failed to unmarshal tool call: " + err.Error())
+	}
+	return tc
+}
+
+func unmarshalCompletion(raw string) *openaiAPI.ChatCompletion {
+	var resp openaiAPI.ChatCompletion
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		panic("failed to unmarshal completion: " + err.Error())
+	}
+	return &resp
+}
+
+func newOpenAIError(body string, statusCode int) *openaiAPI.Error {
+	return newOpenAIErrorWithHeaders(body, statusCode, nil)
+}
+
+// newOpenAIErrorWithHeaders builds an openai-go SDK error whose
+// underlying http.Response carries the given headers. Used by the
+// rate-limit capture tests to drive ParseProviderError without standing
+// up an httptest server for each case.
+func newOpenAIErrorWithHeaders(body string, statusCode int, headers http.Header) *openaiAPI.Error {
+	var err openaiAPI.Error
+	if uErr := json.Unmarshal([]byte(body), &err); uErr != nil {
+		panic("failed to unmarshal openai error: " + uErr.Error())
+	}
+	err.StatusCode = statusCode
+	err.Request = httptest.NewRequest(http.MethodPost, "https://api.openai.com/v1/chat/completions", http.NoBody)
+	err.Response = &http.Response{
+		StatusCode: statusCode,
+		Status:     fmt.Sprintf("%d %s", statusCode, http.StatusText(statusCode)),
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     headers,
+	}
+	return &err
+}
+
+func newAnthropicError(body string, statusCode int, requestID string) *anthropicAPI.Error {
+	var err anthropicAPI.Error
+	if uErr := json.Unmarshal([]byte(body), &err); uErr != nil {
+		panic("failed to unmarshal anthropic error: " + uErr.Error())
+	}
+	err.StatusCode = statusCode
+	err.RequestID = requestID
+	err.Request = httptest.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", http.NoBody)
+	err.Response = &http.Response{
+		StatusCode: statusCode,
+		Status:     fmt.Sprintf("%d %s", statusCode, http.StatusText(statusCode)),
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	return &err
+}

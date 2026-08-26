@@ -1,4 +1,4 @@
-.PHONY: all build run test bdd bdd-smoke bdd-wip fmt lint check clean help ai-commit check-ai-attribution list-ai-commits install-tools
+.PHONY: all build run test test-e2e test-external test-recall bdd bdd-smoke bdd-wip fmt lint check check-docblocks check-untested-packages check-note-comments check-keyword-adr check-gating-drift clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks debug-session debug-latest debug-errors session-overview log-analysis parse-recording session-history session-history-detail session-ids evidence-pack qdrant-up qdrant-down qdrant-logs qdrant-status
 
 # Binary name
 BINARY_NAME=flowstate
@@ -12,6 +12,11 @@ GOFMT=$(GOCMD) fmt
 GOVET=$(GOCMD) vet
 GOMOD=$(GOCMD) mod
 
+# Build identity (injected via -ldflags so startup banner reflects current HEAD)
+BUILD_COMMIT=$(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+BUILD_DATE=$(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+BUILD_LDFLAGS=-X main.commit=$(BUILD_COMMIT) -X main.date=$(BUILD_DATE)
+
 # Default target
 all: check build
 
@@ -22,7 +27,7 @@ all: check build
 build: ## Build the binary
 	@echo "Building $(BINARY_NAME)..."
 	@mkdir -p $(BUILD_DIR)
-	$(GOBUILD) -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/flowstate
+	$(GOBUILD) -buildvcs=true -ldflags "$(BUILD_LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/flowstate
 
 run: build ## Build and run the application
 	@echo "Running $(BINARY_NAME)..."
@@ -37,14 +42,39 @@ clean: ## Clean build artifacts
 # Testing
 #
 
-test: ## Run all Go tests
+test: ## Run all Go tests (excluding BDD features; default build tags exclude `e2e`)
 	@echo "Running tests..."
-	$(GOTEST) -v ./...
+	$(GOTEST) -v $(shell go list ./... | grep -v '/features/')
 
-test-coverage: ## Run tests with coverage
+test-e2e: ## Run BDD/e2e suite under features/ (opt-in via `-tags e2e`)
+	@echo "Running e2e BDD tests (features/...)..."
+	$(GOTEST) -tags e2e -timeout 600s ./features/...
+
+test-external: ## Run external integration tests (requires QDRANT_URL)
+	@if [ -z "$(QDRANT_URL)" ]; then \
+		echo "QDRANT_URL is not set. Run: QDRANT_URL=http://localhost:6333 make test-external"; \
+		exit 1; \
+	fi
+	$(GOTEST) -v ./... --ginkgo.label-filter="external" -count=1
+
+test-recall: ## Run recall integration tests
+	$(GOTEST) -v ./internal/recall/... --ginkgo.label-filter="integration" -v -count=1
+
+test-coverage: ## Run tests with coverage (excluding BDD features)
 	@echo "Running tests with coverage..."
-	$(GOTEST) -v -coverprofile=coverage.out ./...
+	$(GOTEST) -v -coverprofile=coverage.out $(shell go list ./... | grep -v '/features/')
 	$(GOCMD) tool cover -html=coverage.out
+
+GOBIN ?= $$(go env GOPATH)/bin
+
+install-coverage-tools: ## Install go-test-coverage tool
+	@echo "Installing go-test-coverage..."
+	go install github.com/vladopajic/go-test-coverage/v2@latest
+
+coverage-check: ## Check test coverage against thresholds (excluding BDD features)
+	@echo "Running coverage check..."
+	@$(GOTEST) $(shell go list ./... | grep -v '/features/') -coverprofile=./coverage.out -covermode=atomic -coverpkg=./... 2>/dev/null
+	@$(GOBIN)/go-test-coverage --config=./.testcoverage.yml
 
 #
 # BDD Testing (Godog/Cucumber)
@@ -52,19 +82,19 @@ test-coverage: ## Run tests with coverage
 
 bdd: ## Run all BDD tests
 	@echo "Running BDD tests..."
-	godog run ./features/...
+	go test -tags e2e -v ./features/...
 
 bdd-smoke: ## Run smoke BDD tests
 	@echo "Running smoke tests..."
-	godog run --tags=@smoke ./features/...
+	GODOG_TAGS="@smoke" go test -tags e2e -v ./features/... -run "Test"
 
-bdd-wip: ## Run WIP BDD tests
+bdd-wip: ## Run WIP BDD tests (scenarios tagged @wip)
 	@echo "Running WIP tests..."
-	godog run --tags=@wip ./features/...
+	GODOG_TAGS="@wip" go test -tags e2e -v ./features/... -run "Test"
 
 bdd-feature: ## Run specific feature (FEATURE=chat/basic_chat)
 	@echo "Running feature: $(FEATURE)"
-	godog run ./features/$(FEATURE).feature
+	go test -tags e2e -v ./features/... -run "Test"
 
 #
 # Code Quality
@@ -78,10 +108,60 @@ lint: ## Run linters
 	@echo "Running linters..."
 	$(GOVET) ./...
 	@if command -v staticcheck &> /dev/null; then staticcheck ./...; fi
-	@if command -v golangci-lint &> /dev/null; then golangci-lint run; fi
-	@if command -v deadcode &> /dev/null && go list -f '{{if eq .Name "main"}}{{.ImportPath}}{{end}}' ./... 2>/dev/null | grep -q .; then deadcode ./...; fi
+	@if command -v golangci-lint &> /dev/null; then GOTOOLCHAIN=go1.26.1 golangci-lint run; fi
+	@if command -v deadcode >/dev/null 2>&1; then deadcode -test ./...; fi
 
-check: fmt lint test ## Run all checks
+check-docblocks: ## Run structured docblock analyser
+	@echo "Checking docblocks..."
+	@GOTOOLCHAIN=go1.26.1 go run ./cmd/docblocks/... ./...
+
+check-untested-packages: ## Fail if any internal/ package has no test files
+	@echo "Checking for untested internal packages..."
+	@FAILED=0; \
+	for pkg in $$(go list ./internal/...); do \
+		dir=$$(go list -f '{{.Dir}}' $$pkg); \
+		if ! ls $$dir/*_test.go > /dev/null 2>&1; then \
+			echo "  MISSING TESTS: $$pkg"; \
+			FAILED=1; \
+		fi; \
+	done; \
+	if [ $$FAILED -eq 1 ]; then \
+		echo ""; \
+		echo "ERROR: Some internal packages have no test files."; \
+		echo "Add at least one *_test.go file to each package above."; \
+		exit 1; \
+	fi
+	@echo "All internal packages have test files."
+
+check-note-comments: ## Fail if NOTE: appears outside a docblock
+	@echo "Checking NOTE: comment placement..."
+	@bash scripts/check-note-comments.sh
+
+check-keyword-adr: ## Fail if high-risk policy keywords lack a paired ADR (Guard 1)
+	@echo "Checking high-risk keyword + ADR pairing..."
+	@bash scripts/check-keyword-adr.sh
+
+check-gating-drift: ## Flag struct fields whose docstring names a gating identifier the package never reads (Guard 3)
+	@echo "Checking docstring-vs-impl gating drift..."
+	@GOTOOLCHAIN=go1.26.1 go run ./cmd/gatingdrift/... ./internal/...
+
+check-agent-manifests: build ## Validate embedded agent manifests against category→tools rules
+	@echo "Validating embedded agent manifests..."
+	@./build/flowstate agents validate --agents-dir internal/app/agents
+
+check-swarm-manifests: build ## Validate embedded swarm manifests and surface chain_prefix footgun warnings
+	@echo "Validating embedded swarm manifests..."
+	@./build/flowstate swarm validate --swarm-dir internal/app/swarms
+
+check: build fmt lint test coverage-check check-docblocks check-untested-packages check-note-comments check-keyword-adr check-gating-drift check-agent-manifests check-swarm-manifests check-test-file-convention check-funlen-ratchet ## Run all checks
+
+.PHONY: check-funlen-ratchet
+check-funlen-ratchet: ## Enforce funlen (50 lines/40 statements) ratchet baseline
+	@bash scripts/check-funlen-ratchet.sh
+
+.PHONY: check-test-file-convention check-funlen-ratchet
+check-test-file-convention: ## Enforce test-file convention ratchet (2-test cap, no new orphan test files)
+	@bash scripts/check-test-file-convention.sh
 
 #
 # Dependencies
@@ -93,9 +173,13 @@ deps: ## Download dependencies
 deps-tidy: ## Tidy dependencies
 	$(GOMOD) tidy
 
-install-tools: ## Install development tools
-	@echo "Installing development tools..."
-	@go install golang.org/x/tools/cmd/deadcode@latest
+#
+# Hooks
+#
+
+install-hooks: ## Install git hooks (run once after checkout)
+	@git config core.hooksPath .git-hooks
+	@echo "Git hooks installed. Hooks directory: .git-hooks/"
 
 #
 # Git Worktree Helpers
@@ -151,7 +235,7 @@ ai-commit: ## Create AI-attributed commit (FILE=/path/to/msg.txt AI_MODEL=model)
 		echo "Usage:"; \
 		echo "  AI_MODEL=claude-opus-4-5 make ai-commit FILE=/path/to/commit-msg.txt"; \
 		echo ""; \
-		echo "Required: AI_MODEL must be set (agent auto-detected from OPENCODE env)"; \
+		echo "Required: AI_MODEL must be set (OPENCODE=1 is set automatically)"; \
 		echo ""; \
 		echo "Create your commit message file:"; \
 		echo "  cat > /tmp/commit.txt << 'EOF'"; \
@@ -164,7 +248,7 @@ ai-commit: ## Create AI-attributed commit (FILE=/path/to/msg.txt AI_MODEL=model)
 		echo ""; \
 		exit 1; \
 	fi
-	@bash scripts/ai-commit.sh "$(FILE)" "$(NO_VERIFY)"
+	@OPENCODE=1 bash scripts/ai-commit.sh "$(FILE)" "$(NO_VERIFY)"
 
 check-ai-attribution: ## Check latest commit for AI attribution
 	@echo "Checking latest commit for AI attribution..."
@@ -195,6 +279,123 @@ list-tasks: ## List all tasks
 			echo "[$${status:-unknown}] $$name"; \
 		fi \
 	done
+
+#
+# Debug & Analysis
+#
+
+debug-session: ## Debug a session (ID=<session-id>)
+	@if [ -z "$(ID)" ]; then \
+		echo "Usage: make debug-session ID=<session-uuid>"; \
+		echo ""; \
+		echo "Add --include-logs with: make debug-session ID=<uuid> OPTS=--include-logs"; \
+		exit 1; \
+	fi
+	@python3 scripts/correlate-debug.py "$(ID)" $(OPTS)
+
+debug-latest: ## Debug the most recent session
+	@python3 scripts/correlate-debug.py --latest --include-logs
+
+debug-errors: ## Find sessions that encountered errors
+	@python3 scripts/correlate-debug.py --errors
+
+session-overview: ## Show overview of all sessions (OPTS for filters)
+	@python3 scripts/session-overview.py $(OPTS)
+
+log-analysis: ## Analyse application logs (OPTS for filters)
+	@python3 scripts/log-analysis.py $(OPTS)
+
+parse-recording: ## Parse a session recording timeline (ID=<session-id>)
+	@if [ -z "$(ID)" ]; then \
+		echo "Usage: make parse-recording ID=<session-uuid>"; \
+		echo ""; \
+		echo "Flags via OPTS: make parse-recording ID=<uuid> OPTS='--tools-only'"; \
+		exit 1; \
+	fi
+	@python3 scripts/parse-recording.py "$(ID)" $(OPTS)
+
+evidence-pack: ## Create a portable investigation evidence pack (INVESTIGATION=slug [VAULT_ROOT=... PROJECT_ROOT=... DEST_DIR=... EVIDENCE_ARGS='--source ... --excerpt ... --command-output ...'] [DRY_RUN=1])
+	@if [ -z "$(INVESTIGATION)" ]; then \
+		echo "Usage: make evidence-pack INVESTIGATION=2026-07-23-session-duration [VAULT_ROOT=...] [PROJECT_ROOT=...] [DEST_DIR=...] [EVIDENCE_ARGS='--source notes=/tmp/notes.md --excerpt /tmp/redacted.txt --command-output run=/tmp/run.txt'] [DRY_RUN=1]"; \
+		exit 1; \
+	fi
+	@python3 scripts/evidence-pack.py --investigation "$(INVESTIGATION)" \
+		$(if $(VAULT_ROOT),--vault-root "$(VAULT_ROOT)") \
+		$(if $(PROJECT_ROOT),--project-root "$(PROJECT_ROOT)") \
+		$(if $(DEST_DIR),--destination "$(DEST_DIR)") \
+		$(if $(EVIDENCE_ID),--evidence-id "$(EVIDENCE_ID)") \
+		$(if $(SUPPORTS),$(foreach support,$(SUPPORTS),--supports "$(support)")) \
+		$(if $(DRY_RUN),--dry-run) \
+		$(EVIDENCE_ARGS)
+
+session-history: ## Show session conversation history (ID=<session-id>)
+	@if [ -z "$(ID)" ]; then \
+		echo "Usage: make session-history ID=<session-uuid>"; \
+		echo ""; \
+		echo "Short view (default). For detailed: make session-history-detail ID=<uuid>"; \
+		echo "For latest session: make session-history OPTS=--latest"; \
+		exit 1; \
+	fi
+	@python3 scripts/session-history.py "$(ID)" $(OPTS)
+
+session-history-detail: ## Show detailed session history with full content (ID=<session-id>)
+	@if [ -z "$(ID)" ]; then \
+		echo "Usage: make session-history-detail ID=<session-uuid>"; \
+		exit 1; \
+	fi
+	@python3 scripts/session-history.py "$(ID)" --detail $(OPTS)
+
+session-ids: ## Extract all IDs from a session (ID=<session-id>)
+	@if [ -z "$(ID)" ]; then \
+		echo "Usage: make session-ids ID=<session-uuid>"; \
+		exit 1; \
+	fi
+	@python3 scripts/session-history.py "$(ID)" --ids-only
+
+#
+# Local Development Services (Qdrant)
+#
+# These targets manage the Qdrant container described in
+# docker-compose.dev.yml. The compose file mounts the host's existing
+# Qdrant data directory at ~/.local/share/qdrant/. Do NOT erase that
+# directory — it holds the canonical pre-synced vault collections.
+#
+# Requires: docker (any modern version) plus the Compose v2 plugin
+# (`docker compose ...`). On Arch Linux: pacman -S docker-compose.
+#
+
+qdrant-up: ## Start the local Qdrant container in the background
+	@echo "Starting Qdrant via docker-compose.dev.yml..."
+	docker compose -f docker-compose.dev.yml up -d qdrant
+	@echo ""
+	@echo "Qdrant REST: http://127.0.0.1:6333"
+	@echo "Dashboard:   http://127.0.0.1:6333/dashboard"
+	@echo "Run 'make qdrant-status' once health is green."
+
+qdrant-down: ## Stop the local Qdrant container (data persists on host)
+	@echo "Stopping Qdrant (data dir on host is untouched)..."
+	docker compose -f docker-compose.dev.yml down
+
+qdrant-logs: ## Tail the local Qdrant container logs
+	docker compose -f docker-compose.dev.yml logs -f --tail=50 qdrant
+
+qdrant-status: ## Show Qdrant health and list collections
+	@echo "Container state:"
+	@docker compose -f docker-compose.dev.yml ps qdrant
+	@echo ""
+	@echo "Health:"
+	@curl -fsS http://127.0.0.1:6333/healthz && echo "" || echo "(not healthy yet)"
+	@echo ""
+	@echo "Collections:"
+	@curl -fsS http://127.0.0.1:6333/collections | jq -r '.result.collections[].name' 2>/dev/null \
+		|| echo "(curl/jq failed — is Qdrant up?)"
+
+#
+# Web Frontend (Vue 3 + TypeScript)
+#
+# NOTE: The Vue frontend now lives in its own repository (flowstate-web).
+# The web-* make targets and the web/ directory were removed when it was
+# extracted. Run the frontend's own npm scripts in that repo instead.
 
 #
 # Help

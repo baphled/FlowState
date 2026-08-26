@@ -1,0 +1,525 @@
+package agent
+
+import (
+	"encoding/json"
+	"regexp"
+	"sort"
+	"strings"
+)
+
+var manifestHexColorPattern = regexp.MustCompile(`^#[0-9A-Fa-f]{6}$`)
+
+// Manifest defines the complete configuration for a FlowState agent.
+type Manifest struct {
+	SchemaVersion     string            `json:"schema_version" yaml:"schema_version"`
+	ID                string            `json:"id" yaml:"id"`
+	Name              string            `json:"name" yaml:"name"`
+	Color             string            `json:"color,omitempty" yaml:"color,omitempty"`
+	Complexity        string            `json:"complexity" yaml:"complexity"`
+	Metadata          Metadata          `json:"metadata" yaml:"metadata"`
+	Capabilities      Capabilities      `json:"capabilities" yaml:"capabilities"`
+	ContextManagement ContextManagement `json:"context_management" yaml:"context_management"`
+	// Aliases contains alternative names and keywords that can be used to route to this agent.
+	Aliases        []string     `json:"aliases" yaml:"aliases"`
+	Delegation     Delegation   `json:"delegation" yaml:"delegation"`
+	Hooks          Hooks        `json:"hooks" yaml:"hooks"`
+	Instructions   Instructions `json:"instructions" yaml:"instructions"`
+	HarnessEnabled bool         `json:"harness_enabled" yaml:"harness_enabled"`
+	// Harness defines fine-grained output validation and quality layers for this agent.
+	// When present, it takes precedence over the legacy HarnessEnabled boolean.
+	Harness *HarnessConfig `json:"harness,omitempty" yaml:"harness,omitempty"`
+	// Mode selects the harness loop type for this agent. Valid values are "plan"
+	// (default) and "execution". When empty, "plan" behaviour is assumed.
+	Mode string `json:"mode,omitempty" yaml:"mode,omitempty"`
+	// Loop defines the delegation loop for coordinator agents.
+	// When present, the agent operates in review-cycle mode rather than single-shot mode.
+	Loop *LoopConfig `json:"loop,omitempty" yaml:"loop,omitempty"`
+	// OrchestratorMeta describes how orchestrators should reference and invoke this agent.
+	OrchestratorMeta OrchestratorMetadata `json:"orchestrator_meta" yaml:"orchestrator_meta"`
+	// UsesRecall (P13) controls whether this agent's context-assembly
+	// pipeline queries the RecallBroker. Defaults to false so recall is
+	// opt-in per agent — tool-focused executors, routers, and other
+	// agents that do not benefit from recalled observations avoid the
+	// wasted query and the context-window pollution that comes with it.
+	// Set to true only for agents whose reasoning genuinely benefits
+	// from prior distilled knowledge (e.g. evidence synthesis roles).
+	UsesRecall bool `json:"uses_recall" yaml:"uses_recall"`
+	// PreferredModels lists provider/model pairs the agent is intended
+	// to run on. Order is significant — earlier entries are surfaced
+	// first to the operator picking a model. The list is advisory under
+	// a permissive ModelPolicy (operators see a "preferred" hint but
+	// may pick any model) and an allow-list under a strict policy
+	// (operators may only pick from this list).
+	//
+	// An empty slice combined with any policy is treated as fully
+	// permissive — see IsModelAllowed for the precise contract.
+	PreferredModels []ModelPreference `json:"preferred_models,omitempty" yaml:"preferred_models,omitempty"`
+	// ModelPolicy controls how PreferredModels is interpreted by the
+	// model picker. Valid values are "" (default permissive),
+	// "permissive", and "strict". Any other value fails Validate.
+	ModelPolicy string `json:"model_policy,omitempty" yaml:"model_policy,omitempty"`
+}
+
+// ModelPreference declares a single preferred provider/model pairing
+// for an agent. Tagged shape mirrors the wire format the web client
+// consumes; the Go field names follow the package's existing style.
+type ModelPreference struct {
+	Provider string `json:"provider" yaml:"provider"`
+	Model    string `json:"model" yaml:"model"`
+}
+
+// Model policy constants. Empty string is treated as permissive so
+// existing manifests need no migration.
+const (
+	ModelPolicyPermissive = "permissive"
+	ModelPolicyStrict     = "strict"
+)
+
+// IsModelAllowed reports whether the operator may pick the given
+// provider/model combination for this agent.
+//
+// Contract:
+//   - Empty ModelPolicy or "permissive": every model is allowed.
+//   - "strict" with a non-empty PreferredModels list: only listed
+//     pairs are allowed.
+//   - "strict" with an empty PreferredModels list: degrades to
+//     permissive — a strict policy without a list is meaningless and
+//     must not lock the operator out of every model.
+//
+// Returns:
+//   - true when the model may be selected.
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for IsModelAllowed.
+func (m *Manifest) IsModelAllowed(provider, model string) bool {
+	if m == nil {
+		return true
+	}
+	if m.ModelPolicy != ModelPolicyStrict {
+		return true
+	}
+	if len(m.PreferredModels) == 0 {
+		return true
+	}
+	for _, pref := range m.PreferredModels {
+		if pref.Provider == provider && pref.Model == model {
+			return true
+		}
+	}
+	return false
+}
+
+// IsModelPreferred reports whether the given provider/model pair
+// appears in the agent's PreferredModels list. The result is
+// independent of ModelPolicy — it answers "is this a recommended
+// model" not "is this an allowed model".
+//
+// Returns:
+//   - true when the pair is in the preferred list.
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for IsModelPreferred.
+func (m *Manifest) IsModelPreferred(provider, model string) bool {
+	if m == nil {
+		return false
+	}
+	for _, pref := range m.PreferredModels {
+		if pref.Provider == provider && pref.Model == model {
+			return true
+		}
+	}
+	return false
+}
+
+// UnmarshalJSON deserialises a manifest while defaulting aliases to an empty slice.
+//
+// Expected:
+//   - The input data encodes a valid Manifest JSON object.
+//
+// Returns:
+//   - nil when the manifest is decoded successfully.
+//   - An error when the JSON payload cannot be decoded.
+//
+// Side effects:
+//   - Normalises missing aliases to an empty slice.
+func (m *Manifest) UnmarshalJSON(data []byte) error {
+	type manifestAlias Manifest
+	var raw struct {
+		*manifestAlias
+		Aliases []string `json:"aliases"`
+	}
+	raw.manifestAlias = (*manifestAlias)(m)
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if raw.Aliases == nil {
+		m.Aliases = []string{}
+		return nil
+	}
+	m.Aliases = raw.Aliases
+	return nil
+}
+
+// Metadata contains descriptive information about an agent.
+type Metadata struct {
+	Role      string `json:"role" yaml:"role"`
+	Goal      string `json:"goal" yaml:"goal"`
+	WhenToUse string `json:"when_to_use" yaml:"when_to_use"`
+}
+
+// Capabilities defines the tools and skills available to an agent.
+//
+// Manifest schema 1.1.0 adds ToolsDeny (D3 in Agent Runtime Quality plan).
+// Existing manifests are forward-compatible: an absent ToolsDeny YAML key
+// unmarshals as the zero-valued nil slice, which EffectiveTools treats as
+// "no denials".
+type Capabilities struct {
+	Tools     []string `json:"tools" yaml:"tools"`
+	ToolsDeny []string `json:"tools_deny,omitempty" yaml:"tools_deny,omitempty"`
+	// DeliveryTools names tools that the agent MUST call before its session
+	// can complete. When the agent's final turn returns prose with zero
+	// tool calls and none of these tools were called during the session,
+	// the engine retries with a corrective message before failing closed.
+	// Empty slice (the default) means no delivery enforcement.
+	DeliveryTools         []string `json:"delivery_tools,omitempty" yaml:"delivery_tools,omitempty"`
+	Skills                []string `json:"skills" yaml:"skills"`
+	AlwaysActiveSkills    []string `json:"always_active_skills" yaml:"always_active_skills"`
+	MCPServers            []string `json:"mcp_servers" yaml:"mcp_servers"`
+	CapabilityDescription string   `json:"capability_description" yaml:"capability_description"`
+}
+
+// ContextManagement configures how an agent manages conversation context.
+type ContextManagement struct {
+	MaxRecursionDepth   int     `json:"max_recursion_depth" yaml:"max_recursion_depth"`
+	SummaryTier         string  `json:"summary_tier" yaml:"summary_tier"`
+	SlidingWindowSize   int     `json:"sliding_window_size" yaml:"sliding_window_size"`
+	CompactionThreshold float64 `json:"compaction_threshold" yaml:"compaction_threshold"`
+	EmbeddingModel      string  `json:"embedding_model" yaml:"embedding_model"`
+}
+
+// DelegationTrigger describes when an orchestrator should delegate to this agent.
+type DelegationTrigger struct {
+	Domain  string `json:"domain" yaml:"domain"`
+	Trigger string `json:"trigger" yaml:"trigger"`
+}
+
+// OrchestratorMetadata describes how orchestrators should reference and invoke this agent.
+// These fields are consumed by dynamic section builders to compose orchestrator prompts.
+type OrchestratorMetadata struct {
+	Cost        string              `json:"cost" yaml:"cost"`
+	Category    string              `json:"category" yaml:"category"`
+	Triggers    []DelegationTrigger `json:"triggers" yaml:"triggers"`
+	UseWhen     []string            `json:"use_when" yaml:"use_when"`
+	AvoidWhen   []string            `json:"avoid_when" yaml:"avoid_when"`
+	PromptAlias string              `json:"prompt_alias" yaml:"prompt_alias"`
+	KeyTrigger  string              `json:"key_trigger" yaml:"key_trigger"`
+}
+
+// Delegation configures whether and how an agent can delegate tasks.
+//
+// Scope (May 2026) controls how the runtime gate at
+// internal/engine/delegation.go interprets the agent's delegation reach.
+// Two values are accepted:
+//
+//   - "" / "restrictive" (default): the agent is constrained by the
+//     active swarm.Context.Members[] when running inside a swarm, and
+//     by DelegationAllowlist when standalone. This is the historical
+//     behaviour and the safe default for leaf agents
+//     (Senior-Engineer, KB-Curator, etc.) that should not be able to
+//     reach beyond their immediate scope.
+//
+//   - "permissive": the agent is a designated orchestrator that may
+//     delegate to ANY registered agent or swarm, regardless of the
+//     active swarm.Context.Members[] or DelegationAllowlist. The gate
+//     still verifies that the target exists in the agent or swarm
+//     registry — a typo is rejected with a clarified message that
+//     names the permissive scope so the user knows the failure is
+//     "target unknown" not "scope-restricted".
+//
+// Principle: "permissive first, restrictive last." Top-level
+// orchestrators (coordinator, Team-Lead) declare scope: permissive so
+// they can route across the full agent graph; leaf agents inherit the
+// restrictive default so adding a tool-using agent never accidentally
+// widens its reach.
+type Delegation struct {
+	CanDelegate         bool     `json:"can_delegate" yaml:"can_delegate"`
+	DelegationAllowlist []string `json:"delegation_allowlist" yaml:"delegation_allowlist"`
+	// Scope selects the gate-interpretation. Empty / "restrictive" is
+	// the safe default; "permissive" opts the agent out of the
+	// Members[] and DelegationAllowlist checks. See the type doc for
+	// the contract.
+	Scope string `json:"scope,omitempty" yaml:"scope,omitempty"`
+}
+
+// Delegation scope constants. Empty string is treated as restrictive so
+// existing manifests need no migration.
+const (
+	DelegationScopeRestrictive = "restrictive"
+	DelegationScopePermissive  = "permissive"
+)
+
+// IsPermissive reports whether the agent is a permissive orchestrator
+// — i.e. allowed to delegate to any registered agent or swarm
+// regardless of the active swarm.Context.Members[] or
+// DelegationAllowlist. Empty Scope and "restrictive" both return false;
+// only "permissive" returns true.
+//
+// Returns:
+//   - true when Scope == "permissive".
+//   - false otherwise (including the zero value).
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for IsPermissive.
+func (d Delegation) IsPermissive() bool {
+	return d.Scope == DelegationScopePermissive
+}
+
+// HarnessConfig defines the output validation and quality layers for an agent.
+// When nil, the legacy HarnessEnabled boolean is used as a fallback.
+type HarnessConfig struct {
+	Enabled       bool        `json:"enabled" yaml:"enabled"`
+	Validators    []string    `json:"validators,omitempty" yaml:"validators,omitempty"`
+	CriticEnabled bool        `json:"critic_enabled" yaml:"critic_enabled"`
+	VotingEnabled bool        `json:"voting_enabled" yaml:"voting_enabled"`
+	MaxAttempts   int         `json:"max_attempts,omitempty" yaml:"max_attempts,omitempty"`
+	Waves         []WaveStage `json:"waves,omitempty" yaml:"waves,omitempty"`
+}
+
+// WaveStage configures one stage of an orchestrator's fan-in barrier.
+// The harness re-prompts the orchestrator when ANY stage's expected
+// coordination_store keys are missing at the turn the orchestrator
+// tries to yield to the user. Closes the planner-stops-three-stages-
+// early symptom: with waves declared, the deterministic loop is
+// enforced at the harness level, not just by prompt discipline.
+//
+// Mirrors internal/plan/harness.WaveStage; the harness adapter
+// converts between the two so manifest YAML doesn't need to import
+// the harness package.
+type WaveStage struct {
+	Name         string   `json:"name" yaml:"name"`
+	ExpectedKeys []string `json:"expected_keys" yaml:"expected_keys"`
+	Description  string   `json:"description,omitempty" yaml:"description,omitempty"`
+}
+
+// LoopConfig defines the delegation loop for coordinator agents.
+// When nil, the agent operates in single-shot mode without a review cycle.
+type LoopConfig struct {
+	Enabled     bool              `json:"enabled" yaml:"enabled"`
+	Writer      string            `json:"writer,omitempty" yaml:"writer,omitempty"`
+	Reviewer    string            `json:"reviewer,omitempty" yaml:"reviewer,omitempty"`
+	MaxAttempts int               `json:"max_attempts,omitempty" yaml:"max_attempts,omitempty"`
+	Roles       map[string]string `json:"roles,omitempty" yaml:"roles,omitempty"`
+}
+
+// Hooks defines pre and post execution hooks for an agent.
+type Hooks struct {
+	Before []string `json:"before" yaml:"before"`
+	After  []string `json:"after" yaml:"after"`
+}
+
+// Instructions contains system prompts for an agent.
+type Instructions struct {
+	SystemPrompt         string `json:"system_prompt" yaml:"system_prompt"`
+	StructuredPromptFile string `json:"structured_prompt_file" yaml:"structured_prompt_file"`
+}
+
+// HistoricalDefaultEmbeddingModel is the embedding model used when no
+// app-level configuration overrides it. Kept as a package constant so
+// the agent package has a self-contained fallback (loader applyDefaults
+// runs on standalone manifest loads with no AppConfig in scope).
+//
+// Why this is special: vector embeddings must be CONSISTENT across an
+// entire vector-store deployment — vectors produced by different models
+// are not directly comparable, so a cluster sharing a Qdrant collection
+// must agree on one embedding model. The historical default is an
+// Ollama-served 768-dim Cosine model (nomic-embed-text) that matches
+// the existing flowstate Qdrant collection shape.
+const HistoricalDefaultEmbeddingModel = "nomic-embed-text"
+
+// defaultEmbeddingModel is the package-level fallback consumed by
+// DefaultContextManagement() and the manifest-loader's applyDefaults.
+// Initialised to the historical value; the application may swap it at
+// startup via SetDefaultEmbeddingModel so per-agent manifests inherit
+// the cluster-wide config knob (see config.AppConfig.EmbeddingModel).
+//
+// This indirection lets the agent package stay decoupled from the
+// config package while still letting an app-level config drive the
+// per-agent default.
+var defaultEmbeddingModel = HistoricalDefaultEmbeddingModel
+
+// SetDefaultEmbeddingModel overrides the package-level embedding-model
+// fallback used by DefaultContextManagement and manifest applyDefaults.
+// An empty string resets to the historical default. This is intended
+// to be called once at application startup from the app package after
+// AppConfig has been resolved; concurrent callers (e.g. parallel test
+// runners) should treat the value as a soft global.
+//
+// Expected: parameters for SetDefaultEmbeddingModel.
+// Side effects: None.
+func SetDefaultEmbeddingModel(model string) {
+	if model == "" {
+		defaultEmbeddingModel = HistoricalDefaultEmbeddingModel
+		return
+	}
+	defaultEmbeddingModel = model
+}
+
+// DefaultContextManagement returns sensible default context management settings.
+//
+// EmbeddingModel is sourced from the package-level fallback (see
+// SetDefaultEmbeddingModel). Use DefaultContextManagementWith to pass an
+// explicit value when you cannot rely on the global being set — typically
+// only inside the app package's startup wiring.
+//
+// Returns:
+//   - A ContextManagement struct with default values for all fields.
+//
+// Side effects:
+//   - None.
+func DefaultContextManagement() ContextManagement {
+	return DefaultContextManagementWith(defaultEmbeddingModel)
+}
+
+// DefaultContextManagementWith returns the default context-management
+// settings with EmbeddingModel set to the supplied value. Empty string
+// falls back to HistoricalDefaultEmbeddingModel so the manifest is
+// always populated.
+//
+// Returns:
+//   - A ContextManagement struct.
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for DefaultContextManagementWith.
+func DefaultContextManagementWith(embeddingModel string) ContextManagement {
+	if embeddingModel == "" {
+		embeddingModel = HistoricalDefaultEmbeddingModel
+	}
+	return ContextManagement{
+		MaxRecursionDepth:   2,
+		SummaryTier:         "quick",
+		SlidingWindowSize:   50,
+		CompactionThreshold: 0.75,
+		EmbeddingModel:      embeddingModel,
+	}
+}
+
+// Validate checks that the manifest has required fields.
+//
+// Returns:
+//   - nil if the manifest is valid.
+//   - A ValidationError if required fields are missing.
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for Validate.
+func (m *Manifest) Validate() error {
+	if m.ID == "" {
+		return &ValidationError{Field: "id", Message: "required"}
+	}
+	if m.Name == "" {
+		return &ValidationError{Field: "name", Message: "required"}
+	}
+	if m.SchemaVersion != "" && strings.TrimSpace(m.SchemaVersion) == "" {
+		return &ValidationError{Field: "schema_version", Message: "must not be blank"}
+	}
+	if m.Color != "" {
+		if !manifestHexColorPattern.MatchString(m.Color) {
+			return &ValidationError{Field: "color", Message: "must be empty or a valid hex colour (#RRGGBB)"}
+		}
+	}
+	switch m.ModelPolicy {
+	case "", ModelPolicyPermissive, ModelPolicyStrict:
+	default:
+		return &ValidationError{
+			Field:   "model_policy",
+			Message: `must be "permissive", "strict", or empty`,
+		}
+	}
+	switch m.Delegation.Scope {
+	case "", DelegationScopeRestrictive, DelegationScopePermissive:
+	default:
+		return &ValidationError{
+			Field:   "delegation.scope",
+			Message: `must be "permissive", "restrictive", or empty`,
+		}
+	}
+	return nil
+}
+
+// EffectiveTools returns the set of tools an agent may invoke after
+// applying D1 inherit-by-default semantics from the Agent Runtime
+// Quality plan (May 2026).
+//
+// Computation:
+//
+//	union(Capabilities.Tools, DefaultBaseTools) − Capabilities.ToolsDeny
+//
+// The result is sorted for stable ordering across callers (test
+// assertions, debug surfaces, prompt rendering). Manifest aliases
+// like "file" / "delegate" / "autoresearch_run" are NOT expanded here
+// — engine-side buildAllowedToolSetFor remains the seam that turns
+// bundle aliases into individual tool names. EffectiveTools answers
+// the conceptual "what is this manifest's tool floor?" question; the
+// engine answers "what tools does the runtime actually surface?".
+//
+// Returns:
+//   - A sorted []string of effective tool names. Empty result is
+//     impossible under D1 — the base set is always present unless
+//     every base tool is explicitly denied.
+//
+// Side effects:
+//   - None; pure computation over the receiver.
+//
+// Expected: parameters for EffectiveTools.
+func (m *Manifest) EffectiveTools() []string {
+	if m == nil {
+		return DefaultBaseTools()
+	}
+	set := make(map[string]struct{}, len(m.Capabilities.Tools)+len(defaultBaseTools))
+	for _, t := range m.Capabilities.Tools {
+		if t == "" {
+			continue
+		}
+		set[t] = struct{}{}
+	}
+	for _, t := range defaultBaseTools {
+		set[t] = struct{}{}
+	}
+	for _, t := range m.Capabilities.ToolsDeny {
+		delete(set, t)
+	}
+	out := make([]string, 0, len(set))
+	for t := range set {
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ValidationError represents a manifest validation failure.
+type ValidationError struct {
+	Field   string
+	Message string
+}
+
+// Error returns the validation error message.
+//
+// Returns:
+//   - A string describing the validation failure.
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for Error.
+func (e *ValidationError) Error() string {
+	return e.Field + ": " + e.Message
+}

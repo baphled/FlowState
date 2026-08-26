@@ -1,0 +1,804 @@
+package engine_test
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"time"
+
+	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/runner"
+	"github.com/baphled/flowstate/internal/tool"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+)
+
+var _ = Describe("BackgroundOutputTool", func() {
+	var (
+		manager *engine.BackgroundTaskManager
+		botTool *engine.BackgroundOutputTool
+		ctx     context.Context
+	)
+
+	BeforeEach(func() {
+		manager = engine.NewBackgroundTaskManager()
+		botTool = engine.NewBackgroundOutputTool(manager)
+		ctx = context.Background()
+	})
+
+	Describe("Name", func() {
+		It("returns 'background_output'", func() {
+			Expect(botTool.Name()).To(Equal("background_output"))
+		})
+	})
+
+	Describe("Description", func() {
+		It("returns a non-empty description", func() {
+			Expect(botTool.Description()).NotTo(BeEmpty())
+		})
+	})
+
+	Describe("Schema", func() {
+		It("includes task_id as required property", func() {
+			schema := botTool.Schema()
+			Expect(schema.Required).To(ContainElement("task_id"))
+		})
+
+		It("includes task_id property", func() {
+			schema := botTool.Schema()
+			Expect(schema.Properties).To(HaveKey("task_id"))
+		})
+
+		It("includes optional block property", func() {
+			schema := botTool.Schema()
+			Expect(schema.Properties).To(HaveKey("block"))
+		})
+
+		It("includes optional timeout property", func() {
+			schema := botTool.Schema()
+			Expect(schema.Properties).To(HaveKey("timeout"))
+		})
+
+		It("includes optional full_session property", func() {
+			schema := botTool.Schema()
+			Expect(schema.Properties).To(HaveKey("full_session"))
+		})
+	})
+
+	Describe("Execute", func() {
+		Context("when task_id is missing", func() {
+			It("returns an error", func() {
+				input := tool.Input{
+					Name:      "background_output",
+					Arguments: map[string]interface{}{},
+				}
+				_, err := botTool.Execute(ctx, input)
+				Expect(err).To(HaveOccurred())
+			})
+		})
+
+		Context("when task is not found", func() {
+			It("returns an error", func() {
+				input := tool.Input{
+					Name: "background_output",
+					Arguments: map[string]interface{}{
+						"task_id": "nonexistent-task",
+					},
+				}
+				_, err := botTool.Execute(ctx, input)
+				Expect(err).To(HaveOccurred())
+			})
+		})
+
+		Context("when task is running and block=false", func() {
+			It("returns task status immediately", func() {
+				task := manager.Launch(ctx, "task-1", "agent-1", "test task", func(ctx context.Context) (string, error) {
+					time.Sleep(100 * time.Millisecond)
+					return "done", nil
+				})
+
+				input := tool.Input{
+					Name: "background_output",
+					Arguments: map[string]interface{}{
+						"task_id": task.ID,
+						"block":   false,
+					},
+				}
+
+				result, err := botTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+
+				var output map[string]interface{}
+				err = json.Unmarshal([]byte(result.Output), &output)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(output).To(HaveKey("task_id"))
+				Expect(output).To(HaveKey("status"))
+			})
+		})
+
+		Context("when task is completed", func() {
+			It("returns completed status with result", func() {
+				task := manager.Launch(ctx, "task-2", "agent-2", "test task", func(ctx context.Context) (string, error) {
+					return "result content", nil
+				})
+
+				time.Sleep(50 * time.Millisecond)
+
+				input := tool.Input{
+					Name: "background_output",
+					Arguments: map[string]interface{}{
+						"task_id": task.ID,
+					},
+				}
+
+				result, err := botTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+
+				var output map[string]interface{}
+				err = json.Unmarshal([]byte(result.Output), &output)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(output["status"]).To(Equal("completed"))
+				Expect(output).To(HaveKey("result"))
+			})
+		})
+
+		Context("when block=true and task completes", func() {
+			It("polls until task completes", func() {
+				task := manager.Launch(ctx, "task-3", "agent-3", "test task", func(ctx context.Context) (string, error) {
+					time.Sleep(50 * time.Millisecond)
+					return "blocking result", nil
+				})
+
+				input := tool.Input{
+					Name: "background_output",
+					Arguments: map[string]interface{}{
+						"task_id": task.ID,
+						"block":   true,
+						"timeout": 5000,
+					},
+				}
+
+				result, err := botTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+
+				var output map[string]interface{}
+				err = json.Unmarshal([]byte(result.Output), &output)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(output["status"]).To(Equal("completed"))
+			})
+		})
+
+		// Regression pin for the "polling timeout despite task complete"
+		// misdiagnosis (May 2026). A planner-driver session reported that
+		// `background_output(block=true)` was timing out even though the
+		// coordination store contained the child sub-agent's output keys.
+		// The reported pattern was: child writes to coordination_store
+		// via the `coordination_store` tool mid-stream, then the planner
+		// reads coord-store and assumes the task itself has finished.
+		// Live verification on `feature/vue-ui-rebase` HEAD (post-76fb7531)
+		// confirmed the polling loop is correct — when the BackgroundTask
+		// itself reaches a terminal status BEFORE the deadline, the poll
+		// returns the terminal status immediately. The "timeout" the
+		// morning session saw fired against tasks whose sub-agent stream
+		// was genuinely still running (coord-store write != task done).
+		//
+		// This spec pins the polling-loop happy path at the seam: when
+		// the task is ALREADY terminal at the moment block=true is
+		// invoked, the call returns immediately (well inside the
+		// configured timeout) with the completed status. A regression
+		// that broke this would surface here as a deadline-driven
+		// timeout error.
+		Context("when block=true and task is already terminal", func() {
+			It("returns the completed result immediately without timing out", func() {
+				task := manager.Launch(ctx, "task-already-done", "agent-instant", "instant task", func(ctx context.Context) (string, error) {
+					return "instant result", nil
+				})
+
+				// Wait for the goroutine in executeTask to flip the
+				// status. 250ms is generous on any practical scheduler
+				// — the fn returns immediately and the status update
+				// runs under the manager's lock right after.
+				Eventually(func() string {
+					t, _ := manager.Get(task.ID)
+					return t.Status.Load()
+				}, 1*time.Second, 10*time.Millisecond).Should(Equal("completed"))
+
+				input := tool.Input{
+					Name: "background_output",
+					Arguments: map[string]interface{}{
+						"task_id": task.ID,
+						"block":   true,
+						"timeout": 60000, // 60s — would dwarf the actual return time if poll was broken
+					},
+				}
+
+				start := time.Now()
+				result, err := botTool.Execute(ctx, input)
+				elapsed := time.Since(start)
+
+				Expect(err).NotTo(HaveOccurred())
+				// 250ms generous upper bound — the poll loop's first
+				// iteration should hit the terminal-status branch and
+				// return without any time.Sleep. Anything close to the
+				// 60s timeout would indicate the poll loop is not
+				// reading the live task state.
+				Expect(elapsed).To(BeNumerically("<", 250*time.Millisecond),
+					"block=true on an already-terminal task must return immediately, not poll to deadline")
+
+				var output map[string]interface{}
+				err = json.Unmarshal([]byte(result.Output), &output)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(output["status"]).To(Equal("completed"))
+				Expect(output["result"]).To(Equal("instant result"))
+			})
+		})
+
+		Context("when block=true and timeout is exceeded", func() {
+			It("returns the task's current state rather than a bare timeout error", func() {
+				task := manager.Launch(ctx, "task-4", "agent-4", "test task", func(ctx context.Context) (string, error) {
+					time.Sleep(1 * time.Second)
+					return "result", nil
+				})
+
+				input := tool.Input{
+					Name: "background_output",
+					Arguments: map[string]interface{}{
+						"task_id": task.ID,
+						"block":   true,
+						"timeout": 100,
+					},
+				}
+
+				result, err := botTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+
+				var output map[string]interface{}
+				err = json.Unmarshal([]byte(result.Output), &output)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(output["task_id"]).To(Equal(task.ID))
+				Expect(output["status"]).To(Equal("running"))
+			})
+		})
+
+		Context("when full_session=true", func() {
+			It("includes full_session flag in result", func() {
+				task := manager.Launch(ctx, "task-5", "agent-5", "test task", func(ctx context.Context) (string, error) {
+					return "session result", nil
+				})
+
+				time.Sleep(50 * time.Millisecond)
+
+				input := tool.Input{
+					Name: "background_output",
+					Arguments: map[string]interface{}{
+						"task_id":      task.ID,
+						"full_session": true,
+					},
+				}
+
+				result, err := botTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+
+				var output map[string]interface{}
+				err = json.Unmarshal([]byte(result.Output), &output)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(output).To(HaveKey("full_session"))
+				Expect(output["full_session"]).To(BeTrue())
+			})
+		})
+
+		Context("when context is cancelled during blocking poll", func() {
+			It("returns promptly with the task state instead of waiting for timeout", func() {
+				task := manager.Launch(ctx, "poll-cancel-test", "agent-cancel", "cancel test", func(ctx context.Context) (string, error) {
+					time.Sleep(10 * time.Second) // never completes
+					return "done", nil
+				})
+
+				cancelCtx, cancel := context.WithCancel(context.Background())
+				// Cancel after 100ms
+				go func() {
+					time.Sleep(100 * time.Millisecond)
+					cancel()
+				}()
+
+				input := tool.Input{
+					Name: "background_output",
+					Arguments: map[string]interface{}{
+						"task_id": task.ID,
+						"block":   true,
+						"timeout": float64(30000), // 30s timeout - should NOT wait this long
+					},
+				}
+				start := time.Now()
+				result, err := botTool.Execute(cancelCtx, input)
+				elapsed := time.Since(start)
+
+				// Should return within ~2s with the task's current state,
+				// not wait 30 seconds or return a bare error.
+				Expect(err).NotTo(HaveOccurred())
+				Expect(elapsed).To(BeNumerically("<", 2*time.Second))
+
+				var output map[string]interface{}
+				err = json.Unmarshal([]byte(result.Output), &output)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(output["status"]).To(Equal("running"))
+			})
+		})
+
+		// Chat-UI leak triage (May 2026): when a delegated background
+		// task fails (e.g. provider returns 429 rate-limit), the LLM
+		// calls background_output to retrieve the result. The tool's
+		// JSON response is persisted as a tool_result message and
+		// rendered in the chat bubble. Prior to sanitisation the
+		// "error" field carried the raw provider stack
+		// ('delegation stream error: provider github-copilot error
+		// [rate_limit HTTP 429]: POST "https://api.githubcopilot.com/...': 429 Too Many Requests')
+		// directly into the user-visible chat, leaking infrastructure
+		// detail and provider identifiers. Session 2d8dc0ac messages
+		// 231/232/243/244 captured the leak.
+		Context("when the underlying task failed with a rate-limit error", func() {
+			It("returns a sanitised canonical error message and a correlation_id, never the raw provider error", func() {
+				rawErr := errors.New(`delegation stream error: provider github-copilot error [rate_limit HTTP 429]: POST "https://api.githubcopilot.com/chat/completions": 429 Too Many Requests `)
+				task := manager.Launch(ctx, "leak-c-rate", "agent-x", "rate-limited delegation", func(_ context.Context) (string, error) {
+					return "", rawErr
+				})
+
+				Eventually(func() string {
+					t, _ := manager.Get(task.ID)
+					return t.Status.Load()
+				}, time.Second).Should(Equal("failed"))
+
+				input := tool.Input{
+					Name: "background_output",
+					Arguments: map[string]interface{}{
+						"task_id": task.ID,
+					},
+				}
+
+				result, err := botTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+
+				var output map[string]interface{}
+				Expect(json.Unmarshal([]byte(result.Output), &output)).To(Succeed())
+				Expect(output["status"]).To(Equal("failed"))
+
+				errField, ok := output["error"].(string)
+				Expect(ok).To(BeTrue(), "error field must be present and a string")
+				Expect(errField).NotTo(ContainSubstring("github-copilot"),
+					"raw provider name must not leak into the chat-bubble payload")
+				Expect(errField).NotTo(ContainSubstring("api.githubcopilot.com"),
+					"raw provider URL must not leak into the chat-bubble payload")
+				Expect(errField).NotTo(ContainSubstring("HTTP 429"),
+					"raw HTTP status must not leak into the chat-bubble payload")
+				Expect(errField).To(ContainSubstring("rate"),
+					"sanitised message should still convey the rate-limit category")
+
+				cid, ok := output["correlation_id"].(string)
+				Expect(ok).To(BeTrue(), "correlation_id must accompany the sanitised error so support can locate the server log entry")
+				Expect(cid).To(MatchRegexp(`^[0-9a-f]{16}$`), "correlation_id must be 8-byte hex (matches internal/api/errors.go)")
+			})
+		})
+
+		Context("when the underlying task failed with a generic error", func() {
+			It("returns a generic safe error message, never the raw error string", func() {
+				rawErr := errors.New("delegated session ate the database")
+				task := manager.Launch(ctx, "leak-c-generic", "agent-y", "generic failure", func(_ context.Context) (string, error) {
+					return "", rawErr
+				})
+
+				Eventually(func() string {
+					t, _ := manager.Get(task.ID)
+					return t.Status.Load()
+				}, time.Second).Should(Equal("failed"))
+
+				input := tool.Input{
+					Name:      "background_output",
+					Arguments: map[string]interface{}{"task_id": task.ID},
+				}
+
+				result, err := botTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+
+				var output map[string]interface{}
+				Expect(json.Unmarshal([]byte(result.Output), &output)).To(Succeed())
+				Expect(output["status"]).To(Equal("failed"))
+
+				errField, _ := output["error"].(string)
+				Expect(errField).NotTo(ContainSubstring("ate the database"),
+					"raw error text must never leak — server log retains it via correlation_id")
+				Expect(output).To(HaveKey("correlation_id"))
+			})
+		})
+
+		// Bugs A+B (forensic anchor: session 7dfdb197-ce21-45a2-b5da-f2fa62dd293b)
+		//
+		// background_list returns 8-char prefix forms of task IDs in its
+		// rendered output (e.g. "6b5ade98"); the model then passes that
+		// prefix to background_output, which previously errored with a
+		// bare "task not found: 6b5ade98" — no hint that prefix-match
+		// might work, no list of known IDs. That trained the model to
+		// retry with the full UUID (fine) and, on subsequent turns, to
+		// hallucinate plausible-shaped UUIDs (Bug A: d09e3939, 0529850f
+		// at 17:34:54 / 17:35:15).
+		//
+		// Fix: accept unique prefix matches; on ambiguous/no-match
+		// surface a model-friendly error in the Bug 2 precedent shape
+		// (one-per-line backtick-quoted; see
+		// internal/engine/delegation.go formatRejection at 4847+).
+		Context("when task_id is a unique prefix of an existing task", func() {
+			It("returns that task's output (prefix accepted)", func() {
+				task := manager.Launch(ctx, "6b5ade98-1234-5678-9abc-def012345678", "agent-prefix", "prefix task", func(ctx context.Context) (string, error) {
+					return "prefix-resolved result", nil
+				})
+				Eventually(func() string {
+					t, _ := manager.Get(task.ID)
+					return t.Status.Load()
+				}, time.Second).Should(Equal("completed"))
+
+				input := tool.Input{
+					Name: "background_output",
+					Arguments: map[string]interface{}{
+						"task_id": "6b5ade98",
+					},
+				}
+				result, err := botTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+
+				var output map[string]interface{}
+				err = json.Unmarshal([]byte(result.Output), &output)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(output["task_id"]).To(Equal(task.ID))
+				Expect(output["status"]).To(Equal("completed"))
+				Expect(output["result"]).To(Equal("prefix-resolved result"))
+			})
+		})
+
+		Context("when task_id is a prefix matching multiple tasks", func() {
+			It("returns an error naming all matching task IDs", func() {
+				id1 := "abc12345-1111-1111-1111-111111111111"
+				id2 := "abc12345-2222-2222-2222-222222222222"
+				manager.Launch(ctx, id1, "agent-amb", "first ambiguous", func(ctx context.Context) (string, error) {
+					return "r1", nil
+				})
+				manager.Launch(ctx, id2, "agent-amb", "second ambiguous", func(ctx context.Context) (string, error) {
+					return "r2", nil
+				})
+
+				input := tool.Input{
+					Name: "background_output",
+					Arguments: map[string]interface{}{
+						"task_id": "abc12345",
+					},
+				}
+				_, err := botTool.Execute(ctx, input)
+				Expect(err).To(HaveOccurred())
+				msg := err.Error()
+				Expect(msg).To(ContainSubstring("abc12345"))
+				Expect(msg).To(ContainSubstring(id1))
+				Expect(msg).To(ContainSubstring(id2))
+				// Bug 2 precedent: matching IDs rendered backtick-quoted, one per line.
+				Expect(msg).To(ContainSubstring("`" + id1 + "`"))
+				Expect(msg).To(ContainSubstring("`" + id2 + "`"))
+			})
+		})
+
+		Context("when task_id is a full UUID match (regression pin)", func() {
+			It("returns the task's output exactly as before the prefix fix", func() {
+				fullID := "deadbeef-cafe-babe-feed-0123456789ab"
+				task := manager.Launch(ctx, fullID, "agent-full", "full uuid task", func(ctx context.Context) (string, error) {
+					return "full-uuid result", nil
+				})
+				Eventually(func() string {
+					t, _ := manager.Get(task.ID)
+					return t.Status.Load()
+				}, time.Second).Should(Equal("completed"))
+
+				input := tool.Input{
+					Name: "background_output",
+					Arguments: map[string]interface{}{
+						"task_id": fullID,
+					},
+				}
+				result, err := botTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+
+				var output map[string]interface{}
+				err = json.Unmarshal([]byte(result.Output), &output)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(output["task_id"]).To(Equal(fullID))
+				Expect(output["result"]).To(Equal("full-uuid result"))
+			})
+		})
+
+		Context("when task_id matches no known task", func() {
+			It("returns an error that names known task IDs (or suggests background_list when none)", func() {
+				existing := manager.Launch(ctx, "11111111-aaaa-bbbb-cccc-222222222222", "agent-known", "known task", func(ctx context.Context) (string, error) {
+					return "ok", nil
+				})
+				Eventually(func() string {
+					t, _ := manager.Get(existing.ID)
+					return t.Status.Load()
+				}, time.Second).Should(Equal("completed"))
+
+				input := tool.Input{
+					Name: "background_output",
+					Arguments: map[string]interface{}{
+						"task_id": "d09e3939",
+					},
+				}
+				_, err := botTool.Execute(ctx, input)
+				Expect(err).To(HaveOccurred())
+				msg := err.Error()
+				// Echoes the offending id so the model can see what it
+				// passed.
+				Expect(msg).To(ContainSubstring("d09e3939"))
+				// Lists the existing known IDs in backtick form so the
+				// model has a grounded recovery target instead of
+				// hallucinating a fresh UUID (Bug A shape).
+				Expect(msg).To(ContainSubstring("`" + existing.ID + "`"))
+			})
+
+			It("suggests background_list when no tasks are tracked", func() {
+				input := tool.Input{
+					Name: "background_output",
+					Arguments: map[string]interface{}{
+						"task_id": "0529850f",
+					},
+				}
+				_, err := botTool.Execute(ctx, input)
+				Expect(err).To(HaveOccurred())
+				msg := err.Error()
+				Expect(msg).To(ContainSubstring("0529850f"))
+				Expect(msg).To(ContainSubstring("background_list"))
+			})
+		})
+
+		Context("regression: multiple sequential background_output calls", func() {
+			It("successfully retrieves multiple different tasks without eviction conflicts", func() {
+				// Launch two background tasks
+				task1 := manager.Launch(ctx, "task-1", "agent-1", "first task", func(ctx context.Context) (string, error) {
+					return "result 1", nil
+				})
+				task2 := manager.Launch(ctx, "task-2", "agent-2", "second task", func(ctx context.Context) (string, error) {
+					return "result 2", nil
+				})
+
+				// Wait for both to complete
+				Eventually(func() string {
+					t, _ := manager.Get(task1.ID)
+					return t.Status.Load()
+				}, time.Second).Should(Equal("completed"))
+				Eventually(func() string {
+					t, _ := manager.Get(task2.ID)
+					return t.Status.Load()
+				}, time.Second).Should(Equal("completed"))
+
+				// First background_output call
+				input1 := tool.Input{
+					Name: "background_output",
+					Arguments: map[string]interface{}{
+						"task_id": task1.ID,
+					},
+				}
+				result1, err1 := botTool.Execute(ctx, input1)
+				Expect(err1).NotTo(HaveOccurred())
+				Expect(result1.Output).NotTo(BeEmpty())
+
+				// Simulate eviction (as would happen after each tool result in the engine)
+				manager.EvictCompleted()
+
+				// Second background_output call should succeed (task2 is still not accessed)
+				// but it should NOT have been evicted by the first call
+				input2 := tool.Input{
+					Name: "background_output",
+					Arguments: map[string]interface{}{
+						"task_id": task2.ID,
+					},
+				}
+				result2, err2 := botTool.Execute(ctx, input2)
+				Expect(err2).NotTo(HaveOccurred())
+				Expect(result2.Output).NotTo(BeEmpty())
+
+				// Verify task2 is now marked as accessed
+				task2Updated, found := manager.Get(task2.ID)
+				Expect(found).To(BeTrue())
+				Expect(task2Updated.Status.Load()).To(Equal("completed"))
+			})
+		})
+	})
+})
+
+// stubAutoresearchRunner is a test double for runner.AutoresearchRunner.
+type stubAutoresearchRunner struct {
+	result runner.AutoresearchResult
+	err    error
+}
+
+func (s *stubAutoresearchRunner) RunAutoresearch(
+	ctx context.Context,
+	opts runner.AutoresearchOpts,
+	out io.Writer,
+) (runner.AutoresearchResult, error) {
+	return s.result, s.err
+}
+
+var _ = Describe("AutoresearchRunTool", func() {
+	var (
+		manager *engine.BackgroundTaskManager
+		artTool *engine.AutoresearchRunTool
+		stub    *stubAutoresearchRunner
+		ctx     context.Context
+	)
+
+	BeforeEach(func() {
+		manager = engine.NewBackgroundTaskManager()
+		stub = &stubAutoresearchRunner{
+			result: runner.AutoresearchResult{
+				RunID:             "stub-run",
+				TerminationReason: "max-trials",
+				TotalTrials:       1,
+				Converged:         false,
+				BestScore:         1.0,
+			},
+		}
+		artTool = engine.NewAutoresearchRunTool(manager, stub)
+		ctx = context.Background()
+	})
+
+	Describe("Name", func() {
+		It("returns 'autoresearch_run'", func() {
+			Expect(artTool.Name()).To(Equal("autoresearch_run"))
+		})
+	})
+
+	Describe("Schema", func() {
+		It("requires surface, driver_script, evaluator_script", func() {
+			schema := artTool.Schema()
+			Expect(schema.Required).To(ContainElement("surface"))
+			Expect(schema.Required).To(ContainElement("driver_script"))
+			Expect(schema.Required).To(ContainElement("evaluator_script"))
+		})
+
+		It("includes optional max_trials, time_budget, metric_direction, run_id", func() {
+			schema := artTool.Schema()
+			Expect(schema.Properties).To(HaveKey("max_trials"))
+			Expect(schema.Properties).To(HaveKey("time_budget"))
+			Expect(schema.Properties).To(HaveKey("metric_direction"))
+			Expect(schema.Properties).To(HaveKey("run_id"))
+		})
+
+		It("includes optional driver_agent for overriding the agent inside the driver script", func() {
+			schema := artTool.Schema()
+			Expect(schema.Properties).To(HaveKey("driver_agent"),
+				"schema must expose driver_agent so agents can select a more capable model without editing the driver script")
+		})
+	})
+
+	Context("AutoresearchRunTool", func() {
+		It("Execute returns task_id and status=running immediately", func() {
+			input := tool.Input{
+				Name: "autoresearch_run",
+				Arguments: map[string]any{
+					"surface":          "/some/surface.md",
+					"driver_script":    "/some/driver.sh",
+					"evaluator_script": "/some/scorer.sh",
+				},
+			}
+			result, err := artTool.Execute(ctx, input)
+			Expect(err).NotTo(HaveOccurred())
+
+			var output map[string]string
+			Expect(json.Unmarshal([]byte(result.Output), &output)).To(Succeed())
+			Expect(output).To(HaveKey("task_id"))
+			Expect(output["task_id"]).NotTo(BeEmpty())
+			Expect(output["status"]).To(Equal("running"))
+		})
+
+		It("returns an error when surface is missing", func() {
+			input := tool.Input{
+				Name: "autoresearch_run",
+				Arguments: map[string]any{
+					"driver_script":    "/some/driver.sh",
+					"evaluator_script": "/some/scorer.sh",
+				},
+			}
+			_, err := artTool.Execute(ctx, input)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("surface"))
+		})
+
+		It("returns an error when driver_script is missing", func() {
+			input := tool.Input{
+				Name: "autoresearch_run",
+				Arguments: map[string]any{
+					"surface":          "/some/surface.md",
+					"evaluator_script": "/some/scorer.sh",
+				},
+			}
+			_, err := artTool.Execute(ctx, input)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("driver_script"))
+		})
+
+		It("returns an error when evaluator_script is missing", func() {
+			input := tool.Input{
+				Name: "autoresearch_run",
+				Arguments: map[string]any{
+					"surface":       "/some/surface.md",
+					"driver_script": "/some/driver.sh",
+				},
+			}
+			_, err := artTool.Execute(ctx, input)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("evaluator_script"))
+		})
+
+		It("uses provided run_id as task_id", func() {
+			input := tool.Input{
+				Name: "autoresearch_run",
+				Arguments: map[string]any{
+					"surface":          "/some/surface.md",
+					"driver_script":    "/some/driver.sh",
+					"evaluator_script": "/some/scorer.sh",
+					"run_id":           "explicit-run-id",
+				},
+			}
+			result, err := artTool.Execute(ctx, input)
+			Expect(err).NotTo(HaveOccurred())
+
+			var output map[string]string
+			Expect(json.Unmarshal([]byte(result.Output), &output)).To(Succeed())
+			Expect(output["task_id"]).To(Equal("explicit-run-id"))
+		})
+
+		It("completes the background task and exposes result JSON via background_output", func() {
+			// Execute returns immediately with task_id; the stub runner
+			// returns a fixed AutoresearchResult with no blocking.
+			input := tool.Input{
+				Name: "autoresearch_run",
+				Arguments: map[string]any{
+					"surface":          "/some/surface.md",
+					"driver_script":    "/some/driver.sh",
+					"evaluator_script": "/some/scorer.sh",
+					"run_id":           "bg-integration-test",
+				},
+			}
+			result, err := artTool.Execute(ctx, input)
+			Expect(err).NotTo(HaveOccurred())
+
+			var launchOutput map[string]string
+			Expect(json.Unmarshal([]byte(result.Output), &launchOutput)).To(Succeed())
+			taskID := launchOutput["task_id"]
+			Expect(taskID).To(Equal("bg-integration-test"))
+
+			// Poll until the background task reaches completed (the stub
+			// runner returns instantly so this should be near-immediate).
+			deadline := time.Now().Add(2 * time.Second)
+			var task engine.BackgroundTask
+			var found bool
+			for time.Now().Before(deadline) {
+				task, found = manager.Get(taskID)
+				if found && task.Status.Load() == "completed" {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			Expect(found).To(BeTrue(), "task should be found in manager")
+			Expect(task.Status.Load()).To(Equal("completed"), "task should have completed")
+
+			// Unmarshal the result JSON stored by the background function.
+			var resultData map[string]any
+			Expect(json.Unmarshal([]byte(task.Result), &resultData)).To(Succeed())
+			Expect(resultData["RunID"]).To(Equal("stub-run"))
+			Expect(resultData["TerminationReason"]).To(Equal("max-trials"))
+			Expect(resultData["TotalTrials"]).To(BeNumerically("==", 1))
+		})
+	})
+
+	Describe("CanDelegate", func() {
+		It("returns true", func() {
+			Expect(artTool.CanDelegate()).To(BeTrue())
+		})
+	})
+})

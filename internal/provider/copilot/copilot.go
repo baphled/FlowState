@@ -1,50 +1,376 @@
+// Package copilot provides a GitHub Copilot provider implementation.
 package copilot
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
+	"strings"
 
 	"github.com/baphled/flowstate/internal/oauth"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/provider/openaicompat"
+	"github.com/baphled/flowstate/internal/provider/shared"
+	openaiAPI "github.com/openai/openai-go"
+	"github.com/openai/openai-go/option"
 )
 
+var errTokenRequired = errors.New("GitHub token is required")
+
+// streamGuardHeaderTimeout is the time-to-first-byte (response-header) ceiling
+// applied to the Copilot client via shared.StreamGuardHTTPClient. Copilot is
+// served through the openai-go SDK, which passes NO per-attempt request timeout
+// — so without this a flapping endpoint that never responds hangs the caller
+// indefinitely. It does NOT cap total stream duration. Overridable in tests via
+// SetStreamGuardHeaderTimeoutForTest (export_test.go).
+var streamGuardHeaderTimeout = shared.DefaultResponseHeaderTimeout
+
+// ErrEmbedNotSupported is returned when embedding is not supported by Copilot.
+var ErrEmbedNotSupported = errors.New("embedding is not supported by GitHub Copilot")
+
+const (
+	providerName         = "github-copilot"
+	defaultBaseURL       = "https://api.githubcopilot.com"
+	headerAccept         = "application/json"
+	headerContentType    = "application/json"
+	defaultContextLength = 128000
+	// defaultOutputLimit is the Copilot fallback per-model max-output.
+	// The dynamically-fetched /models endpoint does not advertise
+	// per-model output limits today, so 4096 is the conservative shared
+	// figure for unknown entries. Slice 1 of the Phase-4 follow-ups
+	// adds the field; per-model overrides on the gpt-4o / claude / o1
+	// families are populated in fallbackModels.
+	defaultOutputLimit   = 4096
+	copilotUserAgent     = "GitHubCopilotChat/0.35.0"
+	copilotEditorVersion = "vscode/1.107.0"
+	copilotPluginVersion = "copilot-chat/0.35.0"
+	copilotIntegrationID = "vscode-chat"
+)
+
+// Provider implements the GitHub Copilot API provider.
 type Provider struct {
-	token        string
-	oauthProvider *oauth.GitHubOAuthProvider
-	tokenStorage oauth.TokenStorage
+	baseURL      string
+	client       *http.Client
+	tokenManager *TokenManager
 }
 
-func NewWithAPIKey(token string) *Provider {
-	return &Provider{
-		token: token,
+// New creates a new GitHub Copilot provider with the given token.
+//
+// Expected:
+//   - token is a non-empty GitHub authentication token.
+//
+// Returns:
+//   - A configured Provider with default base URL and HTTP client, or an error if token is empty.
+//
+// Side effects:
+//   - None.
+func New(token string) (*Provider, error) {
+	if token == "" {
+		return nil, errTokenRequired
+	}
+	client := &http.Client{}
+	p := &Provider{
+		baseURL: defaultBaseURL,
+		client:  client,
+	}
+	p.tokenManager = NewDirectTokenManager(token)
+	return p, nil
+}
+
+// NewWithOAuth creates a new GitHub Copilot provider using an OAuth token response.
+//
+// Expected:
+//   - tokenResp contains a valid OAuth access token.
+//
+// Returns:
+//   - A configured Provider with the OAuth token, default base URL and HTTP client.
+//
+// Side effects:
+//   - None.
+func NewWithOAuth(tokenResp *oauth.TokenResponse) (*Provider, error) {
+	if tokenResp == nil || tokenResp.AccessToken == "" {
+		return nil, errTokenRequired
+	}
+	client := &http.Client{}
+	p := &Provider{
+		baseURL: defaultBaseURL,
+		client:  client,
+	}
+	p.tokenManager = NewDirectTokenManager(tokenResp.AccessToken)
+	return p, nil
+}
+
+// NewFromConfig builds a GitHub Copilot provider, preferring a stored OAuth
+// token over a configured API key.
+//
+// Expected:
+//   - oauthToken may be nil or empty when no OAuth credential is stored.
+//   - fallbackToken is a direct API key/PAT from config (may be empty).
+//
+// Returns:
+//   - A configured Provider using oauthToken when present.
+//   - A configured Provider using fallbackToken otherwise.
+//   - errTokenRequired when neither source provides a token.
+//
+// Side effects:
+//   - None.
+func NewFromConfig(oauthToken *oauth.TokenResponse, fallbackToken string) (*Provider, error) {
+	if oauthToken != nil && oauthToken.AccessToken != "" {
+		return NewWithOAuth(oauthToken)
+	}
+
+	if fallbackToken != "" {
+		return New(fallbackToken)
+	}
+
+	return nil, errTokenRequired
+}
+
+// SetBaseURL sets the base URL for the GitHub Copilot API endpoint.
+//
+// Expected:
+//   - url is a valid HTTP or HTTPS URL string.
+//
+// Side effects:
+//   - Mutates the baseURL field of the Provider.
+//
+// Returns: result of SetBaseURL.
+func (p *Provider) SetBaseURL(url string) {
+	p.baseURL = strings.TrimSuffix(url, "/")
+	if p.tokenManager != nil {
+		if exchanger, ok := p.tokenManager.exchanger.(*TokenExchangerImpl); ok {
+			exchanger.BaseURL = p.baseURL
+		}
 	}
 }
 
-func NewWithOAuth(clientID string, storage oauth.TokenStorage) (*Provider, error) {
-	oauthProvider := oauth.NewGitHubOAuthProvider(clientID)
-	
-	token, err := storage.Load("github-copilot")
-	if err != nil {
-		return nil, fmt.Errorf("failed to load OAuth token: %w", err)
-	}
-
-	return &Provider{
-		token:        token.AccessToken,
-		oauthProvider: oauthProvider,
-		tokenStorage: storage,
-	}, nil
-}
-
-func (p *Provider) Chat(ctx context.Context, req *provider.ChatRequest) (*provider.ChatResponse, error) {
-	return &provider.ChatResponse{
-		Content: "OAuth implementation pending",
-	}, nil
-}
-
+// Name returns the provider name.
+//
+// Returns:
+//   - The string "github-copilot".
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for Name.
 func (p *Provider) Name() string {
-	return "GitHub Copilot"
+	return providerName
 }
 
-func (p *Provider) Models() []string {
-	return []string{"gpt-4", "gpt-3.5-turbo"}
+// Models returns the list of available models from the GitHub Copilot API.
+//
+// Returns:
+//   - A slice of provider.Model fetched from the Copilot models endpoint.
+//   - A hardcoded fallback list if the API call fails.
+//
+// Side effects:
+//   - Makes an HTTP GET request to the Copilot models endpoint.
+//
+// Expected: parameters for Models.
+func (p *Provider) Models() ([]provider.Model, error) {
+	models, err := p.fetchModels()
+	if err == nil {
+		return models, nil
+	}
+	return fallbackModels(), nil
+}
+
+// fetchModels queries the Copilot API for available models.
+//
+// Returns:
+//   - A slice of provider.Model values from the API.
+//   - An error if the API call fails.
+//
+// Side effects:
+//   - Makes an HTTP GET request to the Copilot models endpoint.
+//
+// Expected: parameters for fetchModels.
+func (p *Provider) fetchModels() ([]provider.Model, error) {
+	endpoint := p.baseURL + "/models"
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, endpoint, http.NoBody)
+	if err != nil {
+		return nil, fmt.Errorf("creating models request: %w", err)
+	}
+	token, err := p.tokenManager.EnsureToken(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("fetchModels: %w", err)
+	}
+	setHeaders(req, token)
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetching copilot models: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("copilot models: status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decoding models response: %w", err)
+	}
+
+	models := make([]provider.Model, 0, len(result.Data))
+	for _, m := range result.Data {
+		models = append(models, provider.Model{
+			ID:            m.ID,
+			Provider:      providerName,
+			ContextLength: defaultContextLength,
+			OutputLimit:   defaultOutputLimit,
+		})
+	}
+	return models, nil
+}
+
+// fallbackModels returns a hardcoded list of known GitHub Copilot models.
+//
+// OutputLimit values follow the upstream-vendor docs for each backing
+// family (gpt-4o = 16K, claude-3.5 = 8K, o1 = 32K). Slice 1 of the
+// Phase-4 follow-ups added the field so the engine's overflow gate can
+// size its output reserve per-model rather than against a shared 4096.
+//
+// Returns:
+//   - A static slice of well-known Copilot model definitions.
+//
+// Side effects:
+//   - None.
+func fallbackModels() []provider.Model {
+	return []provider.Model{
+		{ID: "gpt-4o", Provider: providerName, ContextLength: 128000, OutputLimit: 16384},
+		{ID: "gpt-4o-mini", Provider: providerName, ContextLength: 128000, OutputLimit: 16384},
+		{ID: "claude-3.5-sonnet", Provider: providerName, ContextLength: 200000, OutputLimit: 8192},
+		{ID: "o1-mini", Provider: providerName, ContextLength: 65536, OutputLimit: 32768},
+		{ID: "o1-preview", Provider: providerName, ContextLength: 32768, OutputLimit: 32768},
+	}
+}
+
+// Chat sends a chat request to GitHub Copilot and returns the response.
+//
+// Expected:
+//   - ctx is a non-nil context for request cancellation.
+//   - req contains a valid Model and at least one Message.
+//
+// Returns:
+//   - A ChatResponse with the first choice from the Copilot API, or an error on failure.
+//
+// Side effects:
+//   - Makes an HTTP POST request to the Copilot chat completions endpoint.
+func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
+	// Attachment-size pre-flight gate (plan §6 task-12) — shared
+	// 25 MB ceiling. Copilot rides the openaicompat thread, so this
+	// gate is the same one OpenAI uses.
+	if err := openaicompat.GateAttachmentRequestSize(req); err != nil {
+		return provider.ChatResponse{}, err
+	}
+	token, err := p.tokenManager.EnsureToken(ctx)
+	if err != nil {
+		return provider.ChatResponse{}, err
+	}
+	client := p.buildClient(token)
+	params := openaicompat.BuildParams(req)
+	resp, err := client.Chat.Completions.New(ctx, params)
+	if err != nil {
+		return provider.ChatResponse{}, openaicompat.WrapChatError(p.Name(), err)
+	}
+	return openaicompat.ParseChatResponse(resp)
+}
+
+// Stream sends a chat request to GitHub Copilot and streams the response.
+//
+// Expected:
+//   - ctx is a non-nil context for request cancellation.
+//   - req contains a valid Model and at least one Message.
+//
+// Returns:
+//   - A receive-only channel of StreamChunk values, or an error on setup failure.
+//
+// Side effects:
+//   - Spawns a goroutine that makes an HTTP POST request and sends chunks to the channel.
+func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	// Attachment-size pre-flight gate (plan §6 task-12) — shared
+	// 25 MB ceiling, same as Chat.
+	if err := openaicompat.GateAttachmentRequestSize(req); err != nil {
+		return nil, err
+	}
+	token, err := p.tokenManager.EnsureToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	client := p.buildClient(token)
+	params := openaicompat.BuildParams(req)
+	return openaicompat.RunStream(ctx, client, params, p.Name()), nil
+}
+
+// Embed is not implemented for GitHub Copilot.
+//
+// Expected:
+//   - ctx is a context (unused).
+//   - req is an EmbedRequest (unused).
+//
+// Returns:
+//   - nil and ErrEmbedNotSupported; embedding is not supported by this provider.
+//
+// Side effects:
+//   - None.
+func (p *Provider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
+	return nil, ErrEmbedNotSupported
+}
+
+// buildClient constructs an openaiAPI.Client configured with the Copilot OAuth token
+// and all required Copilot-specific headers.
+//
+// Expected:
+//   - token is a valid GitHub Copilot bearer token.
+//
+// Returns:
+//   - An openaiAPI.Client ready to make authenticated requests to the Copilot API.
+//
+// Side effects:
+//   - None.
+func (p *Provider) buildClient(token string) openaiAPI.Client {
+	return openaiAPI.NewClient(
+		option.WithBaseURL(p.baseURL),
+		// Stream-guard client: time-to-first-byte ceiling so a flapping
+		// Copilot endpoint that never responds cannot hang the caller.
+		option.WithHTTPClient(shared.StreamGuardHTTPClient(streamGuardHeaderTimeout)),
+		option.WithHeader("Authorization", "Bearer "+token),
+		option.WithHeader("Content-Type", headerContentType),
+		option.WithHeader("Accept", headerAccept),
+		option.WithHeader("Copilot-Integration-Id", copilotIntegrationID),
+		option.WithHeader("User-Agent", copilotUserAgent),
+		option.WithHeader("Editor-Version", copilotEditorVersion),
+		option.WithHeader("Editor-Plugin-Version", copilotPluginVersion),
+		option.WithHeader("Openai-Intent", "conversation-edits"),
+	)
+}
+
+// setHeaders sets the required HTTP headers for the Copilot API request.
+//
+// Expected:
+//   - req must be a non-nil HTTP request.
+//   - token must be a valid GitHub Copilot token.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Mutates the Header map of req.
+func setHeaders(req *http.Request, token string) {
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", headerContentType)
+	req.Header.Set("Accept", headerAccept)
+	req.Header.Set("Copilot-Integration-Id", copilotIntegrationID)
+	req.Header.Set("User-Agent", copilotUserAgent)
+	req.Header.Set("Editor-Version", copilotEditorVersion)
+	req.Header.Set("Editor-Plugin-Version", copilotPluginVersion)
+	req.Header.Set("Openai-Intent", "conversation-edits")
 }

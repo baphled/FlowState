@@ -1,0 +1,424 @@
+package engine
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+
+	"github.com/baphled/flowstate/internal/tool"
+)
+
+// BackgroundOutputTool enables retrieval of background task results by task ID.
+type BackgroundOutputTool struct {
+	manager          *BackgroundTaskManager
+	defaultTimeoutMs int
+}
+
+// NewBackgroundOutputTool creates a new background output tool with the
+// compiled-in default poll timeout (120s). Use WithDefaultTimeout to override.
+//
+// Expected:
+//   - manager is the BackgroundTaskManager tracking in-flight background tasks.
+//
+// Returns:
+//   - A configured BackgroundOutputTool using the compiled-in default timeout.
+//
+// Side effects:
+//   - None.
+func NewBackgroundOutputTool(manager *BackgroundTaskManager) *BackgroundOutputTool {
+	return &BackgroundOutputTool{manager: manager}
+}
+
+// WithDefaultTimeout overrides the default poll-until-complete timeout used
+// when the caller does not pass an explicit `timeout` argument. Values <= 0
+// are ignored so the compiled-in 120s default keeps applying.
+//
+// Expected:
+//   - d is the desired default timeout; non-positive values are ignored.
+//
+// Returns:
+//   - The receiver for fluent chaining.
+//
+// Side effects:
+//   - Mutates b.defaultTimeoutMs when d is positive.
+func (b *BackgroundOutputTool) WithDefaultTimeout(d time.Duration) *BackgroundOutputTool {
+	if d > 0 {
+		b.defaultTimeoutMs = int(d / time.Millisecond)
+	}
+	return b
+}
+
+// Name returns the tool name.
+//
+// Returns:
+//   - The string "background_output".
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for Name.
+func (b *BackgroundOutputTool) Name() string {
+	return "background_output"
+}
+
+// Description returns a human-readable description of the tool.
+//
+// Returns:
+//   - A string describing the tool's purpose.
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for Description.
+func (b *BackgroundOutputTool) Description() string {
+	return "Retrieve background task results by task ID"
+}
+
+// Schema returns the JSON schema for the background output tool input.
+//
+// Returns:
+//   - A tool.Schema describing required and optional parameters.
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for Schema.
+func (b *BackgroundOutputTool) Schema() tool.Schema {
+	return tool.Schema{
+		Type: "object",
+		Properties: map[string]tool.Property{
+			"task_id": {
+				Type:        "string",
+				Description: "The unique identifier of the background task",
+			},
+			"block": {
+				Type:        "boolean",
+				Description: "If true, poll until task completes; default is false",
+			},
+			"timeout": {
+				Type:        "integer",
+				Description: "Maximum time in milliseconds to wait when block=true",
+			},
+			"full_session": {
+				Type:        "boolean",
+				Description: "If true, include full message history in result",
+			},
+		},
+		Required: []string{"task_id"},
+	}
+}
+
+// Execute retrieves task results by task ID.
+//
+// Expected:
+//   - ctx is a valid context for the retrieval operation.
+//   - input contains "task_id" string argument.
+//   - Optional "block" boolean to poll until completion.
+//   - Optional "timeout" integer for blocking timeout in milliseconds.
+//   - Optional "full_session" boolean to include full message history.
+//
+// Returns:
+//   - A tool.Result containing the task status and result as JSON.
+//   - An error if the task is not found or other failures occur.
+//
+// Side effects:
+//   - None.
+func (b *BackgroundOutputTool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
+	taskID, ok := input.Arguments["task_id"].(string)
+	if !ok || taskID == "" {
+		return tool.Result{}, errors.New("task_id is required and must be a string")
+	}
+
+	task, ambiguous, found := b.manager.FindByIDOrPrefix(taskID)
+	if !found {
+		return tool.Result{}, b.taskNotFoundError(taskID, ambiguous)
+	}
+
+	// Mark task as accessed so it can be evicted after user retrieval.
+	// Use the resolved id (not the caller-supplied prefix) so an
+	// 8-char prefix lookup still flags the underlying task correctly.
+	taskID = task.ID
+	b.manager.MarkAccessed(taskID)
+
+	block := false
+	if raw, ok := input.Arguments["block"].(bool); ok {
+		block = raw
+	}
+	var timeoutMs int
+	if raw, ok := input.Arguments["timeout"]; ok {
+		switch v := raw.(type) {
+		case float64:
+			timeoutMs = int(v)
+		case int:
+			timeoutMs = v
+		}
+	}
+	fullSession := false
+	if raw, ok := input.Arguments["full_session"].(bool); ok {
+		fullSession = raw
+	}
+
+	if block {
+		if err := b.blockUntilComplete(ctx, taskID, timeoutMs); err != nil {
+			// When the task does not reach a terminal state within
+			// the polling window, surface the last-known state rather
+			// than a bare timeout error. This lets the model see
+			// whether the task is still running or has already failed,
+			// instead of receiving an opaque "task polling timeout
+			// exceeded" that provides no recovery path.
+			if lastKnown, found := b.manager.Get(taskID); found {
+				task = lastKnown
+			}
+		} else {
+			task, _ = b.manager.Get(taskID)
+		}
+	}
+
+	result := b.buildResultOutput(&task, fullSession)
+	jsonBytes, err := json.Marshal(result)
+	if err != nil {
+		return tool.Result{}, fmt.Errorf("marshalling result: %w", err)
+	}
+
+	return tool.Result{Output: string(jsonBytes)}, nil
+}
+
+// taskNotFoundError builds the model-friendly error returned when a
+// task_id lookup misses. Two distinct shapes:
+//
+//  1. ambiguous != nil — the supplied id was a prefix matching multiple
+//     tasks; name every matching full id one-per-line in backticks so
+//     the model can re-issue with the disambiguated UUID.
+//  2. ambiguous == nil — no task (exact or prefix) matched; surface the
+//     currently-known task IDs in the same backtick-per-line form so
+//     the model has a grounded recovery target. When zero tasks are
+//     tracked, suggest `background_list` instead (it may not have been
+//     called yet, or the list may have evicted since).
+//
+// Shape mirrors the Bug 2 precedent for delegation-allowlist rejection
+// (`internal/engine/delegation.go` formatRejection at ~4847+) — the
+// matching ids labelled with a heading, then `  - \`<id>\“ lines —
+// because the same model surface consumes both errors.
+//
+// Expected:
+//   - taskID is the caller-supplied id; echoed back so the model can
+//     see what it actually passed.
+//   - ambiguous is the sorted matching-id slice when the lookup hit on
+//     a non-unique prefix; nil otherwise.
+//
+// Returns:
+//   - A formatted error suitable for surfacing through tool.Result.
+//
+// Side effects:
+//   - None (read-only access to the manager).
+func (b *BackgroundOutputTool) taskNotFoundError(taskID string, ambiguous []string) error {
+	if len(ambiguous) > 0 {
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "task_id %q matches multiple background tasks; pass the full id:", taskID)
+		for _, id := range ambiguous {
+			sb.WriteString("\n  - `")
+			sb.WriteString(id)
+			sb.WriteString("`")
+		}
+		return errors.New(sb.String())
+	}
+
+	known := b.manager.ListIDs()
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "task not found: %s", taskID)
+	if len(known) == 0 {
+		sb.WriteString(" (no background tasks are currently tracked — call `background_list` to confirm before retrying)")
+		return errors.New(sb.String())
+	}
+	sb.WriteString("\nKnown background task IDs (call `background_list` for full status):")
+	for _, id := range known {
+		sb.WriteString("\n  - `")
+		sb.WriteString(id)
+		sb.WriteString("`")
+	}
+	return errors.New(sb.String())
+}
+
+// pollUntilComplete polls a task until it reaches a terminal state or timeout.
+//
+// Expected:
+//   - taskID is a valid task identifier.
+//   - timeoutMs is the maximum wait time in milliseconds.
+//
+// Returns:
+//   - The terminal status string on success, or empty string on timeout.
+//
+// Side effects:
+//   - Blocks the caller and sleeps between polls.
+func (b *BackgroundOutputTool) pollUntilComplete(ctx context.Context, taskID string, timeoutMs int) string {
+	// 30s was too aggressive for real delegated tasks (file reads on
+	// large files, multi-step planner delegations, sub-agent
+	// inference cycles) and surfaced as "task polling timeout
+	// exceeded" errors mid-conversation when the model used
+	// background_output(block=true). 120s covers the common cases
+	// (the longest planner runs in flowstate.log were 1m48s); the
+	// model can still pass an explicit smaller `timeout` for
+	// time-sensitive paths.
+	const compiledDefaultTimeoutMs = 120000
+	const pollIntervalMs = 50
+
+	if timeoutMs == 0 {
+		if b.defaultTimeoutMs > 0 {
+			timeoutMs = b.defaultTimeoutMs
+		} else {
+			timeoutMs = compiledDefaultTimeoutMs
+		}
+	}
+
+	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
+
+	for {
+		taskCopy, found := b.manager.Get(taskID)
+		if !found {
+			return ""
+		}
+
+		status := taskCopy.Status.Load()
+		if isTerminalStatus(status) {
+			return status
+		}
+
+		if time.Now().After(deadline) {
+			return ""
+		}
+
+		select {
+		case <-ctx.Done():
+			return ""
+		default:
+		}
+
+		time.Sleep(time.Duration(pollIntervalMs) * time.Millisecond)
+	}
+}
+
+// blockUntilComplete polls a task until completion or timeout.
+//
+// Expected:
+//   - taskID is a valid task identifier.
+//   - timeoutMs is the maximum wait time in milliseconds.
+//
+// Returns:
+//   - An error if the polling times out.
+//
+// Side effects:
+//   - Blocks the caller until the task reaches a terminal state or timeout.
+func (b *BackgroundOutputTool) blockUntilComplete(ctx context.Context, taskID string, timeoutMs int) error {
+	finalStatus := b.pollUntilComplete(ctx, taskID, timeoutMs)
+	if finalStatus == "" {
+		return errors.New("task polling timeout exceeded")
+	}
+	return nil
+}
+
+// buildResultOutput constructs the result output map for a task.
+//
+// Expected:
+//   - task is a non-nil BackgroundTask instance.
+//   - fullSession indicates whether to include the full_session flag.
+//
+// Returns:
+//   - A map containing task ID, status, result, error, and optional full_session flag.
+//
+// Side effects:
+//   - When task.Error is non-nil, logs the raw error server-side with a
+//     correlation_id and emits the same id in the returned map under
+//     "correlation_id" so a support lookup can find the full payload.
+//     The "error" field surfaced to the LLM/UI is a sanitised canonical
+//     message — never the raw provider error text. This mirrors the
+//     internal/api/errors.go pattern shipped in fc7e62e.
+func (b *BackgroundOutputTool) buildResultOutput(task *BackgroundTask, fullSession bool) map[string]interface{} {
+	output := map[string]interface{}{
+		"task_id": task.ID,
+		"status":  task.Status.Load(),
+	}
+
+	if task.Result != "" {
+		output["result"] = task.Result
+	}
+
+	if task.Error != nil {
+		safeMsg, correlationID := sanitiseTaskError(task.ID, task.Error)
+		output["error"] = safeMsg
+		output["correlation_id"] = correlationID
+	}
+
+	if fullSession {
+		output["full_session"] = true
+	}
+
+	return output
+}
+
+// sanitiseTaskError maps a background-task error to a safe canonical
+// message and a correlation id for log lookup. The raw error is logged
+// server-side; only the canonical message and id reach the LLM and the
+// chat UI. This is the same shape as internal/api/errors.go.clientError
+// so a single audit pattern covers HTTP, SSE, WS, and tool-result error
+// surfaces.
+//
+// The mapping is intentionally coarse — three buckets (rate_limited,
+// stream_error, internal). The chat UI's defensive filter keys on these
+// strings to render friendly fallbacks ("Sub-task was rate-limited —
+// please try again in a moment.") rather than the raw JSON.
+//
+// Expected:
+//   - taskID is the background task identifier; included in the slog
+//     entry so operators can join it with bus events.
+//   - err is the raw error from the failing delegation path; never nil
+//     when this helper is called.
+//
+// Returns:
+//   - safeMsg: a short, canonical, user-safe error message.
+//   - correlationID: a hex-encoded random id paired with the slog entry.
+//
+// Side effects:
+//   - Emits a slog.Error entry tagged "background_task_error" carrying
+//     correlation_id, task_id, and the raw error string.
+func sanitiseTaskError(taskID string, err error) (safeMsg, correlationID string) {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	correlationID = hex.EncodeToString(b)
+
+	raw := err.Error()
+	switch {
+	case strings.Contains(raw, "rate_limit") || strings.Contains(raw, "429"):
+		safeMsg = "rate limited — please retry shortly"
+	case strings.Contains(raw, "delegation stream error") || strings.Contains(raw, "stream error"):
+		safeMsg = "sub-task stream failed"
+	default:
+		safeMsg = "sub-task failed"
+	}
+
+	slog.Error("background_task_error",
+		"correlation_id", correlationID,
+		"task_id", taskID,
+		"error", raw,
+	)
+	return safeMsg, correlationID
+}
+
+// isTerminalStatus reports whether a status is in a terminal state.
+//
+// Expected:
+//   - status is a non-empty status string.
+//
+// Returns:
+//   - true if status is completed, failed, or cancelled.
+//
+// Side effects:
+//   - None.
+func isTerminalStatus(status string) bool {
+	return status == "completed" || status == "failed" || status == "cancelled"
+}

@@ -1,0 +1,182 @@
+package api
+
+import (
+	"encoding/json"
+	"time"
+
+	"github.com/baphled/flowstate/internal/session"
+)
+
+// SessionResponse is the canonical wire shape for session-returning endpoints.
+//
+// All keys are camelCase to match the SessionSummary contract consumed by the
+// Vue frontend, and the body always includes messageCount so callers never
+// read undefined.
+//
+// IsStreaming signals whether the backend broker has an active Publish in
+// progress for this session. The Vue frontend uses this flag to reconnect
+// an EventSource on page load without relying solely on the local message
+// heuristic (last-message role check).
+//
+// ContextUsage carries the always-on context-window usage figure the
+// chat UI's chip renders. Phase 3 of the May 2026 saturation fix
+// includes this on agent / model PATCH responses so the chip ticks up
+// to reflect the new (provider, model, message) state without waiting
+// for the next pre-send streamed event. Embedded as a json.RawMessage
+// because the wire shape is owned by the engine's contextUsagePayload
+// (engine.go) and the api server forwards it verbatim. Omitted when no
+// ContextUsageProvider is wired or the figure cannot be computed.
+type SessionResponse struct {
+	ID                string            `json:"id"`
+	AgentID           string            `json:"agentId"`
+	CurrentAgentID    string            `json:"currentAgentId,omitempty"`
+	CurrentModelID    string            `json:"currentModelId,omitempty"`
+	CurrentProviderID string            `json:"currentProviderId,omitempty"`
+	Status            string            `json:"status"`
+	ParentID          string            `json:"parentId,omitempty"`
+	ParentSessionID   string            `json:"parentSessionId,omitempty"`
+	Depth             int               `json:"depth"`
+	Messages          []session.Message `json:"messages"`
+	MessageCount      int               `json:"messageCount"`
+	IsStreaming       bool              `json:"isStreaming"`
+	// ActiveTurnID is the Phase-4-Commit-1 sibling to IsStreaming —
+	// the in-flight Turn UUID for this session, or "" when no Turn is
+	// Running. Populated by callers via WithActiveTurnID from
+	// turn.Registry.FindActiveBySession so the frontend can drive
+	// `GET /sessions/{id}/turns/{turn_id}` without an extra round-trip.
+	// IsStreaming is preserved here for backward compatibility; Commit 2
+	// retires it once the frontend migration completes.
+	//
+	// Always emitted as a string (never omitempty) — clients gate on
+	// the presence of the key, not on its truthiness, so an absent key
+	// would break the `if (snapshot.activeTurnId) { startPolling }`
+	// path. The zero value is the empty string, which JSON-marshals as
+	// `"activeTurnId": ""`.
+	//
+	// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+	//   Turn-Based Post-Then-Poll Architecture (May 2026).md §4d Commit 1.
+	ActiveTurnID string `json:"activeTurnId"`
+	// ChainID mirrors Session.ChainID (manager.go:138) and Summary.ChainID
+	// (manager.go:167). Persisted on the Session by the engine's spawn path
+	// to close the cold-reload sibling-confusion hole; surfaced here so any
+	// caller that reads the single-session DTO (POST /messages, PATCH /agent,
+	// PATCH /model, future GET /sessions/{id}) sees the same chainId as the
+	// list endpoint. Omitted for root sessions so legacy payloads stay
+	// byte-identical to their pre-field shape. See 40ad53d2 and the
+	// `Chat Sibling Confusion (May 2026)` vault note for context.
+	ChainID      string          `json:"chainId,omitempty"`
+	ContextUsage json.RawMessage `json:"contextUsage,omitempty"`
+	// PermissionMode mirrors Session.PermissionMode (the per-session
+	// safety dial introduced by the Permission Modes plan, May 2026).
+	// Surfaced on every session-returning endpoint so the Vue
+	// chatStore can hydrate the chip from the backend payload on
+	// cold load — backend is the canonical source of truth, with
+	// localStorage as the offline-boot fall-back only. Omitted when
+	// the persisted Session has no mode set (legacy sidecars that
+	// predate the field) so the wire shape stays byte-identical for
+	// sessions that have never opted in. Slice 3 wires the read side
+	// here and the write side on POST /api/v1/sessions/{id}/permission-mode.
+	PermissionMode string    `json:"permissionMode,omitempty"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+}
+
+// sessionResponseOptions holds functional-option state for NewSessionResponse.
+type sessionResponseOptions struct {
+	isStreaming  bool
+	activeTurnID string
+	contextUsage json.RawMessage
+}
+
+// SessionResponseOption is a functional option for NewSessionResponse.
+type SessionResponseOption func(*sessionResponseOptions)
+
+// WithIsStreaming annotates the response with the live-streaming flag from
+// the session broker. Pass true when the broker reports IsPublishing for the
+// session being projected.
+//
+// Expected: parameters for WithIsStreaming.
+// Returns: result of WithIsStreaming.
+// Side effects: None.
+func WithIsStreaming(streaming bool) SessionResponseOption {
+	return func(o *sessionResponseOptions) {
+		o.isStreaming = streaming
+	}
+}
+
+// WithActiveTurnID annotates the response with the in-flight Turn UUID
+// for the session (Phase-4-Commit-1). Pass the result of
+// turn.Registry.FindActiveBySession; an empty string is tolerated and
+// marshals as `"activeTurnId": ""` so the wire shape stays consistent
+// for both idle and running sessions.
+//
+// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+//
+//	Turn-Based Post-Then-Poll Architecture (May 2026).md §4d Commit 1.
+//
+// Expected: parameters for WithActiveTurnID.
+// Returns: result of WithActiveTurnID.
+// Side effects: None.
+func WithActiveTurnID(turnID string) SessionResponseOption {
+	return func(o *sessionResponseOptions) {
+		o.activeTurnID = turnID
+	}
+}
+
+// WithContextUsage annotates the response with the engine's current
+// context_usage payload (Phase 3). Pass the JSON bytes verbatim from
+// the engine — the wire shape is owned by the engine and the api
+// server forwards it without re-parsing.
+//
+// Expected: parameters for WithContextUsage.
+// Returns: result of WithContextUsage.
+// Side effects: None.
+func WithContextUsage(payload []byte) SessionResponseOption {
+	return func(o *sessionResponseOptions) {
+		if len(payload) > 0 {
+			o.contextUsage = json.RawMessage(payload)
+		}
+	}
+}
+
+// NewSessionResponse projects a session.Session into the wire-format DTO.
+// Optional SessionResponseOption values can annotate the response with
+// runtime state (e.g. broker streaming status) that is not part of the
+// persisted session model.
+//
+// Expected: parameters for NewSessionResponse.
+// Returns: result of NewSessionResponse.
+// Side effects: None.
+func NewSessionResponse(sess *session.Session, opts ...SessionResponseOption) *SessionResponse {
+	if sess == nil {
+		return nil
+	}
+	o := &sessionResponseOptions{}
+	for _, opt := range opts {
+		opt(o)
+	}
+	messages := sess.Messages
+	if messages == nil {
+		messages = []session.Message{}
+	}
+	return &SessionResponse{
+		ID:                sess.ID,
+		AgentID:           sess.AgentID,
+		CurrentAgentID:    sess.CurrentAgentID,
+		CurrentModelID:    sess.CurrentModelID,
+		CurrentProviderID: sess.CurrentProviderID,
+		Status:            sess.Status,
+		ParentID:          sess.ParentID,
+		ParentSessionID:   sess.ParentSessionID,
+		Depth:             sess.Depth,
+		Messages:          messages,
+		MessageCount:      len(messages),
+		IsStreaming:       o.isStreaming,
+		ActiveTurnID:      o.activeTurnID,
+		ChainID:           sess.ChainID,
+		ContextUsage:      o.contextUsage,
+		PermissionMode:    sess.PermissionMode,
+		CreatedAt:         sess.CreatedAt,
+		UpdatedAt:         sess.UpdatedAt,
+	}
+}

@@ -1,0 +1,421 @@
+package eventlogger_test
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/eventlogger"
+	"github.com/baphled/flowstate/internal/plugin/events"
+	"github.com/baphled/flowstate/internal/provider"
+)
+
+var _ = Describe("EventLogger", func() {
+	var (
+		logger  *eventlogger.EventLogger
+		bus     *eventbus.EventBus
+		tmpDir  string
+		logPath string
+	)
+
+	BeforeEach(func() {
+		var err error
+		tmpDir, err = os.MkdirTemp("", "eventlogger-test-*")
+		Expect(err).NotTo(HaveOccurred())
+		logPath = filepath.Join(tmpDir, "events.jsonl")
+		bus = eventbus.NewEventBus()
+	})
+
+	AfterEach(func() {
+		if logger != nil {
+			Expect(logger.Close()).To(Succeed())
+		}
+		os.RemoveAll(tmpDir)
+	})
+
+	Describe("writing events as JSONL", func() {
+		It("writes a single event as one JSONL line to the file", func() {
+			logger = eventlogger.New(logPath, 10*1024*1024)
+			Expect(logger.Start(bus)).To(Succeed())
+
+			evt := events.NewSessionEvent(events.SessionEventData{
+				SessionID: "sess-1",
+				UserID:    "user-1",
+				Action:    "created",
+			}, time.Date(2026, 3, 29, 12, 0, 0, 0, time.UTC))
+
+			bus.Publish("session.created", evt)
+
+			data, err := os.ReadFile(logPath)
+			Expect(err).NotTo(HaveOccurred())
+
+			lines := nonEmptyLines(data)
+			Expect(lines).To(HaveLen(1))
+
+			var entry map[string]any
+			Expect(json.Unmarshal([]byte(lines[0]), &entry)).To(Succeed())
+			Expect(entry).To(HaveKey("type"))
+			Expect(entry["type"]).To(Equal("session"))
+			Expect(entry).To(HaveKey("timestamp"))
+			Expect(entry).To(HaveKey("data"))
+		})
+
+		It("writes multiple events as multiple JSONL lines", func() {
+			logger = eventlogger.New(logPath, 10*1024*1024)
+			Expect(logger.Start(bus)).To(Succeed())
+
+			ts := time.Date(2026, 3, 29, 12, 0, 0, 0, time.UTC)
+			bus.Publish("session.created", events.NewSessionEvent(events.SessionEventData{
+				SessionID: "sess-1", Action: "created",
+			}, ts))
+			bus.Publish("tool.execute.before", events.NewToolEvent(events.ToolEventData{
+				ToolName: "bash", Args: map[string]any{"cmd": "ls"},
+			}, ts))
+			bus.Publish("provider.error", events.NewProviderErrorEvent(events.ProviderErrorEventData{
+				ProviderName: "anthropic",
+			}, ts))
+
+			data, err := os.ReadFile(logPath)
+			Expect(err).NotTo(HaveOccurred())
+
+			lines := nonEmptyLines(data)
+			Expect(lines).To(HaveLen(3))
+		})
+
+		It("writes each line as valid JSON", func() {
+			logger = eventlogger.New(logPath, 10*1024*1024)
+			Expect(logger.Start(bus)).To(Succeed())
+
+			ts := time.Date(2026, 3, 29, 12, 0, 0, 0, time.UTC)
+			bus.Publish("session.created", events.NewSessionEvent(events.SessionEventData{
+				SessionID: "sess-1", Action: "created",
+			}, ts))
+			bus.Publish("tool.execute.before", events.NewToolEvent(events.ToolEventData{
+				ToolName: "echo",
+			}, ts))
+
+			data, err := os.ReadFile(logPath)
+			Expect(err).NotTo(HaveOccurred())
+
+			for _, line := range nonEmptyLines(data) {
+				Expect(json.Valid([]byte(line))).To(BeTrue())
+			}
+		})
+	})
+
+	Describe("file rotation", func() {
+		It("rotates when file exceeds max size", func() {
+			smallMax := int64(100)
+			logger = eventlogger.New(logPath, smallMax)
+			Expect(logger.Start(bus)).To(Succeed())
+
+			ts := time.Date(2026, 3, 29, 12, 0, 0, 0, time.UTC)
+			for range 10 {
+				bus.Publish("session.created", events.NewSessionEvent(events.SessionEventData{
+					SessionID: "sess-long-id-to-exceed-limit",
+					UserID:    "user-long-id",
+					Action:    "created",
+					Details:   map[string]any{"key": "value-padding"},
+				}, ts))
+			}
+
+			rotatedPath := logPath + ".1"
+			Expect(rotatedPath).To(BeAnExistingFile())
+		})
+
+		It("preserves old file with .1 suffix after rotation", func() {
+			smallMax := int64(100)
+			logger = eventlogger.New(logPath, smallMax)
+			Expect(logger.Start(bus)).To(Succeed())
+
+			ts := time.Date(2026, 3, 29, 12, 0, 0, 0, time.UTC)
+			for range 10 {
+				bus.Publish("session.created", events.NewSessionEvent(events.SessionEventData{
+					SessionID: "sess-abc", Action: "created",
+					Details: map[string]any{"padding": "extra-data-to-fill"},
+				}, ts))
+			}
+
+			rotatedPath := logPath + ".1"
+			Expect(rotatedPath).To(BeAnExistingFile())
+
+			rotatedData, err := os.ReadFile(rotatedPath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(nonEmptyLines(rotatedData)).NotTo(BeEmpty())
+		})
+	})
+
+	Describe("concurrency safety", func() {
+		It("handles concurrent event writes without races", func() {
+			logger = eventlogger.New(logPath, 10*1024*1024)
+			Expect(logger.Start(bus)).To(Succeed())
+
+			ts := time.Date(2026, 3, 29, 12, 0, 0, 0, time.UTC)
+			wg := sync.WaitGroup{}
+			for range 50 {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					bus.Publish("session.created", events.NewSessionEvent(events.SessionEventData{
+						SessionID: "sess",
+						Action:    "created",
+					}, ts))
+				}()
+			}
+			wg.Wait()
+
+			data, err := os.ReadFile(logPath)
+			Expect(err).NotTo(HaveOccurred())
+
+			lines := nonEmptyLines(data)
+			Expect(lines).To(HaveLen(50))
+			for _, line := range lines {
+				Expect(json.Valid([]byte(line))).To(BeTrue())
+			}
+		})
+	})
+
+	Describe("provider.request event logging", func() {
+		It("writes a provider.request event as a JSONL line with correct type", func() {
+			logger = eventlogger.New(logPath, 10*1024*1024)
+			Expect(logger.Start(bus)).To(Succeed())
+
+			ts := time.Date(2026, 3, 31, 12, 0, 0, 0, time.UTC)
+			bus.Publish("provider.request", events.NewProviderRequestEvent(events.ProviderRequestEventData{
+				AgentID:      "test-agent",
+				ProviderName: "anthropic",
+				ModelName:    "claude-3",
+				Request: provider.ChatRequest{
+					Provider: "anthropic",
+					Model:    "claude-3",
+					Messages: []provider.Message{{Role: "user", Content: "hello"}},
+				},
+			}, ts))
+
+			data, err := os.ReadFile(logPath)
+			Expect(err).NotTo(HaveOccurred())
+
+			lines := nonEmptyLines(data)
+			Expect(lines).To(HaveLen(1))
+
+			var entry map[string]any
+			Expect(json.Unmarshal([]byte(lines[0]), &entry)).To(Succeed())
+			Expect(entry["type"]).To(Equal("provider.request"))
+			Expect(entry).To(HaveKey("data"))
+		})
+	})
+
+	Describe("Close", func() {
+		It("can be called safely", func() {
+			logger = eventlogger.New(logPath, 10*1024*1024)
+			Expect(logger.Start(bus)).To(Succeed())
+			Expect(logger.Close()).To(Succeed())
+			logger = nil
+		})
+
+		It("Close() returns nil when called before Start()", func() {
+			logger = eventlogger.New(logPath, 10*1024*1024)
+			Expect(logger.Close()).To(Succeed())
+			logger = nil
+		})
+	})
+
+	Describe("new event type subscriptions", func() {
+		It("writes a provider.response event as a JSONL line", func() {
+			logger = eventlogger.New(logPath, 10*1024*1024)
+			Expect(logger.Start(bus)).To(Succeed())
+
+			ts := time.Date(2026, 3, 31, 12, 0, 0, 0, time.UTC)
+			bus.Publish("provider.response", events.NewProviderResponseEvent(events.ProviderResponseEventData{
+				SessionID:    "s1",
+				ProviderName: "test",
+			}, ts))
+
+			data, err := os.ReadFile(logPath)
+			Expect(err).NotTo(HaveOccurred())
+
+			lines := nonEmptyLines(data)
+			Expect(lines).To(HaveLen(1))
+
+			var entry map[string]any
+			Expect(json.Unmarshal([]byte(lines[0]), &entry)).To(Succeed())
+			Expect(entry["type"]).To(Equal("provider.response"))
+		})
+
+		It("writes an agent.switched event as a JSONL line", func() {
+			logger = eventlogger.New(logPath, 10*1024*1024)
+			Expect(logger.Start(bus)).To(Succeed())
+
+			ts := time.Date(2026, 3, 31, 12, 0, 0, 0, time.UTC)
+			bus.Publish("agent.switched", events.NewAgentSwitchedEvent(events.AgentSwitchedEventData{
+				SessionID: "s1",
+				FromAgent: "a",
+				ToAgent:   "b",
+			}, ts))
+
+			data, err := os.ReadFile(logPath)
+			Expect(err).NotTo(HaveOccurred())
+
+			lines := nonEmptyLines(data)
+			Expect(lines).To(HaveLen(1))
+
+			var entry map[string]any
+			Expect(json.Unmarshal([]byte(lines[0]), &entry)).To(Succeed())
+			Expect(entry["type"]).To(Equal("agent.switched"))
+		})
+
+		It("writes a background.task.started event as a JSONL line", func() {
+			logger = eventlogger.New(logPath, 10*1024*1024)
+			Expect(logger.Start(bus)).To(Succeed())
+
+			ts := time.Date(2026, 3, 31, 12, 0, 0, 0, time.UTC)
+			bus.Publish("background.task.started", events.NewBackgroundTaskStartedEvent(events.BackgroundTaskEventData{
+				SessionID: "s1",
+				TaskID:    "t1",
+				Name:      "task",
+			}, ts))
+
+			data, err := os.ReadFile(logPath)
+			Expect(err).NotTo(HaveOccurred())
+
+			lines := nonEmptyLines(data)
+			Expect(lines).To(HaveLen(1))
+
+			var entry map[string]any
+			Expect(json.Unmarshal([]byte(lines[0]), &entry)).To(Succeed())
+			Expect(entry["type"]).To(Equal("background.task.started"))
+		})
+
+		It("writes a background.task.completed event as a JSONL line", func() {
+			logger = eventlogger.New(logPath, 10*1024*1024)
+			Expect(logger.Start(bus)).To(Succeed())
+
+			ts := time.Date(2026, 3, 31, 12, 0, 0, 0, time.UTC)
+			bus.Publish("background.task.completed", events.NewBackgroundTaskCompletedEvent(events.BackgroundTaskEventData{
+				SessionID: "s1",
+				TaskID:    "t1",
+				Name:      "task",
+			}, ts))
+
+			data, err := os.ReadFile(logPath)
+			Expect(err).NotTo(HaveOccurred())
+
+			lines := nonEmptyLines(data)
+			Expect(lines).To(HaveLen(1))
+
+			var entry map[string]any
+			Expect(json.Unmarshal([]byte(lines[0]), &entry)).To(Succeed())
+			Expect(entry["type"]).To(Equal("background.task.completed"))
+		})
+
+		It("writes a background.task.failed event as a JSONL line", func() {
+			logger = eventlogger.New(logPath, 10*1024*1024)
+			Expect(logger.Start(bus)).To(Succeed())
+
+			ts := time.Date(2026, 3, 31, 12, 0, 0, 0, time.UTC)
+			bus.Publish("background.task.failed", events.NewBackgroundTaskFailedEvent(events.BackgroundTaskEventData{
+				SessionID: "s1",
+				TaskID:    "t1",
+				Name:      "task",
+				Error:     "something went wrong",
+			}, ts))
+
+			data, err := os.ReadFile(logPath)
+			Expect(err).NotTo(HaveOccurred())
+
+			lines := nonEmptyLines(data)
+			Expect(lines).To(HaveLen(1))
+
+			var entry map[string]any
+			Expect(json.Unmarshal([]byte(lines[0]), &entry)).To(Succeed())
+			Expect(entry["type"]).To(Equal("background.task.failed"))
+		})
+
+		// Bug Hunt #63 (May 2026): observability decision.
+		// recall.embedding.stored is low-frequency (once per stored
+		// message embedding) and carries diagnostic signal worth
+		// preserving in postmortems — dimensions, latency, the silent
+		// dimension-mismatch failure mode flagged in
+		// project_flowstate_recall_silent_zero_failure. Re-added to
+		// eventlogger.subscribedEventTypes.
+		It("writes a recall.embedding.stored event as a JSONL line", func() {
+			logger = eventlogger.New(logPath, 10*1024*1024)
+			Expect(logger.Start(bus)).To(Succeed())
+
+			ts := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+			bus.Publish("recall.embedding.stored", events.NewRecallEmbeddingStoredEvent(events.RecallEmbeddingStoredEventData{
+				SessionID:  "s1",
+				MessageID:  "m1",
+				Dimensions: 1536,
+				LatencyMS:  42,
+			}, ts))
+
+			data, err := os.ReadFile(logPath)
+			Expect(err).NotTo(HaveOccurred())
+
+			lines := nonEmptyLines(data)
+			Expect(lines).To(HaveLen(1))
+
+			var entry map[string]any
+			Expect(json.Unmarshal([]byte(lines[0]), &entry)).To(Succeed())
+			Expect(entry["type"]).To(Equal("recall.embedding.stored"))
+		})
+
+		// Bug Hunt #63 (May 2026): observability decision.
+		// recall.summarized is low-frequency (per compaction, rare)
+		// and carries token-before/after + latency signal. Compaction
+		// is the slowest recall operation; observability worth the
+		// per-summarisation log line. Re-added to eventlogger.
+		It("writes a recall.summarized event as a JSONL line", func() {
+			logger = eventlogger.New(logPath, 10*1024*1024)
+			Expect(logger.Start(bus)).To(Succeed())
+
+			ts := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+			bus.Publish("recall.summarized", events.NewRecallSummarizedEvent(events.RecallSummarizedEventData{
+				SessionID:      "s1",
+				OriginalTokens: 4096,
+				SummaryTokens:  512,
+				LatencyMS:      1800,
+			}, ts))
+
+			data, err := os.ReadFile(logPath)
+			Expect(err).NotTo(HaveOccurred())
+
+			lines := nonEmptyLines(data)
+			Expect(lines).To(HaveLen(1))
+
+			var entry map[string]any
+			Expect(json.Unmarshal([]byte(lines[0]), &entry)).To(Succeed())
+			Expect(entry["type"]).To(Equal("recall.summarized"))
+		})
+	})
+
+	Describe("unsubscribed event types", func() {
+		It("does not write events for unsubscribed event types", func() {
+			logger = eventlogger.New(logPath, 10*1024*1024)
+			Expect(logger.Start(bus)).To(Succeed())
+			bus.Publish("unknown.event.type", "payload")
+			data, err := os.ReadFile(logPath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(nonEmptyLines(data)).To(BeEmpty())
+		})
+	})
+})
+
+func nonEmptyLines(data []byte) []string {
+	raw := strings.Split(strings.TrimSpace(string(data)), "\n")
+	var result []string
+	for _, line := range raw {
+		if strings.TrimSpace(line) != "" {
+			result = append(result, line)
+		}
+	}
+	return result
+}

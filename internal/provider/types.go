@@ -1,24 +1,748 @@
 package provider
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+)
 
+// ErrNoChoices is returned when an API response contains no completion choices.
+var ErrNoChoices = errors.New("no choices in response")
+
+// Message represents a chat message between user and assistant.
 type Message struct {
-	Role    string
-	Content string
+	Role      string
+	Content   string
+	ToolCalls []ToolCall
+	Thinking  string
+	// ModelID identifies the model that generated this message, if known.
+	ModelID string
+	// ThinkingBlocks carries the structured thinking content blocks
+	// emitted by the upstream provider on the turn that produced this
+	// message. The Anthropic API requires that on every subsequent turn
+	// the assistant's thinking blocks are sent back UNCHANGED — including
+	// the encrypted `signature` field on each thinking block, and the
+	// opaque `data` payload for redacted thinking. Without round-tripping
+	// these the server silently disables extended thinking on turn 2+.
+	//
+	// Empty for non-thinking turns and for providers that do not produce
+	// thinking blocks. Construction is the responsibility of the engine /
+	// session accumulator, NOT the provider — providers only emit the
+	// per-block fragments via StreamChunk.
+	ThinkingBlocks []ThinkingBlock
+	// StopReason is the upstream provider's stop reason for the turn that
+	// produced this message (e.g. "end_turn", "tool_use", "max_tokens",
+	// "refusal", "model_context_window_exceeded"). Empty when unknown.
+	StopReason string
+	// IsError is the explicit error signal for a Role:"tool" message —
+	// true when the upstream tool execution failed (tool.Result.Error
+	// non-nil). Set by the engine at the tool-result construction site
+	// from the executor's truth, NOT inferred from message content.
+	//
+	// Bug M4 fix (May 2026): the Anthropic provider previously derived
+	// is_error via `strings.HasPrefix(Content, "Error:")`, which
+	// false-positived on legitimate "Error: 0 results found" success
+	// outputs and false-negatived on "failed: timeout" failures. Anthropic
+	// uses the wire-level is_error flag for its reasoning chain, so a
+	// mis-flagged tool result biased the model. The engine now stamps
+	// this field explicitly; the provider reads it verbatim.
+	//
+	// Zero value (false) for non-tool messages and for sessions reloaded
+	// from pre-fix persisted state preserves prior behaviour — the legacy
+	// success-path was correctly inferred as non-error, and the regression
+	// surface is only the error-path miscount which is bounded by the
+	// session's in-flight turn lifetime.
+	IsError bool
+	// Attachments carries provider-agnostic image (and, in later phases,
+	// document) attachment references that the per-provider request
+	// builder lifts into native content blocks. Empty for messages that
+	// carry no attachments, which is the dominant case.
+	//
+	// The agnostic shape is deliberate: the engine boundary holds
+	// pure-Go data and never sees SDK types — each provider package
+	// owns its own translator (anthropic.attachmentsToBlocks reads from
+	// this slice, builds anthropic.NewImageBlockBase64(...) blocks, and
+	// prepends them ahead of the text block per Anthropic's vision API).
+	//
+	// Base64 payloads are loaded lazily from disk at request-build time
+	// — the Attachment.Data slice carries the bytes only for the in-flight
+	// turn, never the long-lived session.Message replica. See plan
+	// "Chat Attachments Backend (May 2026)" §6 task-04.
+	Attachments []Attachment
 }
 
+// Attachment is the provider-agnostic descriptor for a user-supplied
+// file (PR1 scope: images only — jpeg/png/gif/webp) that should be
+// threaded into the upstream model request as a native content block.
+//
+// The struct is engine-seam-safe: it holds only pure-Go data with no
+// provider SDK types, so the engine can pass a []Attachment slice across
+// the boundary without leaking anthropic.* / openai.* / copilot.* types.
+//
+// MediaType is the validated wire-level media type ("image/png" etc.).
+// PR1 enforces the four Anthropic-supported types upstream of this
+// struct (at the upload endpoint, in session.Store.Put); the slice
+// reaching the provider is already validated and the provider need
+// only translate.
+//
+// Data is the raw bytes of the file, loaded from disk at request-build
+// time and base64-encoded by the per-provider translator. Empty when
+// the engine has only the metadata reference (the upload-and-defer
+// path, used while the message is still in-flight to the provider).
+//
+// ID is the storage layer's stable identifier (the SHA-256 content
+// hash), used by the audit trail and the GET retrieval endpoint.
+// OriginalFilename is preserved for the UI's attachment chip; the
+// provider does not use it. SizeBytes carries the on-disk size for
+// the 25 MB per-request ceiling check (task-04 AC).
+//
+// Kind is the attachment-class discriminant introduced in PR4 of plan
+// "Chat Attachments Backend (May 2026)" §6 task-14: "image" or
+// "document". An empty Kind defaults to "image" so PR1-era state
+// (persisted records without a Kind field) and any caller that hasn't
+// migrated yet continues to produce the existing image-block shape
+// (backwards-compat per AC-14-Detect-CallSites-Preserved).
+//
+// Provider translators read Kind to discriminate native content-block
+// shapes — Anthropic threads documents through NewDocumentBlock with
+// the Base64PDFSourceParam variant, every other provider's translator
+// silently skips Kind=="document" with a structured slog.Warn at the
+// engine seam (the upload-time gate is the primary defence; this is
+// the latent-surface backstop per task-15 / R13).
+//
+// All fields zero-valued is a legal empty Attachment — callers
+// should treat a zero ID as "skip this entry".
+type Attachment struct {
+	ID               string
+	Kind             string
+	MediaType        string
+	OriginalFilename string
+	SizeBytes        int64
+	Data             []byte
+}
+
+// ThinkingBlock is a single thinking-content block as produced by the
+// upstream provider. Anthropic's extended thinking ships these as
+// signed (Thinking + Signature) or redacted (Redacted=true + Data)
+// variants. To round-trip thinking across turns, the engine must
+// preserve every block verbatim and replay it on the subsequent
+// request — see provider.Message.ThinkingBlocks.
+type ThinkingBlock struct {
+	// Thinking is the visible thinking text. Empty when Redacted is
+	// true.
+	Thinking string `json:"thinking,omitempty"`
+	// Signature is the encrypted continuity signature attached to a
+	// signed thinking block. Required by Anthropic on every replayed
+	// thinking block; must be sent back UNCHANGED.
+	Signature string `json:"signature,omitempty"`
+	// Redacted is true when the upstream returned a redacted_thinking
+	// block. Redacted blocks have no visible text — only the encrypted
+	// Data payload — but must still be replayed verbatim.
+	Redacted bool `json:"redacted,omitempty"`
+	// Data is the opaque encrypted payload for a redacted thinking
+	// block. Empty when Redacted is false.
+	Data string `json:"data,omitempty"`
+}
+
+// ToolCall represents a tool invocation request from the model.
+type ToolCall struct {
+	ID        string
+	Name      string
+	Arguments map[string]any
+}
+
+// ToolResultInfo carries tool execution output in a stream chunk.
+type ToolResultInfo struct {
+	Content string
+	IsError bool
+}
+
+// ChatRequest contains the parameters for a chat completion request.
+//
+// The optional sampling and behaviour fields (MaxTokens, Temperature,
+// TopP, TopK, ThinkingMode, ToolChoice) are caller-supplied hints. Each
+// provider applies its own model-aware policy on top — e.g. the
+// Anthropic provider strips non-default sampling for models that reject
+// it (Opus 4.7) and rewrites manual `enabled` thinking to `adaptive`
+// where required. A zero value means "let the provider pick its
+// default", preserving back-compat for callers that do not set them.
 type ChatRequest struct {
+	Provider string
+	Model    string
 	Messages []Message
+	Tools    []Tool
+	// MaxTokens is the caller-requested upper bound on generated tokens.
+	// Zero means "use provider/model default". Providers may clamp this
+	// to a per-model ceiling.
+	MaxTokens int
+	// Temperature is the sampling temperature. Nil means "do not set"
+	// (provider default applies). Some models reject any non-default
+	// value; the provider is responsible for stripping when required.
+	Temperature *float64
+	// TopP is the nucleus-sampling cutoff. Nil means "do not set".
+	TopP *float64
+	// TopK is the top-K sampling cutoff. Nil means "do not set".
+	TopK *int
+	// ThinkingMode selects the extended-thinking configuration. Empty
+	// means "do not set". Recognised values:
+	//   - "disabled"    – explicitly disable thinking
+	//   - "adaptive"    – model-managed budget (Opus 4.7+ default)
+	//   - "enabled"     – manual thinking with provider-default budget
+	//   - "enabled:N"   – manual thinking with budget_tokens=N (N>=1024)
+	// Providers may rewrite or reject values incompatible with the
+	// target model (e.g. Opus 4.7 rejects "enabled").
+	ThinkingMode string
+	// ToolChoice constrains tool selection. Empty means "do not set".
+	// Recognised values:
+	//   - "auto"      – model decides (default behaviour)
+	//   - "any"       – model must call some tool
+	//   - "none"      – model must not call any tool
+	//   - "tool:NAME" – model must call the named tool
+	// Providers map to their native enum and may reject combinations
+	// incompatible with thinking (e.g. {auto, none} only when thinking
+	// is on).
+	ToolChoice string
+}
+
+// Tool describes a tool available for the model to use.
+type Tool struct {
+	Name        string
+	Description string
+	Schema      ToolSchema
+}
+
+// ToolSchema describes the input schema for a tool.
+type ToolSchema struct {
+	Type       string
+	Properties map[string]any
+	Required   []string
+}
+
+// ChatResponse contains the result of a chat completion request.
+type ChatResponse struct {
+	Message Message
+	Usage   Usage
+}
+
+// RequestDebugStats summarises a chat request for diagnostics without
+// retaining the full payload.
+type RequestDebugStats struct {
+	MessageCount int
+	RequestBytes int
+}
+
+// ConcurrencyDebugStats captures the current state of a provider-side
+// concurrency limiter when one is present.
+type ConcurrencyDebugStats struct {
+	InFlight      int
+	QueueDepth    int
+	MaxConcurrent int
+}
+
+// wrappedProvider is implemented by provider decorators that can expose the
+// provider they wrap for recursive diagnostics.
+type wrappedProvider interface {
+	WrappedProvider() Provider
+}
+
+// RequestStats returns a compact diagnostic summary of req.
+//
+// Expected: parameters for RequestStats.
+// Returns: result of RequestStats.
+// Side effects: None.
+func RequestStats(req ChatRequest) RequestDebugStats {
+	stats := RequestDebugStats{MessageCount: len(req.Messages)}
+	raw, err := json.Marshal(req)
+	if err == nil {
+		stats.RequestBytes = len(raw)
+	}
+	return stats
+}
+
+// ConcurrencyStats returns the active concurrency-limiter snapshot for p when
+// one is present anywhere in the wrapper chain.
+//
+// Expected: parameters for ConcurrencyStats.
+// Returns: result of ConcurrencyStats.
+// Side effects: None.
+func ConcurrencyStats(p Provider) (ConcurrencyDebugStats, bool) {
+	for p != nil {
+		if limited, ok := p.(*ConcurrencyLimitedProvider); ok {
+			return ConcurrencyDebugStats{
+				InFlight:      limited.InFlight(),
+				QueueDepth:    limited.QueueDepth(),
+				MaxConcurrent: limited.MaxConcurrent(),
+			}, true
+		}
+		wrapped, ok := p.(wrappedProvider)
+		if !ok {
+			break
+		}
+		p = wrapped.WrappedProvider()
+	}
+	return ConcurrencyDebugStats{}, false
+}
+
+// Usage contains token usage statistics for a request.
+type Usage struct {
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+}
+
+// DelegationInfo carries delegation event metadata in a stream chunk.
+type DelegationInfo struct {
+	SourceAgent  string     `json:"source_agent"`
+	TargetAgent  string     `json:"target_agent"`
+	ChainID      string     `json:"chain_id,omitempty"`
+	ToolCalls    int        `json:"tool_calls,omitempty"`
+	LastTool     string     `json:"last_tool,omitempty"`
+	StartedAt    *time.Time `json:"started_at,omitempty"`
+	CompletedAt  *time.Time `json:"completed_at,omitempty"`
+	Status       string     `json:"status"`
+	ModelName    string     `json:"model_name"`
+	ProviderName string     `json:"provider_name"`
+	Description  string     `json:"description"`
+	// TargetSessionID is the child session identifier. Populated
+	// after createChildSession/resolveOrCreateSession resolves the
+	// child session ID, so the accumulator can stamp it on the
+	// persisted delegation_started/delegation message.
+	TargetSessionID string
+}
+
+// UsageDelta carries per-turn token-accounting deltas reported by the
+// upstream provider on streaming events that carry usage data
+// (Anthropic's `message_start` and `message_delta`).
+//
+// The Anthropic API ships cumulative output_tokens on `message_delta`
+// and cache stats on `message_start`. RequestID is the upstream message
+// ID (Anthropic's `message.id`) and Model is the wire-confirmed model
+// from `message_start.message.model`.
+//
+// All fields are zero/empty when the chunk does not carry that data.
+// Consumers that aggregate usage should treat each chunk as a
+// snapshot — a later message_delta carries the latest cumulative
+// values, not an increment over the previous one.
+type UsageDelta struct {
+	InputTokens              int64  `json:"input_tokens,omitempty"`
+	OutputTokens             int64  `json:"output_tokens,omitempty"`
+	CacheCreationInputTokens int64  `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int64  `json:"cache_read_input_tokens,omitempty"`
+	RequestID                string `json:"request_id,omitempty"`
+	Model                    string `json:"model,omitempty"`
+}
+
+// StreamChunk represents a single chunk of a streaming response.
+type StreamChunk struct {
+	Content        string
+	Done           bool
+	Error          error
+	EventType      string
+	ToolCall       *ToolCall
+	ToolResult     *ToolResultInfo
+	DelegationInfo *DelegationInfo
+	// Usage carries token-accounting and identity data captured from
+	// `message_start` / `message_delta` events. Nil when the chunk
+	// carries no usage data. EventType is "usage" for message_start
+	// chunks and "stop_reason" for message_delta chunks.
+	Usage *UsageDelta
+	// Signature is the encrypted continuity signature for a thinking
+	// block, accumulated across one or more `signature_delta` events
+	// and emitted alongside the matching Thinking content on
+	// content_block_stop. Empty for non-thinking chunks.
+	Signature string
+	// RedactedThinking is the opaque encrypted payload of a
+	// `redacted_thinking` content block, captured on content_block_start
+	// and emitted on the matching content_block_stop. Empty for
+	// non-redacted-thinking chunks.
+	RedactedThinking string
+	// StopReason is the upstream provider's stop reason for the turn
+	// (e.g. "end_turn", "tool_use", "max_tokens", "refusal",
+	// "model_context_window_exceeded"). Populated on the chunk emitted
+	// from a `message_delta` event. Empty otherwise.
+	StopReason string
+	// StopSequence is the matched stop sequence for the turn, when the
+	// stop reason is "stop_sequence". Empty otherwise.
+	StopSequence string
+	// ToolCallID carries the upstream provider's tool-use identifier (Anthropic
+	// block.ID for tool_use blocks, OpenAI tool_calls[].id) on every chunk
+	// associated with a tool call. Populated by providers on tool_call chunks,
+	// and re-populated by the engine on the tool_result chunk emitted after a
+	// tool executes. The ID is empty on chunks unrelated to tool calls.
+	//
+	// Consumers use InternalToolCallID (not this field) for cross-provider
+	// correlation; ToolCallID is retained for audit trails and for surfaces
+	// that need the provider-native id verbatim (Ctrl+E details modal).
+	ToolCallID string
+	// InternalToolCallID is the FlowState-internal, session-scoped identifier
+	// that survives provider failover. Populated by the engine on every
+	// chunk associated with a tool call via streaming.ToolCallCorrelator —
+	// providers do not populate this field.
+	//
+	// The same logical tool call emitted from two different providers (the
+	// failover case: provider A's "toolu_01abc" is replayed to provider B as
+	// "call_xyz123") resolves to the same InternalToolCallID so downstream
+	// coalesce logic pairs the tool_call and tool_result correctly.
+	//
+	// Empty on chunks unrelated to tool calls.
+	InternalToolCallID string
+	// Event carries a streaming.ProgressEvent or other streaming.Event implementation.
+	// Set by the streaming infrastructure (not by providers directly) to convey typed
+	// progress data to consumers such as SSE and WebSocket handlers.
+	Event    any
+	Thinking string
+	// ModelID is the model that produced this chunk, stamped by the engine at stream time.
+	ModelID string
+	// ProviderID is the provider that produced this chunk, stamped by the engine at
+	// stream time. Paired with ModelID so downstream consumers (the session
+	// accumulator, the SSE writer, the per-message audit trail) can attribute
+	// every assistant turn to a (provider, model) pair without re-querying the
+	// engine. The value is the provider's stable identifier (e.g. "anthropic",
+	// "zai", "openai"), matching the `currentProviderId` shape used elsewhere.
+	ProviderID string
+}
+
+// EmbedRequest contains the parameters for an embedding request.
+type EmbedRequest struct {
+	Input string
+	Model string
+}
+
+// Model describes an available LLM model.
+//
+// OutputLimit declares the maximum response tokens the model is configured
+// to produce. The engine's overflow gate consults it via
+// Engine.ResolveOutputLimit so the reserve formula
+//
+//	reserve = max(req.MaxTokens or model.OutputLimit, 1024)
+//
+// can tighten from a single hardcoded 4096 default to a per-model figure.
+// Mirrors OpenCode's `Provider.Model.limit.output` (compaction.ts:30-39).
+// Zero value preserves the prior behaviour: the engine falls back to its
+// defaultOutputReserve constant, so a registry entry that omits OutputLimit
+// is no behaviour change vs the Phase-2 default.
+type Model struct {
+	ID            string
+	Provider      string
+	ContextLength int
+	OutputLimit   int
+}
+
+// ModelPreference specifies a preferred model and provider combination.
+type ModelPreference struct {
+	Provider string
 	Model    string
 }
 
-type ChatResponse struct {
-	Content string
-	Error   error
+// Health contains health check information for a provider.
+type Health struct {
+	Name      string
+	Available bool
+	Latency   int64
+	Error     error
 }
 
+// ErrorType classifies the kind of error returned by a provider.
+type ErrorType string
+
+const (
+	// ErrorTypeRateLimit indicates the provider rejected the request because of rate limiting.
+	ErrorTypeRateLimit ErrorType = "rate_limit"
+	// ErrorTypeBilling indicates the provider rejected the request because of billing issues.
+	ErrorTypeBilling ErrorType = "billing"
+	// ErrorTypeQuota indicates the provider rejected the request because a quota was exceeded.
+	ErrorTypeQuota ErrorType = "quota"
+	// ErrorTypeOverload indicates the provider is temporarily overloaded.
+	ErrorTypeOverload ErrorType = "overload"
+	// ErrorTypeAuthFailure indicates the provider rejected the request because of authentication failure.
+	ErrorTypeAuthFailure ErrorType = "auth_failure"
+	// ErrorTypeModelNotFound indicates the requested model does not exist for the provider.
+	ErrorTypeModelNotFound ErrorType = "model_not_found"
+	// ErrorTypeNetworkError indicates the provider request failed because of a network issue.
+	ErrorTypeNetworkError ErrorType = "network_error"
+	// ErrorTypeServerError indicates the provider returned a server-side failure.
+	ErrorTypeServerError ErrorType = "server_error"
+	// ErrorTypeContextWindowExceeded indicates the request was refused
+	// because its estimated input-token count exceeded the configured
+	// per-model context window. The engine emits this BEFORE flushing to
+	// the upstream provider, via the proactive overflow gate that mirrors
+	// OpenCode's isOverflow check (compaction.ts:30-89). It must surface
+	// to the user as a SeverityCritical event so the Vue chat UI shows
+	// the persistent CriticalErrorBanner with recoverable-action copy
+	// (trim recent tool results, start a fresh session).
+	ErrorTypeContextWindowExceeded ErrorType = "context_window_exceeded"
+	// ErrorTypeUnknown indicates the provider error could not be classified.
+	ErrorTypeUnknown ErrorType = "unknown"
+)
+
+// RateLimit carries provider-issued rate-limit metadata extracted from
+// an HTTP response (typically on a 429 / 529 / 503 error). Each field is
+// optional — providers populate only what the upstream supplied. A
+// failover scheduler should prefer RetryAfter when non-zero over a
+// generic per-error-type cooldown so back-off matches the carrier
+// signal the provider gave us.
+//
+// All token / request counters use -1 to mean "not provided" so the
+// zero value (no metadata) is unambiguous from a real "0 remaining".
+// Reset times are zero-valued time.Time when not provided.
+//
+// The current populator is the Anthropic provider, which extracts the
+// `retry-after` and `anthropic-ratelimit-*` response headers; other
+// providers may leave the *RateLimit pointer nil on Error and the
+// failover hook falls back to the per-error-type cooldown table.
+type RateLimit struct {
+	// RetryAfter is the duration the carrier asked us to wait before
+	// retrying, parsed from the `retry-after` HTTP header. Zero when
+	// the header is absent or unparseable.
+	RetryAfter time.Duration
+	// InputTokensLimit is the per-window input-token budget. -1 when
+	// not provided.
+	InputTokensLimit int
+	// InputTokensRemaining is the input-token budget left in the
+	// current window. -1 when not provided.
+	InputTokensRemaining int
+	// InputTokensReset is the wall-clock time at which the
+	// input-token budget resets. Zero when not provided.
+	InputTokensReset time.Time
+	// OutputTokensLimit is the per-window output-token budget. -1
+	// when not provided.
+	OutputTokensLimit int
+	// OutputTokensRemaining is the output-token budget left in the
+	// current window. -1 when not provided.
+	OutputTokensRemaining int
+	// OutputTokensReset is the wall-clock time at which the
+	// output-token budget resets. Zero when not provided.
+	OutputTokensReset time.Time
+	// RequestsLimit is the per-window request budget. -1 when not
+	// provided.
+	RequestsLimit int
+	// RequestsRemaining is the request budget left in the current
+	// window. -1 when not provided.
+	RequestsRemaining int
+	// RequestsReset is the wall-clock time at which the request
+	// budget resets. Zero when not provided.
+	RequestsReset time.Time
+	// TokensLimit is the combined input+output per-window token
+	// budget when the provider exposes one. -1 when not provided.
+	TokensLimit int
+	// TokensRemaining is the combined token budget left in the
+	// current window. -1 when not provided.
+	TokensRemaining int
+	// TokensReset is the wall-clock time at which the combined token
+	// budget resets. Zero when not provided.
+	TokensReset time.Time
+	// RequestID is the upstream request identifier (Anthropic's
+	// `request-id` header) for support correlation. Empty when not
+	// provided.
+	RequestID string
+}
+
+// Error is a structured provider failure returned at the boundary.
+// It preserves HTTP status codes and provider-specific error codes for accurate classification.
+type Error struct {
+	HTTPStatus  int
+	ErrorCode   string
+	ErrorType   ErrorType
+	Provider    string
+	Message     string
+	IsRetriable bool
+	RawError    error
+	// RateLimit carries provider-issued rate-limit metadata when
+	// available. Nil when the provider did not surface any
+	// rate-limit headers (e.g. a generic 500 server error, or any
+	// provider that does not yet populate this field). A failover
+	// scheduler should consult RateLimit.RetryAfter (when non-zero)
+	// in preference to a generic per-error-type cooldown.
+	RateLimit *RateLimit
+	// Model is the model identifier this error attributes to. Populated
+	// by the engine's proactive context-window overflow gate; empty for
+	// upstream-classified errors that did not carry the model on the
+	// wire (legacy provider error types continue to flow with this
+	// field zero-valued).
+	Model string
+	// EstimatedInputTokens is the engine's input-token estimate for the
+	// refused request, populated only by the proactive context-window
+	// overflow gate (ErrorTypeContextWindowExceeded). Zero for any
+	// other ErrorType.
+	EstimatedInputTokens int
+	// ContextLimit is the resolved per-model context window limit the
+	// estimate was compared against. Zero unless ErrorType is
+	// ErrorTypeContextWindowExceeded. Pairs with EstimatedInputTokens
+	// for operator log triage (slog "estimated_input_tokens"/"limit"
+	// kv pair, see engine.streamFromProvider).
+	ContextLimit int
+}
+
+// Error returns a human-readable description of the provider error.
+//
+// Expected:
+//   - p may be nil.
+//
+// Returns:
+//   - A formatted error string, or "<nil>" when p is nil.
+//
+// Side effects:
+//   - None.
+func (p *Error) Error() string {
+	if p == nil {
+		return "<nil>"
+	}
+
+	provider := p.Provider
+	if provider == "" {
+		provider = "unknown"
+	}
+
+	details := ""
+	if p.ErrorType != "" {
+		details = string(p.ErrorType)
+	}
+	if p.ErrorCode != "" {
+		if details != "" {
+			details += "/"
+		}
+		details += p.ErrorCode
+	}
+	if p.HTTPStatus != 0 {
+		if details != "" {
+			details += " "
+		}
+		details += fmt.Sprintf("HTTP %d", p.HTTPStatus)
+	}
+
+	message := p.Message
+	if message == "" && p.RawError != nil {
+		message = p.RawError.Error()
+	}
+
+	if details == "" {
+		if message == "" {
+			return fmt.Sprintf("provider %s error", provider)
+		}
+		return fmt.Sprintf("provider %s error: %s", provider, message)
+	}
+
+	if message == "" {
+		return fmt.Sprintf("provider %s error [%s]", provider, details)
+	}
+
+	return fmt.Sprintf("provider %s error [%s]: %s", provider, details, message)
+}
+
+// Unwrap returns the underlying error for errors.Is and errors.As traversal.
+//
+// Expected:
+//   - p may be nil.
+//
+// Returns:
+//   - The wrapped error, or nil when p is nil.
+//
+// Side effects:
+//   - None.
+func (p *Error) Unwrap() error {
+	if p == nil {
+		return nil
+	}
+
+	return p.RawError
+}
+
+// IsRetriableErrorType reports whether the given error type should be retried.
+//
+// Expected:
+//   - t is a provider error classification.
+//
+// Returns:
+//   - true when t is retriable.
+//   - false otherwise.
+//
+// Side effects:
+//   - None.
+func IsRetriableErrorType(t ErrorType) bool {
+	switch t {
+	case ErrorTypeRateLimit, ErrorTypeOverload, ErrorTypeNetworkError, ErrorTypeServerError:
+		return true
+	default:
+		return false
+	}
+}
+
+// Provider defines the interface for LLM provider implementations.
 type Provider interface {
-	Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error)
+	// Name returns the provider name.
 	Name() string
-	Models() []string
+	// Stream sends a streaming chat request and returns a channel of response chunks.
+	Stream(ctx context.Context, req ChatRequest) (<-chan StreamChunk, error)
+	// Chat sends a chat completion request and returns the response.
+	Chat(ctx context.Context, req ChatRequest) (ChatResponse, error)
+	// Embed generates embeddings for the given input text.
+	Embed(ctx context.Context, req EmbedRequest) ([]float64, error)
+	// Models returns the list of available models.
+	Models() ([]Model, error)
+}
+
+// RefreshResult carries the tokens and expiry returned by a successful
+// token refresh operation. The fields mirror the per-provider structs
+// in openai.TokenManager and anthropic.TokenManager so that the
+// RefreshCapable interface can use a single agnostic type at the
+// provider boundary.
+type RefreshResult struct {
+	AccessToken  string
+	RefreshToken string
+	ExpiresAt    int64
+}
+
+// RefreshPolicy configures the per-provider reactive refresh behaviour
+// that the failover hook applies when a provider returns
+// ErrorTypeAuthFailure.
+//
+// The zero value (MaxRetries=0) disables the reactive refresh path — the
+// provider's existing EnsureToken-based proactive refresh continues to
+// run inside Stream/Chat as before.
+type RefreshPolicy struct {
+	// MaxRetries is the number of consecutive refresh attempts before
+	// the failover hook gives up on this provider for the current
+	// request. When the per-process counter exceeds this the provider
+	// is skipped for the rest of the process lifetime (a restart
+	// resets the counter).
+	MaxRetries int
+}
+
+// RefreshCapable is implemented by providers that support reactive
+// OAuth token refresh triggered by the failover hook when it receives
+// an ErrorTypeAuthFailure.
+//
+// The failover hook calls RefreshNow after a 401 to force a new token
+// exchange before retrying the failed request. Providers that use
+// static API keys or non-expiring tokens do not implement this
+// interface.
+type RefreshCapable interface {
+	// RefreshNow forces an immediate token refresh, bypassing the
+	// proactive expiry check inside EnsureToken.
+	//
+	// Expected:
+	//   - ctx is a valid context for request cancellation.
+	//
+	// Returns:
+	//   - nil on success (new token acquired and cached).
+	//   - error if the refresh attempt fails.
+	//
+	// Concurrency:
+	//   - The implementation MUST be safe for concurrent calls.
+	//   - Callers SHOULD serialise via single-flight (S2.5).
+	RefreshNow(ctx context.Context) error
+
+	// RefreshStatus returns the last refresh attempt time and the
+	// consecutive failure count.
+	//
+	// Returns:
+	//   - lastAttempt is the wall-clock time of the most recent
+	//     RefreshNow or EnsureToken refresh attempt. Zero when no
+	//     attempt has been made since process start.
+	//   - consecutiveFailures is the number of consecutive refresh
+	//     failures since the last successful refresh. Reset to 0
+	//     after a successful refresh.
+	RefreshStatus() (lastAttempt time.Time, consecutiveFailures int)
 }

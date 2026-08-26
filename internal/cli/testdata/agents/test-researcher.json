@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0.0",
+  "id": "test-researcher",
+  "name": "Test Researcher",
+  "complexity": "deep",
+  "metadata": {
+    "role": "Research specialist",
+    "goal": "Find and analyze information",
+    "when_to_use": "Use for research and investigation tasks"
+  }
+}

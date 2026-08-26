@@ -1,61 +1,63 @@
-Feature: OAuth Token Storage
-  As a user
-  I want my OAuth tokens stored securely
-  So that my authentication persists across sessions without exposing credentials
+@oauth @security @token-storage
+Feature: Encrypted OAuth Token Storage
+  As a FlowState user
+  I want my OAuth tokens to be securely stored
+  So I don't need to re-authenticate every session
 
   Background:
-    Given FlowState is running
+    Given FlowState uses encrypted token storage
 
-  @smoke
-  Scenario: Store OAuth token with encryption
-    Given I have obtained a GitHub OAuth token
-    When the token is saved to storage
-    Then the token file should exist at "$XDG_DATA_HOME/flowstate/tokens.enc"
-    And the token file should be encrypted
-    And the token file permissions should be 0600
+  @storage-encrypt
+  Scenario: Token is encrypted before storage
+    Given I have a raw OAuth access token
+    When I store the token
+    Then the stored token should be encrypted
+    And the encrypted data should not contain the raw token
 
-  Scenario: Retrieve stored OAuth token
-    Given I have a stored encrypted OAuth token for "GitHub Copilot"
-    When I start FlowState
-    And I select "GitHub Copilot" as provider
-    Then the stored token should be decrypted
-    And the provider should be authenticated automatically
-    And I should not be prompted for authentication
+  @storage-decrypt
+  Scenario: Token can be decrypted for use
+    Given I have stored an encrypted token
+    When I retrieve the token
+    Then the retrieved token should match the original
+    And decryption should complete within acceptable time
 
-  Scenario: Handle missing token file
-    Given no OAuth token is stored for "GitHub Copilot"
-    When I select "GitHub Copilot" as provider
-    Then I should be prompted to authenticate
-    And I should see OAuth authentication options
+  @storage-file-permissions
+  Scenario: Token file has restricted permissions
+    Given I store a token
+    Then the token file should have restricted permissions
+    And only the owner should have read access
 
-  Scenario: Handle corrupted token file
-    Given I have a corrupted token file
-    When FlowState attempts to read the token
-    Then I should see "Token file corrupted"
+  @storage-missing-key
+  Scenario: Handle missing encryption key
+    Given no encryption key exists
+    When I attempt to retrieve a stored token
+    Then I should receive an error indicating key missing
     And I should be prompted to re-authenticate
-    And the corrupted file should be backed up
 
-  Scenario: Refresh expired OAuth token
-    Given I have a stored OAuth token for "GitHub Copilot"
-    And the token has expired
-    When I attempt to use the provider
-    Then the token should be refreshed automatically
-    And the new token should be stored
-    And the provider request should succeed
+  @storage-corrupt
+  Scenario: Handle corrupted token storage
+    Given a token file exists but is corrupted
+    When I attempt to decrypt the token
+    Then I should receive a decryption error
+    And I should be prompted to re-authenticate
 
-  Scenario: Handle refresh token expired
-    Given I have a stored OAuth token for "GitHub Copilot"
-    And both access and refresh tokens have expired
-    When I attempt to use the provider
-    Then I should see "Authentication expired"
-    And I should be prompted to re-authenticate via device flow
-    And the expired token should be removed
+  @storage-provider-scoped
+  Scenario: Tokens are scoped per provider
+    Given I have tokens for multiple providers
+    When I retrieve the GitHub token
+    Then I should not receive tokens for other providers
+    And each provider's token should be isolated
 
-  Scenario: Token storage across multiple providers
-    Given I have OAuth tokens for multiple providers
-      | Provider        | Status  |
-      | GitHub Copilot  | Active  |
-      | Another Service | Active  |
-    When I list configured providers
-    Then each provider should show authentication status
-    And I should be able to revoke individual tokens
+  @storage-rekey
+  Scenario: Encryption key can be rotated
+    Given I have a stored token with key version 1
+    When I rotate to a new encryption key
+    Then the token should be re-encrypted with the new key
+    And the new key version should be stored
+
+  @storage-cleanup
+  Scenario: Token is removed when provider is unconfigured
+    Given I have a stored GitHub token
+    When I remove the GitHub provider configuration
+    Then the stored token should be deleted
+    And no residual token data should remain

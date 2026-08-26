@@ -1,0 +1,1447 @@
+package engine_test
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
+	"github.com/baphled/flowstate/internal/agent"
+	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/events"
+	"github.com/baphled/flowstate/internal/plugin/failover"
+	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/session"
+	"github.com/baphled/flowstate/internal/tool"
+)
+
+var _ = Describe("DelegateTool lifecycle", func() {
+	var (
+		qaProvider *mockProvider
+		qaEngine   *engine.Engine
+		engines    map[string]*engine.Engine
+		delegation agent.Delegation
+	)
+
+	BeforeEach(func() {
+		qaProvider = &mockProvider{
+			name: "qa-provider",
+			streamChunks: []provider.StreamChunk{
+				{Content: "lifecycle response", Done: true},
+			},
+		}
+
+		qaManifest := agent.Manifest{
+			ID:                "qa-agent",
+			Name:              "QA Agent",
+			Instructions:      agent.Instructions{SystemPrompt: "You are QA."},
+			ContextManagement: agent.DefaultContextManagement(),
+		}
+
+		qaEngine = engine.New(engine.Config{
+			ChatProvider: qaProvider,
+			Manifest:     qaManifest,
+		})
+
+		engines = map[string]*engine.Engine{
+			"qa-agent": qaEngine,
+		}
+
+		delegation = agent.Delegation{
+			CanDelegate: true,
+		}
+	})
+
+	Describe("Gap 2: resolveOrCreateSession", func() {
+		var mgr *session.Manager
+
+		BeforeEach(func() {
+			mgr = session.NewManager(nil)
+		})
+
+		Context("when session_id refers to an existing session", func() {
+			It("reuses the existing session ID rather than creating a new one", func() {
+				existing, err := mgr.CreateSession("qa-agent")
+				Expect(err).NotTo(HaveOccurred())
+
+				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator").
+					WithSessionManager(mgr)
+
+				ctx := context.Background()
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"subagent_type": "qa-agent",
+						"message":       "Resume the task",
+						"session_id":    existing.ID,
+					},
+				}
+
+				result, err := delegateTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(result.Metadata).NotTo(BeNil())
+				Expect(result.Metadata["sessionId"]).To(Equal(existing.ID))
+			})
+		})
+
+		Context("when session_id is empty", func() {
+			It("creates a new session and returns its ID in metadata", func() {
+				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator").
+					WithSessionManager(mgr)
+
+				ctx := context.Background()
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"subagent_type": "qa-agent",
+						"message":       "New task",
+					},
+				}
+
+				result, err := delegateTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(result.Metadata).NotTo(BeNil())
+				sessionID, ok := result.Metadata["sessionId"].(string)
+				Expect(ok).To(BeTrue())
+				Expect(sessionID).NotTo(BeEmpty())
+			})
+		})
+
+		Context("when session_id refers to a non-existent session", func() {
+			It("falls back to creating a new session", func() {
+				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator").
+					WithSessionManager(mgr)
+
+				ctx := context.Background()
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"subagent_type": "qa-agent",
+						"message":       "Task with stale session ID",
+						"session_id":    "non-existent-session-id",
+					},
+				}
+
+				result, err := delegateTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(result.Metadata).NotTo(BeNil())
+				sessionID, ok := result.Metadata["sessionId"].(string)
+				Expect(ok).To(BeTrue())
+				Expect(sessionID).NotTo(Equal("non-existent-session-id"))
+				Expect(sessionID).NotTo(BeEmpty())
+			})
+		})
+	})
+
+	Describe("Gap 3: agentHasToolPermission", func() {
+		Context("when registry is not set", func() {
+			It("allows all tools (permissive default)", func() {
+				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
+
+				Expect(delegateTool.AgentHasToolPermission("qa-agent", "delegate")).To(BeTrue())
+				Expect(delegateTool.AgentHasToolPermission("qa-agent", "todowrite")).To(BeTrue())
+			})
+		})
+
+		Context("when registry is set", func() {
+			var reg *agent.Registry
+
+			BeforeEach(func() {
+				reg = agent.NewRegistry()
+			})
+
+			Context("when the agent has an empty tools list", func() {
+				It("denies all tools (fail-closed)", func() {
+					reg.Register(&agent.Manifest{
+						ID:   "qa-agent",
+						Name: "QA Agent",
+						Capabilities: agent.Capabilities{
+							Tools: []string{},
+						},
+					})
+
+					delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator").
+						WithRegistry(reg)
+
+					Expect(delegateTool.AgentHasToolPermission("qa-agent", "delegate")).To(BeFalse())
+					Expect(delegateTool.AgentHasToolPermission("qa-agent", "bash")).To(BeFalse())
+				})
+			})
+
+			Context("when the agent lists specific tools", func() {
+				It("returns true for a listed tool", func() {
+					reg.Register(&agent.Manifest{
+						ID:   "qa-agent",
+						Name: "QA Agent",
+						Capabilities: agent.Capabilities{
+							Tools: []string{"bash", "delegate"},
+						},
+					})
+
+					delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator").
+						WithRegistry(reg)
+
+					Expect(delegateTool.AgentHasToolPermission("qa-agent", "delegate")).To(BeTrue())
+				})
+
+				It("returns false for a tool not in the list", func() {
+					reg.Register(&agent.Manifest{
+						ID:   "qa-agent",
+						Name: "QA Agent",
+						Capabilities: agent.Capabilities{
+							Tools: []string{"bash"},
+						},
+					})
+
+					delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator").
+						WithRegistry(reg)
+
+					Expect(delegateTool.AgentHasToolPermission("qa-agent", "delegate")).To(BeFalse())
+				})
+			})
+
+			Context("when the agent is not found in the registry", func() {
+				It("allows all tools (permissive default for unknown agents)", func() {
+					delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator").
+						WithRegistry(reg)
+
+					Expect(delegateTool.AgentHasToolPermission("unknown-agent", "delegate")).To(BeTrue())
+				})
+			})
+		})
+	})
+
+	Describe("Gap 4: formatDelegationOutput and enriched Result", func() {
+		Describe("UnwrapTaskResult", func() {
+			It("strips the canonical wrapper that formatDelegationOutput emits", func() {
+				wrapped := engine.FormatDelegationOutput("inner agent text")
+				Expect(engine.UnwrapTaskResult(wrapped)).To(Equal("inner agent text"))
+			})
+
+			It("returns input unchanged when no wrapper is present (defensive — never partial-strips)", func() {
+				Expect(engine.UnwrapTaskResult("plain content")).To(Equal("plain content"))
+				Expect(engine.UnwrapTaskResult("<task_result>opening only")).To(Equal("<task_result>opening only"))
+				Expect(engine.UnwrapTaskResult("closing only</task_result>")).To(Equal("closing only</task_result>"))
+			})
+
+			It("preserves multi-line inner content verbatim", func() {
+				inner := "first line\n\nsecond line\nthird line"
+				Expect(engine.UnwrapTaskResult(engine.FormatDelegationOutput(inner))).To(Equal(inner))
+			})
+		})
+
+		Describe("formatDelegationOutput", func() {
+			It("wraps the response in a task_result block", func() {
+				output := engine.FormatDelegationOutput("the agent response")
+
+				Expect(output).To(ContainSubstring("<task_result>"))
+				Expect(output).To(ContainSubstring("the agent response"))
+				Expect(output).To(ContainSubstring("</task_result>"))
+			})
+
+			It("does not include the misleading task_id header that the lead used to misread as a background-task id", func() {
+				output := engine.FormatDelegationOutput("response text")
+
+				Expect(output).NotTo(ContainSubstring("task_id:"),
+					"sync delegate output must not advertise a task_id; the lead conflated it with background_output's id namespace and produced 'task not found' cascades")
+				Expect(output).NotTo(ContainSubstring("for resuming to continue this task if needed"))
+			})
+
+			It("emits exactly the task_result block and nothing else", func() {
+				output := engine.FormatDelegationOutput("my response")
+
+				Expect(output).To(Equal("<task_result>\nmy response\n</task_result>"))
+			})
+		})
+
+		Describe("executeSync returns enriched Result", func() {
+			It("replaces narrated output with a coordination chain marker when chainID is present", func() {
+				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
+
+				ctx := context.Background()
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"subagent_type": "qa-agent",
+						"chainID":       "plan-auth-2026",
+						"message":       "Run all the tests",
+					},
+				}
+
+				result, err := delegateTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).To(ContainSubstring("[coordination_chain] plan-auth-2026"))
+				Expect(result.Output).To(ContainSubstring("The delegated agent may have written structured findings to the coordination store"))
+				Expect(result.Output).To(ContainSubstring("prefix \"plan-auth-2026/\""))
+				Expect(result.Output).To(ContainSubstring("lifecycle response"),
+					"the coordination marker is appended but until bg_519d9269 narration stripping is complete the original response remains")
+			})
+
+			It("returns Title set to the delegation message", func() {
+				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
+
+				ctx := context.Background()
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"subagent_type": "qa-agent",
+						"message":       "Run all the tests",
+					},
+				}
+
+				result, err := delegateTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Title).To(Equal("Run all the tests"))
+			})
+
+			It("returns Metadata with sessionId, model, and provider keys", func() {
+				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
+
+				ctx := context.Background()
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"subagent_type": "qa-agent",
+						"message":       "Run all the tests",
+					},
+				}
+
+				result, err := delegateTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Metadata).NotTo(BeNil())
+				Expect(result.Metadata).To(HaveKey("sessionId"))
+				Expect(result.Metadata).To(HaveKey("model"))
+				Expect(result.Metadata).To(HaveKey("provider"))
+			})
+
+			It("wraps the output in a task_result block without a misleading task_id header", func() {
+				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
+
+				ctx := context.Background()
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"subagent_type": "qa-agent",
+						"message":       "Run all the tests",
+					},
+				}
+
+				result, err := delegateTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).NotTo(ContainSubstring("task_id:"),
+					"sync delegate output must not include task_id (lead misread it as a background-task id)")
+				Expect(result.Output).To(ContainSubstring("<task_result>"))
+				Expect(result.Output).To(ContainSubstring("lifecycle response"))
+				Expect(result.Output).To(ContainSubstring("</task_result>"))
+			})
+		})
+
+		Describe("executeAsync returns enriched Result", func() {
+			It("returns Title and Metadata with sessionId for background tasks", func() {
+				bgManager := engine.NewBackgroundTaskManager()
+				delegateTool := engine.NewDelegateToolWithBackground(
+					engines, delegation, "orchestrator", bgManager, nil,
+				)
+
+				ctx := context.Background()
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"subagent_type":     "qa-agent",
+						"message":           "Background task",
+						"run_in_background": true,
+					},
+				}
+
+				result, err := delegateTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Title).To(Equal("Background task"))
+				Expect(result.Metadata).NotTo(BeNil())
+				Expect(result.Metadata).To(HaveKey("sessionId"))
+			})
+		})
+	})
+})
+
+// Plans/Delegation Bus Bridge — Engine to SSE (May 2026) §"Test
+// Strategy" §"Engine seam". The DelegateTool publishes
+// `delegation.{started,completed,failed}` onto the engine's
+// `*eventbus.EventBus` at the six lifecycle sites identified by the
+// plan. These specs pin those sites end-to-end.
+var _ = Describe("DelegateTool delegation lifecycle bus publication", func() {
+	var (
+		qaProvider *mockProvider
+		qaEngine   *engine.Engine
+		engines    map[string]*engine.Engine
+		delegation agent.Delegation
+		mgr        *session.Manager
+		bus        *eventbus.EventBus
+	)
+
+	BeforeEach(func() {
+		qaProvider = &mockProvider{
+			name: "qa-provider",
+			streamChunks: []provider.StreamChunk{
+				{Content: "lifecycle response", Done: true},
+			},
+		}
+
+		qaManifest := agent.Manifest{
+			ID:                "qa-agent",
+			Name:              "QA Agent",
+			Instructions:      agent.Instructions{SystemPrompt: "You are QA."},
+			ContextManagement: agent.DefaultContextManagement(),
+		}
+
+		qaEngine = engine.New(engine.Config{
+			ChatProvider: qaProvider,
+			Manifest:     qaManifest,
+		})
+
+		engines = map[string]*engine.Engine{
+			"qa-agent": qaEngine,
+		}
+
+		delegation = agent.Delegation{
+			CanDelegate: true,
+		}
+
+		mgr = session.NewManager(nil)
+		bus = eventbus.NewEventBus()
+	})
+
+	Context("executeSync success path", func() {
+		It("publishes delegation.started post-resolve with the populated child session id and parent session id", func() {
+			captured := newDelegationCapture(bus)
+
+			parent, err := mgr.CreateSession("orchestrator")
+			Expect(err).NotTo(HaveOccurred())
+
+			delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator").
+				WithSessionManager(mgr).
+				WithEventBus(bus)
+
+			ctx := context.WithValue(context.Background(), session.IDKey{}, parent.ID)
+			input := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "qa-agent",
+					"message":       "Run all the tests",
+				},
+			}
+
+			_, err = delegateTool.Execute(ctx, input)
+			Expect(err).NotTo(HaveOccurred())
+
+			started := captured.startedEvents()
+			Expect(started).To(HaveLen(1),
+				"executeSync must publish exactly one delegation.started on the success path")
+			Expect(started[0].Data.ChildSessionID).NotTo(BeEmpty(),
+				"delegation.started must carry a populated ChildSessionID — the load-bearing field for the SSE click-through")
+			Expect(started[0].Data.ParentSessionID).To(Equal(parent.ID))
+			Expect(started[0].Data.TargetAgent).To(Equal("qa-agent"))
+			Expect(started[0].Data.SourceAgent).To(Equal("orchestrator"))
+		})
+
+		It("publishes delegation.completed with model, provider and tool metadata after the stream drains cleanly", func() {
+			captured := newDelegationCapture(bus)
+
+			parent, err := mgr.CreateSession("orchestrator")
+			Expect(err).NotTo(HaveOccurred())
+
+			delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator").
+				WithSessionManager(mgr).
+				WithEventBus(bus)
+
+			ctx := context.WithValue(context.Background(), session.IDKey{}, parent.ID)
+			input := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "qa-agent",
+					"message":       "Do the thing",
+				},
+			}
+
+			result, err := delegateTool.Execute(ctx, input)
+			Expect(err).NotTo(HaveOccurred())
+
+			completed := captured.completedEvents()
+			Expect(completed).To(HaveLen(1),
+				"executeSync must publish exactly one delegation.completed on the success path")
+			Expect(completed[0].Data.ChildSessionID).To(Equal(result.Metadata["sessionId"]),
+				"completed event must carry the same child session id the result metadata reports")
+			Expect(completed[0].Data.ParentSessionID).To(Equal(parent.ID))
+			Expect(completed[0].Data.CompletedAt).NotTo(BeNil(),
+				"delegation.completed must populate CompletedAt at the success terminator")
+			Expect(captured.failedEvents()).To(BeEmpty(),
+				"delegation.failed must not fire on the success path")
+		})
+
+		// Gap 1 (load_skills propagation, May 2026): the delegate tool
+		// already parses `load_skills` from the tool args and injects
+		// the matching skill prompts into the child manifest, but the
+		// bus payload dropped the list. The Vue DelegationPanel renders
+		// a delegation-skills-row when SwarmEvent.metadata.load_skills
+		// is populated; the bus event must carry the raw user-supplied
+		// list (pre-resolver filter) so the user sees the skill names
+		// they asked for, not what survived allow-listing.
+		It("publishes delegation.started with LoadSkills populated from the delegate tool's load_skills argument", func() {
+			captured := newDelegationCapture(bus)
+
+			parent, err := mgr.CreateSession("orchestrator")
+			Expect(err).NotTo(HaveOccurred())
+
+			delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator").
+				WithSessionManager(mgr).
+				WithEventBus(bus)
+
+			ctx := context.WithValue(context.Background(), session.IDKey{}, parent.ID)
+			input := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "qa-agent",
+					"message":       "Run with skills",
+					"load_skills":   []interface{}{"memory-keeper", "knowledge-base"},
+				},
+			}
+
+			_, err = delegateTool.Execute(ctx, input)
+			Expect(err).NotTo(HaveOccurred())
+
+			started := captured.startedEvents()
+			Expect(started).To(HaveLen(1))
+			Expect(started[0].Data.LoadSkills).To(Equal([]string{"memory-keeper", "knowledge-base"}),
+				"delegation.started must surface the raw user-supplied load_skills so the UI can render the skill chips")
+
+			completed := captured.completedEvents()
+			Expect(completed).To(HaveLen(1))
+			Expect(completed[0].Data.LoadSkills).To(Equal([]string{"memory-keeper", "knowledge-base"}),
+				"delegation.completed must preserve LoadSkills so reload paths render the same chip block as the live stream")
+		})
+
+		It("publishes delegation.started with LoadSkills empty when the delegate tool args omit load_skills", func() {
+			captured := newDelegationCapture(bus)
+
+			parent, err := mgr.CreateSession("orchestrator")
+			Expect(err).NotTo(HaveOccurred())
+
+			delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator").
+				WithSessionManager(mgr).
+				WithEventBus(bus)
+
+			ctx := context.WithValue(context.Background(), session.IDKey{}, parent.ID)
+			input := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "qa-agent",
+					"message":       "Run without skills",
+				},
+			}
+
+			_, err = delegateTool.Execute(ctx, input)
+			Expect(err).NotTo(HaveOccurred())
+
+			started := captured.startedEvents()
+			Expect(started).To(HaveLen(1))
+			Expect(started[0].Data.LoadSkills).To(BeEmpty(),
+				"LoadSkills must stay empty when the caller did not supply load_skills — the frontend gates chip rendering on length>0")
+		})
+	})
+
+	Context("executeSync no-op when the bus is not wired", func() {
+		It("does not panic and behaves identically to today when WithEventBus is unset", func() {
+			delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator").
+				WithSessionManager(mgr)
+
+			ctx := context.Background()
+			input := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "qa-agent",
+					"message":       "no bus path",
+				},
+			}
+
+			result, err := delegateTool.Execute(ctx, input)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Metadata).To(HaveKey("sessionId"))
+		})
+	})
+
+	Context("executeSync stream failure path", func() {
+		It("publishes exactly one delegation.failed and no delegation.completed when the streamer returns an error", func() {
+			failingProvider := &mockProvider{
+				name:      "failing-provider",
+				streamErr: errors.New("stream init failed"),
+			}
+			failingManifest := agent.Manifest{
+				ID:                "failing-agent",
+				Name:              "Failing Agent",
+				Instructions:      agent.Instructions{SystemPrompt: "fail"},
+				ContextManagement: agent.DefaultContextManagement(),
+			}
+			failingEngine := engine.New(engine.Config{
+				ChatProvider: failingProvider,
+				Manifest:     failingManifest,
+			})
+			failingEngines := map[string]*engine.Engine{
+				"failing-agent": failingEngine,
+			}
+
+			captured := newDelegationCapture(bus)
+
+			delegateTool := engine.NewDelegateTool(failingEngines, delegation, "orchestrator").
+				WithSessionManager(mgr).
+				WithEventBus(bus)
+
+			input := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "failing-agent",
+					"message":       "this will fail",
+				},
+			}
+
+			_, err := delegateTool.Execute(context.Background(), input)
+			Expect(err).To(HaveOccurred())
+
+			Expect(captured.failedEvents()).To(HaveLen(1),
+				"a stream error must produce exactly one delegation.failed")
+			Expect(captured.failedEvents()[0].Data.Error).NotTo(BeEmpty(),
+				"delegation.failed must carry the failing path's error message")
+			Expect(captured.completedEvents()).To(BeEmpty(),
+				"delegation.completed must not fire on the failure path")
+		})
+
+		// Bug: only the success branch in executeSync called the seal
+		// helper. dispatchErr returned without sealing — the child
+		// session stayed "active" both in memory and on disk. Behaviour
+		// pinned: a delegation failure must seal the child session in
+		// memory AND persist the seal to the on-disk meta sidecar so the
+		// orchestrator never re-loads it as active. Reads back via the
+		// public LoadSessionMetadata helper — no internal-call peeking.
+		It("seals the child session in memory and on disk when the streamer fails", func() {
+			failingProvider := &mockProvider{
+				name:      "failing-provider",
+				streamErr: errors.New("stream init failed"),
+			}
+			failingManifest := agent.Manifest{
+				ID:                "failing-agent",
+				Name:              "Failing Agent",
+				Instructions:      agent.Instructions{SystemPrompt: "fail"},
+				ContextManagement: agent.DefaultContextManagement(),
+			}
+			failingEngine := engine.New(engine.Config{
+				ChatProvider: failingProvider,
+				Manifest:     failingManifest,
+			})
+			failingEngines := map[string]*engine.Engine{
+				"failing-agent": failingEngine,
+			}
+
+			tmpDir := GinkgoT().TempDir()
+			mgr.SetSessionsDir(tmpDir)
+
+			captured := newDelegationCapture(bus)
+
+			delegateTool := engine.NewDelegateTool(failingEngines, delegation, "orchestrator").
+				WithSessionManager(mgr).
+				WithEventBus(bus)
+
+			input := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "failing-agent",
+					"message":       "this will fail",
+				},
+			}
+
+			_, err := delegateTool.Execute(context.Background(), input)
+			Expect(err).To(HaveOccurred())
+
+			// The bus-published failed event carries the resolved child
+			// session id — that's how we recover the id without leaking
+			// internals. Pre-resolve failures emit empty ids; the
+			// dispatch-failure path emits a populated one.
+			failed := captured.failedEvents()
+			Expect(failed).To(HaveLen(1))
+			childID := failed[0].Data.ChildSessionID
+			Expect(childID).NotTo(BeEmpty(),
+				"dispatch-failure path must emit a populated child session id (the seal target)")
+
+			// In-memory seal: the child must no longer be active.
+			child, err := mgr.GetSession(childID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(child.Status).NotTo(Equal(string(session.StatusActive)),
+				"delegation failure must seal the child in memory — leaving it active clutters the UI and risks replay collisions")
+
+			// On-disk seal: the persisted sidecar must reflect the seal
+			// so the orchestrator does not re-load it as active after
+			// restart.
+			loaded, err := session.LoadSessionMetadata(tmpDir, childID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded).NotTo(BeNil(),
+				"delegation failure must persist the seal — staying \"active\" on disk re-loads the failed child as active after restart")
+			Expect(loaded.Status).NotTo(Equal(string(session.StatusActive)),
+				"on-disk status must reflect the seal — the whole point of the persist step")
+		})
+	})
+
+	Context("executeSync delegation-not-allowed path (pre-resolve failure)", func() {
+		It("does not publish a started or failed event when the canDelegate gate refuses up-front", func() {
+			captured := newDelegationCapture(bus)
+
+			disallowed := agent.Delegation{CanDelegate: false}
+			delegateTool := engine.NewDelegateTool(engines, disallowed, "orchestrator").
+				WithSessionManager(mgr).
+				WithEventBus(bus)
+
+			input := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "qa-agent",
+					"message":       "rejected",
+				},
+			}
+
+			_, err := delegateTool.Execute(context.Background(), input)
+			Expect(err).To(HaveOccurred())
+
+			// CanDelegate refusal happens in resolveTargetWithOptions
+			// before executeSync is reached, so the bus sees nothing.
+			// This pin guards against future refactors that move the
+			// gate into executeSync without updating the publish sites.
+			Expect(captured.startedEvents()).To(BeEmpty())
+			Expect(captured.failedEvents()).To(BeEmpty())
+			Expect(captured.completedEvents()).To(BeEmpty())
+		})
+	})
+
+	Context("executeAsync background mode", func() {
+		It("publishes delegation.started carrying the task id as the child session id before launching the goroutine", func() {
+			captured := newDelegationCapture(bus)
+
+			bgManager := engine.NewBackgroundTaskManager()
+			parent, err := mgr.CreateSession("orchestrator")
+			Expect(err).NotTo(HaveOccurred())
+
+			delegateTool := engine.NewDelegateToolWithBackground(
+				engines, delegation, "orchestrator", bgManager, nil,
+			).
+				WithSessionManager(mgr).
+				WithEventBus(bus)
+
+			ctx := context.WithValue(context.Background(), session.IDKey{}, parent.ID)
+			input := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type":     "qa-agent",
+					"message":           "Background task",
+					"run_in_background": true,
+				},
+			}
+
+			result, err := delegateTool.Execute(ctx, input)
+			Expect(err).NotTo(HaveOccurred())
+
+			taskID, ok := result.Metadata["sessionId"].(string)
+			Expect(ok).To(BeTrue())
+			Expect(taskID).NotTo(BeEmpty())
+
+			started := captured.startedEvents()
+			Expect(started).To(HaveLen(1),
+				"executeAsync must publish exactly one delegation.started immediately after createChildSession")
+			Expect(started[0].Data.ChildSessionID).To(Equal(taskID),
+				"async delegation.started's ChildSessionID must equal the task id surfaced to the caller")
+			Expect(started[0].Data.ParentSessionID).To(Equal(parent.ID))
+		})
+	})
+})
+
+var _ = Describe("DelegateTool pre-flight candidate check", func() {
+	var delegation agent.Delegation
+
+	BeforeEach(func() {
+		delegation = agent.Delegation{CanDelegate: true}
+	})
+
+	Context("when all failover candidates are rate-limited", func() {
+		It("returns an error before opening a stream", func() {
+			sentinel := &mockProvider{
+				name: "anthropic",
+				streamChunks: []provider.StreamChunk{
+					{Content: "must not be streamed", Done: true},
+				},
+			}
+
+			health := failover.NewHealthManager()
+			registry := provider.NewRegistry()
+			registry.Register(sentinel)
+			manager := failover.NewManager(registry, health, 5*time.Minute)
+			manager.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+			})
+			health.MarkRateLimited("anthropic", "claude-sonnet-4-6", time.Now().Add(1*time.Hour))
+
+			targetEngine := engine.New(engine.Config{
+				FailoverManager: manager,
+				Manifest: agent.Manifest{
+					ID:                "restricted-agent",
+					Name:              "Restricted Agent",
+					Instructions:      agent.Instructions{SystemPrompt: "You are restricted."},
+					ContextManagement: agent.DefaultContextManagement(),
+				},
+			})
+
+			delegateTool := engine.NewDelegateTool(
+				map[string]*engine.Engine{"restricted-agent": targetEngine},
+				delegation, "orchestrator",
+			)
+
+			_, err := delegateTool.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "restricted-agent",
+					"message":       "Do something",
+				},
+			})
+
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("no available model candidates"))
+			Expect(sentinel.capturedRequest).To(BeNil(),
+				"Stream must never be opened when all candidates are rate-limited")
+		})
+	})
+
+	Context("when at least one candidate is healthy", func() {
+		It("proceeds to stream without error", func() {
+			sentinel := &mockProvider{
+				name: "anthropic",
+				streamChunks: []provider.StreamChunk{
+					{Content: "response", Done: true},
+				},
+			}
+
+			health := failover.NewHealthManager()
+			registry := provider.NewRegistry()
+			registry.Register(sentinel)
+			manager := failover.NewManager(registry, health, 5*time.Minute)
+			manager.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+			})
+
+			targetEngine := engine.New(engine.Config{
+				ChatProvider:    sentinel,
+				FailoverManager: manager,
+				Manifest: agent.Manifest{
+					ID:                "healthy-agent",
+					Name:              "Healthy Agent",
+					Instructions:      agent.Instructions{SystemPrompt: "You are healthy."},
+					ContextManagement: agent.DefaultContextManagement(),
+				},
+			})
+
+			delegateTool := engine.NewDelegateTool(
+				map[string]*engine.Engine{"healthy-agent": targetEngine},
+				delegation, "orchestrator",
+			)
+
+			_, err := delegateTool.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "healthy-agent",
+					"message":       "Do something",
+				},
+			})
+
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Context("when the current preferred provider is already rate-limited but a healthy fallback exists", func() {
+		It("switches to the first healthy candidate before opening the stream", func() {
+			primary := &mockProvider{
+				name:         "anthropic",
+				streamChunks: []provider.StreamChunk{{Content: "primary should be skipped", Done: true}},
+			}
+			fallback := &mockProvider{
+				name:         "openai",
+				streamChunks: []provider.StreamChunk{{Content: "fallback response", Done: true}},
+			}
+
+			health := failover.NewHealthManager()
+			registry := provider.NewRegistry()
+			registry.Register(primary)
+			registry.Register(fallback)
+			manager := failover.NewManager(registry, health, 5*time.Minute)
+			manager.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+				{Provider: "openai", Model: "gpt-4o"},
+			})
+			health.MarkRateLimited("anthropic", "claude-sonnet-4-6", time.Now().Add(1*time.Hour))
+
+			targetEngine := engine.New(engine.Config{
+				Registry:        registry,
+				FailoverManager: manager,
+				Manifest: agent.Manifest{
+					ID:                "fallback-agent",
+					Name:              "Fallback Agent",
+					Instructions:      agent.Instructions{SystemPrompt: "Use healthy providers."},
+					ContextManagement: agent.DefaultContextManagement(),
+				},
+			})
+
+			delegateTool := engine.NewDelegateTool(
+				map[string]*engine.Engine{"fallback-agent": targetEngine},
+				delegation, "orchestrator",
+			)
+
+			_, err := delegateTool.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "fallback-agent",
+					"message":       "Do something",
+				},
+			})
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(primary.capturedRequest).To(BeNil(),
+				"the rate-limited primary provider should be skipped before stream start")
+			Expect(fallback.capturedRequest).NotTo(BeNil())
+			Expect(targetEngine.LastProvider()).To(Equal("openai"))
+			Expect(targetEngine.LastModel()).To(Equal("gpt-4o"))
+		})
+	})
+})
+
+var _ = Describe("DelegateTool parent model/provider override isolation", func() {
+	// Regression: when the parent session selects a specific provider/model
+	// (e.g. github-copilot), that selection must NOT propagate into child
+	// delegate engines via context. The delegate must use its own configured
+	// failover preferences.
+	It("does not forward the parent session's ProviderOverrideKey to the child engine", func() {
+		childProvider := &mockProvider{
+			name: "anthropic",
+			streamChunks: []provider.StreamChunk{
+				{Content: "delegate response", Done: true},
+			},
+		}
+
+		health := failover.NewHealthManager()
+		registry := provider.NewRegistry()
+		registry.Register(childProvider)
+		manager := failover.NewManager(registry, health, 5*time.Minute)
+		manager.SetBasePreferences([]provider.ModelPreference{
+			{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+		})
+
+		targetEngine := engine.New(engine.Config{
+			ChatProvider:    childProvider,
+			FailoverManager: manager,
+			Manifest: agent.Manifest{
+				ID:                "explorer",
+				Name:              "Codebase Explorer",
+				Instructions:      agent.Instructions{SystemPrompt: "You explore code."},
+				ContextManagement: agent.DefaultContextManagement(),
+			},
+		})
+
+		delegateTool := engine.NewDelegateTool(
+			map[string]*engine.Engine{"explorer": targetEngine},
+			agent.Delegation{CanDelegate: true}, "orchestrator",
+		)
+
+		// Simulate a parent session that has github-copilot selected.
+		parentCtx := context.WithValue(context.Background(), session.ProviderOverrideKey{}, "github")
+		parentCtx = context.WithValue(parentCtx, session.ModelOverrideKey{}, "copilot-gpt-4o")
+
+		_, err := delegateTool.Execute(parentCtx, tool.Input{
+			Name: "delegate",
+			Arguments: map[string]interface{}{
+				"subagent_type": "explorer",
+				"message":       "Find patterns",
+			},
+		})
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(childProvider.capturedRequest).NotTo(BeNil())
+		Expect(childProvider.capturedRequest.Provider).NotTo(Equal("github"),
+			"delegate must not inherit the parent's ProviderOverrideKey")
+		Expect(childProvider.capturedRequest.Model).NotTo(Equal("copilot-gpt-4o"),
+			"delegate must not inherit the parent's ModelOverrideKey")
+	})
+})
+
+var _ = Describe("ResolveChildModelOverride (helper unit)", func() {
+	It("returns the manifest's first preferred pair when the registry has the agent", func() {
+		manifest := agent.Manifest{
+			ID:   "librarian",
+			Name: "Librarian",
+			PreferredModels: []agent.ModelPreference{
+				{Provider: "anthropic", Model: "claude-sonnet-4-7"},
+			},
+		}
+		reg := agent.NewRegistry()
+		reg.Register(&manifest)
+		tool := engine.NewDelegateTool(nil, agent.Delegation{}, "x").WithRegistry(reg)
+		prov, model := tool.ResolveChildModelOverrideForTest("librarian", "", "")
+		Expect(prov).To(Equal("anthropic"))
+		Expect(model).To(Equal("claude-sonnet-4-7"))
+	})
+
+	It("returns empty when no manifest preference is declared", func() {
+		manifest := agent.Manifest{ID: "x", Name: "x"}
+		reg := agent.NewRegistry()
+		reg.Register(&manifest)
+		tool := engine.NewDelegateTool(nil, agent.Delegation{}, "x").WithRegistry(reg)
+		prov, model := tool.ResolveChildModelOverrideForTest("x", "", "")
+		Expect(prov).To(BeEmpty())
+		Expect(model).To(BeEmpty())
+	})
+
+	It("pinned parent selection outranks the child manifest head", func() {
+		manifest := agent.Manifest{
+			ID:              "librarian",
+			Name:            "Librarian",
+			PreferredModels: []agent.ModelPreference{{Provider: "anthropic", Model: "claude-sonnet-4-7"}},
+		}
+		reg := agent.NewRegistry()
+		reg.Register(&manifest)
+
+		mgr := session.NewManager(nil)
+		parent, err := mgr.CreateSession("coordinator")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(mgr.UpdateSessionModel(parent.ID, "zai", "glm-5.2")).To(Succeed())
+
+		tool := engine.NewDelegateTool(nil, agent.Delegation{}, "x").WithRegistry(reg).WithSessionManager(mgr)
+		prov, model := tool.ResolveChildModelOverrideWithParentForTest(parent.ID, "librarian", "", "")
+		Expect(prov).To(Equal("zai"),
+			"user selection > agent manifest > config — the operator's stated precedence")
+		Expect(model).To(Equal("glm-5.2"))
+	})
+
+	It("pinned parent selection heads the child failover chain ahead of manifest tiers", func() {
+		manifest := agent.Manifest{
+			ID:   "librarian",
+			Name: "Librarian",
+			PreferredModels: []agent.ModelPreference{
+				{Provider: "anthropic", Model: "claude-sonnet-4-7"},
+				{Provider: "openai", Model: "gpt-5"},
+			},
+		}
+		reg := agent.NewRegistry()
+		reg.Register(&manifest)
+
+		mgr := session.NewManager(nil)
+		parent, err := mgr.CreateSession("coordinator")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(mgr.UpdateSessionModel(parent.ID, "zai", "glm-5.2")).To(Succeed())
+
+		tool := engine.NewDelegateTool(nil, agent.Delegation{}, "x").WithRegistry(reg).WithSessionManager(mgr)
+		chain := tool.ResolveChildModelChainWithParentForTest(parent.ID, "librarian", "", "")
+		Expect(chain).To(HaveLen(3))
+		Expect(chain[0]).To(Equal(provider.ModelPreference{Provider: "zai", Model: "glm-5.2"}))
+		Expect(chain[1]).To(Equal(provider.ModelPreference{Provider: "anthropic", Model: "claude-sonnet-4-7"}))
+	})
+
+	It("unpinned parent pair is not inherited — the child manifest head wins", func() {
+		manifest := agent.Manifest{
+			ID:              "librarian",
+			Name:            "Librarian",
+			PreferredModels: []agent.ModelPreference{{Provider: "anthropic", Model: "claude-sonnet-4-7"}},
+		}
+		reg := agent.NewRegistry()
+		reg.Register(&manifest)
+
+		mgr := session.NewManager(nil)
+		parent, err := mgr.CreateSession("coordinator")
+		Expect(err).NotTo(HaveOccurred())
+		mgr.AppendMessage(parent.ID, session.Message{
+			Role:         "assistant",
+			Content:      "inferred winner, not a user selection",
+			ModelName:    "glm-5.2",
+			ProviderName: "zai",
+		})
+
+		tool := engine.NewDelegateTool(nil, agent.Delegation{}, "x").WithRegistry(reg).WithSessionManager(mgr)
+		prov, model := tool.ResolveChildModelOverrideWithParentForTest(parent.ID, "librarian", "", "")
+		Expect(prov).To(Equal("anthropic"),
+			"only explicit user selections propagate to children — inferred failover winners stay parent-scoped")
+		Expect(model).To(Equal("claude-sonnet-4-7"))
+	})
+
+	It("category-routed values outrank manifest", func() {
+		manifest := agent.Manifest{
+			ID:              "x",
+			Name:            "x",
+			PreferredModels: []agent.ModelPreference{{Provider: "anthropic", Model: "claude-sonnet-4-7"}},
+		}
+		reg := agent.NewRegistry()
+		reg.Register(&manifest)
+		tool := engine.NewDelegateTool(nil, agent.Delegation{}, "x").WithRegistry(reg)
+		prov, model := tool.ResolveChildModelOverrideForTest("x", "openai", "gpt-5")
+		Expect(prov).To(Equal("openai"))
+		Expect(model).To(Equal("gpt-5"))
+	})
+})
+
+var _ = Describe("DelegateTool applies child manifest's preferred_models override", func() {
+	// Cascade contract — UI > manifest > global. Fresh sessions spawned by
+	// a delegate call must honour the TARGET agent's manifest's
+	// preferred_models[0] as the provider/model override, NOT silently
+	// fall through to the engine's global default.
+	//
+	// Root cause this guards: delegation.go masked the parent's
+	// ProviderOverrideKey / ModelOverrideKey with "" to prevent the
+	// parent's selection from leaking into the child, but never resolved
+	// the child agent's own manifest preference. The result was that
+	// every delegation child ran on whatever the engine's LastProvider /
+	// LastModel happened to be — the global default in practice.
+	//
+	// Real-world reproduction: planner manifest declares
+	// preferred_models: [{provider: anthropic, model: claude-sonnet-4-7}].
+	// Planner ran on its preference (seeded by handleCreateSession), but
+	// when it delegated to a librarian / explorer the child ran on
+	// zai/glm-4.6, which then emitted malformed delegate args.
+	//
+	// The override flows through engine.go:3005-3009 — ProviderOverrideKey
+	// and ModelOverrideKey stamp req.Provider / req.Model unconditionally
+	// when non-empty.
+
+	It("stamps the child engine's request with the target manifest's first preferred provider+model", func() {
+		childProvider := &mockProvider{
+			name: "anthropic",
+			streamChunks: []provider.StreamChunk{
+				{Content: "delegate response", Done: true},
+			},
+		}
+		health := failover.NewHealthManager()
+		registry := provider.NewRegistry()
+		registry.Register(childProvider)
+		manager := failover.NewManager(registry, health, 5*time.Minute)
+		// Failover base preferences deliberately differ from the
+		// manifest's preferred_models so the spec proves the manifest
+		// wins, not the failover preference.
+		manager.SetBasePreferences([]provider.ModelPreference{
+			{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+		})
+
+		childManifest := agent.Manifest{
+			ID:                "librarian",
+			Name:              "Librarian",
+			Instructions:      agent.Instructions{SystemPrompt: "You are a librarian."},
+			ContextManagement: agent.DefaultContextManagement(),
+			PreferredModels: []agent.ModelPreference{
+				{Provider: "anthropic", Model: "claude-sonnet-4-7"},
+				{Provider: "zai", Model: "glm-4.6"},
+			},
+			ModelPolicy: agent.ModelPolicyPermissive,
+		}
+
+		targetEngine := engine.New(engine.Config{
+			ChatProvider:    childProvider,
+			FailoverManager: manager,
+			Manifest:        childManifest,
+		})
+
+		agentRegistry := agent.NewRegistry()
+		agentRegistry.Register(&childManifest)
+
+		delegateTool := engine.NewDelegateTool(
+			map[string]*engine.Engine{"librarian": targetEngine},
+			agent.Delegation{CanDelegate: true}, "orchestrator",
+		).WithRegistry(agentRegistry)
+
+		_, err := delegateTool.Execute(context.Background(), tool.Input{
+			Name: "delegate",
+			Arguments: map[string]interface{}{
+				"subagent_type": "librarian",
+				"message":       "research repository patterns",
+			},
+		})
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(childProvider.capturedRequest).NotTo(BeNil(),
+			"child provider must have been invoked")
+		Expect(childProvider.capturedRequest.Provider).To(Equal("anthropic"),
+			"child engine must run under the target manifest's first preferred provider")
+		Expect(childProvider.capturedRequest.Model).To(Equal("claude-sonnet-4-7"),
+			"child engine must run under the target manifest's first preferred model")
+	})
+
+	It("does not propagate the parent's override even when the child manifest declares preferred_models", func() {
+		// Cascade contract: the child's manifest preference replaces the
+		// parent's override; it does not get layered on top of it. A
+		// parent that selected (github, copilot-gpt-4o) must not leak
+		// those values into the child engine just because the child has
+		// a different manifest preference declared.
+		childProvider := &mockProvider{
+			name: "anthropic",
+			streamChunks: []provider.StreamChunk{
+				{Content: "delegate response", Done: true},
+			},
+		}
+		health := failover.NewHealthManager()
+		registry := provider.NewRegistry()
+		registry.Register(childProvider)
+		manager := failover.NewManager(registry, health, 5*time.Minute)
+		manager.SetBasePreferences([]provider.ModelPreference{
+			{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+		})
+
+		childManifest := agent.Manifest{
+			ID:                "explorer",
+			Name:              "Explorer",
+			Instructions:      agent.Instructions{SystemPrompt: "You explore."},
+			ContextManagement: agent.DefaultContextManagement(),
+			PreferredModels: []agent.ModelPreference{
+				{Provider: "anthropic", Model: "claude-opus-4-7"},
+			},
+			ModelPolicy: agent.ModelPolicyPermissive,
+		}
+
+		targetEngine := engine.New(engine.Config{
+			ChatProvider:    childProvider,
+			FailoverManager: manager,
+			Manifest:        childManifest,
+		})
+
+		agentRegistry := agent.NewRegistry()
+		agentRegistry.Register(&childManifest)
+
+		delegateTool := engine.NewDelegateTool(
+			map[string]*engine.Engine{"explorer": targetEngine},
+			agent.Delegation{CanDelegate: true}, "orchestrator",
+		).WithRegistry(agentRegistry)
+
+		parentCtx := context.WithValue(context.Background(), session.ProviderOverrideKey{}, "github")
+		parentCtx = context.WithValue(parentCtx, session.ModelOverrideKey{}, "copilot-gpt-4o")
+
+		_, err := delegateTool.Execute(parentCtx, tool.Input{
+			Name: "delegate",
+			Arguments: map[string]interface{}{
+				"subagent_type": "explorer",
+				"message":       "find patterns",
+			},
+		})
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(childProvider.capturedRequest).NotTo(BeNil())
+		Expect(childProvider.capturedRequest.Provider).To(Equal("anthropic"),
+			"child engine must run under its own manifest's preference, not the parent's override")
+		Expect(childProvider.capturedRequest.Model).To(Equal("claude-opus-4-7"),
+			"child engine must use the child manifest's preferred model, not the parent's override")
+	})
+
+	It("falls through to the failover/global preference when the child manifest declares no preferred_models", func() {
+		// Back-compat: agents that have not declared preferred_models
+		// must continue to honour the failover manager's base
+		// preferences. Without a manifest preference the override stays
+		// empty and engine.go falls through to LastProvider/LastModel
+		// (which the failover manager populates from its base prefs).
+		childProvider := &mockProvider{
+			name: "anthropic",
+			streamChunks: []provider.StreamChunk{
+				{Content: "delegate response", Done: true},
+			},
+		}
+		health := failover.NewHealthManager()
+		registry := provider.NewRegistry()
+		registry.Register(childProvider)
+		manager := failover.NewManager(registry, health, 5*time.Minute)
+		manager.SetBasePreferences([]provider.ModelPreference{
+			{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+		})
+
+		childManifest := agent.Manifest{
+			ID:                "qa-agent",
+			Name:              "QA",
+			Instructions:      agent.Instructions{SystemPrompt: "You QA."},
+			ContextManagement: agent.DefaultContextManagement(),
+			// PreferredModels intentionally empty — must fall through.
+		}
+
+		targetEngine := engine.New(engine.Config{
+			ChatProvider:    childProvider,
+			FailoverManager: manager,
+			Manifest:        childManifest,
+		})
+
+		agentRegistry := agent.NewRegistry()
+		agentRegistry.Register(&childManifest)
+
+		delegateTool := engine.NewDelegateTool(
+			map[string]*engine.Engine{"qa-agent": targetEngine},
+			agent.Delegation{CanDelegate: true}, "orchestrator",
+		).WithRegistry(agentRegistry)
+
+		_, err := delegateTool.Execute(context.Background(), tool.Input{
+			Name: "delegate",
+			Arguments: map[string]interface{}{
+				"subagent_type": "qa-agent",
+				"message":       "run QA",
+			},
+		})
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(childProvider.capturedRequest).NotTo(BeNil())
+		// No manifest preference → override stays empty → engine uses
+		// the failover manager's base preference (claude-sonnet-4-6).
+		Expect(childProvider.capturedRequest.Model).To(Equal("claude-sonnet-4-6"),
+			"child engine must fall through to the failover preference when no manifest preference is declared")
+	})
+})
+
+var _ = Describe("DelegateTool surfaces the child manifest's full preferred_models chain", func() {
+	// Companion to the tier-0 cascade specs above. resolveChildModelChain
+	// yields the FULL ordered preferred_models list (not just tier-0) so
+	// the three delegate dispatch sites can stamp it on ctx via
+	// session.WithPreferredModels — letting the failover layer exhaust the
+	// agent's own tier-1/tier-2 before the global default. This is the
+	// durable fix for the planning-loop halt where a member whose tier-0
+	// was momentarily unreachable cascaded straight to the unreliable
+	// global default (zai/glm-4.5) instead of its reliable secondary tier.
+
+	newDelegateTool := func(manifest *agent.Manifest) *engine.DelegateTool {
+		agentRegistry := agent.NewRegistry()
+		if manifest != nil {
+			agentRegistry.Register(manifest)
+		}
+		return engine.NewDelegateTool(
+			map[string]*engine.Engine{}, agent.Delegation{CanDelegate: true}, "orchestrator",
+		).WithRegistry(agentRegistry)
+	}
+
+	It("returns every tier in declared order", func() {
+		manifest := agent.Manifest{
+			ID:   "analyst",
+			Name: "Analyst",
+			PreferredModels: []agent.ModelPreference{
+				{Provider: "anthropic", Model: "claude-opus-4-6"},
+				{Provider: "openai", Model: "gpt-4o"},
+				{Provider: "zai", Model: "glm-4.6"},
+			},
+		}
+		chain := newDelegateTool(&manifest).ResolveChildModelChainForTest("analyst", "", "")
+		Expect(chain).To(Equal([]provider.ModelPreference{
+			{Provider: "anthropic", Model: "claude-opus-4-6"},
+			{Provider: "openai", Model: "gpt-4o"},
+			{Provider: "zai", Model: "glm-4.6"},
+		}), "the full ordered chain must be surfaced so failover can walk tier-1/tier-2 before the global default")
+	})
+
+	It("returns nil when the agent declares no preferred_models", func() {
+		manifest := agent.Manifest{ID: "qa-agent", Name: "QA"}
+		chain := newDelegateTool(&manifest).ResolveChildModelChainForTest("qa-agent", "", "")
+		Expect(chain).To(BeEmpty(),
+			"a chain-less agent must fall through so session.WithPreferredModels no-ops and the prior cascade-to-global-default behaviour is preserved")
+	})
+
+	It("prepends the category-routed pair to the manifest chain, deduped", func() {
+		manifest := agent.Manifest{
+			ID:   "analyst",
+			Name: "Analyst",
+			PreferredModels: []agent.ModelPreference{
+				{Provider: "anthropic", Model: "claude-opus-4-6"},
+			},
+		}
+		chain := newDelegateTool(&manifest).ResolveChildModelChainForTest("analyst", "openai", "gpt-5")
+		Expect(chain).To(Equal([]provider.ModelPreference{
+			{Provider: "openai", Model: "gpt-5"},
+			{Provider: "anthropic", Model: "claude-opus-4-6"},
+		}), "an explicit per-call category selection outranks the manifest at the HEAD, but the manifest tiers are retained as fallback so the failover layer is not left with a single-element chain")
+	})
+
+	It("dedupes the category-routed pair when it already heads the manifest chain", func() {
+		manifest := agent.Manifest{
+			ID:   "analyst",
+			Name: "Analyst",
+			PreferredModels: []agent.ModelPreference{
+				{Provider: "openai", Model: "gpt-5"},
+				{Provider: "anthropic", Model: "claude-opus-4-6"},
+			},
+		}
+		chain := newDelegateTool(&manifest).ResolveChildModelChainForTest("analyst", "openai", "gpt-5")
+		Expect(chain).To(Equal([]provider.ModelPreference{
+			{Provider: "openai", Model: "gpt-5"},
+			{Provider: "anthropic", Model: "claude-opus-4-6"},
+		}), "the category pair must not appear twice when it already heads the manifest chain")
+	})
+
+	It("returns only the category pair when the manifest declares no preferred_models", func() {
+		manifest := agent.Manifest{ID: "analyst", Name: "Analyst"}
+		chain := newDelegateTool(&manifest).ResolveChildModelChainForTest("analyst", "openai", "gpt-5")
+		Expect(chain).To(Equal([]provider.ModelPreference{{Provider: "openai", Model: "gpt-5"}}),
+			"with no manifest tiers to fall back on the chain is the category pair alone")
+	})
+})
+
+// delegationCapture is a thread-safe sink for delegation lifecycle events
+// published onto an `*eventbus.EventBus`. It subscribes at construction so
+// every event published after `newDelegationCapture` returns lands in the
+// per-status slices. The mutex keeps reads safe against the publisher
+// goroutine (the bus invokes handlers synchronously on the publisher
+// goroutine, but tests may probe state from another goroutine).
+type delegationCapture struct {
+	mu        sync.Mutex
+	started   []*events.DelegationStartedEvent
+	completed []*events.DelegationCompletedEvent
+	failed    []*events.DelegationFailedEvent
+}
+
+func newDelegationCapture(bus *eventbus.EventBus) *delegationCapture {
+	c := &delegationCapture{}
+	bus.Subscribe(events.EventDelegationStarted, func(ev any) {
+		if e, ok := ev.(*events.DelegationStartedEvent); ok {
+			c.mu.Lock()
+			c.started = append(c.started, e)
+			c.mu.Unlock()
+		}
+	})
+	bus.Subscribe(events.EventDelegationCompleted, func(ev any) {
+		if e, ok := ev.(*events.DelegationCompletedEvent); ok {
+			c.mu.Lock()
+			c.completed = append(c.completed, e)
+			c.mu.Unlock()
+		}
+	})
+	bus.Subscribe(events.EventDelegationFailed, func(ev any) {
+		if e, ok := ev.(*events.DelegationFailedEvent); ok {
+			c.mu.Lock()
+			c.failed = append(c.failed, e)
+			c.mu.Unlock()
+		}
+	})
+	return c
+}
+
+func (c *delegationCapture) startedEvents() []*events.DelegationStartedEvent {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]*events.DelegationStartedEvent, len(c.started))
+	copy(out, c.started)
+	return out
+}
+
+func (c *delegationCapture) completedEvents() []*events.DelegationCompletedEvent {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]*events.DelegationCompletedEvent, len(c.completed))
+	copy(out, c.completed)
+	return out
+}
+
+func (c *delegationCapture) failedEvents() []*events.DelegationFailedEvent {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]*events.DelegationFailedEvent, len(c.failed))
+	copy(out, c.failed)
+	return out
+}

@@ -1,0 +1,1328 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"sync"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
+	"github.com/baphled/flowstate/internal/agent"
+	"github.com/baphled/flowstate/internal/config"
+	"github.com/baphled/flowstate/internal/coordination"
+
+	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/failover"
+	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/session"
+	"github.com/baphled/flowstate/internal/tool"
+	todotool "github.com/baphled/flowstate/internal/tool/todo"
+)
+
+// mockProvider is a simple mock implementation of provider.Provider for testing.
+type mockProvider struct {
+	name string
+}
+
+var errMockNotImplemented = errors.New("mock not implemented")
+
+func (m *mockProvider) Name() string { return m.name }
+func (m *mockProvider) Stream(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	return nil, errMockNotImplemented
+}
+func (m *mockProvider) Chat(_ context.Context, _ provider.ChatRequest) (provider.ChatResponse, error) {
+	return provider.ChatResponse{}, nil
+}
+func (m *mockProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
+	return nil, errMockNotImplemented
+}
+func (m *mockProvider) Models() ([]provider.Model, error) { return nil, nil }
+
+// streamingMockProvider is a mock provider that counts Stream calls and
+// returns configurable streaming responses. Used to verify the engine's
+// retry loop fires when todos are incomplete.
+type streamingMockProvider struct {
+	name     string
+	streamFn func(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error)
+}
+
+func (p *streamingMockProvider) Name() string { return p.name }
+
+func (p *streamingMockProvider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	return p.streamFn(ctx, req)
+}
+
+func (p *streamingMockProvider) Chat(_ context.Context, _ provider.ChatRequest) (provider.ChatResponse, error) {
+	return provider.ChatResponse{}, nil
+}
+
+func (p *streamingMockProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
+	return nil, nil
+}
+
+func (p *streamingMockProvider) Models() ([]provider.Model, error) { return nil, nil }
+
+// modelsProvider is a mock provider that returns a configurable model list,
+// used to test complexity-based model routing in buildDelegateMaps.
+type modelsProvider struct {
+	name   string
+	models []provider.Model
+}
+
+func (m *modelsProvider) Name() string { return m.name }
+func (m *modelsProvider) Stream(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	return nil, errMockNotImplemented
+}
+func (m *modelsProvider) Chat(_ context.Context, _ provider.ChatRequest) (provider.ChatResponse, error) {
+	return provider.ChatResponse{}, nil
+}
+func (m *modelsProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
+	return nil, errMockNotImplemented
+}
+func (m *modelsProvider) Models() ([]provider.Model, error) { return m.models, nil }
+
+// mockTool is a simple mock tool for testing.
+type mockTool struct {
+	name string
+}
+
+func (m *mockTool) Name() string        { return m.name }
+func (m *mockTool) Description() string { return "mock tool" }
+func (m *mockTool) Schema() tool.Schema { return tool.Schema{} }
+func (m *mockTool) Execute(_ context.Context, _ tool.Input) (tool.Result, error) {
+	return tool.Result{}, nil
+}
+
+// findDelegateTool extracts the DelegateTool from an engine for testing.
+func findDelegateTool(eng *engine.Engine) *engine.DelegateTool {
+	if !eng.HasTool("delegate") {
+		return nil
+	}
+	return &engine.DelegateTool{}
+}
+
+var _ = Describe("wireDelegateToolIfEnabled", func() {
+	var (
+		application *App
+		providerReg *provider.Registry
+	)
+
+	BeforeEach(func() {
+		application = &App{
+			Registry: agent.NewRegistry(),
+		}
+	})
+
+	Context("when coordinator has can_delegate=true", func() {
+		var (
+			coordinatorManifest agent.Manifest
+			coordinatorEngine   *engine.Engine
+		)
+
+		BeforeEach(func() {
+			coordinatorManifest = agent.Manifest{
+				ID:   "coordinator",
+				Name: "Coordinator",
+				Delegation: agent.Delegation{
+					CanDelegate: true,
+				},
+			}
+
+			explorerManifest := agent.Manifest{
+				ID:   "explorer",
+				Name: "Explorer Agent",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"read", "bash"},
+				},
+			}
+
+			analystManifest := agent.Manifest{
+				ID:   "analyst",
+				Name: "Analyst Agent",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"read", "bash", "write"},
+				},
+			}
+
+			application.Registry.Register(&coordinatorManifest)
+			application.Registry.Register(&explorerManifest)
+			application.Registry.Register(&analystManifest)
+
+			providerReg = provider.NewRegistry()
+			providerReg.Register(&mockProvider{name: "anthropic"})
+			providerReg.Register(&mockProvider{name: "ollama"})
+			providerReg.Register(&mockProvider{name: "openai"})
+			application.providerRegistry = providerReg
+
+			coordinatorEngine = engine.New(engine.Config{
+				Manifest:      coordinatorManifest,
+				AgentRegistry: application.Registry,
+				Registry:      providerReg,
+				Tools:         []tool.Tool{&mockTool{name: "test"}},
+			})
+		})
+
+		It("creates isolated engines for each target", func() {
+			application.wireDelegateToolIfEnabled(coordinatorEngine, coordinatorManifest)
+
+			Expect(coordinatorEngine.HasTool("delegate")).To(BeTrue())
+
+			delegateTool := findDelegateTool(coordinatorEngine)
+			Expect(delegateTool).NotTo(BeNil())
+		})
+
+		It("preserves the coordinator manifest after wiring", func() {
+			explorerManifest := agent.Manifest{
+				ID:   "explorer-single",
+				Name: "Explorer Agent Single",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"read", "bash"},
+				},
+			}
+
+			singleApp := &App{
+				Registry: agent.NewRegistry(),
+			}
+			singleProviderReg := provider.NewRegistry()
+			singleProviderReg.Register(&mockProvider{name: "ollama"})
+			singleApp.providerRegistry = singleProviderReg
+
+			singleCoordManifest := agent.Manifest{
+				ID:   "coordinator",
+				Name: "Coordinator",
+				Delegation: agent.Delegation{
+					CanDelegate: true,
+				},
+			}
+			singleApp.Registry.Register(&singleCoordManifest)
+			singleApp.Registry.Register(&explorerManifest)
+
+			singleEngine := engine.New(engine.Config{
+				Manifest:      singleCoordManifest,
+				AgentRegistry: singleApp.Registry,
+				Registry:      singleProviderReg,
+				Tools:         []tool.Tool{&mockTool{name: "test"}},
+			})
+
+			singleApp.wireDelegateToolIfEnabled(singleEngine, singleCoordManifest)
+
+			coordinatorManifestAfter := singleEngine.Manifest()
+			Expect(coordinatorManifestAfter.ID).To(Equal("coordinator"))
+			Expect(coordinatorManifestAfter.Name).To(Equal("Coordinator"))
+		})
+
+		It("preserves coordinator state after delegation setup", func() {
+			explorerManifest := agent.Manifest{
+				ID:   "explorer-state",
+				Name: "Explorer Agent",
+			}
+
+			stateApp := &App{
+				Registry: agent.NewRegistry(),
+			}
+			stateProviderReg := provider.NewRegistry()
+			stateProviderReg.Register(&mockProvider{name: "anthropic"})
+			stateProviderReg.Register(&mockProvider{name: "ollama"})
+			stateApp.providerRegistry = stateProviderReg
+
+			stateCoordManifest := agent.Manifest{
+				ID:   "coordinator",
+				Name: "Coordinator",
+				Delegation: agent.Delegation{
+					CanDelegate: true,
+				},
+			}
+			stateApp.Registry.Register(&stateCoordManifest)
+			stateApp.Registry.Register(&explorerManifest)
+
+			stateEngine := engine.New(engine.Config{
+				Manifest:      stateCoordManifest,
+				AgentRegistry: stateApp.Registry,
+				Registry:      stateProviderReg,
+				Tools:         []tool.Tool{&mockTool{name: "test"}},
+			})
+
+			stateApp.wireDelegateToolIfEnabled(stateEngine, stateCoordManifest)
+
+			coordinatorManifestAfter := stateEngine.Manifest()
+			Expect(coordinatorManifestAfter.ID).To(Equal("coordinator"))
+			Expect(coordinatorManifestAfter.Name).To(Equal("Coordinator"))
+			Expect(stateEngine.HasTool("delegate")).To(BeTrue())
+		})
+
+		It("delegate engines inherit the coordinator's model preference", func() {
+			explorerManifest := agent.Manifest{
+				ID:                "explorer-pref",
+				Name:              "Explorer Agent",
+				ContextManagement: agent.DefaultContextManagement(),
+			}
+
+			prefApp := &App{
+				Registry:        agent.NewRegistry(),
+				defaultProvider: &mockProvider{name: "anthropic"},
+			}
+			prefProviderReg := provider.NewRegistry()
+			prefProviderReg.Register(&mockProvider{name: "anthropic"})
+			prefApp.providerRegistry = prefProviderReg
+
+			prefCoordManifest := agent.Manifest{
+				ID:   "coordinator",
+				Name: "Coordinator",
+				Delegation: agent.Delegation{
+					CanDelegate: true,
+				},
+			}
+			prefApp.Registry.Register(&prefCoordManifest)
+			prefApp.Registry.Register(&explorerManifest)
+
+			prefEngine := engine.New(engine.Config{
+				Manifest:      prefCoordManifest,
+				AgentRegistry: prefApp.Registry,
+				Registry:      prefProviderReg,
+				Tools:         []tool.Tool{&mockTool{name: "test"}},
+			})
+			prefEngine.SetModelPreference("anthropic", "claude-sonnet-4")
+
+			prefApp.wireDelegateToolIfEnabled(prefEngine, prefCoordManifest)
+
+			delegateTool, found := prefEngine.GetDelegateTool()
+			Expect(found).To(BeTrue())
+
+			engines := delegateTool.Engines()
+			Expect(engines).To(HaveKey("explorer-pref"))
+
+			explorerEngine := engines["explorer-pref"]
+			Expect(explorerEngine.LastModel()).To(Equal("claude-sonnet-4"))
+			Expect(explorerEngine.LastProvider()).To(Equal("anthropic"))
+		})
+
+		It("wires the agent registry for name-based resolution", func() {
+			explorerManifest := agent.Manifest{
+				ID:   "explorer-reg",
+				Name: "Explorer",
+				Capabilities: agent.Capabilities{
+					CapabilityDescription: "explores systems",
+				},
+			}
+
+			regApp := &App{
+				Registry: agent.NewRegistry(),
+			}
+			regProviderReg := provider.NewRegistry()
+			regProviderReg.Register(&mockProvider{name: "ollama"})
+			regApp.providerRegistry = regProviderReg
+
+			regCoordManifest := agent.Manifest{
+				ID:   "coordinator",
+				Name: "Coordinator",
+				Delegation: agent.Delegation{
+					CanDelegate: true,
+				},
+			}
+			regApp.Registry.Register(&regCoordManifest)
+			regApp.Registry.Register(&explorerManifest)
+
+			regEngine := engine.New(engine.Config{
+				Manifest:      regCoordManifest,
+				AgentRegistry: regApp.Registry,
+				Registry:      regProviderReg,
+			})
+
+			regApp.wireDelegateToolIfEnabled(regEngine, regCoordManifest)
+
+			Expect(regEngine.HasTool("delegate")).To(BeTrue())
+			delegateTool, found := regEngine.GetDelegateTool()
+			Expect(found).To(BeTrue())
+
+			_, err := delegateTool.ResolveByNameOrAlias("explorer-reg")
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("wires embedding discovery when Ollama provider is available", func() {
+			explorerManifest := agent.Manifest{
+				ID:   "explorer-embed",
+				Name: "Explorer",
+				Capabilities: agent.Capabilities{
+					CapabilityDescription: "explores and investigates systems",
+				},
+			}
+
+			embedApp := &App{
+				Registry: agent.NewRegistry(),
+			}
+			embedProviderReg := provider.NewRegistry()
+			embedProviderReg.Register(&mockProvider{name: "ollama"})
+			embedApp.providerRegistry = embedProviderReg
+			embedApp.ollamaProvider = nil
+
+			embedCoordManifest := agent.Manifest{
+				ID:   "coordinator",
+				Name: "Coordinator",
+				Delegation: agent.Delegation{
+					CanDelegate: true,
+				},
+			}
+			embedApp.Registry.Register(&embedCoordManifest)
+			embedApp.Registry.Register(&explorerManifest)
+
+			embedEngine := engine.New(engine.Config{
+				Manifest:      embedCoordManifest,
+				AgentRegistry: embedApp.Registry,
+				Registry:      embedProviderReg,
+			})
+
+			embedApp.wireDelegateToolIfEnabled(embedEngine, embedCoordManifest)
+
+			Expect(embedEngine.HasTool("delegate")).To(BeTrue())
+			delegateTool, found := embedEngine.GetDelegateTool()
+			Expect(found).To(BeTrue())
+			Expect(delegateTool.HasEmbeddingDiscovery()).To(BeTrue())
+		})
+	})
+
+	Context("when agent has can_delegate=false", func() {
+		It("does not wire the delegate tool", func() {
+			noDelegationManifest := agent.Manifest{
+				ID:   "standalone",
+				Name: "Standalone Agent",
+				Delegation: agent.Delegation{
+					CanDelegate: false,
+				},
+			}
+
+			application.Registry.Register(&noDelegationManifest)
+
+			providerReg = provider.NewRegistry()
+			application.providerRegistry = providerReg
+
+			testEngine := engine.New(engine.Config{
+				Manifest:      noDelegationManifest,
+				AgentRegistry: application.Registry,
+				Registry:      providerReg,
+				Tools:         []tool.Tool{&mockTool{name: "test"}},
+			})
+
+			application.wireDelegateToolIfEnabled(testEngine, noDelegationManifest)
+
+			Expect(testEngine.HasTool("delegate")).To(BeFalse())
+		})
+	})
+
+	Context("when the delegate tool is re-wired after a manifest switch (rebind)", func() {
+		// Regression: a manifest-switch rebind used to build a FRESH
+		// coordination store and thread it to the members, while the
+		// existing DelegateTool kept its original store. A FileStore reads
+		// from an in-memory map loaded once at construction and never
+		// re-reads the backing file, so the two instances had independent
+		// maps: a member's write landed in the new store (and on disk) but
+		// the lead's post-member gate read the stale one and reported "no
+		// member output found", failing the swarm. The fix shares ONE store
+		// across the member-write and gate-read sides.
+		var (
+			leadManifest   agent.Manifest
+			memberManifest agent.Manifest
+			lead           *engine.Engine
+			rebindApp      *App
+		)
+
+		BeforeEach(func() {
+			rebindApp = &App{
+				Registry: agent.NewRegistry(),
+				Config:   &config.AppConfig{},
+			}
+
+			leadManifest = agent.Manifest{
+				ID:         "coordinator",
+				Name:       "Coordinator",
+				Delegation: agent.Delegation{CanDelegate: true},
+			}
+			// The member opts into coordination_store so its delegate
+			// engine receives a coordination_store tool — the member-write
+			// surface whose store must match the lead's gate-read store.
+			memberManifest = agent.Manifest{
+				ID:   "explorer",
+				Name: "Explorer Agent",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"read", "coordination_store"},
+				},
+			}
+			rebindApp.Registry.Register(&leadManifest)
+			rebindApp.Registry.Register(&memberManifest)
+
+			reg := provider.NewRegistry()
+			rebindApp.providerRegistry = reg
+
+			lead = engine.New(engine.Config{
+				Manifest:      leadManifest,
+				AgentRegistry: rebindApp.Registry,
+				Registry:      reg,
+			})
+
+			// Wire once (first wiring), then again (rebind branch) to
+			// reproduce the manifest-switch path that diverged.
+			rebindApp.wireDelegateToolIfEnabled(lead, leadManifest)
+			rebindApp.wireDelegateToolIfEnabled(lead, leadManifest)
+		})
+
+		It("reads gates through the App's single shared coordination store", func() {
+			dt, found := lead.GetDelegateTool()
+			Expect(found).To(BeTrue())
+
+			// The member-write path threads the App's shared store into each
+			// member's coordination_store tool (via buildDelegateMaps). The
+			// gate-read path is dt.CoordinationStore(). Both MUST be the same
+			// instance after the rebind — pre-fix the rebind built a fresh
+			// store for the members and left the gate reading the original.
+			sharedStore := rebindApp.coordinationStore
+			Expect(sharedStore).NotTo(BeNil(),
+				"App must hold the single shared coordination store after wiring")
+
+			Expect(dt.CoordinationStore()).To(BeIdenticalTo(sharedStore),
+				"after rebind the gate-read store must be the SAME instance "+
+					"the members write through (the App singleton)")
+		})
+
+		It("surfaces a member-written key to the gate after rebind", func() {
+			dt, found := lead.GetDelegateTool()
+			Expect(found).To(BeTrue())
+
+			// A member writes its output through the App's shared store —
+			// the exact store its coordination_store tool was wired with.
+			memberWriteStore := rebindApp.coordinationStore
+			Expect(memberWriteStore).NotTo(BeNil())
+			Expect(memberWriteStore.Set("chain/explorer/findings", []byte("done"))).To(Succeed())
+
+			// The lead's gate reads through the DelegateTool's store; it must
+			// see the member's write. Pre-fix the gate read a divergent,
+			// never-refreshed store and reported "no member output found".
+			val, err := dt.CoordinationStore().Get("chain/explorer/findings")
+			Expect(err).NotTo(HaveOccurred(),
+				"the gate-read store must see the member's write")
+			Expect(val).To(Equal([]byte("done")))
+		})
+	})
+
+	Describe("createDelegateEngine", func() {
+		It("creates an engine with a chat provider configured", func() {
+			delegateApp := &App{
+				Registry:        agent.NewRegistry(),
+				defaultProvider: &mockProvider{name: "anthropic"},
+			}
+
+			explorerManifest := agent.Manifest{
+				ID:                "explorer-chat",
+				Name:              "Explorer Agent",
+				ContextManagement: agent.DefaultContextManagement(),
+			}
+
+			delegateApp.Registry.Register(&explorerManifest)
+
+			delegateProviderReg := provider.NewRegistry()
+			delegateProviderReg.Register(&mockProvider{name: "ollama"})
+			delegateApp.providerRegistry = delegateProviderReg
+
+			coordinationStore := coordination.NewMemoryStore()
+
+			delegateEngine, _ := delegateApp.createDelegateEngine(explorerManifest, coordinationStore, nil)
+			Expect(delegateEngine).NotTo(BeNil())
+
+			_, err := delegateEngine.Stream(context.Background(), "", "hello")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).NotTo(ContainSubstring("no provider available"))
+		})
+
+		It("returns an isolated engine with the target manifest", func() {
+			isolatedApp := &App{
+				Registry: agent.NewRegistry(),
+			}
+
+			explorerManifest := agent.Manifest{
+				ID:   "explorer-isolated",
+				Name: "Explorer Agent",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"read", "bash"},
+				},
+			}
+
+			isolatedApp.Registry.Register(&explorerManifest)
+
+			isolatedProviderReg := provider.NewRegistry()
+			isolatedProviderReg.Register(&mockProvider{name: "ollama"})
+			isolatedApp.providerRegistry = isolatedProviderReg
+
+			coordinationStore := coordination.NewMemoryStore()
+
+			delegateEngine, _ := isolatedApp.createDelegateEngine(explorerManifest, coordinationStore, nil)
+
+			Expect(delegateEngine).NotTo(BeNil())
+			manifest := delegateEngine.Manifest()
+			Expect(manifest.ID).To(Equal("explorer-isolated"))
+			Expect(manifest.Name).To(Equal("Explorer Agent"))
+		})
+
+		It("shares the provided event bus with the delegate engine", func() {
+			busApp := &App{
+				Registry:        agent.NewRegistry(),
+				defaultProvider: &mockProvider{name: "anthropic"},
+			}
+			busProviderReg := provider.NewRegistry()
+			busProviderReg.Register(&mockProvider{name: "anthropic"})
+			busApp.providerRegistry = busProviderReg
+
+			explorerManifest := agent.Manifest{
+				ID:                "explorer-bus",
+				Name:              "Explorer Agent",
+				ContextManagement: agent.DefaultContextManagement(),
+			}
+			busApp.Registry.Register(&explorerManifest)
+
+			parentBus := eventbus.NewEventBus()
+			coordinationStore := coordination.NewMemoryStore()
+
+			delegateEngine, _ := busApp.createDelegateEngine(explorerManifest, coordinationStore, parentBus)
+			Expect(delegateEngine.EventBus()).To(BeIdenticalTo(parentBus))
+		})
+
+		Context("when the delegate manifest declares always_active_skills", func() {
+			// Pins the symmetry with root-engine creation (see
+			// app.go:821 where createEngine wires Skills from
+			// loadSkills). Without this, manifest-declared
+			// always_active_skills silently drop on delegation —
+			// session loaded_skills omits them and the
+			// harness-validator reports "manifest
+			// always_active_skills not loaded in session".
+			// Mirrors the predecessor fix for root-engine
+			// (see Obsidian: "Engine Skills Field Silent Drop").
+			//
+			It("loads them into the delegate engine's LoadedSkills", func() {
+				// Arrange: a skill directory with a single
+				// known skill that the manifest references.
+				skillDir, err := os.MkdirTemp("", "delegate-skills-*")
+				Expect(err).NotTo(HaveOccurred())
+				DeferCleanup(func() { os.RemoveAll(skillDir) })
+
+				memoryKeeperDir := filepath.Join(skillDir, "memory-keeper")
+				Expect(os.MkdirAll(memoryKeeperDir, 0o755)).To(Succeed())
+				skillBody := "---\nname: memory-keeper\n---\nRemember things."
+				Expect(os.WriteFile(filepath.Join(memoryKeeperDir, "SKILL.md"), []byte(skillBody), 0o600)).To(Succeed())
+
+				skillsApp := &App{
+					Registry:        agent.NewRegistry(),
+					defaultProvider: &mockProvider{name: "anthropic"},
+					Config: &config.AppConfig{
+						SkillDir: skillDir,
+					},
+				}
+				skillsProviderReg := provider.NewRegistry()
+				skillsProviderReg.Register(&mockProvider{name: "anthropic"})
+				skillsApp.providerRegistry = skillsProviderReg
+
+				delegateManifest := agent.Manifest{
+					ID:   "plan-writer",
+					Name: "Plan Writer",
+					Capabilities: agent.Capabilities{
+						AlwaysActiveSkills: []string{"memory-keeper"},
+					},
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+				skillsApp.Registry.Register(&delegateManifest)
+
+				coordinationStore := coordination.NewMemoryStore()
+
+				// Act.
+				delegateEngine, _ := skillsApp.createDelegateEngine(delegateManifest, coordinationStore, nil)
+
+				// Assert: the manifest's always_active_skills
+				// must reach the delegate engine. LoadedSkills
+				// is what the CLI/TUI persist into the session
+				// sidecar's loaded_skills field — if this is
+				// empty, the session reports the bug.
+				loaded := delegateEngine.LoadedSkills()
+				names := make([]string, 0, len(loaded))
+				for i := range loaded {
+					names = append(names, loaded[i].Name)
+				}
+				Expect(names).To(ContainElement("memory-keeper"))
+			})
+		})
+		Context("when the app has a TodoStore configured", func() {
+			It("registers todowrite tools on the delegate engine", func() {
+				todoApp := &App{
+					TodoStore:       todotool.NewMemoryStore(),
+					Registry:        agent.NewRegistry(),
+					defaultProvider: &mockProvider{name: "anthropic"},
+					Config:          &config.AppConfig{},
+				}
+				todoProviderReg := provider.NewRegistry()
+				todoProviderReg.Register(&mockProvider{name: "anthropic"})
+				todoApp.providerRegistry = todoProviderReg
+
+				explorerManifest := agent.Manifest{
+					ID:                "explorer-todo",
+					Name:              "Explorer Agent",
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+				todoApp.Registry.Register(&explorerManifest)
+
+				coordinationStore := coordination.NewMemoryStore()
+				delegateEngine, _ := todoApp.createDelegateEngine(explorerManifest, coordinationStore, nil)
+				Expect(delegateEngine).NotTo(BeNil())
+				Expect(delegateEngine.HasTool("todowrite")).To(BeTrue(),
+					"delegate engine must have todowrite when TodoStore is configured")
+				Expect(delegateEngine.HasTool("todo_update")).To(BeTrue(),
+					"delegate engine must have todo_update when TodoStore is configured")
+				Expect(delegateEngine.HasTool("todo_append")).To(BeTrue(),
+					"delegate engine must have todo_append when TodoStore is configured")
+				Expect(delegateEngine.HasTool("todo_insert")).To(BeTrue(),
+					"delegate engine must have todo_insert when TodoStore is configured")
+			})
+		})
+
+		Context("when streaming through a delegate engine with pending todos", func() {
+			It("retries the model via hasIncompleteTodos through the exact createDelegateEngine path", func() {
+				const sessionID = "test-delegate-todo-session"
+
+				var mu sync.Mutex
+				var streamCallCount int
+
+				countingProvider := &streamingMockProvider{
+					name: "todo-count-provider",
+					streamFn: func(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+						mu.Lock()
+						streamCallCount++
+						mu.Unlock()
+						ch := make(chan provider.StreamChunk, 2)
+						ch <- provider.StreamChunk{Content: "working..."}
+						ch <- provider.StreamChunk{Done: true}
+						close(ch)
+						return ch, nil
+					},
+				}
+
+				providerReg := provider.NewRegistry()
+				providerReg.Register(countingProvider)
+
+				todoStore := todotool.NewMemoryStore()
+				todoStore.Set(sessionID, []todotool.Item{
+					{Content: "finish the pending task", Status: "pending", Priority: "high"},
+				})
+
+				delegateApp := &App{
+					TodoStore:        todoStore,
+					Registry:         agent.NewRegistry(),
+					defaultProvider:  countingProvider,
+					providerRegistry: providerReg,
+					Config:           &config.AppConfig{SystemPromptBudget: 100000},
+				}
+
+				manifest := agent.Manifest{
+					ID:                "test-agent-delegate",
+					Name:              "Test Delegate Agent",
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+				delegateApp.Registry.Register(&manifest)
+
+				eng, str := delegateApp.createDelegateEngine(manifest, coordination.NewMemoryStore(), nil)
+				Expect(eng).NotTo(BeNil())
+				Expect(str).NotTo(BeNil())
+
+				ctx, cancel := context.WithCancel(context.Background())
+				DeferCleanup(cancel)
+				ctx = context.WithValue(ctx, session.IDKey{}, sessionID)
+
+				chunks, err := str.Stream(ctx, sessionID, "Go")
+				Expect(err).NotTo(HaveOccurred())
+
+				// With pending todos, hasIncompleteTodos must fire and the
+				// engine must retry the model. This proves the exact
+				// createDelegateEngine -> Config -> assembleEngine ->
+				// todoStore wiring is intact for delegate sessions.
+				Eventually(func() int {
+					mu.Lock()
+					defer mu.Unlock()
+					return streamCallCount
+				}, "10s", "100ms").Should(BeNumerically(">=", 3),
+					"delegate engine must retry the model when todos are pending")
+
+				cancel()
+
+				// Drain and verify the channel closes cleanly
+				for range chunks {
+				}
+			})
+		})
+	})
+
+	Describe("complexity-based model routing", func() {
+		var (
+			smallModel    = provider.Model{ID: "fast-model", Provider: "test", ContextLength: 4096}
+			mediumModel   = provider.Model{ID: "balanced-model", Provider: "test", ContextLength: 32768}
+			largeModel    = provider.Model{ID: "reasoning-model", Provider: "test", ContextLength: 200000}
+			threeModels   = []provider.Model{smallModel, mediumModel, largeModel}
+			coordManifest = agent.Manifest{
+				ID:         "coordinator",
+				Name:       "Coordinator",
+				Delegation: agent.Delegation{CanDelegate: true},
+			}
+		)
+
+		buildApp := func(models []provider.Model) (*App, *provider.Registry) {
+			p := &modelsProvider{name: "test", models: models}
+			reg := provider.NewRegistry()
+			reg.Register(p)
+			return &App{
+				Registry:         agent.NewRegistry(),
+				defaultProvider:  p,
+				providerRegistry: reg,
+				Config: &config.AppConfig{
+					ToolCapableModels:   []string{"*"},
+					ToolIncapableModels: []string{},
+				},
+			}, reg
+		}
+
+		It("routes a deep-complexity agent to the largest tool-capable model", func() {
+			deepManifest := agent.Manifest{
+				ID:         "security-eng",
+				Name:       "Security Engineer",
+				Complexity: "deep",
+			}
+
+			app, reg := buildApp(threeModels)
+			app.Registry.Register(&coordManifest)
+			app.Registry.Register(&deepManifest)
+
+			lead := engine.New(engine.Config{
+				Manifest: coordManifest, Registry: reg, AgentRegistry: app.Registry,
+			})
+			lead.SetModelPreference("test", "fast-model")
+
+			app.wireDelegateToolIfEnabled(lead, coordManifest)
+
+			dt, found := lead.GetDelegateTool()
+			Expect(found).To(BeTrue())
+
+			secEng := dt.Engines()["security-eng"]
+			Expect(secEng).NotTo(BeNil())
+			Expect(secEng.LastModel()).To(Equal("reasoning-model"))
+		})
+
+		It("routes a low-complexity agent to the smallest tool-capable model", func() {
+			explorerManifest := agent.Manifest{
+				ID:         "explorer",
+				Name:       "Explorer",
+				Complexity: "low",
+			}
+
+			app, reg := buildApp(threeModels)
+			app.Registry.Register(&coordManifest)
+			app.Registry.Register(&explorerManifest)
+
+			lead := engine.New(engine.Config{
+				Manifest: coordManifest, Registry: reg, AgentRegistry: app.Registry,
+			})
+			lead.SetModelPreference("test", "reasoning-model")
+
+			app.wireDelegateToolIfEnabled(lead, coordManifest)
+
+			dt, found := lead.GetDelegateTool()
+			Expect(found).To(BeTrue())
+
+			expEng := dt.Engines()["explorer"]
+			Expect(expEng).NotTo(BeNil())
+			Expect(expEng.LastModel()).To(Equal("fast-model"))
+		})
+
+		It("routes a standard-complexity agent to the median tool-capable model", func() {
+			reviewerManifest := agent.Manifest{
+				ID:         "code-reviewer",
+				Name:       "Code Reviewer",
+				Complexity: "standard",
+			}
+
+			app, reg := buildApp(threeModels)
+			app.Registry.Register(&coordManifest)
+			app.Registry.Register(&reviewerManifest)
+
+			lead := engine.New(engine.Config{
+				Manifest: coordManifest, Registry: reg, AgentRegistry: app.Registry,
+			})
+			lead.SetModelPreference("test", "fast-model")
+
+			app.wireDelegateToolIfEnabled(lead, coordManifest)
+
+			dt, found := lead.GetDelegateTool()
+			Expect(found).To(BeTrue())
+
+			revEng := dt.Engines()["code-reviewer"]
+			Expect(revEng).NotTo(BeNil())
+			Expect(revEng.LastModel()).To(Equal("balanced-model"))
+		})
+
+		It("falls back to the lead's model when the agent has no complexity set", func() {
+			noComplexityManifest := agent.Manifest{
+				ID:   "generic-agent",
+				Name: "Generic Agent",
+			}
+
+			app, reg := buildApp(threeModels)
+			app.Registry.Register(&coordManifest)
+			app.Registry.Register(&noComplexityManifest)
+
+			lead := engine.New(engine.Config{
+				Manifest: coordManifest, Registry: reg, AgentRegistry: app.Registry,
+			})
+			lead.SetModelPreference("test", "reasoning-model")
+
+			app.wireDelegateToolIfEnabled(lead, coordManifest)
+
+			dt, found := lead.GetDelegateTool()
+			Expect(found).To(BeTrue())
+
+			genEng := dt.Engines()["generic-agent"]
+			Expect(genEng).NotTo(BeNil())
+			Expect(genEng.LastModel()).To(Equal("reasoning-model"))
+		})
+
+		It("skips tool-incapable models when routing by complexity", func() {
+			capableSmall := provider.Model{ID: "capable-small", Provider: "test", ContextLength: 8192}
+			incapableLarge := provider.Model{ID: "haiku-large", Provider: "test", ContextLength: 500000}
+
+			p := &modelsProvider{name: "test", models: []provider.Model{capableSmall, incapableLarge}}
+			reg := provider.NewRegistry()
+			reg.Register(p)
+			app := &App{
+				Registry:         agent.NewRegistry(),
+				defaultProvider:  p,
+				providerRegistry: reg,
+				Config: &config.AppConfig{
+					ToolCapableModels:   []string{"capable-*"},
+					ToolIncapableModels: []string{"haiku-*"},
+				},
+			}
+
+			deepManifest := agent.Manifest{
+				ID:         "deep-agent",
+				Name:       "Deep Agent",
+				Complexity: "deep",
+			}
+			app.Registry.Register(&coordManifest)
+			app.Registry.Register(&deepManifest)
+
+			lead := engine.New(engine.Config{
+				Manifest: coordManifest, Registry: reg, AgentRegistry: app.Registry,
+			})
+			lead.SetModelPreference("test", "capable-small")
+
+			app.wireDelegateToolIfEnabled(lead, coordManifest)
+
+			dt, found := lead.GetDelegateTool()
+			Expect(found).To(BeTrue())
+
+			deepEng := dt.Engines()["deep-agent"]
+			Expect(deepEng).NotTo(BeNil())
+			Expect(deepEng.LastModel()).NotTo(Equal("haiku-large"))
+			Expect(deepEng.LastModel()).To(Equal("capable-small"))
+		})
+
+		It("never stamps the lead's provider onto a lister-resolved model it does "+
+			"not serve", func() {
+			// Regression: the abstract-lister path used to pair the resolved
+			// model with src.LastProvider() (the LEAD's provider) without
+			// checking the lead actually serves that model. With the lead on
+			// "zai" and the lister returning models owned by "openai", that
+			// produced an impossible (zai, openai-model) failover candidate.
+			// The effective (provider, model) pair must be self-consistent:
+			// the provider must own the resolved model.
+			openaiSmall := provider.Model{ID: "gpt-5-mini", Provider: "openai", ContextLength: 8192}
+			openaiLarge := provider.Model{ID: "gpt-5", Provider: "openai", ContextLength: 400000}
+
+			lister := &modelsProvider{name: "openai", models: []provider.Model{openaiSmall, openaiLarge}}
+			reg := provider.NewRegistry()
+			reg.Register(lister)
+			app := &App{
+				Registry:         agent.NewRegistry(),
+				defaultProvider:  lister,
+				providerRegistry: reg,
+				Config: &config.AppConfig{
+					ToolCapableModels:   []string{"*"},
+					ToolIncapableModels: []string{},
+				},
+			}
+
+			// Member declares NO preferred_models, so it routes purely via
+			// its complexity tier through the abstract lister.
+			deepManifest := agent.Manifest{
+				ID:         "abstract-member",
+				Name:       "Abstract Member",
+				Complexity: "deep",
+			}
+			app.Registry.Register(&coordManifest)
+			app.Registry.Register(&deepManifest)
+
+			lead := engine.New(engine.Config{
+				Manifest: coordManifest, Registry: reg, AgentRegistry: app.Registry,
+			})
+			// Lead runs on a DIFFERENT provider than the lister owner.
+			lead.SetModelPreference("zai", "glm-5")
+
+			app.wireDelegateToolIfEnabled(lead, coordManifest)
+
+			dt, found := lead.GetDelegateTool()
+			Expect(found).To(BeTrue())
+			memberEng := dt.Engines()["abstract-member"]
+			Expect(memberEng).NotTo(BeNil())
+
+			// The resolved model ("gpt-5", openai's largest) must be paired
+			// with its real owner "openai" — never with the lead's "zai".
+			Expect(memberEng.LastModel()).To(Equal("gpt-5"),
+				"deep complexity resolves to the largest lister model")
+			Expect(memberEng.LastProvider()).To(Equal("openai"),
+				"the resolved model must be stamped with the provider that "+
+					"actually serves it, never the lead's zai")
+		})
+	})
+
+	// Regression: swarm/delegate members must run on their manifest's
+	// preferred_models, not the global default the lead happens to be on.
+	//
+	// Issue #27 — commit 04adb404 set anthropic-first preferred_models on
+	// the planning-loop member manifests so they stop synthesis-hanging on
+	// the global default (zai/glm-5). createDelegateEngine (app.go:2122-2146)
+	// correctly seeds the child failover manager's BASE preferences from the
+	// manifest. But buildDelegateMaps then runs applyModelPreference
+	// (app.go:1607 → 1642-1660), which — for a member with no resolvable
+	// complexity model — calls SetModelPreference(lead.provider, lead.model).
+	// That delegates to failoverManager.SetOverride (engine.go:1841), which
+	// PREPENDS the lead's global-default pair ahead of the manifest base
+	// (manager.go:189 + effectivePreferences:331-339). The effective list
+	// becomes [zai/glm-5(override), anthropic, zai/glm-4.6, zai/glm-5] — so
+	// an anthropic failure lands on glm-5, never the manifest's glm-4.6 tail.
+	//
+	// These specs pin: a member declaring preferred_models keeps the manifest
+	// ordering as the effective failover preferences; the lead's global
+	// default does NOT preempt the manifest's anthropic head.
+	Describe("manifest preferred_models survive delegate model preference", func() {
+		buildPluginApp := func(models []provider.Model) (*App, *provider.Registry) {
+			p := &modelsProvider{name: "zai", models: models}
+			reg := provider.NewRegistry()
+			reg.Register(p)
+			healthMgr := failover.NewHealthManager()
+			parentMgr := failover.NewManager(reg, healthMgr, 0)
+			// Lead/global default — the member must NOT inherit this as a
+			// prepended override when it declares its own preferred_models.
+			parentMgr.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "zai", Model: "glm-5"},
+			})
+			app := &App{
+				Registry:         agent.NewRegistry(),
+				defaultProvider:  p,
+				providerRegistry: reg,
+				Config: &config.AppConfig{
+					ToolCapableModels:   []string{"*"},
+					ToolIncapableModels: []string{},
+				},
+				plugins: &pluginRuntime{
+					healthManager:   healthMgr,
+					failoverManager: parentMgr,
+				},
+			}
+			return app, reg
+		}
+
+		wireMember := func(memberID string, prefs []agent.ModelPreference) *engine.Engine {
+			app, reg := buildPluginApp([]provider.Model{
+				{ID: "glm-5", Provider: "zai", ContextLength: 200000},
+			})
+			leadManifest := agent.Manifest{
+				ID:         "coordinator",
+				Name:       "Coordinator",
+				Delegation: agent.Delegation{CanDelegate: true},
+			}
+			memberManifest := agent.Manifest{
+				ID:              memberID,
+				Name:            memberID,
+				PreferredModels: prefs,
+			}
+			app.Registry.Register(&leadManifest)
+			app.Registry.Register(&memberManifest)
+
+			lead := engine.New(engine.Config{
+				Manifest: leadManifest, Registry: reg, AgentRegistry: app.Registry,
+			})
+			// Lead is on the global default — the very pair that must NOT
+			// clobber the member's manifest preferences.
+			lead.SetModelPreference("zai", "glm-5")
+
+			app.wireDelegateToolIfEnabled(lead, leadManifest)
+
+			dt, found := lead.GetDelegateTool()
+			Expect(found).To(BeTrue())
+			memberEng := dt.Engines()[memberID]
+			Expect(memberEng).NotTo(BeNil())
+			return memberEng
+		}
+
+		// wireMemberWithComplexity is wireMember plus a non-empty complexity.
+		// The complexity resolves through DefaultCategoryRouting, whose tier
+		// configs all carry an EMPTY provider (e.g. "deep" -> {Model:
+		// "reasoning"}). That empty-provider tier must NOT win outright over a
+		// member's declared preferred_models: an empty-provider tier alias is
+		// not a deliberate per-agent provider routing decision, so the manifest
+		// preferences stay authoritative.
+		wireMemberWithComplexity := func(
+			memberID, complexity string,
+			prefs []agent.ModelPreference,
+		) *engine.Engine {
+			app, reg := buildPluginApp([]provider.Model{
+				{ID: "glm-5", Provider: "zai", ContextLength: 200000},
+			})
+			leadManifest := agent.Manifest{
+				ID:         "coordinator",
+				Name:       "Coordinator",
+				Delegation: agent.Delegation{CanDelegate: true},
+			}
+			memberManifest := agent.Manifest{
+				ID:              memberID,
+				Name:            memberID,
+				Complexity:      complexity,
+				PreferredModels: prefs,
+			}
+			app.Registry.Register(&leadManifest)
+			app.Registry.Register(&memberManifest)
+
+			lead := engine.New(engine.Config{
+				Manifest: leadManifest, Registry: reg, AgentRegistry: app.Registry,
+			})
+			lead.SetModelPreference("zai", "glm-5")
+
+			app.wireDelegateToolIfEnabled(lead, leadManifest)
+
+			dt, found := lead.GetDelegateTool()
+			Expect(found).To(BeTrue())
+			memberEng := dt.Engines()[memberID]
+			Expect(memberEng).NotTo(BeNil())
+			return memberEng
+		}
+
+		It("keeps manifest preferred_models authoritative when complexity resolves "+
+			"to an empty-provider tier alias", func() {
+			// analyst/planner declare complexity "deep" AND preferred_models.
+			// "deep" -> DefaultCategoryRouting["deep"] = {Model: "reasoning",
+			// Provider: ""}. With an empty tier provider the resolution must
+			// DEFER to the manifest preferences rather than pin (global-default
+			// provider, tier-model) and clobber them.
+			memberEng := wireMemberWithComplexity("analyst", "deep",
+				[]agent.ModelPreference{
+					{Provider: "anthropic", Model: "claude-opus-4-6"},
+					{Provider: "zai", Model: "glm-4.6"},
+				})
+
+			prefs := memberEng.FailoverManager().Preferences()
+			Expect(prefs).NotTo(BeEmpty(),
+				"member with preferred_models must keep effective failover preferences "+
+					"even when it also declares a complexity")
+			Expect(prefs[0]).To(Equal(provider.ModelPreference{Provider: "anthropic", Model: "claude-opus-4-6"}),
+				"an empty-provider tier alias must NOT pin (global-default, tier-model) "+
+					"ahead of the manifest's anthropic head")
+			// The manifest's own fallback tail must survive ahead of any
+			// inherited global default; the tier-resolved global-default model
+			// must NOT have been prepended as a SetOverride.
+			glm46Idx, anthropicIdx := -1, -1
+			for i, p := range prefs {
+				switch {
+				case p.Provider == "anthropic" && p.Model == "claude-opus-4-6":
+					anthropicIdx = i
+				case p.Provider == "zai" && p.Model == "glm-4.6":
+					glm46Idx = i
+				}
+			}
+			Expect(anthropicIdx).To(Equal(0), "anthropic head must be first")
+			Expect(glm46Idx).To(BeNumerically(">", anthropicIdx),
+				"the manifest's glm-4.6 tail must follow its anthropic head")
+		})
+
+		// wireMemberWithRoutingOverride is wireMemberWithComplexity plus an
+		// explicit config category_routing override that pins a real
+		// (provider, model) pair for the member's complexity tier. This is
+		// the EXPLICIT-provider tier case: a config.yaml override such as
+		//   category_routing:
+		//     low: {provider: zai, model: glm-5.1}
+		// must NOT hijack a member that declares its own preferred_models.
+		// The member's declared head (e.g. openai/gpt-5-mini) stays
+		// authoritative — the explicit tier pair must not be prepended ahead
+		// of it via SetOverride.
+		wireMemberWithRoutingOverride := func(
+			memberID, complexity string,
+			routing map[string]engine.CategoryConfig,
+			prefs []agent.ModelPreference,
+		) *engine.Engine {
+			app, reg := buildPluginApp([]provider.Model{
+				{ID: "glm-5", Provider: "zai", ContextLength: 200000},
+			})
+			app.Config.CategoryRouting = routing
+			leadManifest := agent.Manifest{
+				ID:         "coordinator",
+				Name:       "Coordinator",
+				Delegation: agent.Delegation{CanDelegate: true},
+			}
+			memberManifest := agent.Manifest{
+				ID:              memberID,
+				Name:            memberID,
+				Complexity:      complexity,
+				PreferredModels: prefs,
+			}
+			app.Registry.Register(&leadManifest)
+			app.Registry.Register(&memberManifest)
+
+			lead := engine.New(engine.Config{
+				Manifest: leadManifest, Registry: reg, AgentRegistry: app.Registry,
+			})
+			lead.SetModelPreference("zai", "glm-5")
+
+			app.wireDelegateToolIfEnabled(lead, leadManifest)
+
+			dt, found := lead.GetDelegateTool()
+			Expect(found).To(BeTrue())
+			memberEng := dt.Engines()[memberID]
+			Expect(memberEng).NotTo(BeNil())
+			return memberEng
+		}
+
+		It("keeps manifest preferred_models authoritative even when the tier "+
+			"config carries an EXPLICIT provider", func() {
+			// A config category_routing override pins low -> {provider: zai,
+			// model: glm-5.1}. The member declares preferred_models with
+			// openai/gpt-5-mini as its head. The explicit-provider tier must
+			// NOT be prepended ahead of the manifest head — the member must
+			// still run on openai/gpt-5-mini first.
+			memberEng := wireMemberWithRoutingOverride("worker", "low",
+				map[string]engine.CategoryConfig{
+					"low": {Provider: "zai", Model: "glm-5.1"},
+				},
+				[]agent.ModelPreference{
+					{Provider: "openai", Model: "gpt-5-mini"},
+					{Provider: "zai", Model: "glm-4.6"},
+				})
+
+			prefs := memberEng.FailoverManager().Preferences()
+			Expect(prefs).NotTo(BeEmpty(),
+				"member with preferred_models must keep effective failover "+
+					"preferences even under an explicit-provider tier override")
+			Expect(prefs[0]).To(Equal(provider.ModelPreference{Provider: "openai", Model: "gpt-5-mini"}),
+				"an explicit-provider config tier (zai/glm-5.1) must NOT be "+
+					"prepended ahead of the manifest's openai/gpt-5-mini head")
+			// The hijacking pair must not appear ahead of the manifest head.
+			for i, p := range prefs {
+				if p.Provider == "zai" && p.Model == "glm-5.1" {
+					Expect(i).To(BeNumerically(">", 0),
+						"the tier override pair must never sit at the head of the chain")
+				}
+			}
+		})
+
+		It("keeps the manifest's anthropic head as the first effective failover preference", func() {
+			memberEng := wireMember("plan-writer", []agent.ModelPreference{
+				{Provider: "anthropic", Model: "claude-sonnet-4"},
+				{Provider: "zai", Model: "glm-4.6"},
+			})
+
+			prefs := memberEng.FailoverManager().Preferences()
+			Expect(prefs).NotTo(BeEmpty(),
+				"member with preferred_models must have effective failover preferences")
+			Expect(prefs[0]).To(Equal(provider.ModelPreference{Provider: "anthropic", Model: "claude-sonnet-4"}),
+				"the manifest's anthropic head must lead — the lead's global default "+
+					"(zai/glm-5) must NOT be prepended as a SetOverride")
+		})
+
+		It("falls back to the manifest's glm-4.6 tail, never the global glm-5, after the anthropic head", func() {
+			memberEng := wireMember("explorer", []agent.ModelPreference{
+				{Provider: "anthropic", Model: "claude-sonnet-4"},
+				{Provider: "zai", Model: "glm-4.6"},
+			})
+
+			prefs := memberEng.FailoverManager().Preferences()
+			Expect(len(prefs)).To(BeNumerically(">=", 2),
+				"member must keep its declared fallback tail")
+			Expect(prefs[1]).To(Equal(provider.ModelPreference{Provider: "zai", Model: "glm-4.6"}),
+				"after the anthropic head fails, failover must reach the manifest's "+
+					"glm-4.6 tail before any inherited global default")
+			// glm-5 may still appear LAST as the deduplicated parent fallback,
+			// but it must never sit ahead of the manifest's own pairs.
+			anthropicIdx, glm46Idx, glm5Idx := -1, -1, -1
+			for i, p := range prefs {
+				switch {
+				case p.Provider == "anthropic" && p.Model == "claude-sonnet-4":
+					anthropicIdx = i
+				case p.Provider == "zai" && p.Model == "glm-4.6":
+					glm46Idx = i
+				case p.Provider == "zai" && p.Model == "glm-5":
+					glm5Idx = i
+				}
+			}
+			Expect(anthropicIdx).To(Equal(0), "anthropic head must be first")
+			if glm5Idx != -1 {
+				Expect(glm5Idx).To(BeNumerically(">", glm46Idx),
+					"the global default may only appear as a trailing fallback, "+
+						"never ahead of the manifest's glm-4.6")
+			}
+		})
+	})
+
+	Describe("delegate engine event bus sharing", func() {
+		It("delivers delegate engine events to the coordinator's bus subscribers", func() {
+			busApp := &App{
+				Registry:        agent.NewRegistry(),
+				defaultProvider: &mockProvider{name: "anthropic"},
+			}
+			busProviderReg := provider.NewRegistry()
+			busProviderReg.Register(&mockProvider{name: "anthropic"})
+			busApp.providerRegistry = busProviderReg
+
+			explorerManifest := agent.Manifest{
+				ID:   "explorer-events",
+				Name: "Explorer Agent",
+			}
+			coordManifest := agent.Manifest{
+				ID:   "coordinator-events",
+				Name: "Coordinator",
+				Delegation: agent.Delegation{
+					CanDelegate: true,
+				},
+			}
+			busApp.Registry.Register(&coordManifest)
+			busApp.Registry.Register(&explorerManifest)
+
+			coordinatorEngine := engine.New(engine.Config{
+				Manifest:      coordManifest,
+				AgentRegistry: busApp.Registry,
+				Registry:      busProviderReg,
+				Tools:         []tool.Tool{&mockTool{name: "test"}},
+			})
+
+			var mu sync.Mutex
+			var receivedTopics []string
+			coordinatorEngine.EventBus().Subscribe("session.created", func(_ any) {
+				mu.Lock()
+				receivedTopics = append(receivedTopics, "session.created")
+				mu.Unlock()
+			})
+
+			busApp.wireDelegateToolIfEnabled(coordinatorEngine, coordManifest)
+
+			delegateTool, found := coordinatorEngine.GetDelegateTool()
+			Expect(found).To(BeTrue())
+
+			engines := delegateTool.Engines()
+			Expect(engines).To(HaveKey("explorer-events"))
+
+			mu.Lock()
+			defer mu.Unlock()
+			Expect(engines["explorer-events"].EventBus()).To(BeIdenticalTo(coordinatorEngine.EventBus()))
+		})
+	})
+})

@@ -1,0 +1,10 @@
+version: 1
+tools:
+  read:
+    allow:
+      - "/tmp/allowed/**"
+  bash:
+    allow:
+      - "/tmp/work/**"
+    deny:
+      - "/tmp/work/secrets/**"

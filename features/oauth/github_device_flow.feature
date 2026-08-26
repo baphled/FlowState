@@ -1,57 +1,76 @@
+@oauth @github @smoke
 Feature: GitHub OAuth Device Flow
-  As a user
+  As a FlowState user
   I want to authenticate with GitHub using OAuth Device Flow
-  So that I can securely connect FlowState to GitHub-powered AI providers
+  So I can securely access GitHub Copilot without manually managing tokens
 
   Background:
-    Given FlowState is running
-    And I am in provider setup
+    Given FlowState is configured for OAuth
+    And no existing GitHub OAuth token is stored
 
-  @smoke
-  Scenario: Initiate device flow and display user code
-    Given I select "GitHub Copilot" as provider
-    And I choose "OAuth" as authentication method
-    When the device flow is initiated
-    Then I should see a device code displayed
-    And I should see the verification URL "https://github.com/login/device"
-    And I should see instructions to enter the code
+  @oauth-initiate
+  Scenario: Initiate GitHub Device Flow authentication
+    Given I request GitHub OAuth authentication
+    Then I should receive a device code
+    And I should receive a user code
+    And I should receive a verification URL
+    And I should receive a polling interval
 
-  Scenario: Successfully complete device flow authentication
-    Given I have initiated device flow
-    And I see the device code "ABCD-1234"
-    When I authorize the device on GitHub
-    And the token polling completes successfully
-    Then I should see "Authentication successful"
-    And the GitHub token should be stored securely
-    And I should be returned to the provider list
+  @oauth-user-code
+  Scenario: Display user code for manual verification
+    Given I initiate GitHub OAuth
+    Then the user code should be displayed
+    And the verification URL should be displayed
+    And I should be instructed to visit the URL within the expiry time
 
-  Scenario: Device flow expires before authorization
-    Given I have initiated device flow
-    And I see the device code "ABCD-1234"
-    When the device code expires
-    Then I should see "Device code expired"
-    And I should be prompted to retry
-    And no token should be stored
+  @oauth-user-approval
+  Scenario: Poll for user approval status
+    Given I have initiated GitHub OAuth
+    When I approve the authorization in browser
+    Then the polling should return a success status
+    And I should receive an access token
+    And I should receive a token type
+    And the token should have an expiry time
 
-  Scenario: User denies authorization on GitHub
-    Given I have initiated device flow
-    And I see the device code "ABCD-1234"
-    When I deny authorization on GitHub
-    Then I should see "Authorization denied"
-    And I should be returned to the provider setup
-    And no token should be stored
+  @oauth-pending-await
+  Scenario: Handle pending authorization state
+    Given I have initiated GitHub OAuth
+    And I have not yet approved in browser
+    When I poll for authorization status
+    Then I should receive a pending status
+    And I should be told to continue waiting
 
-  Scenario: Rate limiting during token polling
-    Given I have initiated device flow
-    And the GitHub API is rate limiting requests
-    When token polling occurs
-    Then the polling should respect rate limits
-    And I should see a waiting indicator
-    And polling should continue with backoff
+  @oauth-expired
+  Scenario: Handle expired authorization request
+    Given I have initiated GitHub OAuth
+    And the authorization has expired
+    When I poll for authorization status
+    Then I should receive an expired status
+    And I should be instructed to restart the flow
 
-  Scenario: Network error during device flow
-    Given I have initiated device flow
-    When a network error occurs during polling
-    Then I should see "Network error occurred"
-    And I should be prompted to retry
-    And no token should be stored
+  @oauth-rate-limit
+  Scenario: Handle rate limiting during polling
+    Given I have initiated GitHub OAuth
+    When GitHub rate limits the polling
+    Then I should receive a rate limited error
+    And I should wait for the specified interval before retrying
+
+  @oauth-slow-user
+  Scenario: Handle slow user authorization
+    Given I have initiated GitHub OAuth
+    And the device code expires in 300 seconds
+    When I poll periodically for up to 300 seconds
+    And I eventually approve in browser
+    Then I should still receive a valid access token
+
+  @oauth-scope
+  Scenario: Request correct OAuth scopes for Copilot
+    Given I request GitHub OAuth authentication
+    Then the request should include "copilot" scope
+    And the request should include appropriate device flow parameters
+
+  @oauth-token-storage
+  Scenario: Token is stored after successful authentication
+    Given I complete GitHub OAuth authentication
+    Then the access token should be stored securely
+    And the token should be encrypted at rest

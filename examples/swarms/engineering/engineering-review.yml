@@ -1,0 +1,34 @@
+schema_version: "1.0.0"
+id: engineering-review
+description: >
+  Full engineering lifecycle sub-swarm. Runs through planning, implementation,
+  and quality assurance phases sequentially, with appropriate gates between
+  phases. Used by lead-swarm for major features requiring complete lifecycle.
+lead: planner
+members:
+  - engineering-planning
+  - engineering-implementation
+  - engineering-quality
+harness:
+  parallel: false
+  gates:
+    - name: plan-review
+      kind: ext:plan-review-gate
+      when: post-member
+      target: engineering-planning
+      output_key: output
+
+    - name: ci-gate
+      kind: ext:ci-gate
+      when: post-member
+      target: engineering-implementation
+      output_key: output
+
+    - name: quality-gate
+      kind: ext:quality-gate
+      when: post-member
+      target: engineering-quality
+      output_key: output
+
+context:
+  chain_prefix: engineering/review

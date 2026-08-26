@@ -1,0 +1,132 @@
+schema_version: "1.0.0"
+id: engineer-swarm
+description: >
+  Implementation sub-swarm embedded inside dev-swarm. Senior-Engineer
+  leads, decomposing delivery briefs into atomic TDD cycles delegated
+  through the Mid → Junior hierarchy. Every implementation task passes
+  through strict TDD-first gates (failing test before code) and
+  small-commit discipline (one commit per RED→GREEN→REFACTOR cycle).
+
+  Model policy:
+    - Senior-Engineer: permissive (opus-class, own manifest)
+    - Mid-Engineer:    strict (haiku-class, enforced by manifest)
+    - Junior-Engineer: strict (haiku-class, enforced by manifest)
+    - Principal-Engineer: permissive (opus-class, own manifest)
+    - QA-Engineer: standard (sonnet-class, own manifest)
+
+  Gates:
+    - tdd-commit-gate on Mid-Engineer and Junior-Engineer outputs
+      (ext:): validates RED→GREEN phase evidence and commit SHA
+      via `make ai-commit`. Failure halts the sub-swarm.
+    - standards-review-gate on Principal-Engineer output (ext:):
+      validates structured verdict (approve/revise/abort), files
+      reviewed, and TDD compliance check. Failure halts the
+      sub-swarm.
+    - evidence-grounding on QA-Engineer output (builtin:):
+      validates bug-findings-v1 shape (summary + findings[]) and
+      verifies each finding's evidence appears verbatim in the
+      cited file.
+
+  The swarm replaces the flat Senior/Mid/Junior roster in dev-swarm
+  with a composed sub-swarm so Team-Lead delegates "implementation"
+  as a single unit, and the Senior-Engineer orchestrates the
+  engineering hierarchy internally.
+
+lead: Senior-Engineer
+
+members:
+  - Mid-Engineer
+  - Junior-Engineer
+  - Principal-Engineer
+  - QA-Engineer
+
+swarm_type: codegen
+
+harness:
+  parallel: false
+
+  gates:
+    # Mid-Engineer output must include TDD evidence (failing test
+    # written first) and a valid commit via `make ai-commit`.
+    # MEDIUM precedence: genuine mistakes halt the swarm, but the
+    # Senior-Engineer can revise and retry without escalation.
+    - name: post-member-mid-engineer-tdd-commit
+      kind: ext:tdd-commit-gate
+      when: post-member
+      target: Mid-Engineer
+      output_key: output
+      precedence: MEDIUM
+      failurePolicy: halt
+
+    # Junior-Engineer output validated identically. Junior is
+    # execution-only so the gate catches missing test evidence
+    # or uncommitted work before it cascades.
+    - name: post-member-junior-engineer-tdd-commit
+      kind: ext:tdd-commit-gate
+      when: post-member
+      target: Junior-Engineer
+      output_key: output
+      precedence: MEDIUM
+      failurePolicy: halt
+
+    # Principal-Engineer standards gate: all Mid/Junior work must
+    # pass architecture, clean code, and TDD-cycle review before
+    # the swarm considers the implementation phase complete.
+    # CRITICAL: no bypass — a FAIL here halts the entire swarm.
+    - name: post-member-principal-engineer-standards
+      kind: ext:standards-review-gate
+      when: post-member
+      target: Principal-Engineer
+      output_key: output
+      precedence: CRITICAL
+      failurePolicy: halt
+
+    # QA-Engineer adversarial gate: edge cases, coverage gaps,
+    # and BDD scenario verification. Evidence-grounding pass over
+    # the agent's bug-findings-v1 output — the QA-Engineer
+    # manifest (internal/app/agents/QA-Engineer.md) emits
+    # Filesystem pollution guard on Mid-Engineer: validates the
+    # fs-write report the member publishes under "fs-writes".
+    # Write-capable member — source writes must stay inside the
+    # active worktree and all inter-agent data must flow through
+    # the coordination store.
+    - name: post-member-mid-engineer-fs-pollution
+      kind: builtin:fs-pollution-guard
+      when: post-member
+      target: Mid-Engineer
+      output_key: fs-writes
+      precedence: MEDIUM
+      failurePolicy: halt
+
+    # Same guard on Junior-Engineer, the most execution-heavy
+    # write-capable member of the sub-swarm.
+    - name: post-member-junior-engineer-fs-pollution
+      kind: builtin:fs-pollution-guard
+      when: post-member
+      target: Junior-Engineer
+      output_key: fs-writes
+      precedence: MEDIUM
+      failurePolicy: halt
+
+    # `bug-findings-v1` (summary + findings[]), and the
+    # builtin:evidence-grounding runner projects that shape
+    # natively while additionally verifying each finding's
+    # evidence appears verbatim in the cited file. This replaces
+    # the `builtin:result-schema` + `review-verdict-v1` gate
+    # introduced by dff52884, which required a `verdict` field
+    # the QA-Engineer manifest never promised to emit (vault
+    # note: "Code-Reviewer Not Found After Recent Changes (May
+    # 2026)" — same drift class as the Code-Reviewer gate in
+    # dev-swarm). HIGH precedence so a FAIL triggers revision
+    # but the Senior-Engineer can choose to re-delegate rather
+    # than aborting.
+    - name: post-member-qa-engineer-evidence-grounding
+      kind: builtin:evidence-grounding
+      when: post-member
+      target: QA-Engineer
+      output_key: output
+      precedence: HIGH
+      failurePolicy: halt
+
+context:
+  chain_prefix: engineer-swarm

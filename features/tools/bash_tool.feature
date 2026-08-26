@@ -55,21 +55,7 @@ Feature: Bash Tool
     Then I should see an indicator that the command is running
     And when complete, I should see the output
 
-  @wip
-  Scenario: Cancel running command
-    Given the AI is running a long command
-    When I press Ctrl+c
-    Then the command should be terminated
-    And the AI should be informed of the cancellation
-
   Scenario: Working directory context
     Given I am in directory "/home/user/projects"
     When the AI runs "pwd"
     Then the output should show "/home/user/projects"
-
-  @wip
-  Scenario: Remember permission for session
-    Given bash tool permission is set to "ask"
-    When the AI requests to run "ls"
-    And I approve with "remember for session"
-    Then subsequent "ls" commands should auto-approve

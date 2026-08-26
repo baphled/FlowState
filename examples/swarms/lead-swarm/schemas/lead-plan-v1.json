@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Lead Plan v1",
+  "description": "Output from lead-coordinator after task analysis and sub-swarm selection",
+  "type": "object",
+  "required": ["chain_id", "task_type", "sub_swarms_selected", "rationale"],
+  "properties": {
+    "chain_id": {
+      "type": "string",
+      "description": "Unique identifier for this orchestration session"
+    },
+    "task_type": {
+      "type": "string",
+      "enum": ["simple-bug-fix", "feature-implementation", "security-sensitive", "architecture-decision", "major-feature", "research-investigation", "quality-audit"],
+      "description": "Classification of the task"
+    },
+    "complexity": {
+      "type": "string",
+      "enum": ["simple", "moderate", "complex", "major"],
+      "description": "Assessed complexity level"
+    },
+    "sub_swarms_selected": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["a-team", "board-room", "engineering-review"]
+      },
+      "minItems": 1,
+      "description": "List of sub-swarms selected for this task"
+    },
+    "parallel_dispatch": {
+      "type": "boolean",
+      "description": "Whether sub-swarms are dispatched in parallel"
+    },
+    "rationale": {
+      "type": "string",
+      "description": "Explanation for why these sub-swarms were selected"
+    },
+    "constraints": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Any constraints or requirements identified"
+    }
+  }
+}

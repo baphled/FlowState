@@ -1,0 +1,14 @@
+schema_version: "1.0.0"
+id: engineering-implementation
+description: >
+  Implementation sub-swarm. Senior-Engineer drives feature work guided by the
+  plan produced in the planning phase; executor runs build and script tasks;
+  plan-reviewer validates output against the original plan.
+lead: Senior-Engineer
+members:
+  - executor
+  - plan-reviewer
+harness:
+  parallel: false
+context:
+  chain_prefix: engineering/implementation

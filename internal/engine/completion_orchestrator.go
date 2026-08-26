@@ -1,0 +1,477 @@
+package engine
+
+import (
+	"context"
+	"log/slog"
+	"sync"
+	"time"
+
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/events"
+	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/streaming"
+)
+
+// defaultRePromptTimeout caps any single re-prompt SendMessage call so that a
+// wedged provider cannot hold the orchestrator's worker indefinitely. Mirrors
+// engine.defaultStreamTimeout — a re-prompt is essentially a stream and the
+// same upper bound applies.
+const defaultRePromptTimeout = 5 * time.Minute
+
+// defaultRePromptConcurrency bounds the number of concurrently-running
+// re-prompts across all sessions. A wedged provider for one session would
+// otherwise let the next 64 buffered completion events each spawn a
+// goroutine that piles up against the wedged backend. 8 is enough for normal
+// fan-out across sessions while leaving headroom; the drain goroutine
+// blocks on this semaphore (NOT on the re-prompt itself) once the bound is
+// hit, applying natural backpressure on the completion channel.
+const defaultRePromptConcurrency = 8
+
+// SessionMessageSender abstracts the session manager operations needed by
+// the CompletionOrchestrator. Satisfied by session.Manager.
+type SessionMessageSender interface {
+	// SendMessage sends a message to the given session and returns a stream of response chunks.
+	SendMessage(ctx context.Context, sessionID string, message string) (<-chan provider.StreamChunk, error)
+	// GetNotifications retrieves and clears pending completion notifications for a session.
+	GetNotifications(sessionID string) ([]streaming.CompletionNotificationEvent, error)
+	// EnsureSession creates the session if it does not already exist.
+	EnsureSession(sessionID, agentID string)
+}
+
+// SessionBrokerPublisher abstracts the session broker's publish operation.
+// The api.SessionBroker satisfies this interface.
+type SessionBrokerPublisher interface {
+	// Publish fans out stream chunks to all subscribers for the given session.
+	Publish(sessionID string, chunks <-chan provider.StreamChunk)
+}
+
+// completionEvent is the internal message sent from the EventBus handler to
+// the drain goroutine. It carries only the session and task identifiers.
+type completionEvent struct {
+	sessionID string
+	taskID    string
+}
+
+// CompletionOrchestrator listens for background task completion events and
+// triggers re-prompt streams when all tasks for a session have finished.
+// It sits above session.Manager.SendMessage and makes re-prompting available
+// to all consumers (TUI, CLI, API) via the session broker.
+//
+// Design:
+//   - EventBus handler sends to a buffered channel non-blockingly (never blocks
+//     the EventBus publish call or the background task goroutine's semaphore).
+//   - A dedicated goroutine drains the channel and runs the decision logic.
+//   - Per-session CAS flag prevents duplicate re-prompts from concurrent completions.
+//   - Depth limit (default 3) prevents infinite re-prompt loops.
+type CompletionOrchestrator struct {
+	backgroundMgr *BackgroundTaskManager
+	sessionMgr    SessionMessageSender
+	eventBus      *eventbus.EventBus
+	broker        SessionBrokerPublisher
+
+	completionCh chan completionEvent
+	stopCh       chan struct{}
+	wg           sync.WaitGroup
+
+	// rePromptTimeout caps a single re-prompt SendMessage call. A wedged
+	// provider trips this deadline; the worker goroutine then exits via its
+	// defer, releases the CAS flag and the semaphore slot, and other
+	// sessions stay unblocked.
+	rePromptTimeout time.Duration
+
+	// rePromptSem bounds concurrent re-prompts. The drain goroutine acquires
+	// a slot (blocking ONLY on this acquire, never on the re-prompt itself)
+	// before spawning the worker goroutine that runs triggerRePrompt. This
+	// keeps the drain decoupled from any one wedged session while applying
+	// natural backpressure to the completion channel under load.
+	rePromptSem chan struct{}
+
+	mu          sync.Mutex
+	rePrompting map[string]bool
+	// rePromptPending flags sessions that received a completion event while a
+	// re-prompt was already in progress. After the current re-prompt finishes,
+	// the drain goroutine re-processes the session to avoid stranding events.
+	rePromptPending map[string]bool
+	rePromptCount   map[string]int
+	maxRePrompts    int
+
+	// rePromptSubs maps session IDs to channels that receive re-prompt stream
+	// channels. When a subscriber exists for a session, the re-prompt stream is
+	// delivered to the subscriber instead of the broker.
+	subsMu       sync.RWMutex
+	rePromptSubs map[string]chan<- (<-chan provider.StreamChunk)
+}
+
+// NewCompletionOrchestrator creates a new orchestrator. Call Start() to begin
+// listening for events.
+//
+// Expected:
+//   - backgroundMgr is a non-nil BackgroundTaskManager.
+//   - sessionMgr is a non-nil SessionMessageSender (typically session.Manager).
+//   - eventBus is a non-nil EventBus for subscribing to completion events.
+//   - broker may be nil; when nil, re-prompt streams are consumed but not published.
+//
+// Returns:
+//   - A configured but not yet started CompletionOrchestrator.
+//
+// Side effects:
+//   - None until Start() is called.
+func NewCompletionOrchestrator(
+	backgroundMgr *BackgroundTaskManager,
+	sessionMgr SessionMessageSender,
+	eventBus *eventbus.EventBus,
+	broker SessionBrokerPublisher,
+) *CompletionOrchestrator {
+	return &CompletionOrchestrator{
+		backgroundMgr:   backgroundMgr,
+		sessionMgr:      sessionMgr,
+		eventBus:        eventBus,
+		broker:          broker,
+		completionCh:    make(chan completionEvent, 64),
+		stopCh:          make(chan struct{}),
+		rePromptTimeout: defaultRePromptTimeout,
+		rePromptSem:     make(chan struct{}, defaultRePromptConcurrency),
+		rePrompting:     make(map[string]bool),
+		rePromptPending: make(map[string]bool),
+		rePromptCount:   make(map[string]int),
+		maxRePrompts:    3,
+		rePromptSubs:    make(map[string]chan<- (<-chan provider.StreamChunk)),
+	}
+}
+
+// Start subscribes to background task completion and failure events on the
+// EventBus and launches the drain goroutine.
+//
+// Side effects:
+//   - Subscribes two handlers to the EventBus.
+//   - Spawns one goroutine that runs until Stop() is called.
+//
+// Expected: parameters for Start.
+// Returns: result of Start.
+func (o *CompletionOrchestrator) Start() {
+	o.eventBus.Subscribe(events.EventBackgroundTaskCompleted, o.handleEvent)
+	o.eventBus.Subscribe(events.EventBackgroundTaskFailed, o.handleEvent)
+
+	o.wg.Add(1)
+	go o.drainLoop()
+}
+
+// Stop signals the drain goroutine to exit and waits for it to finish.
+//
+// Side effects:
+//   - Closes the stop channel, causing the drain goroutine to exit.
+//   - Unsubscribes from EventBus events.
+//
+// Expected: parameters for Stop.
+// Returns: result of Stop.
+func (o *CompletionOrchestrator) Stop() {
+	close(o.stopCh)
+	o.wg.Wait()
+
+	o.eventBus.Unsubscribe(events.EventBackgroundTaskCompleted, o.handleEvent)
+	o.eventBus.Unsubscribe(events.EventBackgroundTaskFailed, o.handleEvent)
+}
+
+// handleEvent is the EventBus handler called synchronously during Publish.
+// It extracts the session ID from the event and sends a completionEvent to
+// the buffered channel non-blockingly. If the channel is full, it logs a
+// warning and drops the event (the system is self-correcting: the next
+// completion will re-check all pending notifications).
+//
+// Expected:
+//   - event is a *BackgroundTaskCompletedEvent or *BackgroundTaskFailedEvent.
+//
+// Side effects:
+//   - Sends to completionCh or logs a warning on channel full.
+//
+// Returns: result of handleEvent.
+func (o *CompletionOrchestrator) handleEvent(event any) {
+	var sessionID, taskID string
+
+	switch e := event.(type) {
+	case *events.BackgroundTaskCompletedEvent:
+		sessionID = e.Data.SessionID
+		taskID = e.Data.TaskID
+	case *events.BackgroundTaskFailedEvent:
+		sessionID = e.Data.SessionID
+		taskID = e.Data.TaskID
+	default:
+		return
+	}
+
+	if sessionID == "" {
+		return
+	}
+
+	select {
+	case o.completionCh <- completionEvent{sessionID: sessionID, taskID: taskID}:
+	default:
+		slog.Warn("completion orchestrator: channel full, dropping event",
+			"session_id", sessionID, "task_id", taskID)
+	}
+}
+
+// drainLoop is the dedicated goroutine that processes completion events.
+// It exits when stopCh is closed.
+//
+// Side effects:
+//   - Calls processCompletion for each event received on completionCh.
+//
+// Expected: parameters for drainLoop.
+// Returns: result of drainLoop.
+func (o *CompletionOrchestrator) drainLoop() {
+	defer o.wg.Done()
+
+	for {
+		select {
+		case <-o.stopCh:
+			return
+		case evt := <-o.completionCh:
+			o.processCompletion(evt)
+		}
+	}
+}
+
+// processCompletion handles a single completion event. It checks whether all
+// tasks for the session are done, acquires the CAS flag and a semaphore slot,
+// and dispatches a re-prompt onto a worker goroutine if conditions are met.
+//
+// The drain goroutine never executes triggerRePrompt itself: it only ever
+// blocks on (a) the stop signal, (b) reading the completion channel, and
+// (c) acquiring the bounded re-prompt semaphore. A wedged provider trapped
+// inside triggerRePrompt for one session therefore cannot stall the drain
+// or starve completion notifications for other sessions. (H4 — May 2026.)
+//
+// Expected:
+//   - evt contains a valid sessionID.
+//
+// Side effects:
+//   - May spawn a worker goroutine running triggerRePrompt.
+//
+// Returns: result of processCompletion.
+func (o *CompletionOrchestrator) processCompletion(evt completionEvent) {
+	if o.backgroundMgr.ActiveCountForSession(evt.sessionID) > 0 {
+		return
+	}
+
+	// CAS: only one re-prompt per session at a time.
+	o.mu.Lock()
+	if o.rePrompting[evt.sessionID] {
+		// A re-prompt is already running for this session. Mark pending so the
+		// current re-prompt's defer re-processes the session after it finishes,
+		// preventing strand if a new task completed while the re-prompt was
+		// still streaming.
+		o.rePromptPending[evt.sessionID] = true
+		o.mu.Unlock()
+		return
+	}
+	if o.rePromptCount[evt.sessionID] >= o.maxRePrompts {
+		o.mu.Unlock()
+		slog.Warn("completion orchestrator: re-prompt depth limit reached",
+			"session_id", evt.sessionID, "max", o.maxRePrompts)
+		return
+	}
+	o.rePrompting[evt.sessionID] = true
+	o.mu.Unlock()
+
+	// Acquire a worker slot. We block here so that a flood of completions
+	// across many sessions doesn't fan out into unbounded goroutines, but we
+	// also abort cleanly on Stop so shutdown isn't held up by a saturated
+	// pool. If we abort, we MUST release the CAS flag we just took.
+	select {
+	case o.rePromptSem <- struct{}{}:
+	case <-o.stopCh:
+		o.mu.Lock()
+		o.rePrompting[evt.sessionID] = false
+		delete(o.rePromptPending, evt.sessionID)
+		o.mu.Unlock()
+		return
+	}
+
+	o.wg.Add(1)
+	go func(sessionID string) {
+		defer o.wg.Done()
+		defer func() { <-o.rePromptSem }()
+		o.triggerRePrompt(sessionID)
+	}(evt.sessionID)
+}
+
+// triggerRePrompt retrieves pending notifications, formats them, sends a
+// message to the session manager, and publishes the result to the broker.
+//
+// Expected:
+//   - sessionID identifies an active session with pending notifications.
+//
+// Side effects:
+//   - Calls SendMessage on the session manager.
+//   - Publishes the resulting stream to the broker (if configured).
+//   - Increments the re-prompt counter ONLY when SendMessage was actually
+//     attempted (F1, Bug Hunt Findings May 11 2026). Early-return no-op
+//     paths (zero notifications, empty reminder, GetNotifications error)
+//     must NOT consume the re-prompt budget.
+//   - Clears the CAS flag and re-enqueues pending completions on every
+//     return path so racing-empty-notif completions stay observable.
+//
+// Returns: result of triggerRePrompt.
+func (o *CompletionOrchestrator) triggerRePrompt(sessionID string) {
+	// F1: track whether a SendMessage was actually attempted in this
+	// invocation. The deferred closure only increments rePromptCount
+	// when attempted=true. Pre-F1, the unconditional increment exhausted
+	// the budget on 3 racing-empty-notif completions, permanently
+	// disabling auto-re-prompt for the session until ResetRePromptCount
+	// fired on a new user message.
+	var attempted bool
+	defer func() {
+		o.mu.Lock()
+		if attempted {
+			o.rePromptCount[sessionID]++
+		}
+		o.rePrompting[sessionID] = false
+		pending := o.rePromptPending[sessionID]
+		delete(o.rePromptPending, sessionID)
+		o.mu.Unlock()
+
+		// If completions arrived during this re-prompt, re-enqueue to avoid
+		// stranding them. The drain goroutine will re-check ActiveCountForSession
+		// and notification presence; if neither applies, it is a no-op.
+		if pending {
+			select {
+			case o.completionCh <- completionEvent{sessionID: sessionID}:
+			default:
+				slog.Warn("completion orchestrator: could not re-enqueue pending completion",
+					"session_id", sessionID)
+			}
+		}
+	}()
+
+	notifications, err := o.sessionMgr.GetNotifications(sessionID)
+	if err != nil || len(notifications) == 0 {
+		return
+	}
+
+	reminder := FormatCompletionReminders(notifications)
+	if reminder == "" {
+		return
+	}
+
+	// Per-call deadline ensures a wedged provider can't hold a worker slot
+	// or the per-session CAS flag indefinitely. The deadline is the upper
+	// bound for the SendMessage stream as a whole; chunk-level liveness
+	// is the engine's concern.
+	timeout := o.rePromptTimeout
+	if timeout <= 0 {
+		timeout = defaultRePromptTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	// F1: a re-prompt is now being attempted — flag the budget
+	// increment BEFORE the SendMessage call so an error path
+	// (deadline-exceeded, transport failure) still consumes a slot.
+	// Mirroring the pre-F1 semantics for the work-was-tried case:
+	// only the racing-empty-notif paths get the budget back.
+	attempted = true
+	chunks, err := o.sessionMgr.SendMessage(ctx, sessionID, reminder)
+	if err != nil {
+		slog.Warn("completion orchestrator: re-prompt SendMessage failed",
+			"session_id", sessionID, "error", err)
+		return
+	}
+
+	// If a direct subscriber exists (e.g. TUI), deliver the stream to it
+	// instead of the broker. This avoids duplicate chunk delivery.
+	o.subsMu.RLock()
+	sub, hasSub := o.rePromptSubs[sessionID]
+	o.subsMu.RUnlock()
+
+	if hasSub {
+		select {
+		case sub <- chunks:
+		default:
+			slog.Warn("completion orchestrator: re-prompt subscriber full, falling back to broker",
+				"session_id", sessionID)
+			o.publishOrDrain(sessionID, chunks)
+		}
+		return
+	}
+
+	o.publishOrDrain(sessionID, chunks)
+}
+
+// publishOrDrain publishes chunks to the broker if configured, otherwise
+// drains the channel to ensure the stream completes.
+//
+// Expected:
+//   - chunks is a non-nil channel from SendMessage.
+//
+// Side effects:
+//   - Publishes to broker or drains the channel.
+//
+// Returns: result of publishOrDrain.
+func (o *CompletionOrchestrator) publishOrDrain(sessionID string, chunks <-chan provider.StreamChunk) {
+	if o.broker != nil {
+		o.broker.Publish(sessionID, chunks)
+	} else {
+		for range chunks {
+		}
+	}
+}
+
+// ResetRePromptCount clears the re-prompt depth counter for a session,
+// typically called when the user sends a new message (resetting the
+// autonomous re-prompt budget).
+//
+// Expected:
+//   - sessionID is a valid session identifier.
+//
+// Side effects:
+//   - Resets the re-prompt counter for the given session.
+//
+// Returns: result of ResetRePromptCount.
+func (o *CompletionOrchestrator) ResetRePromptCount(sessionID string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	delete(o.rePromptCount, sessionID)
+}
+
+// SubscribeRePrompt registers a channel to receive re-prompt stream channels
+// for the given session. When a re-prompt is triggered, the resulting stream
+// is sent on the returned channel instead of being published to the session
+// broker, allowing the TUI to read chunks incrementally.
+//
+// Expected:
+//   - sessionID is a valid session identifier.
+//
+// Returns:
+//   - A receive-only channel that delivers re-prompt stream channels.
+//
+// Side effects:
+//   - Registers the subscription; call UnsubscribeRePrompt to clean up.
+func (o *CompletionOrchestrator) SubscribeRePrompt(sessionID string) <-chan (<-chan provider.StreamChunk) {
+	ch := make(chan (<-chan provider.StreamChunk), 1)
+
+	o.subsMu.Lock()
+	o.rePromptSubs[sessionID] = ch
+	o.subsMu.Unlock()
+
+	return ch
+}
+
+// UnsubscribeRePrompt removes the re-prompt subscription for the given
+// session and closes the subscriber channel.
+//
+// Expected:
+//   - sessionID was previously passed to SubscribeRePrompt.
+//
+// Side effects:
+//   - Closes the subscriber channel and removes it from the map.
+//
+// Returns: result of UnsubscribeRePrompt.
+func (o *CompletionOrchestrator) UnsubscribeRePrompt(sessionID string) {
+	o.subsMu.Lock()
+	if ch, ok := o.rePromptSubs[sessionID]; ok {
+		close(ch)
+		delete(o.rePromptSubs, sessionID)
+	}
+	o.subsMu.Unlock()
+}

@@ -1,0 +1,379 @@
+package todo
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+
+	"github.com/baphled/flowstate/internal/session"
+	"github.com/baphled/flowstate/internal/tool"
+)
+
+// UpdateTool implements the todo_update tool: a single-task patch operation
+// over the stored todo list for a session. It is the companion to todowrite
+// (the whole-list replace) and exists because models naturally batch many
+// status flips into one todowrite call when there is no patch API. Live
+// evidence: session 59b4e1a2-daf9-44f2-b179-fa0757c34f02 emitted 4 todowrite
+// calls vs ~94 bash calls, so the per-status-transition signal that the
+// instructions ask for never reaches the UI.
+//
+// The patch identifies the target by 0-based index in the stored list — the
+// model already sees the indexed list returned from todowrite, so index is
+// the lowest-ambiguity identifier available without introducing IDs.
+// Patchable fields are status, content, and priority; all are optional, and
+// at least one MUST be supplied.
+type UpdateTool struct {
+	store Store
+}
+
+// NewUpdate creates a new todo_update Tool backed by the given store.
+//
+// Expected:
+//   - s is a non-nil Store implementation shared with the todowrite tool so
+//     both tools mutate the same per-session list.
+//
+// Returns:
+//   - A configured UpdateTool instance.
+//
+// Side effects:
+//   - None.
+func NewUpdate(s Store) *UpdateTool {
+	return &UpdateTool{store: s}
+}
+
+// Name returns the tool identifier.
+//
+// Returns:
+//   - The string "todo_update".
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for Name.
+func (t *UpdateTool) Name() string {
+	return "todo_update"
+}
+
+// Description returns a human-readable description of the todo_update tool.
+//
+// Returns:
+//   - A string describing the tool's purpose.
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for Description.
+func (t *UpdateTool) Description() string {
+	return "Patch a single todo entry by 0-based index; status transitions are forward-only and only one item may be in_progress at a time."
+}
+
+// Schema returns the input schema for the todo_update tool.
+//
+// Returns:
+//   - A tool.Schema declaring the required index property and the optional
+//     status, content, and priority patch fields.
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for Schema.
+func (t *UpdateTool) Schema() tool.Schema {
+	return tool.Schema{
+		Type: "object",
+		Properties: map[string]tool.Property{
+			"index": {
+				Type:        "integer",
+				Description: "0-based index of the todo to patch within the stored list",
+			},
+			"status": {
+				Type:        "string",
+				Description: "New status: pending, in_progress, completed, or cancelled (forward-only; terminal states cannot revert).",
+			},
+			"content": {
+				Type:        "string",
+				Description: "Replacement content/description for the todo",
+			},
+			"priority": {
+				Type:        "string",
+				Description: "New priority for the todo: high, medium, or low",
+			},
+		},
+		Required: []string{"index"},
+	}
+}
+
+// IsStateModifying returns true because todo_update patches the stored
+// task list for the session.
+//
+// Expected: parameters for IsStateModifying.
+// Returns: result of IsStateModifying.
+// Side effects: None.
+func (t *UpdateTool) IsStateModifying() bool { return true }
+
+// Execute patches a single todo in the stored list and returns the full
+// updated list as JSON so the UI surface (and the model) sees the same shape
+// as a todowrite response.
+//
+// Monotonic state machine: status transitions are forward-only. A pending
+// item may advance to in_progress, completed, or cancelled. An in_progress
+// item may advance only to completed or cancelled. Terminal states
+// (completed, cancelled) and the in_progress→pending demote are rejected, so
+// finished work cannot be silently reverted. Completing or cancelling the
+// active item auto-advances the next pending item to in_progress, and at
+// most one item may be in_progress at a time — starting a second one is
+// rejected.
+//
+// Fraud prevention: only an item currently in_progress can be marked
+// completed or cancelled. This forces agents to work on items sequentially
+// (claim → work → complete → claim next) rather than batch completing
+// items without doing the work.
+//
+// Expected:
+//   - ctx contains a session.IDKey value identifying the current session.
+//   - input.Arguments["index"] is a JSON number (decoded as float64) in
+//     range [0, len(list)-1].
+//   - At least one of status, content, or priority is supplied; supplying
+//     none is a no-op and returns an error so the model gets a clear signal
+//     it called the tool wrong.
+//
+// Returns:
+//   - A tool.Result whose Output is the JSON-encoded patched list.
+//   - An error when session ID is missing, the index is invalid, no patch
+//     fields are supplied, a transition is rejected, or the store rejects
+//     the write.
+//
+// Side effects:
+//   - Mutates the stored todo list for the session.
+//   - May auto-advance the next pending item when the active item is
+//     completed or cancelled.
+func (t *UpdateTool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
+	sessionID, ok := ctx.Value(session.IDKey{}).(string)
+	if !ok || sessionID == "" {
+		return tool.Result{}, errors.New("session ID missing from context")
+	}
+
+	idx, err := parseIndex(input.Arguments)
+	if err != nil {
+		return tool.Result{}, err
+	}
+
+	patch, hasPatch := parsePatch(input.Arguments)
+	if !hasPatch {
+		return tool.Result{}, errors.New("todo_update requires at least one of status, content, or priority")
+	}
+
+	result, err := t.store.Apply(sessionID, func(current []Item) ([]Item, error) {
+		if idx < 0 || idx >= len(current) {
+			return nil, fmt.Errorf("index %d out of range: stored list has %d entries", idx, len(current))
+		}
+		if err := validateStatusPatch(current, idx, patch); err != nil {
+			return nil, err
+		}
+		updated := make([]Item, len(current))
+		copy(updated, current)
+		applyPatch(&updated[idx], patch)
+		enforceSequential(updated, idx, patch)
+		return updated, nil
+	})
+	if err != nil {
+		return tool.Result{}, err
+	}
+
+	out, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return tool.Result{}, fmt.Errorf("serialising todos: %w", err)
+	}
+	return tool.Result{Output: string(out)}, nil
+}
+
+// validateStatusPatch enforces the monotonic-state guards for a status patch
+// against the pre-patch list state. It allows the patch through when no status
+// is being changed, when the transition is forward-only, and when starting an
+// in_progress item would not collide with another already-active item.
+//
+// Expected:
+//   - current is the list state before the patch is applied.
+//   - idx is the 0-based index targeted by the patch.
+//   - patch carries the requested patch fields; only the status field is
+//     inspected.
+//
+// Returns:
+//   - nil when the patch is safe to apply.
+//   - An error when the transition reverts a state, starts a second active
+//     item, or when marking an item complete that isn't in_progress. Returning
+//     the error from the Apply callback leaves the store unchanged.
+//
+// Side effects:
+//   - None.
+func validateStatusPatch(current []Item, idx int, patch itemPatch) error {
+	if patch.status == "" {
+		return nil
+	}
+	if err := validateTransition(current[idx].Status, patch.status); err != nil {
+		return err
+	}
+	// Prevent fraudulent batch completions: only an item currently in_progress
+	// can be marked completed or cancelled. This forces agents to work on items
+	// sequentially (claim → work → complete → claim next) rather than batch
+	// completing items without doing the work.
+	if patch.status == "completed" || patch.status == "cancelled" {
+		if current[idx].Status != "in_progress" {
+			return fmt.Errorf("can only mark an in_progress item as %s; item %d is currently %s", patch.status, idx, current[idx].Status)
+		}
+	}
+	if patch.status == "in_progress" {
+		for i := range current {
+			if i != idx && current[i].Status == "in_progress" {
+				return fmt.Errorf("another todo is already in_progress; complete or cancel it before starting index %d", idx)
+			}
+		}
+	}
+	return nil
+}
+
+// validateTransition enforces the forward-only monotonic state machine that
+// governs status transitions. A transition is allowed when the next status
+// equals the current one (no-op) or advances forward: pending may move to
+// in_progress, completed, or cancelled; in_progress may move only to
+// completed or cancelled. Any move out of a terminal state (completed,
+// cancelled) is rejected as a revert, and the in_progress→pending demote is
+// rejected as a backward move.
+//
+// Expected:
+//   - current is the item's existing status string.
+//   - next is the requested new status string.
+//
+// Returns:
+//   - nil when the transition is allowed.
+//   - An error describing the rejection otherwise.
+//
+// Side effects:
+//   - None.
+func validateTransition(current, next string) error {
+	if next == current {
+		return nil
+	}
+	switch current {
+	case "completed", "cancelled":
+		return fmt.Errorf("todo is in terminal state %q and cannot be reverted", current)
+	case "pending":
+		switch next {
+		case "in_progress", "completed", "cancelled":
+			return nil
+		}
+	case "in_progress":
+		switch next {
+		case "completed", "cancelled":
+			return nil
+		}
+	}
+	return fmt.Errorf("cannot move to %q from %q", next, current)
+}
+
+// enforceSequential applies the auto-advance discipline on a mutated todo
+// list. When the patched item was set to a terminal state (completed or
+// cancelled), the next pending item (after idx, wrapping forward) is
+// auto-advanced to in_progress so work continues without an explicit start
+// call. The demote-on-second-in_progress behaviour was removed: starting a
+// second in_progress item is now rejected upstream by Execute rather than
+// silently demoting the active one.
+//
+// Expected:
+//   - updated is the current state of the todo list after the requested patch
+//     has been applied (the caller has already mutated updated[idx]).
+//   - idx is the 0-based index that was patched.
+//   - patch carries the patch fields that were applied. Only the status field
+//     triggers auto-advance adjustments.
+//
+// Side effects:
+//   - Mutates items in updated in place.
+func enforceSequential(updated []Item, idx int, patch itemPatch) {
+	if patch.status == "" {
+		return
+	}
+
+	switch patch.status {
+	case "completed", "cancelled":
+		for i := idx + 1; i < len(updated); i++ {
+			if updated[i].Status == "pending" {
+				updated[i].Status = "in_progress"
+				return
+			}
+		}
+		for i := 0; i <= idx; i++ {
+			if updated[i].Status == "pending" {
+				updated[i].Status = "in_progress"
+				return
+			}
+		}
+	}
+}
+
+// itemPatch carries optional patch fields for a single todo. Empty strings
+// mean "leave the existing value unchanged".
+type itemPatch struct {
+	status   string
+	content  string
+	priority string
+}
+
+// parseIndex extracts the index argument from a tool input map. JSON numbers
+// decode as float64 in Go, so accept that as the canonical form; reject any
+// other type with an explicit error.
+//
+// Expected: parameters for parseIndex.
+// Returns: result of parseIndex.
+// Side effects: None.
+func parseIndex(args map[string]interface{}) (int, error) {
+	raw, present := args["index"]
+	if !present {
+		return 0, errors.New("index argument is required")
+	}
+	switch v := raw.(type) {
+	case float64:
+		return int(v), nil
+	case int:
+		return v, nil
+	case int64:
+		return int(v), nil
+	default:
+		return 0, fmt.Errorf("index must be a number, got %T", raw)
+	}
+}
+
+// parsePatch reads the optional status, content, and priority fields from a
+// tool input map. Returns ok=true when at least one non-empty patch field is
+// present so Execute can reject empty-patch calls.
+//
+// Expected: parameters for parsePatch.
+// Returns: result of parsePatch.
+// Side effects: None.
+func parsePatch(args map[string]interface{}) (itemPatch, bool) {
+	p := itemPatch{
+		status:   stringField(args, "status"),
+		content:  stringField(args, "content"),
+		priority: stringField(args, "priority"),
+	}
+	if p.status == "" && p.content == "" && p.priority == "" {
+		return p, false
+	}
+	return p, true
+}
+
+// applyPatch mutates target in place with any non-empty patch fields. Empty
+// patch fields preserve the existing values — the patch is additive.
+//
+// Expected: parameters for applyPatch.
+// Side effects: None.
+func applyPatch(target *Item, p itemPatch) {
+	if p.status != "" {
+		target.Status = p.status
+	}
+	if p.content != "" {
+		target.Content = p.content
+	}
+	if p.priority != "" {
+		target.Priority = p.priority
+	}
+}

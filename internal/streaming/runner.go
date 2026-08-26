@@ -1,0 +1,345 @@
+package streaming
+
+import (
+	"context"
+
+	"github.com/baphled/flowstate/internal/provider"
+)
+
+// DispatchHarnessEvent is the exported entry point to the harness /
+// typed-event dispatch logic. Used by internal/dispatch.Dispatcher to
+// route chunks emitted by the session-anchored streamer through the
+// same WS / SSE consumer surface that streaming.Run uses for ephemeral
+// callers. Centralising the dispatch logic here (rather than re-
+// implementing in dispatch.deliverChunkToConsumer) keeps the WS surface
+// observing the same chunk → frame mapping as the live engine driver.
+//
+// Side effects:
+//   - See dispatchHarnessEvent.
+//
+// Expected: parameters for DispatchHarnessEvent.
+// Returns: result of DispatchHarnessEvent.
+func DispatchHarnessEvent(c StreamConsumer, chunk provider.StreamChunk) bool {
+	return dispatchHarnessEvent(c, chunk)
+}
+
+// DeliverDelegationEvent is the exported wrapper for the delegation
+// event dispatch logic. See deliverDelegationEvent for the contract.
+//
+// Side effects:
+//   - See deliverDelegationEvent.
+//
+// Expected: parameters for DeliverDelegationEvent.
+// Returns: result of DeliverDelegationEvent.
+func DeliverDelegationEvent(c StreamConsumer, info *provider.DelegationInfo) bool {
+	return deliverDelegationEvent(c, info)
+}
+
+// DeliverToolCall is the exported wrapper for the tool-call dispatch
+// logic. See deliverToolCall for the contract.
+//
+// Side effects:
+//   - See deliverToolCall.
+//
+// Expected: parameters for DeliverToolCall.
+func DeliverToolCall(c StreamConsumer, toolCall *provider.ToolCall) {
+	deliverToolCall(c, toolCall)
+}
+
+// DeliverToolResult is the exported wrapper for the tool-result dispatch
+// logic. See deliverToolResult for the contract.
+//
+// Side effects:
+//   - See deliverToolResult.
+//
+// Expected: parameters for DeliverToolResult.
+func DeliverToolResult(c StreamConsumer, result *provider.ToolResultInfo) {
+	deliverToolResult(c, result)
+}
+
+// Run drives a Streamer into a StreamConsumer, coordinating the streaming lifecycle.
+//
+// Expected:
+//   - ctx is a valid context for the streaming operation.
+//   - s is a non-nil Streamer implementation.
+//   - c is a non-nil StreamConsumer implementation.
+//   - agentID identifies the agent to stream from.
+//   - message is the user's input text.
+//
+// Returns:
+//   - nil on success.
+//   - The Stream error if the initial stream call fails.
+//   - The first WriteChunk error if content delivery fails.
+//
+// Side effects:
+//   - Calls c.WriteError for stream-level and chunk-level errors.
+//   - Calls c.Done after the stream completes regardless of errors.
+func Run(ctx context.Context, s Streamer, c StreamConsumer, agentID, message string) error {
+	defer c.Done()
+
+	ch, err := s.Stream(ctx, agentID, message)
+	if err != nil {
+		c.WriteError(err)
+		return err
+	}
+
+	var writeErr error
+	for chunk := range ch {
+		if chunk.Error != nil {
+			c.WriteError(chunk.Error)
+			continue
+		}
+		if dispatchHarnessEvent(c, chunk) {
+			continue
+		}
+		if deliverDelegationEvent(c, chunk.DelegationInfo) {
+			continue
+		}
+		deliverToolCall(c, chunk.ToolCall)
+		deliverToolResult(c, chunk.ToolResult)
+		if chunk.Content != "" && writeErr == nil {
+			writeErr = c.WriteChunk(chunk.Content)
+		}
+		if chunk.Done {
+			break
+		}
+	}
+
+	return writeErr
+}
+
+// deliverToolCall extracts the tool call name and delivers it to the consumer.
+//
+// Expected:
+//   - c is a non-nil StreamConsumer.
+//   - toolCall may be nil.
+//
+// Side effects:
+//   - If toolCall is not nil and c implements ToolCallConsumer, calls c.WriteToolCall.
+//   - Extracts the skill name from skill_load tool calls and prefixes with "skill:".
+func deliverToolCall(c StreamConsumer, toolCall *provider.ToolCall) {
+	if toolCall == nil {
+		return
+	}
+	tc, ok := c.(ToolCallConsumer)
+	if !ok {
+		return
+	}
+
+	name := toolCall.Name
+	if name == "skill_load" {
+		if skillName, ok := toolCall.Arguments["name"].(string); ok && skillName != "" {
+			name = "skill:" + skillName
+		}
+	}
+	tc.WriteToolCall(name)
+}
+
+// IsControlEvent reports whether a stream chunk's EventType identifies an
+// out-of-band control event whose Content is structured metadata for
+// in-stream consumers (TUI status line, SSE event channel) rather than
+// natural-language text destined for the assistant message body.
+//
+// The set MUST stay in sync with the event-type cases handled by
+// dispatchHarnessEvent below. Concatenating Content from these chunks into
+// assistant or tool_result text was the source of the "{"attempt":1,...}"
+// JSON leaks captured in session 2d8dc0ac (May 2026 chat-UI leak triage):
+// teeToParentStream and the delegation collectors wrote chunk.Content into
+// the parent stream / delegated response without checking EventType, so the
+// harness's structured retry metadata ended up in the chat bubble.
+//
+// Callers in the engine and delegation pipelines invoke this predicate
+// before any chunk.Content concatenation. Adding a new EventType to
+// dispatchHarnessEvent without adding it here is a regression of the same
+// leak class — keep both lists co-located.
+//
+// Expected:
+//   - eventType is the chunk's EventType field; "" denotes a non-event chunk.
+//
+// Returns:
+//   - true when eventType identifies a known out-of-band control event.
+//   - false for "" and for tool_call / tool_result EventTypes (those carry
+//     structural payloads handled by their dedicated channels).
+//
+// Side effects:
+//   - None.
+func IsControlEvent(eventType string) bool {
+	switch eventType {
+	case "harness_retry",
+		"harness_attempt_start",
+		"harness_complete",
+		"harness_critic_feedback",
+		"harness_wave_incomplete",
+		"plan_artifact",
+		"review_verdict",
+		"status_transition",
+		"provider_changed",
+		"model_active",
+		"context_usage",
+		"provider_quota":
+		return true
+	default:
+		return false
+	}
+}
+
+// dispatchHarnessEvent checks whether the chunk is a recognised control event
+// and delivers it to the consumer if supported. Returns true if the chunk was handled.
+//
+// Expected:
+//   - c is a non-nil StreamConsumer.
+//   - chunk is the current stream chunk to inspect.
+//
+// Returns:
+//   - true if the chunk carried a recognised control event type (regardless of
+//     consumer support), preventing its Content from leaking into the text stream.
+//   - false if the chunk is not a recognised event type.
+//
+// Side effects:
+//   - If c implements HarnessEventConsumer, calls the corresponding method for harness event types.
+//   - If c implements EventConsumer, calls WriteEvent for plan_artifact, review_verdict, and
+//     status_transition event types.
+//   - provider_changed, model_active, context_usage, and provider_quota are silently consumed (no consumer interface delivery)
+//     since the dispatcher's turn registry tap handles their data for the long-poll API surface.
+func dispatchHarnessEvent(c StreamConsumer, chunk provider.StreamChunk) bool {
+	var harnessFunc func(HarnessEventConsumer)
+	switch chunk.EventType {
+	case "harness_retry":
+		harnessFunc = func(h HarnessEventConsumer) { h.WriteHarnessRetry(chunk.Content) }
+	case "harness_attempt_start":
+		harnessFunc = func(h HarnessEventConsumer) { h.WriteAttemptStart(chunk.Content) }
+	case "harness_complete":
+		harnessFunc = func(h HarnessEventConsumer) { h.WriteComplete(chunk.Content) }
+	case "harness_critic_feedback":
+		harnessFunc = func(h HarnessEventConsumer) { h.WriteCriticFeedback(chunk.Content) }
+	case "plan_artifact":
+		deliverTypedEvent(c, PlanArtifactEvent{Content: chunk.Content})
+		return true
+	case "review_verdict":
+		deliverTypedEvent(c, ReviewVerdictEvent{})
+		return true
+	case "status_transition":
+		deliverTypedEvent(c, StatusTransitionEvent{})
+		return true
+	case "provider_changed", "model_active", "context_usage", "provider_quota":
+		return true
+	default:
+		return false
+	}
+	if hc, ok := c.(HarnessEventConsumer); ok {
+		harnessFunc(hc)
+	}
+	return true
+}
+
+// deliverTypedEvent delivers a typed Event to the consumer if it implements EventConsumer.
+//
+// Expected:
+//   - c is a non-nil StreamConsumer.
+//   - event is a non-nil Event implementation.
+//
+// Side effects:
+//   - If c implements EventConsumer, calls WriteEvent with the event.
+//   - Errors from WriteEvent are forwarded to c.WriteError.
+func deliverTypedEvent(c StreamConsumer, event Event) {
+	ec, ok := c.(EventConsumer)
+	if !ok {
+		return
+	}
+	if err := ec.WriteEvent(event); err != nil {
+		c.WriteError(err)
+	}
+}
+
+// deliverToolResult delivers the tool result to the consumer. When the
+// engine has stamped IsError=true on the chunk (denied call, real tool
+// failure, gate rejection) the failure routes through WriteToolError on
+// consumers that implement ToolErrorConsumer; legacy consumers that only
+// implement ToolResultConsumer keep seeing the failure content on
+// WriteToolResult so the wire still carries the message.
+//
+// Why two channels: the /api/chat ephemeral SSE wire shape pre-fix only
+// exposed "tool_result" — the frontend rendered live tool failures as a
+// normal completed bubble because the SSEConsumer dropped IsError. Adding
+// a distinct WriteToolError lets the SSE writer emit a typed `tool_error`
+// event the frontend's handleToolErrorEvent (web/src/stores/chatStore.ts)
+// can flip the matching running tool_result row to status='error' in
+// stream. The session-scoped turn-poll path already surfaced errors via
+// the accumulator's persisted role="tool_error" row; this brings the
+// live wire to parity.
+//
+// Mutual exclusion: when WriteToolError fires WriteToolResult MUST NOT
+// also fire — emitting both would write tool_result (status=completed)
+// then tool_error (status=error) and the frontend would render the
+// success bubble before the error flip arrived, defeating the typed
+// channel entirely.
+//
+// Expected:
+//   - c is a non-nil StreamConsumer.
+//   - result may be nil.
+//
+// Side effects:
+//   - If result is nil, no-op.
+//   - If result.IsError is true and c implements ToolErrorConsumer, calls
+//     c.WriteToolError and returns (no WriteToolResult fan-out).
+//   - If result.IsError is true and c does NOT implement ToolErrorConsumer
+//     but does implement ToolResultConsumer, calls c.WriteToolResult so
+//     legacy consumers retain failure visibility.
+//   - If result.IsError is false and c implements ToolResultConsumer,
+//     calls c.WriteToolResult.
+func deliverToolResult(c StreamConsumer, result *provider.ToolResultInfo) {
+	if result == nil {
+		return
+	}
+	if result.IsError {
+		if tec, ok := c.(ToolErrorConsumer); ok {
+			tec.WriteToolError(result.Content)
+			return
+		}
+	}
+	trc, ok := c.(ToolResultConsumer)
+	if !ok {
+		return
+	}
+	trc.WriteToolResult(result.Content)
+}
+
+// deliverDelegationEvent converts a DelegationInfo into a DelegationEvent and delivers
+// it to the consumer if supported. Returns true when the chunk carried delegation info
+// (regardless of consumer support) so the caller can skip normal content delivery.
+//
+// Expected:
+//   - c is a non-nil StreamConsumer.
+//   - info may be nil.
+//
+// Returns:
+//   - true if info was non-nil (chunk consumed as delegation event).
+//   - false if info was nil (chunk should continue normal processing).
+//
+// Side effects:
+//   - If info is non-nil and c implements DelegationConsumer, calls c.WriteDelegation.
+func deliverDelegationEvent(c StreamConsumer, info *provider.DelegationInfo) bool {
+	if info == nil {
+		return false
+	}
+	dc, ok := c.(DelegationConsumer)
+	if !ok {
+		return true
+	}
+	if err := dc.WriteDelegation(DelegationEvent{
+		SourceAgent:  info.SourceAgent,
+		TargetAgent:  info.TargetAgent,
+		ChainID:      info.ChainID,
+		Status:       info.Status,
+		ModelName:    info.ModelName,
+		ProviderName: info.ProviderName,
+		Description:  info.Description,
+		ToolCalls:    info.ToolCalls,
+		LastTool:     info.LastTool,
+		StartedAt:    info.StartedAt,
+		CompletedAt:  info.CompletedAt,
+	}); err != nil {
+		c.WriteError(err)
+	}
+	return true
+}

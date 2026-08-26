@@ -1,0 +1,27 @@
+Feature: Agent Prompt Loading
+  As a FlowState user
+  I want agents to load their embedded prompts
+  So that they have the necessary instructions and context to operate
+
+  Scenario: Planner agent loads comprehensive embedded prompt
+    Given the planner agent is configured
+    When the system prompt is built
+    Then the prompt should contain planning instructions
+    And the prompt size should be at least 3500 characters
+
+  Scenario: Executor agent loads comprehensive embedded prompt
+    Given the executor agent is configured
+    When the system prompt is built
+    Then the prompt should contain execution instructions
+    And the prompt size should be at least 5000 characters
+
+  Scenario: Switching agent rebuilds engine with new prompt
+    Given the FlowState TUI is running with the planner agent
+    When I switch to the executor agent
+    Then the active agent should be "executor"
+
+  Scenario: BuildSystemPrompt uses manifest SystemPrompt from markdown agent
+    Given an explorer agent loaded from a markdown definition
+    When the system prompt is built
+    Then the prompt should contain the explorer role description
+    And the prompt should not be the bare JSON system prompt

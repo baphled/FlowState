@@ -1,0 +1,3 @@
+The coordination store at chain "validate-harness-001" already holds the requirements and a draft plan ready for review.
+
+Begin your review now by following the Coordination Store protocol: your first action is to read the requirements using coordination_store(operation="get", key="validate-harness-001/requirements"). Issue that tool call immediately as your first response.

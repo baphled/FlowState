@@ -1,0 +1,722 @@
+// Package events — catalog.go provides the canonical compile-time catalog of all
+// event types in the FlowState event system.
+//
+// This file is machine-readable metadata intended for use by tooling, documentation
+// generators, and downstream packages (e.g. T11 validation, T13 documentation).
+// It is NOT a runtime registry — no dynamic dispatch or registration happens here.
+//
+// Rules:
+//   - Do NOT add event versioning negotiation here.
+//   - Do NOT modify topic strings — they must match the constants in types.go exactly.
+//   - When a new event is introduced, add a corresponding entry to Catalog.
+//   - When an event is deprecated, change its Status to StatusDeprecated and update Notes.
+package events
+
+// EventScope indicates whether an event is intended for internal use only or is
+// part of the public plugin API.
+type EventScope string
+
+const (
+	// ScopeInternal marks events consumed only within the FlowState engine and
+	// built-in plugins (eventlogger, sessionrecorder).
+	ScopeInternal EventScope = "internal"
+
+	// ScopePublic marks events that external plugins may subscribe to or publish.
+	ScopePublic EventScope = "public"
+)
+
+// EventStatus indicates the lifecycle stage of an event type.
+type EventStatus string
+
+const (
+	// StatusActive is the normal state for an event type that is in use.
+	StatusActive EventStatus = "active"
+
+	// StatusTransitional marks an event type that is in the process of being
+	// replaced or restructured. Subscribers should plan for migration.
+	StatusTransitional EventStatus = "transitional"
+
+	// StatusDeprecated marks an event type that is no longer recommended.
+	// It may still be published during a transition window but will be removed.
+	StatusDeprecated EventStatus = "deprecated"
+)
+
+// EventCatalogEntry describes a single event type in the FlowState event system.
+//
+// Each entry maps a topic constant to its Go struct, lifecycle status, scope, and
+// the packages that publish or subscribe to it. The EventType field records the
+// value returned by the event's EventType() method, which may differ from Topic
+// for legacy events that predate the structured-topic naming scheme.
+type EventCatalogEntry struct {
+	// Topic is the string value of the event topic constant (e.g. "session.created").
+	// This is the value passed to bus.Publish and bus.Subscribe.
+	Topic string
+
+	// Constant is the Go constant name used to refer to this topic (e.g. "EventSessionCreated").
+	Constant string
+
+	// EventType is the value returned by the event struct's EventType() method.
+	// For most events this matches Topic, but for legacy events it may be a shorter
+	// prefix (e.g. "session" for both "session.created" and "session.ended").
+	// See the Notes field for divergence details.
+	EventType string
+
+	// Struct is the Go type name of the event payload (e.g. "SessionEvent").
+	// For external plugin events that have no dedicated struct, this is empty.
+	Struct string
+
+	// Publishers lists the source files or packages that call bus.Publish for
+	// this topic. "(not yet wired)" indicates the publisher is planned but absent.
+	Publishers []string
+
+	// Subscribers lists the source files or packages that call bus.Subscribe for
+	// this topic. "(T14 will add subscribers)" indicates planned future wiring.
+	Subscribers []string
+
+	// Scope indicates whether the event is internal-only or part of the public API.
+	Scope EventScope
+
+	// Status reflects the lifecycle stage: active, transitional, or deprecated.
+	Status EventStatus
+
+	// Delivery describes the dispatch guarantee. All FlowState events use
+	// fire-and-forget semantics.
+	Delivery string
+
+	// Notes records divergences, deprecation reasons, or other relevant context.
+	Notes string
+}
+
+// NamespaceRules documents the topic namespace policy enforced at the inbound
+// plugin boundary (internal/plugin/external.InboundHandler).
+//
+// External plugins publish events via the JSON-RPC notifications/event method.
+// The inbound handler enforces the following rules:
+//
+//   - The "ext.*" namespace is reserved exclusively for external plugin events.
+//     External plugins publish as "ext.{plugin-name}.{event-name}".
+//     A plugin named "my-plugin" sending "ping" produces the topic
+//     "ext.my-plugin.ping" on the EventBus.
+//
+//   - All other topic prefixes (agent.*, background.*, context.*, plugin.*,
+//     prompt.*, provider.*, session.*, tool.*) are reserved for internal
+//     FlowState events. External plugins CANNOT publish directly to these topics.
+//
+//   - Attempting to use an "ext.*" prefixed name is also rejected to prevent
+//     double-prefixing (e.g. "ext.foo" → would produce "ext.plugin.ext.foo").
+//
+// Enforcement: internal/plugin/external.isInternalTopic checks the eventName
+// against every Topic field in Catalog before allowing the publish to proceed.
+// This check lives at the adapter boundary, NOT inside the EventBus itself.
+var NamespaceRules = struct {
+	ExternalPrefix     string
+	InternalNamespaces []string
+}{
+	ExternalPrefix: "ext.",
+	InternalNamespaces: []string{
+		"agent.",
+		"background.",
+		"context.",
+		"delegation.",
+		"gate.",
+		"permission.",
+		"plugin.",
+		"prompt.",
+		"provider.",
+		"session.",
+		"tool.",
+	},
+}
+
+// Catalog is the canonical list of all event types in the FlowState event system.
+//
+// Entries are ordered by topic prefix grouping: agent, background, context,
+// plugin, prompt, provider, session, tool.
+var Catalog = []EventCatalogEntry{
+	{
+		Topic:       EventAgentSwitched,
+		Constant:    "EventAgentSwitched",
+		EventType:   "agent.switched",
+		Struct:      "AgentSwitchedEvent",
+		Publishers:  []string{"engine.go"},
+		Subscribers: []string{"eventlogger", "sessionrecorder"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+	},
+	{
+		Topic:       EventBackgroundTaskStarted,
+		Constant:    "EventBackgroundTaskStarted",
+		EventType:   "background.task.started",
+		Struct:      "BackgroundTaskStartedEvent",
+		Publishers:  []string{"engine/background.go"},
+		Subscribers: []string{"eventlogger", "sessionrecorder", "api.subscribeSessionBus", "api.handleSwarmEvents"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+	},
+	{
+		Topic:       EventBackgroundTaskCompleted,
+		Constant:    "EventBackgroundTaskCompleted",
+		EventType:   "background.task.completed",
+		Struct:      "BackgroundTaskCompletedEvent",
+		Publishers:  []string{"engine/background.go"},
+		Subscribers: []string{"eventlogger", "sessionrecorder", "api.subscribeSessionBus", "api.handleSwarmEvents", "engine/completion_orchestrator"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+	},
+	{
+		Topic:       EventBackgroundTaskFailed,
+		Constant:    "EventBackgroundTaskFailed",
+		EventType:   "background.task.failed",
+		Struct:      "BackgroundTaskFailedEvent",
+		Publishers:  []string{"engine/background.go"},
+		Subscribers: []string{"eventlogger", "sessionrecorder", "api.subscribeSessionBus", "api.handleSwarmEvents", "engine/completion_orchestrator"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+	},
+	{
+		Topic:       EventBackgroundTaskCancelled,
+		Constant:    "EventBackgroundTaskCancelled",
+		EventType:   "background.task.cancelled",
+		Struct:      "BackgroundTaskCancelledEvent",
+		Publishers:  []string{"engine/background.go"},
+		Subscribers: []string{"eventlogger", "sessionrecorder"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+	},
+	{
+		Topic:       EventDelegationStarted,
+		Constant:    "EventDelegationStarted",
+		EventType:   "delegation.started",
+		Struct:      "DelegationStartedEvent",
+		Publishers:  []string{"engine/delegation.go"},
+		Subscribers: []string{"api.handleSwarmEvents", "tui/intents/chat/intent"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "Published by DelegateTool.executeSync / executeAsync after the child" +
+			" session is resolved. Bridges intent-resident SwarmEvent construction onto" +
+			" the bus so TUI and web SSE consume identically.",
+	},
+	{
+		Topic:       EventDelegationCompleted,
+		Constant:    "EventDelegationCompleted",
+		EventType:   "delegation.completed",
+		Struct:      "DelegationCompletedEvent",
+		Publishers:  []string{"engine/delegation.go"},
+		Subscribers: []string{"api.handleSwarmEvents", "tui/intents/chat/intent"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+	},
+	{
+		Topic:       EventDelegationFailed,
+		Constant:    "EventDelegationFailed",
+		EventType:   "delegation.failed",
+		Struct:      "DelegationFailedEvent",
+		Publishers:  []string{"engine/delegation.go"},
+		Subscribers: []string{"api.handleSwarmEvents", "tui/intents/chat/intent"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+	},
+	{
+		Topic:       EventDelegationProgress,
+		Constant:    "EventDelegationProgress",
+		EventType:   "delegation.progress",
+		Struct:      "DelegationProgressEvent",
+		Publishers:  []string{"engine/delegation.go"},
+		Subscribers: []string{"api.handleSwarmEvents", "tui/intents/chat/intent"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "Published by the progress heartbeat goroutine in" +
+			" DelegateTool.executeSync every 30s while the child stream" +
+			" runs. Restores parent-side visibility during long delegations" +
+			" without forwarding child content.",
+	},
+	{
+		Topic:       EventGateEvaluating,
+		Constant:    "EventGateEvaluating",
+		EventType:   "gate.evaluating",
+		Struct:      "GateEvaluatingEvent",
+		Publishers:  []string{"engine/delegation.go"},
+		Subscribers: []string{"tui/intents/chat/intent", "api.handleSwarmEvents"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026)." +
+			" Published once per swarm.Dispatch call when at least one gate matches" +
+			" the lifecycle. Carries GateCount and Lifecycle; per-gate fields are empty." +
+			" Swarm Gate SSE Observability (May 2026): the /api/swarm/events SSE bridge" +
+			" (handleSwarmEvents) now forwards this topic so a captured stream shows which" +
+			" gate batch was evaluating when a swarm stalled. The request-reply chat banner" +
+			" still ignores the evaluating marker to avoid UX noise.",
+	},
+	{
+		Topic:       EventGatePassed,
+		Constant:    "EventGatePassed",
+		EventType:   "gate.passed",
+		Struct:      "GatePassedEvent",
+		Publishers:  []string{"engine/delegation.go"},
+		Subscribers: []string{"api.handleSwarmEvents"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026)." +
+			" Single event per swarm.Dispatch call when the batch completes without halt." +
+			" Per-gate pass events are deliberately suppressed by the pass-event policy" +
+			" — surfaces want a clean failure-signal:noise ratio. Swarm Gate SSE" +
+			" Observability (May 2026): the /api/swarm/events SSE bridge" +
+			" (handleSwarmEvents) forwards this topic so a captured stream can show the" +
+			" clean-pass context alongside failures.",
+	},
+	{
+		Topic:       EventGateFailed,
+		Constant:    "EventGateFailed",
+		EventType:   "gate.failed",
+		Struct:      "GateFailedEvent",
+		Publishers:  []string{"engine/delegation.go"},
+		Subscribers: []string{"api.subscribeSessionBus", "api.handleSwarmEvents", "tui/intents/chat/intent"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026)." +
+			" One event per failing gate on halt-class failures only; continue-class" +
+			" and warn-class failures stay log-only because they do not interrupt the stream." +
+			" Replaces the silent-swallow path at internal/api/server.go's chat handler" +
+			" by giving the SSE bridge a typed signal to project to the gate-failed banner." +
+			" Swarm Gate SSE Observability (May 2026): also forwarded by the" +
+			" /api/swarm/events SSE bridge (handleSwarmEvents) — the one reachable" +
+			" diagnostic stream — so a captured stream shows WHY a swarm gate halted" +
+			" (reason / member_id / gate_name / coord_store_keys in the event metadata).",
+	},
+	{
+		Topic:       EventStreamingHeartbeat,
+		Constant:    "EventStreamingHeartbeat",
+		EventType:   "streaming.heartbeat",
+		Struct:      "StreamingHeartbeatEvent",
+		Publishers:  []string{"engine.go (streamFromProvider + tool-loop)", "provider/anthropic (forwarded ping)"},
+		Subscribers: []string{},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "Streaming Coherence — Slice F (May 2026). Engine emits a heartbeat at" +
+			" most every ~15s during a turn so the chat UI's stall watchdog re-arms even" +
+			" when the provider pauses content emission (long thinking, sandboxed tool" +
+			" execution, queued delegation). Anthropic ping events MUST be forwarded as" +
+			" this heartbeat rather than silently dropped per the Engine Bus Event" +
+			" Taxonomy ADR's anti-pattern callout. The payload carries the turn-phase" +
+			" discriminant the frontend's adaptive watchdog reads to pick a per-phase" +
+			" threshold (generating 45s, thinking 120s, tool_executing 180s, queued 300s)." +
+			" Bug Hunt #51 (May 2026): NO real subscriber today — the SSE bridge in" +
+			" api.subscribeSessionBus does NOT forward this topic; the catalog previously" +
+			" over-claimed the subscription. Surface flagged as dead pending wire-up.",
+	},
+	{
+		Topic:       EventContextWindowBuilt,
+		Constant:    "EventContextWindowBuilt",
+		EventType:   "context.window",
+		Struct:      "ContextWindowEvent",
+		Publishers:  []string{"engine.go"},
+		Subscribers: []string{"eventlogger", "sessionrecorder"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "DIVERGENCE: EventType() returns \"context.window\" but topic is \"context.window.built\"." +
+			" Do not change EventType() — it affects the serialised JSONL format.",
+	},
+	{
+		Topic:       EventPluginEvent,
+		Constant:    "EventPluginEvent",
+		EventType:   "plugin.event",
+		Struct:      "",
+		Publishers:  []string{"(external plugins)"},
+		Subscribers: []string{"app.go (dispatcher)"},
+		Scope:       ScopePublic,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes:       "No dedicated struct — external plugins publish arbitrary payloads under this topic.",
+	},
+	{
+		Topic:       EventPromptGenerated,
+		Constant:    "EventPromptGenerated",
+		EventType:   "prompt",
+		Struct:      "PromptEvent",
+		Publishers:  []string{"engine.go"},
+		Subscribers: []string{"eventlogger", "sessionrecorder"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "DIVERGENCE: EventType() returns \"prompt\" but topic is \"prompt.generated\"." +
+			" Do not change EventType() — it affects the serialised JSONL format.",
+	},
+	{
+		Topic:       EventProviderError,
+		Constant:    "EventProviderError",
+		EventType:   "provider.error",
+		Struct:      "ProviderErrorEvent",
+		Publishers:  []string{"engine.go", "stream_hook.go"},
+		Subscribers: []string{"detector.go", "eventlogger", "sessionrecorder", "tui/intents/chat/intent"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+	},
+	{
+		Topic:       EventProviderRateLimited,
+		Constant:    "EventProviderRateLimited",
+		EventType:   "provider",
+		Struct:      "ProviderEvent",
+		Publishers:  []string{"detector.go"},
+		Subscribers: []string{"app.go (rate-limit logger)", "eventlogger", "sessionrecorder", "tui/intents/chat/intent", "api.subscribeSessionBus"},
+		Scope:       ScopeInternal,
+		Status:      StatusTransitional,
+		Delivery:    "fire-and-forget",
+		Notes: "DIVERGENCE: EventType() returns \"provider\" but topic is \"provider.rate_limited\"." +
+			" ProviderEvent is the generic event type used for re-publishing;" +
+			" marked transitional pending migration to a dedicated type.",
+	},
+	{
+		Topic:       EventProviderRequest,
+		Constant:    "EventProviderRequest",
+		EventType:   "provider.request",
+		Struct:      "ProviderRequestEvent",
+		Publishers:  []string{"engine.go"},
+		Subscribers: []string{"eventlogger", "sessionrecorder"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+	},
+	{
+		Topic:       EventProviderRequestRetry,
+		Constant:    "EventProviderRequestRetry",
+		EventType:   "provider.request.retry",
+		Struct:      "ProviderRequestRetryEvent",
+		Publishers:  []string{"engine.go"},
+		Subscribers: []string{"eventlogger", "sessionrecorder"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+	},
+	{
+		Topic:       EventProviderResponse,
+		Constant:    "EventProviderResponse",
+		EventType:   "provider.response",
+		Struct:      "ProviderResponseEvent",
+		Publishers:  []string{"engine.go"},
+		Subscribers: []string{"eventlogger", "sessionrecorder"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+	},
+	{
+		Topic:       EventSessionCreated,
+		Constant:    "EventSessionCreated",
+		EventType:   "session",
+		Struct:      "SessionEvent",
+		Publishers:  []string{"engine.go"},
+		Subscribers: []string{"eventlogger", "sessionrecorder"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "DIVERGENCE: EventType() returns \"session\" but topic is \"session.created\"." +
+			" Shared SessionEvent struct also covers session.ended;" +
+			" the Action field in SessionEventData distinguishes the two." +
+			" Do not change EventType() — it affects the serialised JSONL format.",
+	},
+	{
+		Topic:       EventSessionEnded,
+		Constant:    "EventSessionEnded",
+		EventType:   "session",
+		Struct:      "SessionEvent",
+		Publishers:  []string{"engine.go"},
+		Subscribers: []string{"eventlogger", "sessionrecorder", "engine.handleSessionEnded", "app.go (session-ended)"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "DIVERGENCE: EventType() returns \"session\" but topic is \"session.ended\"." +
+			" Shares SessionEvent struct with session.created; Action field distinguishes them." +
+			" Do not change EventType() — it affects the serialised JSONL format.",
+	},
+	{
+		Topic:       EventSessionResumed,
+		Constant:    "EventSessionResumed",
+		EventType:   "session.resumed",
+		Struct:      "SessionResumedEvent",
+		Publishers:  []string{"tui/run.go"},
+		Subscribers: []string{"eventlogger", "sessionrecorder"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes:       "Publisher wired in tui/run.go: publishes when sessionID is non-empty on TUI start.",
+	},
+	{
+		Topic:       EventToolExecuteBefore,
+		Constant:    "EventToolExecuteBefore",
+		EventType:   "tool",
+		Struct:      "ToolEvent",
+		Publishers:  []string{"engine.go"},
+		Subscribers: []string{"app.go (dispatcher)", "eventlogger", "sessionrecorder", "api.subscribeSessionBus", "api.handleSwarmEvents", "tui/intents/chat/intent"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "DIVERGENCE: EventType() returns \"tool\" but topic is \"tool.execute.before\"." +
+			" Shares ToolEvent struct with tool.execute.after." +
+			" Do not change EventType() — it affects the serialised JSONL format.",
+	},
+	{
+		Topic:       EventToolExecuteAfter,
+		Constant:    "EventToolExecuteAfter",
+		EventType:   "tool",
+		Struct:      "ToolEvent",
+		Publishers:  []string{"engine.go"},
+		Subscribers: []string{},
+		Scope:       ScopeInternal,
+		Status:      StatusDeprecated,
+		Delivery:    "fire-and-forget",
+		Notes: "DEPRECATED: Subscribers migrated to tool.execute.result and tool.execute.error (T14)." +
+			" Engine still publishes during the transition window." +
+			" DIVERGENCE: EventType() returns \"tool\" but topic is \"tool.execute.after\".",
+	},
+	{
+		Topic:       EventToolExecuteError,
+		Constant:    "EventToolExecuteError",
+		EventType:   "tool.execute.error",
+		Struct:      "ToolExecuteErrorEvent",
+		Publishers:  []string{"engine.go"},
+		Subscribers: []string{"eventlogger", "sessionrecorder", "app.go (dispatcher)", "api.event_bridge", "api.handleSwarmEvents", "tui/intents/chat/intent"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes:       "Replacement for tool.execute.after for error paths.",
+	},
+	{
+		Topic:       EventToolExecuteResult,
+		Constant:    "EventToolExecuteResult",
+		EventType:   "tool.execute.result",
+		Struct:      "ToolExecuteResultEvent",
+		Publishers:  []string{"engine.go"},
+		Subscribers: []string{"eventlogger", "sessionrecorder", "app.go (dispatcher)", "api.event_bridge", "api.handleSwarmEvents", "tui/intents/chat/intent"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes:       "Replacement for tool.execute.after for success paths.",
+	},
+	{
+		Topic:       EventToolReasoning,
+		Constant:    "EventToolReasoning",
+		EventType:   "tool.reasoning",
+		Struct:      "ToolReasoningEvent",
+		Publishers:  []string{"engine.go"},
+		Subscribers: []string{"eventlogger", "sessionrecorder"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+	},
+	{
+		Topic:       EventToolArgsValidationFailed,
+		Constant:    "EventToolArgsValidationFailed",
+		EventType:   "tool.args.validation_failed",
+		Struct:      "ToolArgsValidationFailedEvent",
+		Publishers:  []string{"engine.go (executeToolCall)"},
+		Subscribers: []string{"eventlogger"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "Recommendation E from the May 2026 codebase-explorer investigation of " +
+			"the glm-4.6 `librarian` mis-call (validator at " +
+			"internal/engine/tool_validation.go correctly bounced the call). " +
+			"Published when ValidateToolArgs returns a *ValidationError; payload carries " +
+			"provider, model, tool name, and the structured ValidationErrorClass label " +
+			"(unknown_keys / missing_required / xml_bleed_detected). Subscribed by " +
+			"eventlogger so the failure lands in events.jsonl for dashboarding without " +
+			"requiring an SSE bridge — TUI / web surfaces continue to consume the " +
+			"existing IsError=true tool_result chunk for in-UI rendering.",
+	},
+	{
+		Topic:       EventRecallEmbeddingStored,
+		Constant:    "EventRecallEmbeddingStored",
+		EventType:   "recall.embedding.stored",
+		Struct:      "RecallEmbeddingStoredEvent",
+		Publishers:  []string{"engine.go"},
+		Subscribers: []string{"eventlogger"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "Bug Hunt #63 (May 11 2026) decision: re-added to" +
+			" eventlogger.subscribedEventTypes. Low-frequency" +
+			" (once per stored message embedding) with diagnostic" +
+			" value — dimensions / latency, complements the silent" +
+			" dimension-mismatch failure mode captured in" +
+			" project_flowstate_recall_silent_zero_failure. Bug" +
+			" Hunt #51 (May 2026) previously flagged the over-claim;" +
+			" #63 resolves the open decision in favour of observability.",
+	},
+	// EventRecallSearched (recall.searched) was removed by Bug Hunt
+	// #63 (May 11 2026): the topic fired on every SearchContextTool
+	// invocation (high frequency) with zero non-test subscribers
+	// anywhere in the tree. The engine's existing
+	// `tool.execute.result` event already carries the tool-level
+	// latency / args / result count for search_context invocations
+	// and IS subscribed by eventlogger, so the recall-specific
+	// topic was pure log volume with no signal not already covered.
+	//
+	// EventRecallChainSearched (recall.chain.searched) was removed
+	// by Bug Hunt #63 (May 11 2026) for the same reasons applied to
+	// chain_search invocations — high-frequency, zero non-test
+	// subscribers, redundant with `tool.execute.result`.
+	//
+	// EventRecallChainSearchFailed (M9, May 2026) was removed by F4
+	// (Bug Hunt Findings May 11 2026): the topic shipped with zero
+	// non-test subscribers anywhere in the tree, making it dead
+	// surface area. The typed `recall.ErrAllSourcesFailed` sentinel
+	// and the engine's existing `tool.execute.error` propagation
+	// remain the canonical recall-failure signals.
+	{
+		Topic:       EventRecallSummarized,
+		Constant:    "EventRecallSummarized",
+		EventType:   "recall.summarized",
+		Struct:      "RecallSummarizedEvent",
+		Publishers:  []string{"recall/query_tools.go"},
+		Subscribers: []string{"eventlogger"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "Bug Hunt #63 (May 11 2026) decision: re-added to" +
+			" eventlogger.subscribedEventTypes. Low-frequency (per" +
+			" compaction, rare) with token-before/after + latency" +
+			" signal worth the per-summarisation log line. Bug Hunt" +
+			" #51 (May 2026) previously flagged the over-claim;" +
+			" #63 resolves the open decision in favour of observability.",
+	},
+	{
+		Topic:       EventContextCompacted,
+		Constant:    "EventContextCompacted",
+		EventType:   "context.compacted",
+		Struct:      "ContextCompactedEvent",
+		Publishers:  []string{"internal/engine/engine.go"},
+		Subscribers: []string{"api.subscribeSessionBus"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "Bug Hunt #51 (May 2026): catalog previously over-claimed eventlogger" +
+			" subscription. eventlogger.subscribedEventTypes does NOT include this" +
+			" topic. The real subscriber is the SSE bridge (api.subscribeSessionBus's" +
+			" newContextCompactedHandler), which projects the compaction telemetry" +
+			" onto the wire for Vue's compaction-chip affordance.",
+	},
+	{
+		Topic:       EventDiscoveryPublished,
+		Constant:    "EventDiscoveryPublished",
+		EventType:   "discovery.published",
+		Struct:      "DiscoveryPublishedEvent",
+		Publishers:  []string{"internal/agent/tools/publish_discovery.go"},
+		Subscribers: []string{"internal/plugin/eventlogger/eventlogger.go"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+	},
+	{
+		Topic:       EventLearningRecorded,
+		Constant:    "EventLearningRecorded",
+		EventType:   "learning.recorded",
+		Struct:      "LearningRecordedEvent",
+		Publishers:  []string{"internal/learning/store.go"},
+		Subscribers: []string{"internal/plugin/eventlogger/eventlogger.go"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+	},
+	// Permission Mode ModeAskUser Extension (May 2026) Slice 2.
+	// Four lifecycle events: required (suspension start) +
+	// granted / denied / timeout (resolution). Honest catalog claim:
+	// eventlogger subscribes to all four (low-frequency, audit-grade
+	// signal worth the JSONL line). Slice 3 will add a long-poll
+	// bridge subscriber for SSE delivery to the chat UI; app.go's
+	// observability hook subscribes to the resolution trio so the
+	// permission_pending gauge decrements on grant / deny / timeout.
+	// Memory: feedback_eventlogger_catalog_subscriber_is_dead_comment —
+	// every Subscribers list here must match a real bus.Subscribe.
+	{
+		Topic:       EventPermissionRequired,
+		Constant:    "EventPermissionRequired",
+		EventType:   "permission.required",
+		Struct:      "PermissionRequiredEvent",
+		Publishers:  []string{"internal/app/app.go (permissionPrompter)"},
+		Subscribers: []string{"eventlogger", "app.go (permission_pending gauge)"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "Published by the PermissionPrompter implementation when " +
+			"pathguard or the engine runtime-allowlist gate would otherwise " +
+			"return access denied AND the session is in ModeAskUser. The " +
+			"suspended tool-dispatch goroutine blocks on " +
+			"permissionrequest.Registry until the operator answers or the " +
+			"5-minute timeout fires. Slice 3 (May 2026) will add an SSE " +
+			"bridge subscriber so the chat UI renders the inline prompt.",
+	},
+	{
+		Topic:       EventPermissionGranted,
+		Constant:    "EventPermissionGranted",
+		EventType:   "permission.granted",
+		Struct:      "PermissionGrantedEvent",
+		Publishers:  []string{"internal/api/server.go (handlePermissionGrant — Slice 3)"},
+		Subscribers: []string{"eventlogger", "app.go (permission_pending gauge)"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "Published when the operator clicks Allow Once / Allow This " +
+			"Session / Allow Forever on the inline prompt (Slice 3). The " +
+			"permission_pending gauge subscriber decrements on receipt; the " +
+			"eventlogger subscriber writes the resolution line to events.jsonl.",
+	},
+	{
+		Topic:       EventPermissionDenied,
+		Constant:    "EventPermissionDenied",
+		EventType:   "permission.denied",
+		Struct:      "PermissionDeniedEvent",
+		Publishers:  []string{"internal/api/server.go (handlePermissionGrant — Slice 3)"},
+		Subscribers: []string{"eventlogger", "app.go (permission_pending gauge)"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "Published when the operator clicks Deny on the inline " +
+			"prompt. The suspended tool call resumes with the original " +
+			"access-denied IsError tool_result.",
+	},
+	{
+		Topic:       EventPermissionTimeout,
+		Constant:    "EventPermissionTimeout",
+		EventType:   "permission.timeout",
+		Struct:      "PermissionTimeoutEvent",
+		Publishers:  []string{"internal/app/app.go (permissionPrompter timeout)"},
+		Subscribers: []string{"eventlogger", "app.go (permission_pending gauge)"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "Published when the 5-minute suspension timer fires before " +
+			"the operator responds. The PermissionPrompter resumes the " +
+			"suspended tool call with the access-denied path; the UI may " +
+			"render the timeout state distinctly from a manual Deny.",
+	},
+	{
+		Topic:       EventProviderStatusChanged,
+		Constant:    "EventProviderStatusChanged",
+		EventType:   "provider.status_changed",
+		Struct:      "ProviderStatusChangedEvent",
+		Publishers:  []string{"internal/engine/provider_quota.go (stampRateLimitedUntil)"},
+		Subscribers: []string{"(not yet wired)"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "Published when the engine detects a provider status " +
+			"transition (healthy↔rate_limited, healthy↔exhausted, " +
+			"healthy↔spent). The API layer will subscribe to fan out " +
+			"to SSE clients on GET /api/v1/providers/status/stream. " +
+			"ADR 002 — Provider Status SSE Side-Channel (July 2026).",
+	},
+}

@@ -1,36 +1,2124 @@
+// Package config loads FlowState application configuration.
 package config
 
-import "github.com/baphled/flowstate/internal/oauth"
+import (
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
 
-type Config struct {
-	Providers map[string]*ProviderConfig `yaml:"providers"`
+	contextpkg "github.com/baphled/flowstate/internal/context"
+	compactionpkg "github.com/baphled/flowstate/internal/context/compaction"
+	"github.com/baphled/flowstate/internal/engine"
+	pluginpkg "github.com/baphled/flowstate/internal/plugin"
+	"gopkg.in/yaml.v3"
+)
+
+// Config aliases AppConfig for callers that use the shorter configuration name.
+type Config = AppConfig
+
+// DelegationConfig controls the delegation engine's content-streaming
+// behaviour. TeeChildContent gates whether delegate chain-of-thought is
+// mirrored into the parent's user-visible stream via teeToParentStream.
+// Defaults to false — the child session plus tool_result is the canonical
+// surface for delegate output, matching the consensus pattern across
+// Claude Code, OpenCode, and other harnesses.
+type DelegationConfig struct {
+	TeeChildContent bool `json:"tee_child_content" yaml:"tee_child_content"`
 }
 
+// AppConfig holds the complete application configuration.
+type AppConfig struct {
+	Providers ProvidersConfig `json:"providers" yaml:"providers"`
+	AgentDir  string          `json:"agent_dir" yaml:"agent_dir"`
+	// AgentDirs lists user-defined agent directories merged into the registry after
+	// AgentDir. Agents in later directories override agents with the same ID from
+	// earlier directories and from AgentDir. Tilde paths (~/...) are expanded at load time.
+	AgentDirs []string `json:"agent_dirs" yaml:"agent_dirs"`
+	SkillDir  string   `json:"skill_dir" yaml:"skill_dir"`
+	DataDir   string   `json:"data_dir" yaml:"data_dir"`
+	// SchemaDir overrides the directory the swarm gate runner walks at
+	// startup to discover JSON Schema documents referenced by
+	// `builtin:result-schema` gates. Each file is registered under its
+	// basename (e.g. `review-verdict-v1.json` registers as
+	// `review-verdict-v1`). Empty (the default) resolves to
+	// `${ConfigDir}/schemas` via swarm.ResolveSchemaDir. File-based
+	// drop-ins override programmatic seeds (see swarm.SchemaDirLoader
+	// for the precedence rationale).
+	SchemaDir string `json:"schema_dir,omitempty" yaml:"schema_dir,omitempty"`
+	// GatesDir is the discovery directory for v0 ext-gate manifests. Each
+	// gate is a subdirectory <GatesDir>/<name>/ with manifest.yml plus
+	// the executable. Default ~/.config/flowstate/gates; override here
+	// for system-wide installs (e.g. /etc/flowstate/gates).
+	GatesDir           string                           `json:"gates_dir" yaml:"gates_dir"`
+	LogLevel           string                           `json:"log_level" yaml:"log_level"`
+	DefaultAgent       string                           `json:"default_agent" yaml:"default_agent"`
+	CategoryRouting    map[string]engine.CategoryConfig `json:"category_routing" yaml:"category_routing"`
+	Plugins            PluginsConfig                    `json:"plugins" yaml:"plugins,omitempty"`
+	MCPServers         []MCPServerConfig                `yaml:"mcp_servers,omitempty"`
+	AlwaysActiveSkills []string                         `yaml:"always_active_skills,omitempty"`
+	Harness            HarnessConfig                    `json:"harness" yaml:"harness"`
+	AgentOverrides     map[string]AgentOverrideConfig   `json:"agent_overrides" yaml:"agent_overrides"`
+	// ContextAssemblyHooks lets callers inject custom context assembly hooks at runtime.
+	ContextAssemblyHooks []pluginpkg.ContextAssemblyHook `json:"-" yaml:"-"`
+	// Voice configures the local talk-to-agents voice pipeline
+	// (capture, STT, optional TTS). All commands are POSIX-local;
+	// see VoiceConfig for the command template contract.
+	Voice            VoiceConfig `json:"voice" yaml:"voice"`
+	SessionRecording bool        `json:"session_recording" yaml:"session_recording"`
+	// SessionRecordingDir overrides the filesystem location the
+	// session recorder writes to. When empty the effective directory
+	// is derived from the active sessions directory (--sessions-dir
+	// or cfg.DataDir/sessions) via `<sessionsDir>/recordings`. When
+	// that derivation is unavailable the recorder falls back to the
+	// user cache dir. Expressed as a top-level YAML key rather than
+	// a nested session_recording block so the existing boolean
+	// `session_recording` remains a non-breaking literal.
+	SessionRecordingDir string       `json:"session_recording_dir" yaml:"session_recording_dir"`
+	Qdrant              QdrantConfig `json:"qdrant" yaml:"qdrant"`
+	VaultPath           string       `json:"vault_path" yaml:"vault_path"`
+	VaultCollection     string       `json:"vault_collection" yaml:"vault_collection"`
+	// Compression controls the three-layer context compression system
+	// (micro-compaction, auto-compaction, session-memory). All layers
+	// default to disabled; see internal/context.DefaultCompressionConfig.
+	Compression      contextpkg.CompressionConfig  `json:"compression" yaml:"compression"`
+	ProviderFallback engine.ProviderFallbackConfig `json:"provider_fallback" yaml:"provider_fallback"`
+	// Compaction controls the RLM Phase A Layer 1 micro-compaction —
+	// the hot-tail/cold-store split for compactable tool results. It
+	// defaults to ENABLED with a 3-result hot-tail floor and an 8000-
+	// token size budget; see internal/context/compaction.DefaultConfig.
+	// Distinct from Compression.MicroCompaction (the prior view-only
+	// L1 implementation) so the two can be enabled or disabled
+	// independently while Phase A is rolled out.
+	Compaction compactionpkg.Config `json:"compaction" yaml:"compaction"`
+
+	// Delegation controls the delegation engine's content-streaming
+	// behaviour. See DelegationConfig for the field-level contract.
+	Delegation DelegationConfig `json:"delegation" yaml:"delegation"`
+
+	// Auth controls the FlowState API Auth Track (May 2026). PR5/C10
+	// flips Enabled to true by default; existing deployments upgrading
+	// to v1 MUST configure `auth.mode` + credentials before the upgrade
+	// takes effect (multi-user mode additionally requires a
+	// pre-provisioned users.json via `flowstate auth user add`). See
+	// AuthConfig for field-level documentation and the migration note
+	// in the PR5/C10 commit body for the rollout matrix.
+	//
+	// Env vars (FLOWSTATE_AUTH_*) override the config layer per plan
+	// §"Bootstrap UX" precedence (env → flag → config → default).
+	Auth AuthConfig `json:"auth" yaml:"auth"`
+
+	// Quota controls the Provider Quota and Spend Visibility surface
+	// (May 2026 plan). PR1 ships Store.Backend + Store.DeploymentTopology
+	// keys + boot-time validation of the (Backend, DeploymentTopology)
+	// pairing. See QuotaConfig for field-level documentation.
+	//
+	// Fresh-install defaults boot quietly into single-instance + memory.
+	// Operators running multi-instance deployments must explicitly opt
+	// in to `deployment_topology: multi-instance` AND set `backend:
+	// redis` or `backend: postgres` (the boot validation rejects the
+	// only silent-double-count pairing: memory + multi-instance).
+	Quota QuotaConfig `json:"quota" yaml:"quota"`
+
+	// StreamTimeout overrides the per-LLM-stream wall-clock budget. Empty
+	// means inherit the engine's compiled-in default (5m). Long delegations
+	// on slow providers (e.g. zai/glm-4.7) are the typical reason to raise
+	// this. Format: a Go duration string ("15m", "300s").
+	StreamTimeout string `json:"stream_timeout,omitempty" yaml:"stream_timeout,omitempty"`
+	// ToolTimeout overrides the per-tool-call wall-clock budget. Empty
+	// means inherit the engine's compiled-in default (2m). The delegate
+	// tool already opts out of this via TimeoutOverrider, so raising it
+	// affects shell-style tools (bash, read, web) only.
+	ToolTimeout string `json:"tool_timeout,omitempty" yaml:"tool_timeout,omitempty"`
+	// BackgroundOutputTimeout overrides the default poll-until-complete
+	// budget on the background_output tool when the model does not pass
+	// an explicit `timeout` argument. Empty means inherit the compiled-in
+	// default (120s).
+	BackgroundOutputTimeout string `json:"background_output_timeout,omitempty" yaml:"background_output_timeout,omitempty"`
+	// ToolLoopDuration overrides the cumulative wall-clock ceiling for a
+	// single turn's tool-loop continuations (the duration backstop that
+	// terminates a turn regardless of iteration count). Empty means
+	// inherit the compiled-in default (30m). Long multi-agent tasks with
+	// background delegations are the typical reason to raise this.
+	// Format: a Go duration string ("15m", "600s").
+	ToolLoopDuration string `json:"tool_loop_duration,omitempty" yaml:"tool_loop_duration,omitempty"`
+	// ToolLoopIterations overrides the absolute ceiling on tool-loop
+	// continuations for a single turn (the iteration backstop that
+	// terminates a turn regardless of wall-clock duration). Zero means
+	// inherit the compiled-in default (200). Complex multi-wave swarm
+	// sessions are the typical reason to raise this.
+	ToolLoopIterations int `json:"tool_loop_iterations,omitempty" yaml:"tool_loop_iterations,omitempty"`
+
+	// PlanLocation overrides the directory FlowState reads/writes plan
+	// markdown files from. Resolution rules (see ResolvedPlanLocation):
+	//
+	//   - Empty (default): walk up from the current working directory
+	//     looking for a `.flowstate/` marker directory. If found, use
+	//     `<projectRoot>/.flowstate/plans/`. Otherwise fall back to the
+	//     nearest Git worktree root (`.git` file or directory) so
+	//     repo-local worktrees share the same layout. If no marker is
+	//     found, fall back to `${cfg.DataDir}/plans/` so users without
+	//     a project setup still get a working location.
+	//   - Non-empty: the literal path is used verbatim, with `~` and
+	//     `~/` expanded against the user's home directory. Bare relative
+	//     paths are resolved against the user's CWD at call time, NOT
+	//     against `cfg.DataDir`. Allows `plan_location: ~/work/shared-plans/`
+	//     for a global override or `plan_location: ./.flowstate/plans/`
+	//     for a project-local pin.
+	//
+	// The project-marker default mirrors OMO's pattern: plans live next
+	// to the code they describe and can be checked into version control
+	// alongside it.
+	PlanLocation string `json:"plan_location,omitempty" yaml:"plan_location,omitempty"`
+
+	// EmbeddingModel names the model used for vector-search embeddings
+	// across the application (recall queries, knowledge distillation,
+	// per-agent context_management defaults). It is deliberately separated
+	// from the chat-provider model surface for three reasons:
+	//
+	//  1. It powers vector search, not user-facing inference. Swapping it
+	//     does not change reasoning quality — it changes the SHAPE of the
+	//     vectors stored in Qdrant.
+	//  2. The model MUST be consistent across an entire vector-store
+	//     deployment. Vectors produced by different embedding models are
+	//     not comparable; mixing them silently corrupts recall.
+	//  3. A multi-worker / multi-pod cluster wants every node producing
+	//     vectors that index into the same collection. Centralising the
+	//     embedding model in one config knob lets a cluster operator pin
+	//     it cluster-wide while individual agents still customise their
+	//     chat-provider choice freely.
+	//
+	// Empty means "use the historical default `nomic-embed-text`" — an
+	// Ollama-served 768-dim Cosine model that matches the existing
+	// flowstate Qdrant collection shape.
+	EmbeddingModel string `json:"embedding_model,omitempty" yaml:"embedding_model,omitempty"`
+
+	// ToolCapableModels lists model-name patterns whose underlying provider
+	// is known to reliably emit structured tool calls. Delegation consults
+	// this list before spawning a sub-agent: when the resolved (provider,
+	// model) does not match any entry here (and is not on
+	// ToolIncapableModels), the delegate tool fails closed with a
+	// structured error instead of streaming a sub-agent that would
+	// silently produce zero tool calls. See KB:
+	//   - Investigations/GLM Delegation Failure After Rebuild (April 2026).md
+	//   - Investigations/Non-Anthropic Provider Stream Termination Investigation (April 2026).md
+	//   - Bug Fixes/Planner Harness Rescue - April 2026.md
+	//
+	// Patterns use a prefix match with a single `*` glob suffix:
+	//   - `claude-*` matches every Anthropic Claude model.
+	//   - `qwen3:*` matches `qwen3:8b`, `qwen3:14b`, `qwen3:30b-a3b`.
+	//   - `gpt-oss:20b` is a literal match (the `-4k`/`-8k` clones are
+	//     deliberately NOT covered because they are context-clamped and
+	//     have shown different tool-call reliability in practice).
+	//
+	// Empty (and nil) means "fail closed" — no model is considered tool
+	// capable. Operators opt-in by listing patterns here. Defaults come
+	// from DefaultConfig (the known-good shortlist documented in the
+	// FlowState README).
+	ToolCapableModels []string `json:"tool_capable_models,omitempty" yaml:"tool_capable_models,omitempty"`
+
+	// ToolIncapableModels lists model-name patterns whose underlying
+	// provider is known NOT to emit reliable structured tool calls. This
+	// list takes precedence over ToolCapableModels: a model that matches
+	// any pattern here is rejected regardless of the allow list. Same
+	// glob-suffix matching as ToolCapableModels.
+	//
+	// Defaults pin the four models documented in the KB notes above as
+	// silently producing zero tool calls under FlowState's current
+	// prompts/templates: `llama3.2*`, `qwen2.5-coder*`, `glm-4.7`, and
+	// `mistral:7b`.
+	ToolIncapableModels []string `json:"tool_incapable_models,omitempty" yaml:"tool_incapable_models,omitempty"`
+
+	// Features carries opt-in runtime feature flags introduced by the
+	// Agent Runtime Quality plan (May 2026). Defaults to the zero
+	// value (all flags off) so existing deployments inherit the
+	// historical behaviour without configuration churn.
+	Features FeaturesConfig `json:"features,omitempty" yaml:"features,omitempty"`
+
+	// SystemPromptBudget overrides the model-context fallback used when
+	// the failover manager and token counter cannot supply a concrete
+	// context length for the active provider/model. Zero (default) lets
+	// the engine inherit ctxstore.DefaultModelContextFallback (16K).
+	// Operators with hardware that warrants a different cap pin the
+	// fallback per-deployment via this knob; the env var
+	// FLOWSTATE_SYSTEM_PROMPT_BUDGET takes precedence at load time.
+	//
+	// Why this exists: prior to this knob the fallback was a hardcoded
+	// 4096 that quietly truncated ~70% of an 11-skill FlowState system
+	// prompt to fit. The new default plus this override path lets every
+	// provider in the support matrix (Anthropic 200K, OpenAI/Copilot/
+	// Gemini 128K, ZAI/OpenZen 128K+, Ollama qwen3/llama3.1/devstral
+	// 32K-128K) carry the full prompt without losing skill content.
+	SystemPromptBudget int `json:"system_prompt_budget,omitempty" yaml:"system_prompt_budget,omitempty"`
+}
+
+// ParsedStreamTimeout returns the parsed value of StreamTimeout, or 0 when
+// unset/invalid (callers treat 0 as "use engine default"). Invalid input is
+// logged once at WARN and treated as zero so a typo never crashes startup.
+// A nil receiver returns 0 — App test fixtures construct App with Config=nil.
+//
+// Returns:
+//   - The parsed StreamTimeout duration, or 0 when unset/invalid/nil receiver.
+//
+// Side effects:
+//   - Logs a WARN once when the configured value fails to parse.
+//
+// Expected: parameters for ParsedStreamTimeout.
+func (c *AppConfig) ParsedStreamTimeout() time.Duration {
+	if c == nil {
+		return 0
+	}
+	return parseDurationField(c.StreamTimeout, "stream_timeout")
+}
+
+// ParsedToolTimeout returns the parsed value of ToolTimeout (see
+// ParsedStreamTimeout for semantics, including nil-receiver behaviour).
+//
+// Returns:
+//   - The parsed ToolTimeout duration, or 0 when unset/invalid/nil receiver.
+//
+// Side effects:
+//   - Logs a WARN once when the configured value fails to parse.
+//
+// Expected: parameters for ParsedToolTimeout.
+func (c *AppConfig) ParsedToolTimeout() time.Duration {
+	if c == nil {
+		return 0
+	}
+	return parseDurationField(c.ToolTimeout, "tool_timeout")
+}
+
+// ParsedBackgroundOutputTimeout returns the parsed value of
+// BackgroundOutputTimeout (see ParsedStreamTimeout for semantics, including
+// nil-receiver behaviour).
+//
+// Returns:
+//   - The parsed BackgroundOutputTimeout duration, or 0 when unset/invalid/nil receiver.
+//
+// Side effects:
+//   - Logs a WARN once when the configured value fails to parse.
+//
+// Expected: parameters for ParsedBackgroundOutputTimeout.
+func (c *AppConfig) ParsedBackgroundOutputTimeout() time.Duration {
+	if c == nil {
+		return 0
+	}
+	return parseDurationField(c.BackgroundOutputTimeout, "background_output_timeout")
+}
+
+// ParsedToolLoopDuration returns the parsed value of ToolLoopDuration
+// (see ParsedStreamTimeout for semantics, including nil-receiver behaviour).
+//
+// Returns:
+//   - The parsed ToolLoopDuration duration, or 0 when unset/invalid/nil receiver.
+//
+// Side effects:
+//   - Logs a WARN once when the configured value fails to parse.
+//
+// Expected: parameters for ParsedToolLoopDuration.
+func (c *AppConfig) ParsedToolLoopDuration() time.Duration {
+	if c == nil {
+		return 0
+	}
+	return parseDurationField(c.ToolLoopDuration, "tool_loop_duration")
+}
+
+// ParsedToolLoopIterations returns the configured max tool-loop iteration
+// ceiling, with nil-receiver safety. Zero inherits the engine's compiled-in
+// default (200).
+//
+// Returns:
+//   - The configured ToolLoopIterations, or 0 when nil receiver.
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for ParsedToolLoopIterations.
+func (c *AppConfig) ParsedToolLoopIterations() int {
+	if c == nil {
+		return 0
+	}
+	return c.ToolLoopIterations
+}
+
+// TodoStrictModeEnabled reports whether the D9 hard-gate todo_strict_mode
+// feature flag is on, with nil-receiver safety mirroring the Parsed*/
+// Resolved* accessors. A nil *AppConfig (legitimate in the delegate-engine
+// path before any config is loaded) reports false — the v1 default — rather
+// than panicking on the embedded Features struct deref.
+//
+// Returns:
+//   - true when Features.TodoStrictMode is set; false when unset or nil receiver.
+//
+// Expected: parameters for TodoStrictModeEnabled.
+// Side effects: None.
+func (c *AppConfig) TodoStrictModeEnabled() bool {
+	if c == nil {
+		return false
+	}
+	return c.Features.TodoStrictMode
+}
+
+// SystemPromptBudgetEnv is the environment variable operators set to
+// override AppConfig.SystemPromptBudget without editing config.yaml.
+// The env wins over the YAML field (matching the existing OPENAI_API_KEY
+// / ANTHROPIC_API_KEY precedence in resolveProviderKey).
+const SystemPromptBudgetEnv = "FLOWSTATE_SYSTEM_PROMPT_BUDGET"
+
+// ResolvedSystemPromptBudget returns the effective system-prompt budget
+// in tokens, applying the documented precedence: the env var overrides
+// the YAML field, and zero from both means "inherit the engine default"
+// (ctxstore.DefaultModelContextFallback). Invalid env values are
+// logged once at WARN and treated as unset so a typo cannot silently
+// reintroduce the legacy 4096 truncation.
+//
+// Returns:
+//   - The override token cap when one is set; zero when neither the
+//     env var nor the YAML field carries a positive value.
+//
+// Side effects:
+//   - Reads the FLOWSTATE_SYSTEM_PROMPT_BUDGET environment variable.
+//   - Logs a single WARN slog line when the env value fails to parse.
+//
+// Expected: parameters for ResolvedSystemPromptBudget.
+func (c *AppConfig) ResolvedSystemPromptBudget() int {
+	if v := os.Getenv(SystemPromptBudgetEnv); v != "" {
+		if parsed, err := parsePositiveInt(v); err == nil {
+			return parsed
+		} else {
+			slog.Warn("config: invalid env value; falling back to config / engine default",
+				"key", SystemPromptBudgetEnv, "value", v, "error", err)
+		}
+	}
+	if c == nil {
+		return 0
+	}
+	if c.SystemPromptBudget > 0 {
+		return c.SystemPromptBudget
+	}
+	return 0
+}
+
+// parsePositiveInt parses a token-budget string. Returns an error for
+// non-numeric input or non-positive values so callers can surface the
+// problem without falling silently back to defaults.
+//
+// Expected:
+//   - s is a candidate integer string.
+//
+// Returns:
+//   - The parsed positive integer on success.
+//   - An error when s is empty, non-numeric, or <= 0.
+//
+// Side effects:
+//   - None.
+func parsePositiveInt(s string) (int, error) {
+	if s == "" {
+		return 0, fmt.Errorf("empty value")
+	}
+	n := 0
+	for _, ch := range s {
+		if ch < '0' || ch > '9' {
+			return 0, fmt.Errorf("non-numeric character %q", ch)
+		}
+		n = n*10 + int(ch-'0')
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("value must be positive")
+	}
+	return n, nil
+}
+
+// ResolvedPlanLocation returns the directory FlowState should use for plan
+// markdown files. The four-tier resolution mirrors the field godoc on
+// PlanLocation:
+//
+//  1. If PlanLocation is non-empty, expand a leading `~` / `~/` against
+//     the user's home directory and return the result. Bare relative
+//     paths are kept relative — they are resolved against the user's
+//     CWD at call time, never against cfg.DataDir.
+//  2. Otherwise walk parents of the current working directory looking
+//     for a `.flowstate/` marker. The first match wins; the resolver
+//     returns `<dir>/.flowstate/plans/`. This matches OMO's project-
+//     local layout and allows shared plans via `git`.
+//  3. Otherwise walk parents again looking for a `.git` file or
+//     directory. The first match wins; the resolver returns
+//     `<worktreeRoot>/.flowstate/plans/` so Git worktrees share the
+//     same project-local layout.
+//  4. Otherwise fall back to `<DataDir>/plans/` so fresh users with no
+//     project marker still get a working location.
+//
+// A nil receiver returns the empty string. App test fixtures construct
+// App with Config=nil and exercise paths that consult this helper.
+//
+// Expected: parameters for ResolvedPlanLocation.
+// Returns: result of ResolvedPlanLocation.
+// Side effects: None.
+func (c *AppConfig) ResolvedPlanLocation() string {
+	if c == nil {
+		return ""
+	}
+	if c.PlanLocation != "" {
+		return expandTilde(c.PlanLocation)
+	}
+	if dir := findProjectFlowstateDir(); dir != "" {
+		return filepath.Join(dir, "plans")
+	}
+	if dir := findGitWorktreeRoot(); dir != "" {
+		return filepath.Join(dir, ".flowstate", "plans")
+	}
+	return filepath.Join(c.DataDir, "plans")
+}
+
+// findProjectFlowstateDir walks parents of the current working directory
+// looking for a `.flowstate/` directory. Returns the absolute path to the
+// marker directory itself (so callers can append `plans/` etc.), or the
+// empty string when no marker is found.
+//
+// Side effects:
+//   - Reads os.Getwd() and stat()s candidate parents.
+//
+// Returns: result of findProjectFlowstateDir.
+func findProjectFlowstateDir() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	dir := cwd
+	for {
+		candidate := filepath.Join(dir, ".flowstate")
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			return candidate
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+// findGitWorktreeRoot walks parents of the current working directory looking
+// for a `.git` file or directory. Returns the directory that contains the Git
+// entry, or the empty string when no Git root is found.
+//
+// Returns: result of findGitWorktreeRoot.
+// Side effects: None.
+func findGitWorktreeRoot() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	dir := cwd
+	for {
+		candidate := filepath.Join(dir, ".git")
+		if _, err := os.Stat(candidate); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+// parseDurationField parses a duration string from a config field, returning 0
+// when empty or invalid. Invalid values are logged once at WARN with the field
+// key so the operator can find the typo without a startup crash.
+//
+// Expected:
+//   - s is the raw configured value; an empty string yields 0.
+//   - key is the config-field name used in the WARN log to identify the source.
+//
+// Returns:
+//   - The parsed duration, or 0 when s is empty or fails to parse.
+//
+// Side effects:
+//   - Logs a WARN entry when s is non-empty but fails to parse.
+func parseDurationField(s, key string) time.Duration {
+	if s == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		slog.Warn("config: invalid duration string; falling back to default",
+			"key", key, "value", s, "error", err)
+		return 0
+	}
+	return d
+}
+
+// DefaultEmbeddingModel is the historical embedding model used when
+// AppConfig.EmbeddingModel is empty. See AppConfig.EmbeddingModel for
+// the rationale around centralising this knob.
+const DefaultEmbeddingModel = "nomic-embed-text"
+
+// ResolvedEmbeddingModel returns the embedding model to use for vector-store
+// operations: the explicit cfg.EmbeddingModel when set, otherwise the
+// historical default `nomic-embed-text`. A nil receiver returns the default
+// so test fixtures that construct App with Config=nil still produce
+// well-formed vectors.
+//
+// Expected: parameters for ResolvedEmbeddingModel.
+// Returns: result of ResolvedEmbeddingModel.
+// Side effects: None.
+func (c *AppConfig) ResolvedEmbeddingModel() string {
+	if c == nil || c.EmbeddingModel == "" {
+		return DefaultEmbeddingModel
+	}
+	return c.EmbeddingModel
+}
+
+// QdrantConfig provides configuration for Qdrant-based recall storage.
+//
+// Fields:
+//   - URL: The base URL of the Qdrant server (e.g., "http://localhost:6333").
+//   - Collection: The Qdrant collection name to use for recall storage.
+//   - APIKey: The optional API key for authenticated Qdrant instances.
+//
+// Expected:
+//   - Used to configure Qdrant-backed recall in the application engine.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - None.
+type QdrantConfig struct {
+	URL        string `json:"url" yaml:"url"`
+	Collection string `json:"collection" yaml:"collection"`
+	APIKey     string `json:"api_key" yaml:"api_key"`
+}
+
+// QdrantURLEnv is the environment variable consulted by ResolvedQdrantURL
+// as a fallback when AppConfig.Qdrant.URL is empty. Honouring the env var
+// keeps `flowstate run` aligned with the in-process vault-rag surface
+// (buildVaultQueryHandler + the vault_index / vault_sync admin tools),
+// which has always read QDRANT_URL — operators expect the same env-var
+// override regardless of which entry point opens the Qdrant connection,
+// and the user-facing warning at internal/app/app.go names QDRANT_URL by
+// name. Without this resolver the warning was a contract lie.
+const QdrantURLEnv = "QDRANT_URL"
+
+// ResolvedQdrantURL returns the effective Qdrant base URL for the recall
+// pipeline, applying the documented precedence: an explicit YAML
+// `qdrant.url` value beats the QDRANT_URL env-var fallback, and an empty
+// result means "Qdrant is not configured" (recall broker stays disabled).
+// A nil receiver returns the empty string so test fixtures that construct
+// AppConfig as nil still produce a well-formed resolution.
+//
+// Returns:
+//   - The trimmed YAML field when populated.
+//   - The trimmed QDRANT_URL env var when YAML is empty.
+//   - The empty string when neither carries a usable value.
+//
+// Side effects:
+//   - Reads the QDRANT_URL environment variable.
+//
+// Expected: parameters for ResolvedQdrantURL.
+func (c *AppConfig) ResolvedQdrantURL() string {
+	if c != nil {
+		if u := strings.TrimSpace(c.Qdrant.URL); u != "" {
+			return u
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv(QdrantURLEnv)); v != "" {
+		return v
+	}
+	return ""
+}
+
+// ProvidersConfig configures all available LLM providers.
+type ProvidersConfig struct {
+	// Default names the preferred provider for failover and model preference construction.
+	// Empty means "use the first eligible configured provider".
+	Default     string         `json:"default" yaml:"default"`
+	Anthropic   ProviderConfig `json:"anthropic" yaml:"anthropic"`
+	GitHub      ProviderConfig `json:"github" yaml:"github"`
+	Ollama      ProviderConfig `json:"ollama" yaml:"ollama"`
+	OllamaCloud ProviderConfig `json:"ollamacloud" yaml:"ollamacloud"`
+	OpenCodeGo  ProviderConfig `json:"opencode-go" yaml:"opencode-go"`
+	OpenAI      ProviderConfig `json:"openai" yaml:"openai"`
+	OpenZen     ProviderConfig `json:"openzen" yaml:"openzen"`
+	ZAI         ProviderConfig `json:"zai" yaml:"zai"`
+}
+
+// ProviderConfig holds configuration for a single LLM provider.
+//
+// Plan is a provider-specific endpoint discriminator. It is currently only
+// consulted for the Z.AI provider, where it picks the Z.AI subscription
+// endpoint. Valid Z.AI values:
+//   - "general" (or empty) — pay-per-token, https://api.z.ai/api/paas/v4
+//   - "coding"             — coding-plan subscription,
+//     https://api.z.ai/api/coding/paas/v4
+//
+// For back-compat, when Plan is empty and Host equals the coding-plan URL
+// verbatim, the routing infers "coding". New configs should set Plan
+// explicitly and leave Host empty so the provider uses its compiled-in
+// default endpoint. Other providers ignore the field.
 type ProviderConfig struct {
-	Host     string             `yaml:"host"`
-	APIKey   string             `yaml:"api_key,omitempty"`
-	Model    string             `yaml:"model"`
-	AuthType oauth.AuthType     `yaml:"auth_type"`
-	OAuth    *oauth.OAuthConfig `yaml:"oauth,omitempty"`
+	Host   string      `json:"host" yaml:"host"`
+	APIKey string      `json:"api_key" yaml:"api_key"`
+	Model  string      `json:"model" yaml:"model"`
+	OAuth  OAuthConfig `json:"oauth" yaml:"oauth"`
+	Plan   string      `json:"plan,omitempty" yaml:"plan,omitempty"`
+
+	// MaxConcurrentRequests caps the number of simultaneous in-flight chat
+	// calls (Stream/Chat) FlowState will make to this provider. It exists to
+	// respect a provider's per-account concurrent-request limit: the swarm
+	// lead can emit several `delegate` tool calls in one turn, which the
+	// engine executes as concurrent goroutines, each opening its own provider
+	// stream. Without a cap, N batched delegates open N concurrent streams and
+	// can trip a provider's concurrency limit (observed as HTTP 429 against
+	// z.ai). The cap is enforced by a ConcurrencyLimitedProvider decorator
+	// applied at registration time (see internal/app/providers).
+	//
+	//   - 0 / unset → unlimited (no decorator applied), preserving the
+	//     historical behaviour for providers without a configured cap.
+	//   - N > 0     → at most N simultaneous Stream/Chat calls; further calls
+	//     queue (block) until a slot frees.
+	//
+	// Embeddings (Embed) are NOT gated by this cap.
+	//
+	// See EffectiveMaxConcurrent for the resolved value, which supplies a
+	// provider-specific default (currently zai) when this field is unset.
+	MaxConcurrentRequests int `json:"max_concurrent_requests,omitempty" yaml:"max_concurrent_requests,omitempty"`
 }
 
-func DefaultConfig() *Config {
-	return &Config{
-		Providers: make(map[string]*ProviderConfig),
+// DefaultZAIMaxConcurrent is the default cap on simultaneous in-flight chat
+// calls to the z.ai provider when MaxConcurrentRequests is unset. Z.A.I
+// enforces a per-account concurrent-request limit of 1 for Lite plans and
+// 1-2+ for Pro/Max (see https://docs.z.ai/devpack/usage-policy). Exceeding
+// the server-side limit surfaces as HTTP 429 with error code 1302, which
+// causes cascading failover churn across swarm members. Setting the default
+// to 1 matches the most restrictive plan tier and avoids the error entirely;
+// Pro/Max operators can raise it via providers.zai.max_concurrent_requests.
+const DefaultZAIMaxConcurrent = 1
+
+// EffectiveMaxConcurrent returns the concurrency cap to apply to in-flight
+// chat calls for the provider identified by name.
+//
+// Resolution:
+//   - If MaxConcurrentRequests is explicitly set (> 0), it wins for every
+//     provider, including zai.
+//   - Otherwise, zai falls back to DefaultZAIMaxConcurrent (a known provider
+//     with a documented concurrency limit).
+//   - Otherwise, 0 (unlimited) — no decorator is applied and behaviour is
+//     unchanged from before this cap existed.
+//
+// Expected:
+//   - name is the provider's registry name (e.g. "zai", "anthropic").
+//
+// Returns:
+//   - The effective maximum simultaneous chat calls; 0 means unlimited.
+//
+// Side effects:
+//   - None.
+func (p ProviderConfig) EffectiveMaxConcurrent(name string) int {
+	if p.MaxConcurrentRequests > 0 {
+		return p.MaxConcurrentRequests
+	}
+	if name == "zai" {
+		return DefaultZAIMaxConcurrent
+	}
+	return 0
+}
+
+// OAuthConfig holds OAuth-specific configuration for a provider.
+type OAuthConfig struct {
+	Enabled   bool   `json:"enabled" yaml:"enabled"`
+	ClientID  string `json:"client_id" yaml:"client_id"`
+	TokenFile string `json:"token_file" yaml:"token_file"`
+	Scopes    string `json:"scopes" yaml:"scopes"`
+	UseOAuth  bool   `json:"use_oauth" yaml:"use_oauth"`
+}
+
+// MCPToolPermission defines the permission mode for a specific MCP server tool.
+type MCPToolPermission struct {
+	ServerName string `yaml:"server_name"`
+	ToolName   string `yaml:"tool_name"`
+	Permission string `yaml:"permission"`
+}
+
+// MCPServerConfig holds configuration for a single MCP server connection.
+// Name and Command are required fields.
+//
+// Enabled is a pointer so an omitted `enabled` key stays distinguishable
+// from an explicit `enabled: false`: omission resolves to enabled via
+// EnabledOrDefault, while an explicit false survives config load and
+// suppresses the server (including against PATH-discovered copies of the
+// same name, which MergeServers resolves in the configured entry's favour).
+type MCPServerConfig struct {
+	Name    string            `yaml:"name"`
+	Command string            `yaml:"command"`
+	Args    []string          `yaml:"args,omitempty"`
+	Env     map[string]string `yaml:"env,omitempty"`
+	Enabled *bool             `yaml:"enabled,omitempty"`
+}
+
+// EnabledOrDefault resolves the server's effective enabled state. A nil
+// Enabled pointer (key omitted from YAML, or constructed without the
+// field, as PATH discovery does) means enabled by default; an explicit
+// pointer — true or false — is honoured verbatim.
+//
+// Returns:
+//   - false only when Enabled is a non-nil pointer to false.
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for EnabledOrDefault.
+func (s MCPServerConfig) EnabledOrDefault() bool {
+	return s.Enabled == nil || *s.Enabled
+}
+
+// HarnessConfig holds configuration for the planning harness.
+//
+// Each field controls an optional layer of the harness. By default,
+// the harness is enabled but the critic and voting are disabled.
+// MaxRetries controls how many evaluation attempts the harness makes
+// before returning a best-effort result; defaults to 1.
+//
+// Mode selects the harness loop type. Valid values are "plan" (default)
+// and "execution". When empty, "plan" behaviour is assumed.
+//
+// LearningEnabled enables the async learning loop for this harness.
+// LearningOnFailure triggers learning captures when evaluation fails.
+// LearningOnNovelty triggers learning captures when novel output is detected.
+//
+// CriticModel overrides the chat model used by the LLM critic. When empty,
+// the harness falls back to the provider's primary model. Set this only when
+// the critic should run on a different model from the agent under critique —
+// e.g. a cheaper reviewer over an expensive primary, or vice versa.
+type HarnessConfig struct {
+	Enabled            bool   `json:"enabled" yaml:"enabled"`
+	ProjectRoot        string `json:"project_root" yaml:"project_root"`
+	CriticEnabled      bool   `json:"critic_enabled" yaml:"critic_enabled"`
+	CriticModel        string `json:"critic_model,omitempty" yaml:"critic_model,omitempty"`
+	VotingEnabled      bool   `json:"voting_enabled" yaml:"voting_enabled"`
+	IncrementalEnabled bool   `json:"incremental_enabled" yaml:"incremental_enabled"`
+	MaxRetries         int    `json:"harness_max_retries" yaml:"harness_max_retries"`
+	Mode               string `json:"mode" yaml:"mode"`
+	LearningEnabled    bool   `json:"learning_enabled" yaml:"learning_enabled"`
+	LearningOnFailure  bool   `json:"learning_on_failure" yaml:"learning_on_failure"`
+	LearningOnNovelty  bool   `json:"learning_on_novelty" yaml:"learning_on_novelty"`
+}
+
+// VoiceConfig configures the local voice pipeline. Command fields
+// are whitespace-split argv templates with a "{file}" placeholder;
+// no shell is ever invoked.
+type VoiceConfig struct {
+	// Enabled gates the whole voice pipeline.
+	Enabled bool `json:"enabled" yaml:"enabled"`
+	// CaptureCmd overrides the audio capture command template.
+	CaptureCmd string `json:"capture_cmd,omitempty" yaml:"capture_cmd,omitempty"`
+	// STTCmd overrides the whisper-cli STT command template.
+	STTCmd string `json:"stt_cmd,omitempty" yaml:"stt_cmd,omitempty"`
+	// TTSCmd overrides the TTS command template (piper, espeak-ng).
+	TTSCmd string `json:"tts_cmd,omitempty" yaml:"tts_cmd,omitempty"`
+	// TTSEnabled opts in to spoken responses; disabled by default.
+	TTSEnabled bool `json:"tts_enabled" yaml:"tts_enabled"`
+	// SampleRate is the capture sample rate in Hz (default 16000).
+	SampleRate int `json:"sample_rate,omitempty" yaml:"sample_rate,omitempty"`
+	// MaxDurationSec bounds each recording (default 30).
+	MaxDurationSec int `json:"max_duration_sec,omitempty" yaml:"max_duration_sec,omitempty"`
+}
+
+// AgentOverrideConfig holds per-agent configuration overrides.
+//
+// PromptAppend contains text to be appended to an agent's system prompt
+// at runtime, without modifying the agent .md file.
+type AgentOverrideConfig struct {
+	PromptAppend string `json:"prompt_append" yaml:"prompt_append"`
+}
+
+// PluginsConfig holds configuration for FlowState plugins.
+type PluginsConfig struct {
+	Dir      string         `json:"dir" yaml:"dir,omitempty"`
+	Enabled  []string       `json:"enabled" yaml:"enabled,omitempty"`
+	Disabled []string       `json:"disabled" yaml:"disabled,omitempty"`
+	Timeout  int            `json:"timeout" yaml:"timeout,omitempty"`
+	Failover FailoverConfig `json:"failover" yaml:"failover,omitempty"`
+}
+
+// FailoverConfig holds configurable tier mappings for provider failover.
+type FailoverConfig struct {
+	Tiers map[string]string `json:"tiers" yaml:"tiers,omitempty"`
+}
+
+// FeaturesConfig carries opt-in runtime feature flags introduced by
+// the Agent Runtime Quality plan (May 2026).
+//
+// Every flag defaults to false so an upgrading deployment inherits
+// the historical behaviour without any config churn. Flag-off is the
+// support contract: tests for the historical behaviour MUST exercise
+// the zero-valued FeaturesConfig and prove the engine's old surface
+// is unchanged.
+//
+// Fields:
+//
+//   - TodoStrictMode — D9. When true (the default), the engine
+//     rejects non-todowrite/non-todo_update tool calls once a
+//     session's agent-turn-chain has fired more than 3 tool calls
+//     without invoking either todo tool. The rejection is a structured
+//     tool.Result with IsError=true whose output instructs the model
+//     to call todowrite first. Set features.todo_strict_mode: false
+//     in config.yaml to disable the hard gate and fall back to the
+//     soft-nudge-only contract (D6).
+type FeaturesConfig struct {
+	TodoStrictMode bool `json:"todo_strict_mode" yaml:"todo_strict_mode"`
+
+	// PermissionGrantForeverEnabled controls whether the ModeAskUser
+	// "Forever" grant scope persists to permissions.yaml. Permission
+	// Mode ModeAskUser Extension plan (May 2026), Slice 4 §4.
+	//
+	// Default true via DefaultConfig — the YAML writer (atomic
+	// temp+rename+fsync under flock) is the v1-shipping behaviour the
+	// plan acceptance bullet requires. Operators opt out by setting
+	// `features.permission_grant_forever_enabled: false`, in which
+	// case scope=="forever" falls through to GrantSession semantics
+	// (in-memory only, lost on daemon restart) — the existing pre-
+	// Slice-4 wire shape.
+	//
+	// Rollback path: flip this flag false. The "Forever" button
+	// remains visible in the UI (the wire shape is stable across
+	// slices) but no file is written; the operator's intent is
+	// honoured for the rest of the session via in-memory state.
+	PermissionGrantForeverEnabled bool `json:"permission_grant_forever_enabled" yaml:"permission_grant_forever_enabled"`
+
+	// PermissionGrantMCPEnabled controls whether the ModeAskUser
+	// "Forever" grant scope persists MCP server grants to
+	// permissions.yaml under agents.<agent>.mcp_servers_grant. Slice 5
+	// of the Permission Mode ModeAskUser Extension plan (May 2026).
+	//
+	// Default FALSE via DefaultConfig — Slice 5's schema bump to
+	// version: 2 is verified safe by the round-trip spec in
+	// permissions_writer_test.go but the plan §6 ships the surface
+	// behind a flag until ops confirms operator file-edits in the
+	// wild parse cleanly under v2. The "Forever" button still renders
+	// for MCP prompts; with the flag off the handler returns a 400
+	// "MCP grant disabled by config" and the operator can still pick
+	// Once / Session / Deny without a file write.
+	//
+	// Rollback path: flip this flag false. The in-memory Once and
+	// Session scopes continue to honour MCP grants for the lifetime of
+	// the session — only the YAML persistence is gated.
+	PermissionGrantMCPEnabled bool `json:"permission_grant_mcp_enabled" yaml:"permission_grant_mcp_enabled"`
+}
+
+// AuthConfig holds the FlowState API Auth Track (May 2026) config layer.
+// Sourced from `auth:` in config.yaml (NOT TOML — the codebase uses YAML
+// per LoadConfigFromPath); env vars (FLOWSTATE_AUTH_*) take precedence
+// per plan §"Bootstrap UX" precedence order (env → flag → config →
+// default).
+//
+// Fields:
+//
+//   - Enabled         — features.auth_v1. v1 ships with this true by default
+//     (the PR5/C10 flag-flip). Operators opt out by setting
+//     `auth.enabled: false` (development / smoke tests) or by leaving
+//     credentials unconfigured — the safety net in installAuthFromConfig
+//     downgrades to pass-through with a loud slog.Warn when Enabled=true
+//     but no Mode is resolvable.
+//   - Mode            — one of "shared-secret" | "per-deployment-login" |
+//     "multi-user". Empty defaults to "per-deployment-login" (plan §OD-E
+//     v1 deployable mode).
+//   - Secret          — credential for shared-secret / per-deployment-login.
+//     Production deployments typically supply this via the env var
+//     FLOWSTATE_AUTH_SECRET rather than the config file (which may be
+//     checked into version control).
+//   - PrincipalID     — operator id stamped on the session under
+//     per-deployment-login. Empty defaults to "default".
+//   - DisplayName     — human-readable label for the principal. Optional.
+//   - AllowedOrigins  — comma-list / YAML slice consumed by RequireOrigin.
+//     Empty defaults to ["localhost:*"] (the pre-PR1-lift behaviour).
+//   - SecureCookies   — controls the Secure attribute on the session +
+//     CSRF cookies. Defaults to TRUE (HTTPS production); flip to false
+//     ONLY for HTTP-only dev. Plan §"Wire Protocol" line 414 + R2/R12.
+//   - CSRFKey         — 32+ byte HMAC key for gorilla/csrf. v1 reads
+//     this from config OR env. PR5/C10 removes the ephemeral-random
+//     fallback in production: when Enabled=true and CSRFKey is unset on
+//     BOTH config and env, installAuthFromConfig returns an error. The
+//     `flowstate auth csrf-key gen` cobra subcommand prints a freshly
+//     generated key the operator can paste into config.yaml or pipe
+//     into the env.
+//
+// Default values are documented at the field level; DefaultAuthConfig
+// (below) returns the canonical default. PR5/C10 sets
+// DefaultConfig().Auth.Enabled = true (the flag-flip).
+type AuthConfig struct {
+	Enabled        bool     `json:"enabled" yaml:"enabled"`
+	Mode           string   `json:"mode,omitempty" yaml:"mode,omitempty"`
+	Secret         string   `json:"secret,omitempty" yaml:"secret,omitempty"`
+	PrincipalID    string   `json:"principal_id,omitempty" yaml:"principal_id,omitempty"`
+	DisplayName    string   `json:"display_name,omitempty" yaml:"display_name,omitempty"`
+	AllowedOrigins []string `json:"allowed_origins,omitempty" yaml:"allowed_origins,omitempty"`
+	SecureCookies  bool     `json:"secure_cookies" yaml:"secure_cookies"`
+	CSRFKey        string   `json:"csrf_key,omitempty" yaml:"csrf_key,omitempty"`
+}
+
+// QuotaConfig controls the Provider Quota and Spend Visibility surface
+// (May 2026 plan). PR1 ships the Store-backend + deployment-topology
+// keys + boot validation; PR2 adds Pricing (three-tier table),
+// Currency (OD-6 conversion), Providers (per-provider cap + period +
+// thresholds). PR4 lights up the spend variant against the PR2
+// plumbing.
+//
+// The load-bearing keys for PR1 are Store.Backend and
+// Store.DeploymentTopology. Per plan §"Boot validation" lines 289-291,
+// the combination `Backend=memory + DeploymentTopology=multi-instance`
+// is rejected at boot — the only silently-broken pairing that would
+// double-count across instances.
+//
+// PR2 adds:
+//   - Pricing.Path        — operator-override file (highest precedence).
+//   - Pricing.Registry    — opt-in remote registry (B5 closure —
+//     disabled by default, no canonical FlowState URL).
+//   - Currency.ConversionTable — OD-6 USD-equivalent override path.
+//   - Providers[name]     — per-provider cap + period + thresholds
+//     (plumbed but NOT enforced in PR2 — PR4 lights spend up).
+//
+// Plan §"`internal/provider/quota/store/`" YAML example lines 269-281
+// + §"Pricing table" lines 338-388 + OD-6 lines 498-503 + OD-9
+// thresholds lines 517-520.
+type QuotaConfig struct {
+	// Store controls the cluster-ready persistence backend.
+	Store QuotaStoreConfig `json:"store" yaml:"store"`
+
+	// Pricing controls the three-tier pricing-table resolution.
+	// Operator override > remote registry > embedded default.
+	Pricing QuotaPricingConfig `json:"pricing" yaml:"pricing"`
+
+	// Currency controls the OD-6 native-to-USD conversion table.
+	// Default rates are embedded at
+	// internal/provider/quota/currencies.go; operators override the
+	// full table via the JSON file at Currency.ConversionTable.
+	Currency QuotaCurrencyConfig `json:"currency" yaml:"currency"`
+
+	// Providers carries the per-deployment cap + period + thresholds
+	// for each configured provider. PR2 plumbs this through but does
+	// NOT enforce — PR4 wires the spend variant against these keys.
+	// Maps keyed by canonical provider id ("anthropic", "openai", ...).
+	Providers map[string]ProviderQuotaConfig `json:"providers,omitempty" yaml:"providers,omitempty"`
+
+	// Cache controls the PR6 on-disk cache + periodic refresh ticker.
+	// Default Path resolves to $XDG_CACHE_HOME/flowstate/provider-quota.json
+	// (or $HOME/.cache/flowstate/... when XDG_CACHE_HOME is empty).
+	// RefreshInterval defaults to 10 seconds.
+	//
+	// Plan §"Rollout Plan" PR6 row 430 + OD-2 RESOLVED 2026-05-13.
+	Cache QuotaCacheConfig `json:"cache" yaml:"cache"`
+}
+
+// QuotaCacheConfig controls the PR6 persisted-cache and refresh-ticker
+// behaviour. Both fields are optional — the wireup resolves sensible
+// defaults when empty.
+//
+// Plan §"Rollout Plan" PR6 row 430.
+type QuotaCacheConfig struct {
+	// Path is the operator-supplied path to the JSON cache file. Empty
+	// resolves to $XDG_CACHE_HOME/flowstate/provider-quota.json (or
+	// $HOME/.cache/flowstate/... when XDG_CACHE_HOME is empty). The
+	// parent directory is created at boot via os.MkdirAll(0o700); if
+	// creation fails the wireup logs a warn and skips persistence
+	// (graceful degradation).
+	Path string `json:"path,omitempty" yaml:"path,omitempty"`
+
+	// RefreshInterval is the cadence at which the ticker writes the
+	// current spend state to disk. Format: a Go duration string
+	// ("10s", "30s"). Empty resolves to 10s — the plan's PR6 default.
+	// Set to "0" to disable the periodic write (boot-time load still
+	// runs; cache becomes append-only-on-shutdown).
+	RefreshInterval string `json:"refresh_interval,omitempty" yaml:"refresh_interval,omitempty"`
+}
+
+// QuotaStoreConfig holds the Store-backend selection and deployment
+// topology declaration.
+type QuotaStoreConfig struct {
+	// Backend is "memory" (single-instance default), "redis", or
+	// "postgres". v1 ships MemoryStore as the only full impl;
+	// Redis/Postgres are compile-clean stubs (every method returns
+	// ErrNotImplemented). v3 swaps in the real impls.
+	Backend string `json:"backend,omitempty" yaml:"backend,omitempty"`
+
+	// DeploymentTopology is "single-instance" (default) or
+	// "multi-instance". An operator running a horizontally-scaled
+	// FlowState deployment MUST set "multi-instance" AND select a
+	// non-memory Backend (the boot validation enforces this).
+	DeploymentTopology string `json:"deployment_topology,omitempty" yaml:"deployment_topology,omitempty"`
+}
+
+// QuotaPricingConfig controls the three-tier pricing resolution.
+// Plan §"Pricing table" lines 338-388.
+type QuotaPricingConfig struct {
+	// Path is the operator-supplied pricing JSON file. When set, takes
+	// highest precedence (partial files merge over the registry +
+	// embedded baseline per plan line 344). Empty means no override
+	// configured.
+	Path string `json:"path,omitempty" yaml:"path,omitempty"`
+
+	// Registry controls the opt-in remote registry tier.
+	Registry QuotaPricingRegistryConfig `json:"registry" yaml:"registry"`
+}
+
+// QuotaPricingRegistryConfig holds the remote-registry knobs. Per B5
+// closure (feedback_default_urls_must_be_provisioned_or_disabled), v1
+// default is Enabled=false with empty URL — every fresh install boots
+// with embedded prices, no network, no warning. Operators wanting
+// fresh prices set Enabled=true AND supply their own URL.
+type QuotaPricingRegistryConfig struct {
+	// Enabled controls whether the registry tier participates. Default
+	// false (v1 baseline is embedded). When true, URL MUST be non-empty
+	// — the boot validation rejects the misconfiguration.
+	Enabled bool `json:"enabled" yaml:"enabled"`
+
+	// URL is the operator-supplied registry URL. v1 ships no canonical
+	// FlowState URL per B5 — every operator who wants fresh prices runs
+	// their own registry (or waits for the infrastructure track to ship
+	// a pricing.flowstate.app endpoint).
+	URL string `json:"url,omitempty" yaml:"url,omitempty"`
+
+	// CacheTTL overrides the default 24h cache validity. Format: a Go
+	// duration string ("12h", "30m"). Empty means the registry
+	// package's DefaultCacheTTL (24h).
+	CacheTTL string `json:"cache_ttl,omitempty" yaml:"cache_ttl,omitempty"`
+
+	// CachePath overrides the default $XDG_CACHE_HOME/flowstate/
+	// pricing-registry.json path. Empty means the registry package's
+	// DefaultCachePath.
+	CachePath string `json:"cache_path,omitempty" yaml:"cache_path,omitempty"`
+}
+
+// QuotaCurrencyConfig controls the OD-6 conversion table.
+// Plan OD-6 lines 498-503.
+type QuotaCurrencyConfig struct {
+	// ConversionTable is the operator-supplied path to a JSON file
+	// matching the shape of the embedded
+	// internal/provider/quota/currencies.go map (USD identity entry
+	// MUST be present at rate 1.0). Empty means the embedded table.
+	ConversionTable string `json:"conversion_table,omitempty" yaml:"conversion_table,omitempty"`
+}
+
+// ProviderQuotaConfig is the per-provider cap + period + threshold
+// surface. PR2 ships the shape; PR4 enforces it.
+//
+// Plan §"Pricing table" line 390 + OD-9 thresholds lines 517-520.
+type ProviderQuotaConfig struct {
+	// Cap is the operator-configured monthly cap formatted as
+	// "<amount> <currency>" (e.g. "50.00 USD", "350.00 CNY"). Parsed
+	// via ParseCap. Empty means uncapped — the chip renders without
+	// a denominator and stays green.
+	Cap string `json:"cap,omitempty" yaml:"cap,omitempty"`
+
+	// Period is the spend-window granularity. "monthly" (default),
+	// "rolling-30d", or "session" per plan line 204.
+	Period string `json:"period,omitempty" yaml:"period,omitempty"`
+
+	// ThresholdAmber is the percentage (Spent/Cap * 100) at which the
+	// chip transitions green → amber. Default 80 per OD-9.
+	ThresholdAmber int `json:"threshold_amber,omitempty" yaml:"threshold_amber,omitempty"`
+
+	// ThresholdRed is the percentage at which the chip transitions
+	// amber → red. Default 95 per OD-9.
+	ThresholdRed int `json:"threshold_red,omitempty" yaml:"threshold_red,omitempty"`
+}
+
+// ParseCap parses the "<amount> <currency>" format (e.g. "50.00 USD",
+// "350.50 CNY") into amountMinor (int64 minor units) + currency code.
+// Returns an error on malformed input — the plan demands operators see
+// the misconfiguration at boot rather than at first-spend-event time.
+//
+// Recognised currencies are USD/CNY/EUR/GBP (v1 currencies per OD-6).
+// Unknown currencies parse without erroring here — the engine
+// validates against the conversion table when the cap is first
+// consulted.
+//
+// Format rules:
+//   - Exactly two whitespace-separated tokens: <amount> <currency>.
+//   - Amount uses decimal point (no thousands separator). Negative
+//     amounts rejected.
+//   - Currency is 3 uppercase letters (ISO-4217); case-insensitive on
+//     parse, normalised to uppercase in the returned string.
+//
+// Minor-unit conversion: cents for USD/EUR/GBP, fen for CNY, etc. The
+// v1 currencies named in OD-6 all use the 100-minor-units-per-major
+// convention; future currencies with different exponents would need
+// per-currency handling.
+//
+// Expected: parameters for ParseCap.
+// Returns: result of ParseCap.
+// Side effects: None.
+func ParseCap(cap string) (amountMinor int64, currency string, err error) {
+	cap = strings.TrimSpace(cap)
+	if cap == "" {
+		return 0, "", errors.New("config: empty cap value")
+	}
+	parts := strings.Fields(cap)
+	if len(parts) != 2 {
+		return 0, "", fmt.Errorf("config: cap %q must be \"<amount> <currency>\" (e.g. \"50.00 USD\")", cap)
+	}
+	amount := parts[0]
+	currencyCode := strings.ToUpper(parts[1])
+
+	// Strict 3-letter ISO-4217 form. Lowercase tolerated on parse but
+	// normalised. Letters only — reject "1.0" / "USD1".
+	if len(currencyCode) != 3 {
+		return 0, "", fmt.Errorf("config: cap currency %q must be 3 letters (ISO-4217)", parts[1])
+	}
+	for _, r := range currencyCode {
+		if r < 'A' || r > 'Z' {
+			return 0, "", fmt.Errorf("config: cap currency %q must be 3 letters (ISO-4217)", parts[1])
+		}
+	}
+
+	// Parse amount. Accept either an integer ("50") or a 2-decimal form
+	// ("50.00"). More decimal places are rejected — silent rounding is
+	// the failure mode the plan's honesty stance avoids.
+	dotIdx := strings.Index(amount, ".")
+	if dotIdx < 0 {
+		major, parseErr := strconv.ParseInt(amount, 10, 64)
+		if parseErr != nil {
+			return 0, "", fmt.Errorf("config: cap amount %q: %w", amount, parseErr)
+		}
+		if major < 0 {
+			return 0, "", fmt.Errorf("config: cap amount %q must be non-negative", amount)
+		}
+		return major * 100, currencyCode, nil
+	}
+	majorStr := amount[:dotIdx]
+	minorStr := amount[dotIdx+1:]
+	if len(minorStr) > 2 {
+		return 0, "", fmt.Errorf("config: cap amount %q has more than 2 decimal places", amount)
+	}
+	// Pad single-digit minor to two: "50.5" -> minor=50.
+	for len(minorStr) < 2 {
+		minorStr += "0"
+	}
+	major, parseErr := strconv.ParseInt(majorStr, 10, 64)
+	if parseErr != nil {
+		return 0, "", fmt.Errorf("config: cap amount major part %q: %w", majorStr, parseErr)
+	}
+	if major < 0 {
+		return 0, "", fmt.Errorf("config: cap amount %q must be non-negative", amount)
+	}
+	minor, parseErr := strconv.ParseInt(minorStr, 10, 64)
+	if parseErr != nil {
+		return 0, "", fmt.Errorf("config: cap amount minor part %q: %w", minorStr, parseErr)
+	}
+	if minor < 0 {
+		return 0, "", fmt.Errorf("config: cap amount %q minor part must be non-negative", amount)
+	}
+	return major*100 + minor, currencyCode, nil
+}
+
+// DefaultQuotaConfig returns the canonical default. Per plan B4
+// (lines 283): both keys default to safe single-instance values so
+// fresh installs boot quietly into `memory + single-instance`.
+// Operators running multi-instance deployments must explicitly opt
+// in (and select a non-memory backend, enforced at boot).
+//
+// PR2 defaults:
+//   - Pricing.Registry.Enabled = false (v1 baseline is embedded; B5
+//     closure — no aspirational URL provisioned).
+//   - Providers map empty (no caps configured).
+//
+// Returns: result of DefaultQuotaConfig.
+// Side effects: None.
+func DefaultQuotaConfig() QuotaConfig {
+	return QuotaConfig{
+		Store: QuotaStoreConfig{
+			Backend:            "memory",
+			DeploymentTopology: "single-instance",
+		},
+		Pricing: QuotaPricingConfig{
+			Registry: QuotaPricingRegistryConfig{
+				Enabled: false,
+			},
+		},
+		Currency:  QuotaCurrencyConfig{},
+		Providers: map[string]ProviderQuotaConfig{},
 	}
 }
 
-func (c *Config) AddProvider(name string, config *ProviderConfig) {
-	if c.Providers == nil {
-		c.Providers = make(map[string]*ProviderConfig)
+// ResolveThresholds returns (amber, red) with OD-9 defaults applied
+// when the per-provider config left the field at zero. Plan §"OD-9"
+// lines 519: TokenSpend defaults green < 80% used, amber 80-95%, red
+// ≥ 95% used.
+//
+// Out-of-range values (negative, > 100, amber >= red) are rejected
+// via ValidateThresholds at boot; ResolveThresholds is the in-engine
+// getter that assumes the config has already been validated.
+//
+// Expected: parameters for ResolveThresholds.
+// Returns: result of ResolveThresholds.
+// Side effects: None.
+func (p ProviderQuotaConfig) ResolveThresholds() (amber, red int) {
+	amber = p.ThresholdAmber
+	red = p.ThresholdRed
+	if amber <= 0 {
+		amber = 80
 	}
-	c.Providers[name] = config
+	if red <= 0 {
+		red = 95
+	}
+	return amber, red
 }
 
-func (c *Config) GetProvider(name string) *ProviderConfig {
-	return c.Providers[name]
+// ResolvePeriod returns the period field with the "monthly" default
+// applied. Plan §"OD-9" lines 519 + ProviderQuotaConfig.Period.
+//
+// Expected: parameters for ResolvePeriod.
+// Returns: result of ResolvePeriod.
+// Side effects: None.
+func (p ProviderQuotaConfig) ResolvePeriod() string {
+	if p.Period == "" {
+		return "monthly"
+	}
+	return p.Period
 }
 
-func (c *Config) RemoveProvider(name string) {
-	delete(c.Providers, name)
+// ValidateProviderQuota checks the per-provider quota config is
+// well-formed. Boot validation calls this for every entry in
+// Providers; returns the first error encountered with the provider id
+// prefixed.
+//
+// Validations:
+//   - Cap parses cleanly when non-empty (via ParseCap).
+//   - Period is one of {"", "monthly", "rolling-30d", "session"}.
+//   - ThresholdAmber and ThresholdRed are in [0, 100] (0 means
+//     "apply default"; values > 100 reject).
+//   - When BOTH thresholds are set, amber < red (an amber threshold
+//     at or above the red threshold is a misconfiguration).
+//
+// Expected: parameters for ValidateProviderQuota.
+// Returns: result of ValidateProviderQuota.
+// Side effects: None.
+func ValidateProviderQuota(providerID string, p ProviderQuotaConfig) error {
+	if p.Cap != "" {
+		if _, _, err := ParseCap(p.Cap); err != nil {
+			return fmt.Errorf("quota.providers.%s.cap: %w", providerID, err)
+		}
+	}
+	switch p.Period {
+	case "", "monthly", "rolling-30d", "session":
+		// ok
+	default:
+		return fmt.Errorf("quota.providers.%s.period: %q is not one of monthly, rolling-30d, session", providerID, p.Period)
+	}
+	if p.ThresholdAmber < 0 || p.ThresholdAmber > 100 {
+		return fmt.Errorf("quota.providers.%s.threshold_amber: %d out of range [0, 100]", providerID, p.ThresholdAmber)
+	}
+	if p.ThresholdRed < 0 || p.ThresholdRed > 100 {
+		return fmt.Errorf("quota.providers.%s.threshold_red: %d out of range [0, 100]", providerID, p.ThresholdRed)
+	}
+	if p.ThresholdAmber > 0 && p.ThresholdRed > 0 && p.ThresholdAmber >= p.ThresholdRed {
+		return fmt.Errorf("quota.providers.%s: threshold_amber (%d) must be less than threshold_red (%d)", providerID, p.ThresholdAmber, p.ThresholdRed)
+	}
+	return nil
+}
+
+// ValidatePricingRegistry rejects pricing.registry.enabled=true with
+// an empty pricing.registry.url. Per memory
+// feedback_default_urls_must_be_provisioned_or_disabled: v1 ships no
+// canonical FlowState URL; an operator who toggles enabled=true MUST
+// supply their own URL. Quiet boot when enabled=false regardless of
+// URL — disabled means "no registry tier participates", URL is
+// informational only.
+//
+// Plan §"Pricing table" line 345 (B5 closure).
+//
+// Expected: parameters for ValidatePricingRegistry.
+// Returns: result of ValidatePricingRegistry.
+// Side effects: None.
+func ValidatePricingRegistry(p QuotaPricingRegistryConfig) error {
+	if p.Enabled && strings.TrimSpace(p.URL) == "" {
+		return errors.New(
+			"quota.pricing.registry.enabled=true requires quota.pricing.registry.url; " +
+				"v1 ships no canonical FlowState URL (B5 — no aspirational URLs). " +
+				"Set the URL to your self-hosted registry or disable the tier with enabled=false " +
+				"(the embedded pricing.json is the v1 baseline)",
+		)
+	}
+	return nil
+}
+
+// DefaultAuthConfig returns the canonical default AuthConfig. Used by
+// DefaultConfig and by cmd/serve when the operator's config.yaml omits
+// the `auth:` block.
+//
+// Defaults:
+//   - Enabled:       true (PR5/C10 flag-flip — see AppConfig.Auth)
+//   - Mode:          "per-deployment-login" (plan §OD-E v1 deployable)
+//   - SecureCookies: true (production HTTPS; operator opts out for dev)
+//
+// Other fields are zero-valued; installAuthFromConfig fills in
+// implementation defaults (e.g. AllowedOrigins defaults to localhost:*
+// when both config and env are empty).
+//
+// Returns: result of DefaultAuthConfig.
+// Side effects: None.
+func DefaultAuthConfig() AuthConfig {
+	return AuthConfig{
+		Enabled:       true,
+		Mode:          "per-deployment-login",
+		SecureCookies: true,
+	}
+}
+
+// Dir returns the configuration directory path.
+//
+// Checks XDG_CONFIG_HOME environment variable first, then falls back to
+// ~/.config/flowstate. Returns the directory path (not the config file).
+//
+// Returns:
+//   - The path to the FlowState configuration directory.
+//
+// Side effects:
+//   - None.
+func Dir() string {
+	if xdgConfigHome := os.Getenv("XDG_CONFIG_HOME"); xdgConfigHome != "" {
+		return filepath.Join(xdgConfigHome, "flowstate")
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".config", "flowstate")
+	}
+	return filepath.Join(homeDir, ".config", "flowstate")
+}
+
+// DataDir returns the data directory path.
+//
+// Checks XDG_DATA_HOME environment variable first, then falls back to
+// ~/.local/share/flowstate.
+//
+// Returns:
+//   - The path to the FlowState data directory.
+//
+// Side effects:
+//   - None.
+func DataDir() string {
+	if xdgDataHome := os.Getenv("XDG_DATA_HOME"); xdgDataHome != "" {
+		return filepath.Join(xdgDataHome, "flowstate")
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".local", "share", "flowstate")
+	}
+	return filepath.Join(homeDir, ".local", "share", "flowstate")
+}
+
+// DefaultConfig returns sensible default configuration values.
+//
+// AgentDir and SkillDir live under XDG_CONFIG (Dir()) rather than XDG_DATA
+// because agent manifests and skill bundles are user-edited configuration —
+// adding `harness.critic_enabled` to `plan-writer.md`, editing `SKILL.md`,
+// swapping a model name, etc. — and XDG_CONFIG is the canonical home for
+// that class of file. Swarms (also user-edited) follow the same rule.
+// Cache-style outputs (sessions, plans) stay under DataDir because they
+// are derived state, not user input.
+//
+// Returns:
+//   - An AppConfig populated with default provider and directory settings.
+//
+// Side effects:
+//   - Resolves the user home directory to set the data path.
+func DefaultConfig() *AppConfig {
+	dataDir := DataDir()
+
+	return &AppConfig{
+		Providers: ProvidersConfig{
+			Ollama: ProviderConfig{
+				Host:  "http://localhost:11434",
+				Model: "llama3.2",
+			},
+			OpenAI: ProviderConfig{
+				Model: "gpt-4o",
+			},
+			Anthropic: ProviderConfig{
+				Model: "claude-sonnet-4-20250514",
+			},
+			OllamaCloud: ProviderConfig{
+				Model: "llama3.3:70b",
+			},
+		},
+		AgentDir:        filepath.Join(Dir(), "agents"),
+		SkillDir:        filepath.Join(Dir(), "skills"),
+		SchemaDir:       filepath.Join(Dir(), "schemas"),
+		GatesDir:        filepath.Join(Dir(), "gates"),
+		DataDir:         dataDir,
+		LogLevel:        "info",
+		DefaultAgent:    "default-assistant",
+		CategoryRouting: engine.DefaultCategoryRouting(),
+		AlwaysActiveSkills: []string{
+			"pre-action",
+			"memory-keeper",
+			"token-cost-estimation",
+			"retrospective",
+			"note-taking",
+			"knowledge-base",
+			"discipline",
+			"skill-discovery",
+			"agent-discovery",
+		},
+		Harness: HarnessConfig{
+			Enabled:            true,
+			CriticEnabled:      false,
+			VotingEnabled:      false,
+			IncrementalEnabled: false,
+			MaxRetries:         1,
+		},
+		Plugins: PluginsConfig{
+			Failover: FailoverConfig{
+				Tiers: map[string]string{
+					"claude-sonnet-4-20250514":   "tier-0",
+					"claude-3-5-sonnet-20241022": "tier-0",
+					"gpt-4o":                     "tier-1",
+					"gpt-4o-mini":                "tier-2",
+					"llama3.2":                   "tier-3",
+					"llama3":                     "tier-3",
+				},
+			},
+		},
+		AgentOverrides:      make(map[string]AgentOverrideConfig),
+		Voice:               DefaultVoiceConfig(),
+		Compression:         contextpkg.DefaultCompressionConfig(),
+		Compaction:          compactionpkg.DefaultConfig(),
+		Delegation:          DefaultDelegationConfig(),
+		ProviderFallback:    engine.DefaultProviderFallback(),
+		Auth:                DefaultAuthConfig(),
+		Quota:               DefaultQuotaConfig(),
+		ToolCapableModels:   defaultToolCapableModels(),
+		ToolIncapableModels: defaultToolIncapableModels(),
+		Features: FeaturesConfig{
+			// TodoStrictMode defaults false. The engine now uses
+			// complexity-based estimation (EstimateComplexity) to
+			// decide per-session whether to enforce the hard todo
+			// gate. Only sessions classified as ComplexityComplex
+			// get the gate automatically. Set this to true to force
+			// the hard gate on ALL sessions regardless of estimated
+			// complexity (the pre-compatibility override).
+			TodoStrictMode: false,
+			// PermissionGrantForeverEnabled defaults true — Slice 4
+			// of the Permission Mode ModeAskUser Extension plan
+			// (May 2026) ships the atomic-flock YAML writer as the
+			// v1 behaviour. Operators opt out via config.yaml; the
+			// false path preserves the in-memory-only semantics of
+			// Slices 1-3.
+			PermissionGrantForeverEnabled: true,
+			// PermissionGrantMCPEnabled defaults FALSE — Slice 5 of
+			// the same plan (May 2026 §6) ships the v2 schema bump
+			// + AppendMCPGrant writer behind a flag. The round-trip
+			// safety spec confirms the migration is reversible, but
+			// the plan keeps the surface flag-gated until ops
+			// confirms wild operator files parse cleanly. Operators
+			// opt in via config.yaml.
+			PermissionGrantMCPEnabled: false,
+		},
+	}
+}
+
+// DefaultDelegationConfig returns the default delegation configuration with TeeChildContent disabled; the child session plus
+// tool_result is the canonical surface unless callers explicitly opt in.
+//
+// Returns: result of DefaultDelegationConfig.
+// Side effects: None.
+func DefaultDelegationConfig() DelegationConfig {
+	return DelegationConfig{
+		TeeChildContent: false,
+	}
+}
+
+// defaultToolCapableModels returns the curated shortlist of model-name
+// patterns FlowState ships with. These are the models we have direct
+// production evidence (citation-backed in the KB's "Local Model Matrix"
+// note) of emitting structured tool calls reliably under the current
+// FlowState system prompt + provider templates. Operators can extend
+// the list via cfg.ToolCapableModels in config.yaml.
+//
+// Evidence summary for the local-model entries:
+//   - qwen3:*       — BFCL-v3 72.4 + RULER 99.2 @32K (Qwen3-30B-A3B-Thinking
+//     model card); qwen3:14b RULER 96.1 @32K (NVIDIA RULER);
+//     qwen3:8b verified live in FlowState (2 tool calls on the
+//     /tmp .md count test).
+//   - devstral:latest — SWE-Bench Verified 53.6 (Mistral / Devstral release);
+//     verified live in FlowState (1 tool call after ~120s
+//     first load).
+//   - llama3.1:latest — BFCL 0.761 + RULER 87.4 @32K (llm-stats, NVIDIA);
+//     verified live in FlowState.
+//   - llama3.3:latest — v2 BFCL ~77 (Galileo); reasoning > FC. Untested live
+//     (70B too slow for the consumer-GPU smoke runner).
+//   - gemini-3*     — gemini-3-flash-preview verified live in FlowState
+//     (via github-copilot proxy).
+//   - grok-code-*   — grok-code-fast-1 verified live in FlowState (via
+//     github-copilot proxy).
+//   - glm-*         — Z.AI's glm-4.5, glm-4.5-air, glm-4.6, glm-5,
+//     glm-5-turbo, glm-5.1 all verified live in FlowState
+//     (the broken `glm-4.7` is on the deny list and takes
+//     precedence).
+//
+// Returns: result of defaultToolCapableModels.
+// Side effects: None.
+func defaultToolCapableModels() []string {
+	return []string{
+		"claude-*",
+		"gpt-4*",
+		"gpt-5*",
+		"o1*",
+		"o3*",
+		"gemini-3*",
+		"grok-code-*",
+		"glm-*",
+		"qwen3:*",
+		"devstral:latest",
+		"llama3.1:latest",
+		"llama3.3:latest",
+		"Kimi*",
+		"Qwen*",
+		"DeepSeek*",
+	}
+}
+
+// defaultToolIncapableModels returns the curated deny list of models
+// known (per the KB investigations cited on AppConfig.ToolCapableModels
+// and the "Local Model Matrix" note) to either silently emit zero tool
+// calls or to trip Ollama-template bugs that intersect FlowState's
+// 4–12-tool-calls-per-turn pattern. Deny-list match takes precedence
+// over allow-list match, so a future operator who allows
+// `qwen2.5-coder:14b` via ToolCapableModels still trips this guard
+// until they explicitly remove the deny entry.
+//
+// Evidence summary:
+//   - llama3.2*        — KB: planner produced zero tool calls when failover
+//     landed here (Bug Fixes / Planner Harness Rescue).
+//   - qwen2.5-coder*   — KB: broken on clean input under current Ollama
+//     template (Investigations / Non-Anthropic Provider
+//     Stream Termination).
+//   - glm-4.7          — KB: returns prose instead of structured tool calls
+//     (Investigations / GLM Delegation Failure).
+//   - mistral:7b       — RULER 75.4 @32K → 13.8 @128K (effective ctx ≪32K);
+//     pre-tool-format generation, FC is a prompt hack.
+//   - gpt-oss:20b*     — Five open Ollama bugs: no parallel tool calls
+//     (#12159), thinking leaks into tool calls (#12203),
+//     malformed tool names (#11704), 500 on call (#11800),
+//     RAM blowup (#13401). Intersects FlowState's
+//     multi-tool-per-turn pattern hard.
+//   - deepseek-r1:*    — Ollama template-broken for tools per #10935 / #8517.
+//     The community fork lucasmg/...-tool-true exists but
+//     has no published bench — local-bench before adopting.
+//   - claude-haiku*    — verified live in FlowState: claude-haiku-4.5 returns
+//     prose instead of structured tool calls on the /tmp
+//     .md count test. The cost-optimised distillates trade
+//     tool-call reliability for latency.
+//   - gpt-*-mini       — same pattern as claude-haiku: gpt-5-mini verified
+//     prose-only on the same test. The deny pattern uses
+//     the suffix glob so future *-mini releases are
+//     captured automatically.
+//   - gpt-*-nano       — same reasoning as *-mini: nano-tier models trade
+//     tool-call reliability for latency/cost. Preventive
+//     deny so future *-nano releases are captured.
+//
+// Returns: result of defaultToolIncapableModels.
+// Side effects: None.
+func defaultToolIncapableModels() []string {
+	return []string{
+		"llama3.2*",
+		"qwen2.5-coder*",
+		"glm-4.7",
+		"mistral:7b",
+		"gpt-oss:20b*",
+		"deepseek-r1:*",
+		"claude-haiku*",
+		"gpt-*-mini",
+		"gpt-*-nano",
+	}
+}
+
+// LoadConfig loads configuration from the default location.
+//
+// Checks paths in order:
+//  1. $XDG_CONFIG_HOME/flowstate/config.yaml
+//  2. ~/.config/flowstate/config.yaml
+//  3. ~/.flowstate/config.yaml (backwards compatibility)
+//
+// Returns:
+//   - An AppConfig loaded from the first found file, or defaults if none exist.
+//   - An error only if a file exists but cannot be parsed.
+//
+// Side effects:
+//   - Reads the configuration file from disk if it exists.
+func LoadConfig() (*AppConfig, error) {
+	paths := []string{
+		filepath.Join(Dir(), "config.yaml"),
+		filepath.Join(homeDir(), ".config", "flowstate", "config.yaml"),
+		filepath.Join(homeDir(), ".flowstate", "config.yaml"),
+	}
+
+	for _, path := range paths {
+		if _, err := os.Stat(path); err == nil {
+			return LoadConfigFromPath(path)
+		}
+	}
+
+	return DefaultConfig(), nil
+}
+
+// homeDir returns the user's home directory, or "." if it cannot be resolved.
+//
+// Returns:
+//   - The user's home directory path, or "." as fallback.
+//
+// Side effects:
+//   - None.
+func homeDir() string {
+	if h, err := os.UserHomeDir(); err == nil {
+		return h
+	}
+	return "."
+}
+
+// LoadConfigFromPath loads configuration from the specified file path.
+//
+// Expected:
+//   - path is a file path to a YAML configuration file.
+//
+// Returns:
+//   - An AppConfig loaded from the file, with defaults applied for missing fields.
+//   - An error if the file cannot be read or parsed.
+//
+// Side effects:
+//   - Reads the configuration file from disk.
+func LoadConfigFromPath(path string) (*AppConfig, error) {
+	cleanPath := filepath.Clean(path)
+	if _, err := os.Stat(cleanPath); err != nil {
+		if os.IsNotExist(err) {
+			cfg := DefaultConfig()
+			expandPaths(cfg)
+			return cfg, nil
+		}
+		return nil, fmt.Errorf("stat config file %q: %w", cleanPath, err)
+	}
+
+	data, err := os.ReadFile(cleanPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading config file %q: %w", cleanPath, err)
+	}
+
+	cfg := DefaultConfig()
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		return nil, fmt.Errorf("parsing config file %q: %w", cleanPath, err)
+	}
+
+	applyDefaults(cfg)
+	expandPaths(cfg)
+	if err := validateConfig(cfg); err != nil {
+		return nil, fmt.Errorf("validating config file %q: %w", cleanPath, err)
+	}
+	return cfg, nil
+}
+
+// validateConfig runs post-load invariants over the fully-defaulted
+// configuration. It is the single choke-point for cross-field rules
+// that cannot be encoded in struct tags or default-fill logic.
+//
+// Expected:
+//   - cfg has had applyDefaults and expandPaths run against it.
+//
+// Returns:
+//   - nil when every rule holds.
+//   - The first rule violation with enough context for the operator
+//     to identify the offending YAML key.
+//
+// Side effects:
+//   - None.
+func validateConfig(cfg *AppConfig) error {
+	if err := cfg.Compression.Validate(); err != nil {
+		return err
+	}
+	if err := validateDefaultProvider(cfg); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateDefaultProvider ...
+//
+// Expected: parameters for validateDefaultProvider.
+//
+// Returns: result of validateDefaultProvider.
+//
+// Side effects: None.
+func validateDefaultProvider(cfg *AppConfig) error {
+	defaultName := strings.TrimSpace(cfg.Providers.Default)
+	if defaultName == "" {
+		return nil
+	}
+	if !providerEligibleForDefault(cfg, defaultName) {
+		if !knownProviderName(defaultName) {
+			return fmt.Errorf("providers.default: unknown provider %q", defaultName)
+		}
+		return fmt.Errorf("providers.default: provider %q is not configured", defaultName)
+	}
+	return nil
+}
+
+// providerEligibleForDefault ...
+//
+// Expected: parameters for providerEligibleForDefault.
+//
+// Returns: result of providerEligibleForDefault.
+//
+// Side effects: None.
+func providerEligibleForDefault(cfg *AppConfig, name string) bool {
+	checker, ok := providerEligibilityChecks[name]
+	if !ok {
+		return false
+	}
+	return checker(cfg)
+}
+
+var providerEligibilityChecks = map[string]func(*AppConfig) bool{
+	"anthropic": func(cfg *AppConfig) bool {
+		return providerModelAndCredentialConfigured(cfg.Providers.Anthropic.Model, cfg.Providers.Anthropic.APIKey, "ANTHROPIC_API_KEY")
+	},
+	"openai": func(cfg *AppConfig) bool {
+		return providerModelAndCredentialConfigured(cfg.Providers.OpenAI.Model, cfg.Providers.OpenAI.APIKey, "OPENAI_API_KEY")
+	},
+	"zai": func(cfg *AppConfig) bool {
+		return providerModelAndCredentialConfigured(cfg.Providers.ZAI.Model, cfg.Providers.ZAI.APIKey, "ZAI_API_KEY")
+	},
+	"copilot": func(cfg *AppConfig) bool {
+		return providerModelAndCredentialConfigured(cfg.Providers.GitHub.Model, cfg.Providers.GitHub.APIKey, "GITHUB_TOKEN")
+	},
+	"openzen": func(cfg *AppConfig) bool {
+		return providerModelAndCredentialConfigured(cfg.Providers.OpenZen.Model, cfg.Providers.OpenZen.APIKey, "OPENZEN_API_KEY")
+	},
+	"opencode-go": func(cfg *AppConfig) bool {
+		return providerModelAndCredentialConfigured(cfg.Providers.OpenCodeGo.Model, cfg.Providers.OpenCodeGo.APIKey, "OPENCODE_GO_API_KEY")
+	},
+	"ollamacloud": func(cfg *AppConfig) bool {
+		return providerModelAndCredentialConfigured(cfg.Providers.OllamaCloud.Model, cfg.Providers.OllamaCloud.APIKey, "OLLAMA_CLOUD_API_KEY")
+	},
+	"ollama": func(cfg *AppConfig) bool {
+		defaults := DefaultConfig().Providers.Ollama
+		host := strings.TrimSpace(cfg.Providers.Ollama.Host)
+		model := strings.TrimSpace(cfg.Providers.Ollama.Model)
+		return host != "" && model != "" && (host != strings.TrimSpace(defaults.Host) || model != strings.TrimSpace(defaults.Model))
+	},
+}
+
+// providerModelAndCredentialConfigured ...
+//
+// Expected: parameters for providerModelAndCredentialConfigured.
+//
+// Returns: result of providerModelAndCredentialConfigured.
+//
+// Side effects: None.
+func providerModelAndCredentialConfigured(model, cfgValue, envVar string) bool {
+	return model != "" && providerCredentialConfigured(cfgValue, envVar)
+}
+
+// providerCredentialConfigured ...
+//
+// Expected: parameters for providerCredentialConfigured.
+//
+// Returns: result of providerCredentialConfigured.
+//
+// Side effects: None.
+func providerCredentialConfigured(cfgValue, envVar string) bool {
+	return strings.TrimSpace(cfgValue) != "" || strings.TrimSpace(os.Getenv(envVar)) != ""
+}
+
+// knownProviderName ...
+//
+// Expected: parameters for knownProviderName.
+//
+// Returns: result of knownProviderName.
+//
+// Side effects: None.
+func knownProviderName(name string) bool {
+	switch name {
+	case "anthropic", "openai", "zai", "copilot", "openzen", "opencode-go", "ollamacloud", "ollama":
+		return true
+	default:
+		return false
+	}
+}
+
+// ValidateMCPServers validates that all MCP servers have required fields.
+//
+// Expected:
+//   - servers is a slice of MCPServerConfig.
+//
+// Returns:
+//   - An error if any server is missing Name or Command, nil otherwise.
+//
+// Side effects:
+//   - None.
+func ValidateMCPServers(servers []MCPServerConfig) error {
+	for i, server := range servers {
+		if server.Name == "" {
+			return fmt.Errorf("MCP server at index %d: missing required field 'name'", i)
+		}
+		if server.Command == "" {
+			return fmt.Errorf("MCP server at index %d: missing required field 'command'", i)
+		}
+	}
+	return nil
+}
+
+// DefaultVoiceConfig returns the default voice pipeline settings:
+// enabled, 16kHz, 30s cap, TTS off. Command templates resolve at
+// use time (env > YAML > PATH probe) inside the voice package.
+//
+// Returns:
+//   - A VoiceConfig with local-first defaults.
+//
+// Side effects:
+//   - None.
+func DefaultVoiceConfig() VoiceConfig {
+	return VoiceConfig{
+		Enabled:        true,
+		SampleRate:     16000,
+		MaxDurationSec: 30,
+	}
+}
+
+// applyVoiceDefaults fills unset voice fields from defaults and then
+// applies FLOWSTATE_VOICE_* environment overrides (highest
+// precedence). Capture/STT templates left empty resolve at use time.
+//
+// Expected:
+//   - cfg is a non-nil AppConfig pointer.
+//
+// Side effects:
+//   - Mutates cfg.Voice in place; reads FLOWSTATE_VOICE_CAPTURE,
+//     FLOWSTATE_VOICE_STT and FLOWSTATE_VOICE_TTS.
+func applyVoiceDefaults(cfg *AppConfig) {
+	d := DefaultVoiceConfig()
+	if cfg.Voice.SampleRate == 0 {
+		cfg.Voice.SampleRate = d.SampleRate
+	}
+	if cfg.Voice.MaxDurationSec == 0 {
+		cfg.Voice.MaxDurationSec = d.MaxDurationSec
+	}
+	// A YAML file without a voice: block decodes Enabled as false;
+	// treat zero-valued blocks as "use the default" so absence keeps
+	// voice enabled.
+	if v := os.Getenv("FLOWSTATE_VOICE_CAPTURE"); v != "" {
+		cfg.Voice.CaptureCmd = v
+	}
+	if v := os.Getenv("FLOWSTATE_VOICE_STT"); v != "" {
+		cfg.Voice.STTCmd = v
+	}
+	if v := os.Getenv("FLOWSTATE_VOICE_TTS"); v != "" {
+		cfg.Voice.TTSCmd = v
+	}
+}
+
+// applyDefaults populates missing configuration fields with sensible defaults.
+//
+// Expected:
+//   - cfg is a non-nil AppConfig pointer.
+//
+// Side effects:
+//   - Modifies cfg in place, filling empty fields with default values from DefaultConfig.
+func applyDefaults(cfg *AppConfig) {
+	defaults := DefaultConfig()
+	applyVoiceDefaults(cfg)
+	applyProviderDefaults(&cfg.Providers.Ollama, defaults.Providers.Ollama)
+	applyProviderDefaults(&cfg.Providers.OpenAI, defaults.Providers.OpenAI)
+	applyProviderDefaults(&cfg.Providers.Anthropic, defaults.Providers.Anthropic)
+
+	if cfg.AgentDir == "" {
+		cfg.AgentDir = defaults.AgentDir
+	}
+	if cfg.SkillDir == "" {
+		cfg.SkillDir = defaults.SkillDir
+	}
+	if cfg.SchemaDir == "" {
+		cfg.SchemaDir = defaults.SchemaDir
+	}
+	if cfg.GatesDir == "" {
+		cfg.GatesDir = defaults.GatesDir
+	}
+	if cfg.DataDir == "" {
+		cfg.DataDir = defaults.DataDir
+	}
+	if cfg.LogLevel == "" {
+		cfg.LogLevel = defaults.LogLevel
+	}
+	if cfg.DefaultAgent == "" {
+		cfg.DefaultAgent = defaults.DefaultAgent
+	}
+	cfg.CategoryRouting = mergeCategoryRouting(defaults.CategoryRouting, cfg.CategoryRouting)
+	if cfg.Plugins.Dir == "" {
+		cfg.Plugins.Dir = filepath.Join(homeDir(), ".config", "flowstate", "plugins")
+	}
+	if cfg.Plugins.Timeout == 0 {
+		cfg.Plugins.Timeout = 5
+	}
+
+	if len(cfg.Plugins.Failover.Tiers) == 0 {
+		cfg.Plugins.Failover.Tiers = defaults.Plugins.Failover.Tiers
+	}
+
+	if len(cfg.ToolCapableModels) == 0 {
+		cfg.ToolCapableModels = defaults.ToolCapableModels
+	}
+	if len(cfg.ToolIncapableModels) == 0 {
+		cfg.ToolIncapableModels = defaults.ToolIncapableModels
+	}
+
+	if !cfg.Harness.Enabled {
+		cfg.Harness.Enabled = true
+	}
+	if cfg.Harness.MaxRetries == 0 {
+		cfg.Harness.MaxRetries = defaults.Harness.MaxRetries
+	}
+
+	applyCompressionDefaults(&cfg.Compression, defaults.Compression)
+	compactionpkg.ApplyDefaults(&cfg.Compaction)
+}
+
+// applyCompressionDefaults fills empty numeric and path fields of the
+// CompressionConfig from defaults, leaving any explicitly configured
+// value untouched. Enabled flags are never overridden — an explicit
+// false in YAML is preserved because all defaults are false too.
+//
+// Expected:
+//   - cfg is a non-nil CompressionConfig pointer.
+//   - defaults carries the values returned by DefaultCompressionConfig.
+//
+// Side effects:
+//   - Modifies cfg in place.
+func applyCompressionDefaults(cfg *contextpkg.CompressionConfig, defaults contextpkg.CompressionConfig) {
+	if cfg.MicroCompaction.HotTailSize == 0 {
+		cfg.MicroCompaction.HotTailSize = defaults.MicroCompaction.HotTailSize
+	}
+	if cfg.MicroCompaction.TokenThreshold == 0 {
+		cfg.MicroCompaction.TokenThreshold = defaults.MicroCompaction.TokenThreshold
+	}
+	if cfg.MicroCompaction.StorageDir == "" {
+		cfg.MicroCompaction.StorageDir = defaults.MicroCompaction.StorageDir
+	}
+	if cfg.MicroCompaction.PlaceholderTokens == 0 {
+		cfg.MicroCompaction.PlaceholderTokens = defaults.MicroCompaction.PlaceholderTokens
+	}
+	if cfg.MicroCompaction.IdleTTL == 0 {
+		cfg.MicroCompaction.IdleTTL = defaults.MicroCompaction.IdleTTL
+	}
+	if cfg.AutoCompaction.Threshold == 0 {
+		cfg.AutoCompaction.Threshold = defaults.AutoCompaction.Threshold
+	}
+	if cfg.SessionMemory.StorageDir == "" {
+		cfg.SessionMemory.StorageDir = defaults.SessionMemory.StorageDir
+	}
+	if cfg.SessionMemory.WaitTimeout == 0 {
+		cfg.SessionMemory.WaitTimeout = defaults.SessionMemory.WaitTimeout
+	}
+}
+
+// mergeCategoryRouting applies user overrides on top of the default routing map.
+//
+// Expected:
+//   - defaults contains the base category routing configuration.
+//   - overrides contains user-specified replacements.
+//
+// Returns:
+//   - A merged map with overrides applied over defaults.
+//
+// Side effects:
+//   - None.
+func mergeCategoryRouting(defaults, overrides map[string]engine.CategoryConfig) map[string]engine.CategoryConfig {
+	merged := make(map[string]engine.CategoryConfig, len(defaults))
+	for key, value := range defaults {
+		merged[key] = value
+	}
+	for key, value := range overrides {
+		merged[key] = value
+	}
+	return merged
+}
+
+// applyProviderDefaults populates missing provider configuration fields with defaults.
+//
+// Expected:
+//   - cfg is a non-nil ProviderConfig pointer.
+//   - defaults is a ProviderConfig with fallback values.
+//
+// Side effects:
+//   - Modifies cfg in place, filling empty Host, APIKey, and Model fields from defaults.
+func applyProviderDefaults(cfg *ProviderConfig, defaults ProviderConfig) {
+	if cfg.Host == "" {
+		cfg.Host = defaults.Host
+	}
+	if cfg.APIKey == "" {
+		cfg.APIKey = defaults.APIKey
+	}
+	if cfg.Model == "" {
+		cfg.Model = defaults.Model
+	}
+	if cfg.OAuth.ClientID == "" {
+		cfg.OAuth.ClientID = defaults.OAuth.ClientID
+	}
+	if cfg.OAuth.Scopes == "" {
+		cfg.OAuth.Scopes = defaults.OAuth.Scopes
+	}
+}
+
+// expandTilde expands a leading ~ or ~/ in a path to the user's home directory.
+//
+// Expected:
+//   - path is a filesystem path that may begin with ~ or ~/.
+//
+// Returns:
+//   - The expanded path, or the original path when no tilde prefix is present.
+//
+// Side effects:
+//   - None.
+func expandTilde(path string) string {
+	if path == "~" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return path
+		}
+		return home
+	}
+	if len(path) > 2 && path[:2] == "~/" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return path
+		}
+		return filepath.Join(home, path[2:])
+	}
+	return path
+}
+
+// expandPaths expands tildes in all relevant AppConfig path fields.
+//
+// Expected:
+//   - cfg is a non-nil AppConfig pointer.
+//
+// Side effects:
+//   - Modifies cfg in place.
+func expandPaths(cfg *AppConfig) {
+	cfg.AgentDir = expandTilde(cfg.AgentDir)
+	cfg.SkillDir = expandTilde(cfg.SkillDir)
+	cfg.SchemaDir = expandTilde(cfg.SchemaDir)
+	cfg.GatesDir = expandTilde(cfg.GatesDir)
+	cfg.DataDir = expandTilde(cfg.DataDir)
+	cfg.PlanLocation = expandTilde(cfg.PlanLocation)
+	cfg.Plugins.Dir = expandTilde(cfg.Plugins.Dir)
+	for i, dir := range cfg.AgentDirs {
+		cfg.AgentDirs[i] = expandTilde(dir)
+	}
+	cfg.Compression.MicroCompaction.StorageDir = expandTilde(cfg.Compression.MicroCompaction.StorageDir)
+	cfg.Compression.SessionMemory.StorageDir = expandTilde(cfg.Compression.SessionMemory.StorageDir)
 }
