@@ -180,3 +180,93 @@ func buildCaptureArgs(template, file string) ([]string, error) {
 	}
 	return fields, nil
 }
+
+// ActiveRecording is a capture started in the background whose audio
+// continues until Stop is called — the push-to-talk primitive the
+// `flowstate talk` CLI drives with two keypresses.
+type ActiveRecording struct {
+	// Path is the temp WAV the capture command writes into.
+	Path string
+	// maxDuration bounds the recording when Stop never arrives.
+	maxDuration time.Duration
+	cmd         *exec.Cmd
+	cancel      context.CancelFunc
+	done        chan error
+	stopped     bool
+}
+
+// StartRecording spawns the capture command immediately and returns
+// without waiting for it to finish. The caller ends the recording
+// with Stop (second keypress) or lets maxDuration elapse.
+//
+// Expected:
+//   - ctx is non-nil; cancellation kills the child process.
+//   - c is configured with a non-empty Command.
+//
+// Returns:
+//   - An *ActiveRecording whose WAV grows until Stop.
+//   - ErrCaptureUnavailable when no command is configured.
+//   - An error when temp file creation or process spawn fails.
+//
+// Side effects:
+//   - Creates a 0600 temporary WAV and spawns the capture binary.
+func (c *CaptureTool) StartRecording(ctx context.Context) (*ActiveRecording, error) {
+	if c == nil || c.Command == "" {
+		return nil, ErrCaptureUnavailable
+	}
+	f, err := os.CreateTemp("", "flowstate-voice-*.wav")
+	if err != nil {
+		return nil, fmt.Errorf("voice: create temp wav: %w", err)
+	}
+	path := f.Name()
+	if err := f.Close(); err != nil {
+		return nil, fmt.Errorf("voice: close temp wav: %w", err)
+	}
+	args, err := buildCaptureArgs(c.Command, path)
+	if err != nil {
+		_ = os.Remove(path)
+		return nil, err
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, c.MaxDuration+2*time.Second)
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	done := make(chan error, 1)
+	if err := cmd.Start(); err != nil {
+		cancel()
+		_ = os.Remove(path)
+		if errors.Is(err, exec.ErrNotFound) {
+			return nil, fmt.Errorf("%w: %s: %w", ErrCaptureUnavailable, args[0], err)
+		}
+		return nil, fmt.Errorf("voice: start capture command %q: %w", args[0], err)
+	}
+	go func() { done <- cmd.Wait() }()
+	return &ActiveRecording{Path: path, cmd: cmd, cancel: cancel, done: done, maxDuration: c.MaxDuration}, nil
+}
+
+// Stop terminates the background capture and finalises the WAV.
+//
+// Expected:
+//   - Called at most once; safe on a nil receiver.
+//
+// Returns:
+//   - A *Recording wrapping the captured WAV; the caller MUST call
+//     its Cleanup.
+//   - An error when the capture process failed before stopping.
+//
+// Side effects:
+//   - Kills the capture process and cancels its context.
+func (a *ActiveRecording) Stop() (*Recording, error) {
+	if a == nil || a.stopped {
+		return nil, errors.New("voice: recording already stopped")
+	}
+	a.stopped = true
+	if a.cmd.Process != nil {
+		_ = a.cmd.Process.Signal(os.Interrupt)
+	}
+	waitErr := <-a.done
+	a.cancel()
+	if waitErr != nil && a.cmd.ProcessState != nil && a.cmd.ProcessState.ExitCode() != -1 {
+		return &Recording{Path: a.Path}, fmt.Errorf("voice: capture exited non-zero: %w", waitErr)
+	}
+	return &Recording{Path: a.Path, Duration: a.maxDuration}, nil
+}
