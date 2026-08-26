@@ -30,6 +30,9 @@ func getOptions() *godog.Options {
 	} else {
 		opts.Tags = defaultTagFilter
 	}
+	if f := os.Getenv("GODOG_FORMAT"); f != "" {
+		opts.Format = f
+	}
 	return opts
 }
 
