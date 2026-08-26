@@ -15,7 +15,17 @@ import (
 func newFSPollutionHarness(t *testing.T, homeDir string) (GateRunner, string) {
 	t.Helper()
 	root := t.TempDir()
-	return NewFSPollutionRunner(root, []string{"vaults/baphled", filepath.Join(homeDir, "vaults", "baphled")}), root
+	return newFSPollutionHarnessWithRole(t, homeDir, "kb-curator"), root
+}
+
+// newFSPollutionHarnessWithRole builds a harness whose worker member
+// is attested in the manifest profile for the given role.
+func newFSPollutionHarnessWithRole(t *testing.T, homeDir, role string) GateRunner {
+	t.Helper()
+	root := t.TempDir()
+	return NewFSPollutionRunnerWithProfiles(root, []string{"vaults/baphled", filepath.Join(homeDir, "vaults", "baphled")}, map[string]FSPollutionMemberProfile{
+		"worker": {Role: role, ContentTypes: []string{"source", "vault"}},
+	})
 }
 
 func fsPollutionGate() GateSpec {
@@ -78,7 +88,9 @@ func TestFSPollutionGateRejectsScratchWrite(t *testing.T) {
 
 func TestFSPollutionGatePassesWorktreeSource(t *testing.T) {
 	root := t.TempDir()
-	runner := NewFSPollutionRunner(root, nil)
+	runner := NewFSPollutionRunnerWithProfiles(root, nil, map[string]FSPollutionMemberProfile{
+		"worker": {Role: "junior", ContentTypes: []string{"source"}},
+	})
 	payload := `{"writes":[{"path":"internal/swarm/gates.go","content_type":"source","role":"junior"}]}`
 	if err := runner.Run(context.Background(), fsPollutionGate(), fsArgs(fsCoordStore{payload: payload})); err != nil {
 		t.Fatalf("worktree source write should pass, got: %v", err)
@@ -202,7 +214,9 @@ func TestFSPollutionGateEmptyPathFails(t *testing.T) {
 func TestFSPollutionGateRelativeVaultRoot(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
-	runner := NewFSPollutionRunner(t.TempDir(), []string{"vaults/baphled"})
+	runner := NewFSPollutionRunnerWithProfiles(t.TempDir(), []string{"vaults/baphled"}, map[string]FSPollutionMemberProfile{
+		"worker": {Role: "kb-curator", ContentTypes: []string{"vault"}},
+	})
 	vaultPath := filepath.Join(homeDir, "vaults", "baphled", "kb", "note.md")
 	payload := `{"writes":[{"path":` + quoteJSON(vaultPath) + `,"content_type":"vault","role":"kb-curator"}]}`
 	if err := runner.Run(context.Background(), fsPollutionGate(), fsArgs(fsCoordStore{payload: payload})); err != nil {
@@ -238,7 +252,9 @@ func TestPreCommitPollutionCheck(t *testing.T) {
 
 func TestFSPollutionGateVaultPathOutsideRootsFails(t *testing.T) {
 	homeDir := t.TempDir()
-	runner := NewFSPollutionRunner(t.TempDir(), []string{"vaults/baphled"})
+	runner := NewFSPollutionRunnerWithProfiles(t.TempDir(), []string{"vaults/baphled"}, map[string]FSPollutionMemberProfile{
+		"worker": {Role: "kb-curator", ContentTypes: []string{"vault"}},
+	})
 	outside := filepath.Join(homeDir, "elsewhere", "notes.md")
 	payload := `{"writes":[{"path":` + quoteJSON(outside) + `,"content_type":"vault","role":"kb-curator"}]}`
 	if err := runner.Run(context.Background(), fsPollutionGate(), fsArgs(fsCoordStore{payload: payload})); err == nil {
@@ -316,5 +332,66 @@ func TestResolveSymlinkAncestry(t *testing.T) {
 	want = filepath.Join(dir, "missing", "tail.md")
 	if got != want {
 		t.Fatalf("non-existent ancestor should rejoin remainder: got %s want %s", got, want)
+	}
+}
+
+// TestFSPollutionGateRejectsManifestContradiction verifies ADR-0001
+// gap 1: a self-declared role that contradicts the manifest-declared
+// role fails closed as an unattested declaration.
+func TestFSPollutionGateRejectsManifestContradiction(t *testing.T) {
+	homeDir := t.TempDir()
+	runner, _ := newFSPollutionHarness(t, homeDir)
+	manifests := map[string]FSPollutionMemberProfile{"worker": {Role: "junior", ContentTypes: []string{"source"}}}
+	runner.(*fsPollutionRunner).profiles = manifests
+	vaultPath := filepath.Join(homeDir, "vaults", "baphled", "notes.md")
+	payload := `{"writes":[{"path":` + quoteJSON(vaultPath) + `,"content_type":"vault","role":"kb-curator"}]}`
+	err := runner.Run(context.Background(), fsPollutionGate(), fsArgs(fsCoordStore{payload: payload}))
+	if err == nil {
+		t.Fatal("declaration contradicting the manifest must fail closed")
+	}
+	if !strings.Contains(err.Error(), "manifest") {
+		t.Fatalf("violation should name the manifest mismatch, got: %v", err)
+	}
+}
+
+// TestFSPollutionGateRejectsUnknownContentType verifies an unknown
+// content_type fails closed rather than defaulting to sanctioned.
+func TestFSPollutionGateRejectsUnknownContentType(t *testing.T) {
+	homeDir := t.TempDir()
+	runner, _ := newFSPollutionHarness(t, homeDir)
+	manifests := map[string]FSPollutionMemberProfile{"worker": {Role: "junior", ContentTypes: []string{"source"}}}
+	runner.(*fsPollutionRunner).profiles = manifests
+	payload := `{"writes":[{"path":"internal/swarm/gates.go","content_type":"knowledge-base","role":"junior"}]}`
+	err := runner.Run(context.Background(), fsPollutionGate(), fsArgs(fsCoordStore{payload: payload}))
+	if err == nil {
+		t.Fatal("content_type not in the manifest output profile must fail closed")
+	}
+}
+
+// TestFSPollutionGateRejectsUnknownMember verifies a report from a
+// member absent from the manifest fails closed.
+func TestFSPollutionGateRejectsUnknownMember(t *testing.T) {
+	runner := NewFSPollutionRunnerWithProfiles(t.TempDir(), nil, map[string]FSPollutionMemberProfile{
+		"worker": {Role: "junior", ContentTypes: []string{"source"}},
+	})
+	payload := `{"writes":[{"path":"internal/swarm/gates.go","content_type":"source","role":"junior"}]}`
+	err := runner.Run(context.Background(), fsPollutionGate(), GateArgs{SwarmID: "s", MemberID: "ghost", CoordStore: fsCoordStore{payload: payload}})
+	if err == nil {
+		t.Fatal("write from a member with no manifest entry must fail closed")
+	}
+}
+
+// TestFSPollutionGateProfiledMemberPasses verifies a declaration
+// consistent with the manifest passes.
+func TestFSPollutionGateProfiledMemberPasses(t *testing.T) {
+	homeDir := t.TempDir()
+	runner := NewFSPollutionRunnerWithProfiles(t.TempDir(), nil, map[string]FSPollutionMemberProfile{
+		"worker": {Role: "kb-curator", ContentTypes: []string{"source", "vault"}},
+	})
+	runner.(*fsPollutionRunner).vaultRoots = []string{filepath.Join(homeDir, "vaults", "baphled")}
+	vaultPath := filepath.Join(homeDir, "vaults", "baphled", "notes.md")
+	payload := `{"writes":[{"path":` + quoteJSON(vaultPath) + `,"content_type":"vault","role":"kb-curator"}]}`
+	if err := runner.Run(context.Background(), fsPollutionGate(), fsArgs(fsCoordStore{payload: payload})); err != nil {
+		t.Fatalf("manifest-consistent declaration should pass, got: %v", err)
 	}
 }

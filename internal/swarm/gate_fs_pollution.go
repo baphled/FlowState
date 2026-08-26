@@ -41,6 +41,18 @@ type fsWrite struct {
 	Role        string `json:"role"`
 }
 
+// FSPollutionMemberProfile is the manifest-declared authority record
+// for one swarm member: its role and the content types its output
+// profile sanctions. The manifest is the sole authority; a report
+// that contradicts it fails closed per ADR-0001 gap 1.
+type FSPollutionMemberProfile struct {
+	// Role is the manifest-declared member role (e.g. "kb-curator").
+	Role string
+	// ContentTypes lists the content types the member's manifest
+	// output profile sanctions (e.g. "source", "vault").
+	ContentTypes []string
+}
+
 // fsPollutionRunner implements GateRunner for kind:
 // "builtin:fs-pollution-guard". It enforces that swarm members never
 // persist coordination or scratch data to the filesystem — inter-agent
@@ -54,6 +66,7 @@ type fsWrite struct {
 type fsPollutionRunner struct {
 	repoRoot   string
 	vaultRoots []string
+	profiles   map[string]FSPollutionMemberProfile
 }
 
 // NewFSPollutionRunner returns the production fs-pollution-guard
@@ -74,6 +87,26 @@ type fsPollutionRunner struct {
 // Side effects:
 //   - On nil/empty repoRoot, calls os.Getwd at construction.
 func NewFSPollutionRunner(repoRoot string, vaultRoots []string) GateRunner {
+	return NewFSPollutionRunnerWithProfiles(repoRoot, vaultRoots, nil)
+}
+
+// NewFSPollutionRunnerWithProfiles returns an fs-pollution-guard
+// runner whose role and content-type authority is the supplied
+// member-profile map keyed by member id. A nil map means no members
+// are attested, so every reported write fails closed (ADR-0001 gap
+// 1: unknown declarations are unsanctioned).
+//
+// Expected:
+//   - repoRoot is the absolute worktree path (may be empty for CWD).
+//   - vaultRoots lists sanctioned out-of-repo write roots.
+//   - profiles maps member ids to their manifest profiles.
+//
+// Returns:
+//   - A GateRunner enforcing manifest-based type authority.
+//
+// Side effects:
+//   - On nil/empty repoRoot, calls os.Getwd at construction.
+func NewFSPollutionRunnerWithProfiles(repoRoot string, vaultRoots []string, profiles map[string]FSPollutionMemberProfile) GateRunner {
 	if repoRoot == "" {
 		if cwd, err := os.Getwd(); err == nil {
 			repoRoot = cwd
@@ -85,6 +118,7 @@ func NewFSPollutionRunner(repoRoot string, vaultRoots []string) GateRunner {
 	return &fsPollutionRunner{
 		repoRoot:   repoRoot,
 		vaultRoots: vaultRoots,
+		profiles:   profiles,
 	}
 }
 
@@ -120,7 +154,7 @@ func (r *fsPollutionRunner) Run(_ context.Context, gate GateSpec, args GateArgs)
 		return newGateFailure(gate, args, "decoding fs-write report: "+err.Error(), err)
 	}
 
-	violations := r.checkWrites(doc.Writes)
+	violations := r.checkWrites(args.MemberID, doc.Writes)
 	if len(violations) == 0 {
 		return nil
 	}
@@ -251,6 +285,34 @@ func resolveSymlinkAncestry(p string) string {
 	}
 }
 
+// manifestDeclarationMismatch compares a self-declared write against
+// the member's manifest profile, the sole authority for role and
+// content_type per ADR-0001 gap 1. Unknown or contradictory
+// declarations fail closed with a reason naming the mismatch.
+//
+// Expected:
+//   - profile is the manifest-declared member profile.
+//   - w is the member's self-reported write.
+//
+// Returns:
+//   - "" when the declaration is consistent; otherwise a reason
+//     naming the contradiction.
+//
+// Side effects:
+//   - None.
+func manifestDeclarationMismatch(profile FSPollutionMemberProfile, w fsWrite) string {
+	if !strings.EqualFold(w.Role, profile.Role) {
+		return fmt.Sprintf("declared role %q, manifest declares %q", w.Role, profile.Role)
+	}
+	declared := strings.ToLower(w.ContentType)
+	for _, ct := range profile.ContentTypes {
+		if strings.ToLower(ct) == declared {
+			return ""
+		}
+	}
+	return fmt.Sprintf("declared content_type %q not in manifest output profile", w.ContentType)
+}
+
 // checkWrites walks every reported write and collects violations,
 // resolving each path against the process CWD when relative.
 //
@@ -262,7 +324,8 @@ func resolveSymlinkAncestry(p string) string {
 //
 // Side effects:
 //   - None.
-func (r *fsPollutionRunner) checkWrites(writes []fsWrite) []fsWrite {
+func (r *fsPollutionRunner) checkWrites(memberID string, writes []fsWrite) []fsWrite {
+	profile, attested := r.profiles[memberID]
 	var out []fsWrite
 	for _, w := range writes {
 		if w.Path == "" {
@@ -272,12 +335,20 @@ func (r *fsPollutionRunner) checkWrites(writes []fsWrite) []fsWrite {
 			out = append(out, w)
 			continue
 		}
+		if !attested {
+			out = append(out, fsWrite{Path: w.Path, ContentType: w.ContentType, Role: w.Role})
+			continue
+		}
+		if mismatch := manifestDeclarationMismatch(profile, w); mismatch != "" {
+			out = append(out, fsWrite{Path: w.Path, ContentType: w.ContentType, Role: w.Role + "; manifest mismatch: " + mismatch})
+			continue
+		}
 		resolved := w.Path
 		if !filepath.IsAbs(resolved) {
 			resolved = filepath.Join(r.repoRoot, resolved)
 		}
 		resolved = resolveSymlinkAncestry(filepath.Clean(resolved))
-		if !r.isSanctioned(resolved, strings.ToLower(w.ContentType), strings.ToLower(w.Role)) {
+		if !r.isSanctioned(resolved, strings.ToLower(w.ContentType), strings.ToLower(profile.Role)) {
 			out = append(out, w)
 		}
 	}
