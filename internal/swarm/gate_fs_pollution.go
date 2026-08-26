@@ -216,6 +216,41 @@ func expandVaultRoot(root string) string {
 	return root
 }
 
+// resolveSymlinkAncestry resolves p through filepath.EvalSymlinks on
+// its deepest existing ancestor, re-joining the non-existent tail.
+// EvalSymlinks errors on missing final components, so the ancestor is
+// walked up until it exists (or the path is exhausted) and the
+// remainder re-attached. This closes the symlink-laundering gap from
+// ADR-0001: containment is checked against the real target
+// location, never a lexical path that merely looks sanctioned.
+//
+// Expected:
+//   - p is an absolute, cleaned filesystem path.
+//
+// Returns:
+//   - The symlink-resolved path; p unchanged when no ancestor exists
+//     or resolution fails (fail closed to the lexical path, which the
+//     containment check then evaluates as-is).
+//
+// Side effects:
+//   - Stat/EvalSymlinks syscalls per ancestor level.
+func resolveSymlinkAncestry(p string) string {
+	current := p
+	var tail []string
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			return filepath.Join(append([]string{resolved}, tail...)...)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return p
+		}
+		tail = append([]string{filepath.Base(current)}, tail...)
+		current = parent
+	}
+}
+
 // checkWrites walks every reported write and collects violations,
 // resolving each path against the process CWD when relative.
 //
@@ -241,7 +276,7 @@ func (r *fsPollutionRunner) checkWrites(writes []fsWrite) []fsWrite {
 		if !filepath.IsAbs(resolved) {
 			resolved = filepath.Join(r.repoRoot, resolved)
 		}
-		resolved = filepath.Clean(resolved)
+		resolved = resolveSymlinkAncestry(filepath.Clean(resolved))
 		if !r.isSanctioned(resolved, strings.ToLower(w.ContentType), strings.ToLower(w.Role)) {
 			out = append(out, w)
 		}

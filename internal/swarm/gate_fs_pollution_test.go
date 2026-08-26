@@ -258,3 +258,63 @@ func TestFSNameMatchesPollution(t *testing.T) {
 		}
 	}
 }
+
+// TestFSPollutionGateFlagsSymlinkInsideRepoPointingOutside verifies
+// ADR-0001 gap 3: a reported path that sits lexically inside the
+// repo root but passes through a symlink to a directory outside it
+// must be resolved before the containment check and rejected.
+func TestFSPollutionGateFlagsSymlinkInsideRepoPointingOutside(t *testing.T) {
+	repoRoot := t.TempDir()
+	outside := t.TempDir()
+	target := filepath.Join(outside, "loot.json")
+	if err := os.WriteFile(target, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(repoRoot, "internal")
+	if err := os.Symlink(outside, linkDir); err != nil {
+		t.Fatal(err)
+	}
+	runner := NewFSPollutionRunner(repoRoot, nil)
+	payload := `{"writes":[{"path":` + quoteJSON(filepath.Join(linkDir, "loot.json")) + `,"content_type":"source","role":"junior"}]}`
+	err := runner.Run(context.Background(), fsPollutionGate(), fsArgs(fsCoordStore{payload: payload}))
+	if err == nil {
+		t.Fatal("symlink laundered write resolving outside the repo root must be a violation")
+	}
+}
+
+// TestFSPollutionGateFlagsSymlinkInsideVaultPointingOutside verifies
+// the same laundering against a sanctioned vault root.
+func TestFSPollutionGateFlagsSymlinkInsideVaultPointingOutside(t *testing.T) {
+	homeDir := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(homeDir, "vaults")); err != nil {
+		t.Fatal(err)
+	}
+	runner := NewFSPollutionRunner(t.TempDir(), []string{"vaults/baphled"})
+	laundered := filepath.Join(homeDir, "vaults", "baphled", "note.md")
+	payload := `{"writes":[{"path":` + quoteJSON(laundered) + `,"content_type":"vault","role":"kb-curator"}]}`
+	err := runner.Run(context.Background(), fsPollutionGate(), fsArgs(fsCoordStore{payload: payload}))
+	if err == nil {
+		t.Fatal("symlink laundered vault write resolving outside the vault root must be a violation")
+	}
+}
+
+// TestResolveSymlinkAncestry covers the ancestor-resolution helper:
+// existing paths resolve fully, non-existent tails are re-joined.
+func TestResolveSymlinkAncestry(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	got := resolveSymlinkAncestry(filepath.Join(dir, "link", "new.md"))
+	want := filepath.Join(outside, "new.md")
+	if got != want {
+		t.Fatalf("resolveSymlinkAncestry: got %s want %s", got, want)
+	}
+	got = resolveSymlinkAncestry(filepath.Join(dir, "missing", "tail.md"))
+	want = filepath.Join(dir, "missing", "tail.md")
+	if got != want {
+		t.Fatalf("non-existent ancestor should rejoin remainder: got %s want %s", got, want)
+	}
+}
