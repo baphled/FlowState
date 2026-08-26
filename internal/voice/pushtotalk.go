@@ -3,6 +3,8 @@ package voice
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"time"
 )
 
@@ -37,8 +39,6 @@ type PushToTalkSession struct {
 //
 // Side effects:
 //   - None; subprocesses spawn at Start time.
-//
-//lint:ignore unreachable-func constructed by the features/voice/talk.feature BDD glue (features/support/voice_steps.go).
 func NewPushToTalkSession(capture, stt string, maxDuration time.Duration) *PushToTalkSession {
 	if maxDuration <= 0 {
 		maxDuration = 30 * time.Second
@@ -57,8 +57,6 @@ func NewPushToTalkSession(capture, stt string, maxDuration time.Duration) *PushT
 //
 // Side effects:
 //   - Creates a temporary WAV and spawns the capture binary.
-//
-//lint:ignore unreachable-func driven directly by the features/voice/talk.feature BDD glue (features/support/voice_steps.go).
 func (s *PushToTalkSession) Start(ctx context.Context) error {
 	if s == nil {
 		return errors.New("voice: nil push-to-talk session")
@@ -94,8 +92,6 @@ func (s *PushToTalkSession) Start(ctx context.Context) error {
 //
 // Side effects:
 //   - Kills the capture process and removes the temporary WAV.
-//
-//lint:ignore unreachable-func driven directly by the features/voice/talk.feature BDD glue (features/support/voice_steps.go).
 func (s *PushToTalkSession) StopAndTranscribe(ctx context.Context) (string, error) {
 	if s == nil || s.active == nil {
 		return "", errors.New("voice: no active recording")
@@ -126,8 +122,6 @@ func (s *PushToTalkSession) StopAndTranscribe(ctx context.Context) (string, erro
 //
 // Side effects:
 //   - Stops any active recording and removes its temporary WAV.
-//
-//lint:ignore unreachable-func driven directly by the features/voice/talk.feature BDD glue; guarantees temp WAV cleanup on every exit path.
 func (s *PushToTalkSession) Close() error {
 	if s == nil {
 		return nil
@@ -142,4 +136,45 @@ func (s *PushToTalkSession) Close() error {
 		rec.Cleanup()
 	}
 	return err
+}
+
+// ResolveTurnFallback attempts one voice turn and, when voice is
+// unavailable (capture or STT binary absent), emits the fallback
+// warning to out and falls back to the supplied text-turn reader.
+//
+// Expected:
+//   - ctx is non-nil; out is a non-nil writer; textTurn yields the
+//     fallback turn content (commonly one line from stdin).
+//
+// Returns:
+//   - The transcript from whichever source succeeded.
+//   - The textTurn error when both voice and fallback fail.
+//
+// Side effects:
+//   - Spawns capture/STT subprocesses when voice resolves; writes
+//     the fallback warning to out when it does not.
+func ResolveTurnFallback(ctx context.Context, out io.Writer, textTurn func() (string, error)) (string, error) {
+	pipeline := NewPipeline("", "")
+	capTool, capErr := NewCaptureTool(pipeline.Capture)
+	if capErr == nil {
+		rec, recErr := capTool.Record(ctx, pipeline.MaxDuration)
+		if recErr == nil {
+			defer rec.Cleanup()
+			sttTool, sttErr := NewSTTTool(pipeline.STT)
+			if sttErr == nil {
+				transcript, err := sttTool.Transcribe(ctx, rec.Path)
+				if err == nil {
+					return transcript, nil
+				}
+				fmt.Fprintf(out, "voice unavailable, falling back to text-only mode: %v\n", err)
+				return textTurn()
+			}
+			fmt.Fprintf(out, "voice unavailable, falling back to text-only mode: %v\n", sttErr)
+			return textTurn()
+		}
+		fmt.Fprintf(out, "voice unavailable, falling back to text-only mode: %v\n", recErr)
+		return textTurn()
+	}
+	fmt.Fprintf(out, "voice unavailable, falling back to text-only mode: %v\n", capErr)
+	return textTurn()
 }

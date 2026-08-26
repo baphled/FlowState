@@ -210,8 +210,6 @@ type ActiveRecording struct {
 //
 // Side effects:
 //   - Creates a 0600 temporary WAV and spawns the capture binary.
-//
-//lint:ignore unreachable-func exercised via PushToTalkSession.Start in the features/voice/talk.feature BDD glue (features/support/voice_steps.go).
 func (c *CaptureTool) StartRecording(ctx context.Context) (*ActiveRecording, error) {
 	if c == nil || c.Command == "" {
 		return nil, ErrCaptureUnavailable
@@ -257,8 +255,6 @@ func (c *CaptureTool) StartRecording(ctx context.Context) (*ActiveRecording, err
 //
 // Side effects:
 //   - Kills the capture process and cancels its context.
-//
-//lint:ignore unreachable-func exercised via PushToTalkSession.StopAndTranscribe/Close in the features/voice/talk.feature BDD glue.
 func (a *ActiveRecording) Stop() (*Recording, error) {
 	if a == nil || a.stopped {
 		return nil, errors.New("voice: recording already stopped")
