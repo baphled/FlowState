@@ -26,6 +26,13 @@
 
 set -e
 
+# Merge commits are exempt: a merge combines already-reviewed branches and
+# its diff can reintroduce keyword lines without a paired ADR. The guard
+# targets author-authored changes, not merge mechanics.
+if [ -e "$(git rev-parse --git-dir)/MERGE_HEAD" ]; then
+    exit 0
+fi
+
 KEYWORDS_REGEX='\b(unconditionally|always|bypass)\b'
 ADR_PATH_PREFIX='Documentation/Architecture/ADR/'
 
