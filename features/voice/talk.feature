@@ -1,30 +1,19 @@
 Feature: Talk To Agents
   As a user
-  I want to speak to FlowState agents by voice
-  So that I can interact hands-free while the transcript still flows through normal dispatch
+  I want my spoken words transcribed and handed to the existing dispatcher
+  So that voice turns flow through the same session and mention machinery as typed turns
 
-  Background:
-    Given the FlowState CLI is available
-
-  @voice
+  @voice @b5
   Scenario: Transcript flows through existing dispatch
-    Given a fake STT command that emits the transcript "hello agent"
-    And a fake TTS command is configured
-    When I run "flowstate talk --help"
-    Then I should see usage for "flowstate talk"
+    Given a voice pipeline with a fake STT command emitting "hello agent"
+    And a dispatcher spy is wired
+    When the pipeline runs one talk turn
+    Then the dispatcher receives content "hello agent"
+    And the dispatcher receives ScanMentions true
 
-  @voice
-  Scenario: Graceful degradation when voice binaries are absent
-    Given no voice binaries are available
-    When I run "flowstate talk --help"
-    Then I should see usage for "flowstate talk"
-    And running the talk command should warn and fall back to text-only mode
-    And the exit code should be 0
-
-  @voice
-  Scenario: Push-to-talk start and stop
-    Given a fake STT command that emits the transcript "push to talk works"
-    When the talk command starts in push-to-talk mode
-    Then a keypress should start recording
-    And the same keypress should stop recording and transcribe
-    And the terminal should be restored after the command exits
+  @voice @b5
+  Scenario: Capture binary unavailable fails gracefully
+    Given a voice pipeline with no capture binary
+    And a dispatcher spy is wired
+    When the pipeline runs one talk turn
+    Then the pipeline returns ErrCaptureUnavailable

@@ -151,6 +151,9 @@ func (c *CaptureTool) Record(ctx context.Context, duration time.Duration) (*Reco
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("voice: capture cancelled: %w", ctx.Err())
 		}
+		if errors.Is(err, exec.ErrNotFound) {
+			return nil, fmt.Errorf("%w: %s: %w", ErrCaptureUnavailable, args[0], err)
+		}
 		return nil, fmt.Errorf("voice: capture command %q failed: %w", args[0], err)
 	}
 	return rec, nil
