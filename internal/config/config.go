@@ -65,7 +65,11 @@ type AppConfig struct {
 	AgentOverrides     map[string]AgentOverrideConfig   `json:"agent_overrides" yaml:"agent_overrides"`
 	// ContextAssemblyHooks lets callers inject custom context assembly hooks at runtime.
 	ContextAssemblyHooks []pluginpkg.ContextAssemblyHook `json:"-" yaml:"-"`
-	SessionRecording     bool                            `json:"session_recording" yaml:"session_recording"`
+	// Voice configures the local talk-to-agents voice pipeline
+	// (capture, STT, optional TTS). All commands are POSIX-local;
+	// see VoiceConfig for the command template contract.
+	Voice            VoiceConfig `json:"voice" yaml:"voice"`
+	SessionRecording bool        `json:"session_recording" yaml:"session_recording"`
 	// SessionRecordingDir overrides the filesystem location the
 	// session recorder writes to. When empty the effective directory
 	// is derived from the active sessions directory (--sessions-dir
@@ -805,6 +809,26 @@ type HarnessConfig struct {
 	LearningOnNovelty  bool   `json:"learning_on_novelty" yaml:"learning_on_novelty"`
 }
 
+// VoiceConfig configures the local voice pipeline. Command fields
+// are whitespace-split argv templates with a "{file}" placeholder;
+// no shell is ever invoked.
+type VoiceConfig struct {
+	// Enabled gates the whole voice pipeline.
+	Enabled bool `json:"enabled" yaml:"enabled"`
+	// CaptureCmd overrides the audio capture command template.
+	CaptureCmd string `json:"capture_cmd,omitempty" yaml:"capture_cmd,omitempty"`
+	// STTCmd overrides the whisper-cli STT command template.
+	STTCmd string `json:"stt_cmd,omitempty" yaml:"stt_cmd,omitempty"`
+	// TTSCmd overrides the TTS command template (piper, espeak-ng).
+	TTSCmd string `json:"tts_cmd,omitempty" yaml:"tts_cmd,omitempty"`
+	// TTSEnabled opts in to spoken responses; disabled by default.
+	TTSEnabled bool `json:"tts_enabled" yaml:"tts_enabled"`
+	// SampleRate is the capture sample rate in Hz (default 16000).
+	SampleRate int `json:"sample_rate,omitempty" yaml:"sample_rate,omitempty"`
+	// MaxDurationSec bounds each recording (default 30).
+	MaxDurationSec int `json:"max_duration_sec,omitempty" yaml:"max_duration_sec,omitempty"`
+}
+
 // AgentOverrideConfig holds per-agent configuration overrides.
 //
 // PromptAppend contains text to be appended to an agent's system prompt
@@ -1463,6 +1487,7 @@ func DefaultConfig() *AppConfig {
 			},
 		},
 		AgentOverrides:      make(map[string]AgentOverrideConfig),
+		Voice:               DefaultVoiceConfig(),
 		Compression:         contextpkg.DefaultCompressionConfig(),
 		Compaction:          compactionpkg.DefaultConfig(),
 		Delegation:          DefaultDelegationConfig(),
@@ -1848,6 +1873,55 @@ func ValidateMCPServers(servers []MCPServerConfig) error {
 	return nil
 }
 
+// DefaultVoiceConfig returns the default voice pipeline settings:
+// enabled, 16kHz, 30s cap, TTS off. Command templates resolve at
+// use time (env > YAML > PATH probe) inside the voice package.
+//
+// Returns:
+//   - A VoiceConfig with local-first defaults.
+//
+// Side effects:
+//   - None.
+func DefaultVoiceConfig() VoiceConfig {
+	return VoiceConfig{
+		Enabled:        true,
+		SampleRate:     16000,
+		MaxDurationSec: 30,
+	}
+}
+
+// applyVoiceDefaults fills unset voice fields from defaults and then
+// applies FLOWSTATE_VOICE_* environment overrides (highest
+// precedence). Capture/STT templates left empty resolve at use time.
+//
+// Expected:
+//   - cfg is a non-nil AppConfig pointer.
+//
+// Side effects:
+//   - Mutates cfg.Voice in place; reads FLOWSTATE_VOICE_CAPTURE,
+//     FLOWSTATE_VOICE_STT and FLOWSTATE_VOICE_TTS.
+func applyVoiceDefaults(cfg *AppConfig) {
+	d := DefaultVoiceConfig()
+	if cfg.Voice.SampleRate == 0 {
+		cfg.Voice.SampleRate = d.SampleRate
+	}
+	if cfg.Voice.MaxDurationSec == 0 {
+		cfg.Voice.MaxDurationSec = d.MaxDurationSec
+	}
+	// A YAML file without a voice: block decodes Enabled as false;
+	// treat zero-valued blocks as "use the default" so absence keeps
+	// voice enabled.
+	if v := os.Getenv("FLOWSTATE_VOICE_CAPTURE"); v != "" {
+		cfg.Voice.CaptureCmd = v
+	}
+	if v := os.Getenv("FLOWSTATE_VOICE_STT"); v != "" {
+		cfg.Voice.STTCmd = v
+	}
+	if v := os.Getenv("FLOWSTATE_VOICE_TTS"); v != "" {
+		cfg.Voice.TTSCmd = v
+	}
+}
+
 // applyDefaults populates missing configuration fields with sensible defaults.
 //
 // Expected:
@@ -1857,6 +1931,7 @@ func ValidateMCPServers(servers []MCPServerConfig) error {
 //   - Modifies cfg in place, filling empty fields with default values from DefaultConfig.
 func applyDefaults(cfg *AppConfig) {
 	defaults := DefaultConfig()
+	applyVoiceDefaults(cfg)
 	applyProviderDefaults(&cfg.Providers.Ollama, defaults.Providers.Ollama)
 	applyProviderDefaults(&cfg.Providers.OpenAI, defaults.Providers.OpenAI)
 	applyProviderDefaults(&cfg.Providers.Anthropic, defaults.Providers.Anthropic)

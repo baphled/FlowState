@@ -1217,3 +1217,62 @@ var _ = Describe("AppConfig.Features (D9 todo_strict_mode)", func() {
 		Expect(cfg.Features.TodoStrictMode).To(BeFalse())
 	})
 })
+
+// writeVoiceConfig writes a minimal config.yaml with the given body
+// and returns its path.
+func writeVoiceConfig(body string) string {
+	path := filepath.Join(GinkgoT().TempDir(), "config.yaml")
+	Expect(os.WriteFile(path, []byte(body), 0o600)).To(Succeed())
+	return path
+}
+
+var _ = Describe("AppConfig.Voice (B4 voice config block)", func() {
+	It("defaults to enabled, 16 kHz, 30 s cap and TTS off", func() {
+		cfg := config.DefaultConfig()
+		Expect(cfg.Voice.Enabled).To(BeTrue(), "voice is local-first and on by default")
+		Expect(cfg.Voice.SampleRate).To(Equal(16000))
+		Expect(cfg.Voice.MaxDurationSec).To(Equal(30))
+		Expect(cfg.Voice.TTSEnabled).To(BeFalse())
+	})
+
+	It("parses the voice block from YAML", func() {
+		path := writeVoiceConfig(`
+voice:
+  capture_cmd: "fakedcapture {file}"
+  stt_cmd: "fakestt {file}"
+  max_duration_sec: 15
+`)
+		cfg, err := config.LoadConfigFromPath(path)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.Voice.CaptureCmd).To(Equal("fakedcapture {file}"))
+		Expect(cfg.Voice.STTCmd).To(Equal("fakestt {file}"))
+		Expect(cfg.Voice.MaxDurationSec).To(Equal(15))
+	})
+
+	It("applies voice defaults when the block is absent", func() {
+		path := writeVoiceConfig("log_level: debug\n")
+		cfg, err := config.LoadConfigFromPath(path)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.Voice.Enabled).To(BeTrue())
+		Expect(cfg.Voice.MaxDurationSec).To(Equal(30))
+	})
+
+	It("lets FLOWSTATE_VOICE_STT override the YAML STT command", func() {
+		GinkgoT().Setenv("FLOWSTATE_VOICE_STT", "envstt {file}")
+		path := writeVoiceConfig(`
+voice:
+  stt_cmd: "yamlstt {file}"
+`)
+		cfg, err := config.LoadConfigFromPath(path)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.Voice.STTCmd).To(Equal("envstt {file}"))
+	})
+
+	It("lets FLOWSTATE_VOICE_CAPTURE override the capture command", func() {
+		GinkgoT().Setenv("FLOWSTATE_VOICE_CAPTURE", "envcapture {file}")
+		path := writeVoiceConfig("log_level: info\n")
+		cfg, err := config.LoadConfigFromPath(path)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.Voice.CaptureCmd).To(Equal("envcapture {file}"))
+	})
+})
