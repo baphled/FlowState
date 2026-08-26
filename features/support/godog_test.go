@@ -97,4 +97,5 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterGateAmendmentSteps(ctx)
 	VoiceTalkContext(ctx)
 	VoiceCLIContext(ctx)
+	VoiceTTSContext(ctx)
 }
