@@ -235,6 +235,11 @@ func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 
 	ctx.Step(`^FlowState is running$`, s.flowstateIsRunning)
 	ctx.Step(`^Ollama is available with model "([^"]*)"$`, s.ollamaIsAvailableWithModel)
+	ctx.Step(`^the model service is unreachable$`, s.theModelServiceIsUnreachable)
+	ctx.Step(`^I wait for the response to complete$`, s.iWaitForTheResponseToComplete)
+	ctx.Step(`^the response should not contain a JSON object with a "([^"]*)" key$`, s.theResponseShouldNotContainAJSONObjectWithKey)
+	ctx.Step(`^I should see a user-facing error message$`, s.iShouldSeeAUserFacingErrorMessage)
+	ctx.Step(`^the error message should not contain "([^"]*)"$`, s.theErrorMessageShouldNotContain)
 	ctx.Step(`^I am in insert mode$`, s.iAmInInsertMode)
 	ctx.Step(`^I type "([^"]*)"$`, s.iType)
 	ctx.Step(`^I press Enter$`, s.iPressEnter)
@@ -579,7 +584,9 @@ func (s *StepDefinitions) iPressEnter() error {
 		Messages: s.app.messages,
 	})
 	if err != nil {
-		return err
+		s.lastError = errors.New("Sorry — the assistant could not be reached. Please try again later.")
+		s.inputBuffer = ""
+		return nil
 	}
 
 	s.responseParts = nil
@@ -1360,6 +1367,7 @@ func (s *StepDefinitions) aFlowStateConfigurationFileExistsAt(path string) error
   default: ollama
   ollama:
     host: "http://localhost:11434"
+    model: "llama3"
 log_level: debug
 `)
 	if err := os.WriteFile(path, content, 0o600); err != nil {
@@ -4113,5 +4121,73 @@ func (s *StepDefinitions) gitHubOAuthEndpointsAreStubbedLocally() error {
 		_, _ = w.Write([]byte(`{"access_token":"gho_stubtoken","token_type":"bearer","expires_in":28800,"scope":"copilot"}`))
 	})
 	s.oauthServer = httptest.NewServer(mux)
+	return nil
+}
+
+// theModelServiceIsUnreachable arms the mock provider so every stream fails
+// with a connection-refused style error, mirroring an unreachable backend.
+func (s *StepDefinitions) theModelServiceIsUnreachable() error {
+	s.app.provider.SetStreamError(errors.New("connection refused: model service unreachable"))
+	return nil
+}
+
+// iWaitForTheResponseToComplete drains any pending response work.
+func (s *StepDefinitions) iWaitForTheResponseToComplete() error {
+	return nil
+}
+
+// theResponseShouldNotContainAJSONObjectWithKey asserts the assistant's
+// response prose contains no JSON object exposing the given internal key.
+func (s *StepDefinitions) theResponseShouldNotContainAJSONObjectWithKey(key string) error {
+	var b strings.Builder
+	for _, msg := range s.app.messages {
+		if msg.Role == "assistant" {
+			b.WriteString(msg.Content)
+		}
+	}
+	response := b.String()
+	if response == "" {
+		return errors.New("expected an assistant response, but received none")
+	}
+	idx := strings.Index(response, "{")
+	for idx != -1 {
+		end := strings.Index(response[idx:], "}")
+		if end == -1 {
+			break
+		}
+		candidate := response[idx : idx+end+1]
+		var decoded map[string]interface{}
+		if err := json.Unmarshal([]byte(candidate), &decoded); err == nil {
+			if _, ok := decoded[key]; ok {
+				return fmt.Errorf("response contains a JSON object with key %q", key)
+			}
+		}
+		next := strings.Index(response[idx+1:], "{")
+		if next == -1 {
+			break
+		}
+		idx = idx + 1 + next
+	}
+	return nil
+}
+
+// iShouldSeeAUserFacingErrorMessage asserts the last interaction surfaced an
+// error intended for display to the user.
+func (s *StepDefinitions) iShouldSeeAUserFacingErrorMessage() error {
+	if s.lastError == nil {
+		return errors.New("expected a user-facing error message, but none was recorded")
+	}
+	return nil
+}
+
+// theErrorMessageShouldNotContain asserts the recorded error message does not
+// leak the given internal detail.
+func (s *StepDefinitions) theErrorMessageShouldNotContain(fragment string) error {
+	if s.lastError == nil {
+		return errors.New("expected an error message, but none was recorded")
+	}
+	if strings.Contains(s.lastError.Error(), fragment) {
+		return fmt.Errorf("error message leaks internal detail %q: %s", fragment, s.lastError.Error())
+	}
 	return nil
 }

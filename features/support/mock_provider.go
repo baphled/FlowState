@@ -81,6 +81,9 @@ type MockProvider struct {
 	embeddings    []float64
 	models        []Model
 	responseIndex int
+	// streamErr, when set, is returned by Stream so scenarios can exercise
+	// provider failure paths such as an unreachable model service.
+	streamErr error
 	// longStream enables a slow, lengthy streaming response so scenarios
 	// covering mid-stream cancellation can observe and interrupt the stream
 	// before it naturally completes.
@@ -118,6 +121,15 @@ func (m *MockProvider) Name() string {
 	return m.name
 }
 
+// SetStreamError arms the provider so subsequent Stream calls fail with err.
+//
+// Expected: err is the error callers should observe.
+//
+// Side effects: Mutates streamErr.
+func (m *MockProvider) SetStreamError(err error) {
+	m.streamErr = err
+}
+
 // Stream streams a mock response character by character for the given chat request.
 //
 // Expected:
@@ -131,6 +143,9 @@ func (m *MockProvider) Name() string {
 // Side effects:
 //   - Spawns a goroutine to send chunks on the returned channel.
 func (m *MockProvider) Stream(ctx context.Context, req ChatRequest) (<-chan StreamChunk, error) {
+	if m.streamErr != nil {
+		return nil, m.streamErr
+	}
 	ch := make(chan StreamChunk, 16)
 	if m.longStream {
 		go m.streamLong(ctx, ch)

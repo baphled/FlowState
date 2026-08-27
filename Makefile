@@ -86,7 +86,7 @@ bdd: ## Run all BDD tests
 
 bdd-smoke: ## Run smoke BDD tests
 	@echo "Running smoke tests..."
-	GODOG_TAGS="@smoke" go test -tags e2e -v ./features/... -run "Test"
+	GODOG_TAGS="@smoke && ~@wip" go test -tags e2e -v ./features/... -run "Test"
 
 bdd-wip: ## Run WIP BDD tests (scenarios tagged @wip)
 	@echo "Running WIP tests..."

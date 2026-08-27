@@ -163,7 +163,6 @@ func stringContains(s, sub string) bool {
 func RegisterEngineSteps(ctx *godog.ScenarioContext) {
 	s := &engineSteps{session: "engine-steps-session"}
 	ctx.Step(`^an agent manifest with tool support$`, s.agentManifestWithToolSupport)
-	ctx.Step(`^FlowState is running$`, s.flowStateRunning)
 	ctx.Step(`^the todo tool is enabled$`, s.todoToolEnabled)
 	ctx.Step(`^the provider will return a context-window-exceeded error on the first call$`, s.providerOverflowFirstCall)
 	ctx.Step(`^the provider will return a context-window-exceeded error on every call$`, s.providerOverflowEveryCall)
@@ -189,15 +188,6 @@ func RegisterEngineSteps(ctx *godog.ScenarioContext) {
 // agentManifestWithToolSupport is the Background step for the overflow
 // feature; it resets per-scenario state.
 func (s *engineSteps) agentManifestWithToolSupport() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.reset()
-	return nil
-}
-
-// flowStateRunning is the Background step for the todo-completion feature;
-// it resets per-scenario state.
-func (s *engineSteps) flowStateRunning() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.reset()

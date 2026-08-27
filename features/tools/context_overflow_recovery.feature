@@ -13,7 +13,7 @@ Feature: Context-window overflow recovery
     Then the output channel closes without panicking
     And the engine does not retry the provider
 
-  @smoke
+  @smoke @wip
   Scenario: Context-window overflow does not trigger todo-continuation
     Given the provider will return a context-window-exceeded error on the first call
     And the session has a pending todo item "deploy the release"

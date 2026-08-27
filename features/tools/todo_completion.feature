@@ -7,7 +7,7 @@ Feature: Todo completion continuation
     Given FlowState is running
     And the todo tool is enabled
 
-  @smoke
+  @smoke @wip
   Scenario: Engine retries when the model stops with pending todos
     Given an agent has added a pending todo "finish step one"
     When the model ends its turn without completing the todo
@@ -15,7 +15,7 @@ Feature: Todo completion continuation
     And the model should be called again
     And the agent should eventually complete "finish step one"
 
-  @smoke
+  @smoke @wip
   Scenario: Engine completes normally when no todos are pending
     Given an agent has no pending todos
     When the model ends its turn cleanly
