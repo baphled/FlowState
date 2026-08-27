@@ -96,6 +96,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterGateAmendmentSteps(ctx)
 	RegisterEngineSteps(ctx)
 	registerOpenAICompatClassificationSteps(ctx)
+	RegisterDelegationIntegritySteps(ctx)
 	VoiceTalkContext(ctx)
 	VoiceCLIContext(ctx)
 	VoiceTTSContext(ctx)

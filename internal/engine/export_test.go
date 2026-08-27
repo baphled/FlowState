@@ -36,11 +36,6 @@ func (d *DelegateTool) WithChildTurnRegistryForTest(reg ChildTurnRegistryForTest
 	return d.withChildTurnRegistry(reg)
 }
 
-// CollectWithProgressForTest exposes collectWithProgress for white-box testing of goroutine lifecycle.
-func CollectWithProgressForTest(ctx context.Context, d *DelegateTool, chunks <-chan provider.StreamChunk, startedAt time.Time) (DelegationResultForTest, error) {
-	return d.collectWithProgress(ctx, chunks, startedAt)
-}
-
 // BuildAllowedToolSetForTest exposes buildAllowedToolSetFor so the
 // tool-filtering specs (commit 3 — Gap B) can pin the delegate-bundle
 // narrowing directly on the allowed-set membership without going
@@ -437,9 +432,6 @@ func (d *DelegateTool) ResolveChildModelChainWithParentForTest(parentSessionID, 
 	})
 }
 
-// DelegationResultForTest re-exports delegationResult for external tests.
-type DelegationResultForTest = delegationResult
-
 // MaxDelegationResultBytesForTest re-exports the truncation ceiling.
 const MaxDelegationResultBytesForTest = maxDelegationResultBytes
 
@@ -448,15 +440,6 @@ const MaxDelegationResultBytesForTest = maxDelegationResultBytes
 func CollectDelegationResultForTest(d *DelegateTool, chunks <-chan provider.StreamChunk) (DelegationResultForTest, error) {
 	return d.collectDelegationResult(chunks)
 }
-
-// Response returns the accumulated response text.
-func (r DelegationResultForTest) Response() string { return r.response }
-
-// Truncated reports whether the response was truncated.
-func (r DelegationResultForTest) Truncated() bool { return r.truncated }
-
-// ToolCallCount returns the total number of chunks observed.
-func (r DelegationResultForTest) ToolCallCount() int { return r.toolCalls }
 
 // SetTodoStoreForTest wires an external todo.Store into the engine so
 // specs can pre-populate todo state without going through the todowrite
