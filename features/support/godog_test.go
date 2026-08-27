@@ -103,8 +103,11 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterQuestionSteps(ctx)
 	RegisterMCPServerLifecycleSteps(ctx)
 	RegisterGateAmendmentSteps(ctx)
+<<<<<<< HEAD
 	RegisterEngineSteps(ctx)
 	registerOpenAICompatClassificationSteps(ctx)
+=======
+>>>>>>> 7e8a19a3 (test(engine): add red bdd scenarios for delegation completion integrity)
 	RegisterDelegationIntegritySteps(ctx)
 	VoiceTalkContext(ctx)
 	VoiceCLIContext(ctx)
