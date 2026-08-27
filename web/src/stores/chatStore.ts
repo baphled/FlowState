@@ -1149,15 +1149,41 @@ export const useChatStore = defineStore('chat', {
       if (this.bootstrapPromise) {
         return this.bootstrapPromise
       }
-      this.bootstrapPromise = this.restoreStateFromBackend()
+      // Delegation card wrong-session fix (Aug 2026): snapshot the
+      // session id at bootstrap start. If a user/delegation click
+      // changes currentSessionId while the restore's awaits are in
+      // flight, the click wins — restore must not clobber it.
+      const sessionIdAtStart = this.currentSessionId
+      this.bootstrapPromise = this.restoreStateFromBackend({ sessionIdAtStart })
       return this.bootstrapPromise
     },
 
-    async restoreStateFromBackend(): Promise<void> {
+    async restoreStateFromBackend(options?: {
+      sessionIdAtStart?: string | null
+    }): Promise<void> {
+      // Delegation card wrong-session fix (Aug 2026): a mid-flight
+      // selection beats this restore. When the caller snapshotted the
+      // session id at start (bootstrap) and it has since changed, bail
+      // out instead of overwriting. Direct callers that omit the
+      // option keep the previous unconditional behaviour.
+      const sessionIdAtStart = options?.sessionIdAtStart
+      const selectionChanged =
+        sessionIdAtStart !== undefined &&
+        this.currentSessionId !== sessionIdAtStart
+      if (selectionChanged) return
+
       await this.loadAgents()
       await this.loadSwarms()
       await this.loadSessions()
       await this.loadModels()
+
+      // Re-check after the awaits — the race window is exactly here.
+      if (
+        sessionIdAtStart !== undefined &&
+        this.currentSessionId !== sessionIdAtStart
+      ) {
+        return
+      }
 
       const persistedAgentId = getPersistedAgentId()
       const persistedSessionId = getPersistedSessionId()
@@ -1231,6 +1257,13 @@ export const useChatStore = defineStore('chat', {
         }
         persistSessionId(sessionForAgent.id)
         const loadedForAgent = await fetchSessionMessages(sessionForAgent.id)
+        // Guard: a click landed while we fetched — abandon the overwrite.
+        if (
+          sessionIdAtStart !== undefined &&
+          this.currentSessionId !== sessionIdAtStart
+        ) {
+          return
+        }
         this.messages = loadedForAgent.map((m) =>
           m.role === 'assistant' && !m.status ? { ...m, status: 'completed' } : m,
         )
@@ -1270,6 +1303,13 @@ export const useChatStore = defineStore('chat', {
       }
       persistSessionId(session.id)
       const loadedForSession = await fetchSessionMessages(session.id)
+      // Guard: a click landed while we fetched — abandon the overwrite.
+      if (
+        sessionIdAtStart !== undefined &&
+        this.currentSessionId !== sessionIdAtStart
+      ) {
+        return
+      }
       this.messages = loadedForSession.map((m) =>
         m.role === 'assistant' && !m.status ? { ...m, status: 'completed' } : m,
       )
