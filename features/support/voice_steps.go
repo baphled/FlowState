@@ -5,6 +5,10 @@ package support
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
 	"errors"
 	"fmt"
 	"os"
@@ -15,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	agentpkg "github.com/baphled/flowstate/internal/agent"
+	"github.com/baphled/flowstate/internal/api"
 	dispatchpkg "github.com/baphled/flowstate/internal/dispatch"
 	"github.com/baphled/flowstate/internal/voice"
 	"github.com/cucumber/godog"
@@ -838,4 +844,190 @@ func VoiceTTSContext(sc *godog.ScenarioContext) {
 	sc.Step(`^speaking fails with an ErrTTSUnavailable error$`, func() error {
 		return ttsState.speakingFailsWithAnErrTTSUnavailableError()
 	})
+}
+
+// voiceAPIState holds per-scenario state for the @b6 transcription
+// endpoint steps.
+type voiceAPIState struct {
+	// recorder captures the last HTTP response.
+	recorder *httptest.ResponseRecorder
+	// server is the API server under test.
+	server *api.Server
+}
+
+// voiceAPI is the scenario-scoped state, rebound per scenario.
+var voiceAPI *voiceAPIState
+
+// aVoiceAPIServer builds a bare API server for the endpoint tests.
+//
+// Side effects:
+//   - Stores a fresh *api.Server on the state.
+func (v *voiceAPIState) aVoiceAPIServer() error {
+	v.server = api.NewServer(nil, agentpkg.NewRegistry(), nil, nil)
+	return nil
+}
+
+// iPOSTAWAVFileToTheTranscribeEndpoint uploads a minimal WAV via
+// multipart POST.
+//
+// Expected:
+//   - path is the endpoint path.
+//
+// Returns:
+//   - An error when the request cannot be built or served.
+//
+// Side effects:
+//   - Records the response on the state.
+func (v *voiceAPIState) iPOSTAWAVFileToTheTranscribeEndpoint(path string) error {
+	if v.server == nil {
+		if err := v.aVoiceAPIServer(); err != nil {
+			return err
+		}
+	}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("audio", "turn.wav")
+	if err != nil {
+		return err
+	}
+	if _, err := part.Write([]byte("RIFFb\x00\x00\x00WAVEfmt ")); err != nil {
+		return err
+	}
+	if err := writer.Close(); err != nil {
+		return err
+	}
+	req := httptest.NewRequest(http.MethodPost, path, &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rec := httptest.NewRecorder()
+	v.server.Handler().ServeHTTP(rec, req)
+	v.recorder = rec
+	return nil
+}
+
+// iPOSTNoAudioToTheTranscribeEndpoint posts an empty body.
+//
+// Expected:
+//   - path is the endpoint path.
+//
+// Side effects:
+//   - Records the response on the state.
+func (v *voiceAPIState) iPOSTNoAudioToTheTranscribeEndpoint(path string) error {
+	if v.server == nil {
+		if err := v.aVoiceAPIServer(); err != nil {
+			return err
+		}
+	}
+	req := httptest.NewRequest(http.MethodPost, path, nil)
+	rec := httptest.NewRecorder()
+	v.server.Handler().ServeHTTP(rec, req)
+	v.recorder = rec
+	return nil
+}
+
+// theResponseStatusIs asserts the recorded HTTP status code.
+//
+// Expected:
+//   - status is the expected integer status.
+//
+// Returns:
+//   - An error when the recorded status differs.
+func (v *voiceAPIState) theResponseStatusIs(status int) error {
+	if v.recorder == nil {
+		return fmt.Errorf("no response recorded")
+	}
+	if v.recorder.Code != status {
+		return fmt.Errorf("status = %d, want %d; body: %s", v.recorder.Code, status, v.recorder.Body.String())
+	}
+	return nil
+}
+
+// theResponseContainsTheTranscript asserts the transcript JSON.
+//
+// Expected:
+//   - transcript is the expected transcript text.
+//
+// Returns:
+//   - An error when the body does not embed the transcript.
+func (v *voiceAPIState) theResponseContainsTheTranscript(transcript string) error {
+	if v.recorder == nil {
+		return fmt.Errorf("no response recorded")
+	}
+	var payload struct {
+		Transcript string `json:"transcript"`
+	}
+	if err := json.Unmarshal(v.recorder.Body.Bytes(), &payload); err != nil {
+		return fmt.Errorf("decode response: %w; body: %s", err, v.recorder.Body.String())
+	}
+	if payload.Transcript != transcript {
+		return fmt.Errorf("transcript = %q, want %q", payload.Transcript, transcript)
+	}
+	return nil
+}
+
+// VoiceAPIContext registers the @b6 transcription endpoint steps.
+//
+// Expected:
+//   - sc is a valid Godog ScenarioContext.
+//
+// Side effects:
+//   - Registers all @b6 scenario steps with the context.
+func VoiceAPIContext(sc *godog.ScenarioContext) {
+	sc.Before(func(ctx context.Context, _ *godog.Scenario) (context.Context, error) {
+		voiceAPI = &voiceAPIState{}
+		return ctx, nil
+	})
+	sc.After(func(ctx context.Context, _ *godog.Scenario, _ error) (context.Context, error) {
+		_ = os.Unsetenv("FLOWSTATE_VOICE_STT")
+		voiceAPI = nil
+		return ctx, nil
+	})
+
+	sc.Step(`^I POST a WAV file to (/api/v1/voice/transcribe)$`, func(path string) error {
+		return voiceAPI.iPOSTAWAVFileToTheTranscribeEndpoint(path)
+	})
+	sc.Step(`^I POST no audio to (/api/v1/voice/transcribe)$`, func(path string) error {
+		return voiceAPI.iPOSTNoAudioToTheTranscribeEndpoint(path)
+	})
+	sc.Step(`^a fake STT command that emits "([^"]*)"$`, func(transcript string) error {
+		return voiceAPI.aFakeSTTCommandThatEmits(transcript)
+	})
+	sc.Step(`^no STT command is configured$`, func() error { return voiceAPI.noSTTCommandIsConfiguredForAPI() })
+	sc.Step(`^the response status is (\d+)$`, func(status int) error { return voiceAPI.theResponseStatusIs(status) })
+	sc.Step(`^the response contains the transcript "([^"]*)"$`, func(transcript string) error {
+		return voiceAPI.theResponseContainsTheTranscript(transcript)
+	})
+}
+
+// aFakeSTTCommandThatEmits installs a fake STT binary emitting the
+// given transcript, shared by the @b6 endpoint scenarios.
+//
+// Expected:
+//   - transcript is the text the fake must print.
+//
+// Returns:
+//   - An error when the script cannot be created.
+//
+// Side effects:
+//   - Sets FLOWSTATE_VOICE_STT to the fake invocation.
+func (v *voiceAPIState) aFakeSTTCommandThatEmits(transcript string) error {
+	dir, err := os.MkdirTemp("", "voice-api-stt-*")
+	if err != nil {
+		return err
+	}
+	bin := filepath.Join(dir, "stt-fake")
+	script := fmt.Sprintf("#!/bin/sh\ncat \"$1\" >/dev/null 2>&1\nprintf '%%s' %q\n", transcript)
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		return err
+	}
+	return os.Setenv("FLOWSTATE_VOICE_STT", bin)
+}
+
+// noSTTCommandIsConfiguredForAPI clears the STT override so the
+// endpoint's 503 branch fires.
+//
+// Side effects:
+//   - Unsets FLOWSTATE_VOICE_STT.
+func (v *voiceAPIState) noSTTCommandIsConfiguredForAPI() error {
+	_ = os.Unsetenv("FLOWSTATE_VOICE_STT")
+	return nil
 }

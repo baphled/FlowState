@@ -99,4 +99,5 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	VoiceTalkContext(ctx)
 	VoiceCLIContext(ctx)
 	VoiceTTSContext(ctx)
+	VoiceAPIContext(ctx)
 }
