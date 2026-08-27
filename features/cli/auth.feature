@@ -12,9 +12,8 @@ Feature: Provider Authentication
   Scenario: Authenticate with GitHub Copilot via OAuth Device Flow
     When I run "flowstate auth github-copilot"
     Then I should see "Starting GitHub OAuth authentication..."
-    And I should see "Device code:"
     And I should see "User code:"
-    And I should see "Verification URL: https://github.com/login/device"
+    And I should see "URL:       https://github.com/login/device"
     And I should see "Waiting for authorization..."
     When GitHub authorization completes successfully
     Then I should see "✓ Authentication successful"

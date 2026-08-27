@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -69,6 +71,24 @@ func resolveGitHubClientID(cfg *config.AppConfig) string {
 	return defaultGitHubClientID
 }
 
+// oauthBaseURLFromEnv returns the OAuth endpoint base URL override from the
+// FLOWSTATE_OAUTH_BASE_URL environment variable. It exists so tests and
+// offline environments can point the device flow at a local stub server
+// instead of github.com. An empty value means no override (production
+// GitHub endpoints are used).
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - The override base URL, or "" when unset/blank.
+//
+// Side effects:
+//   - None.
+func oauthBaseURLFromEnv() string {
+	return strings.TrimSpace(os.Getenv("FLOWSTATE_OAUTH_BASE_URL"))
+}
+
 // newAuthGitHubCmd creates the GitHub Copilot authentication command via OAuth Device Flow.
 //
 // Expected:
@@ -115,7 +135,7 @@ func runAuthGitHub(cmd *cobra.Command, application *app.App) error {
 	defer cancel()
 
 	clientID := resolveGitHubClientID(application.Config)
-	ghProvider := oauth.NewGitHub(clientID)
+	ghProvider := oauth.NewGitHubWithBaseURL(clientID, oauthBaseURLFromEnv())
 
 	dcResp, err := ghProvider.InitiateFlow(ctx)
 	if err != nil {

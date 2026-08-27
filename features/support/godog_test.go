@@ -94,5 +94,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterTodoSteps(ctx)
 	RegisterMCPServerLifecycleSteps(ctx)
 	RegisterGateAmendmentSteps(ctx)
+	RegisterEngineSteps(ctx)
+	registerOpenAICompatClassificationSteps(ctx)
 	VoiceTalkContext(ctx)
 }

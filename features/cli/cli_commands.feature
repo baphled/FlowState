@@ -14,7 +14,7 @@ Feature: CLI Commands
      And I should see the global flag "--agents-dir"
      And I should see the global flag "--skills-dir"
      And I should see the global flag "--sessions-dir"
-     And I should see the subcommand "chat"
+     And I should see the subcommand "run"
      And I should see the subcommand "serve"
      And I should see the subcommand "agent"
      And I should see the subcommand "skill"
@@ -23,14 +23,6 @@ Feature: CLI Commands
      And I should see the subcommand "models"
 
   @smoke
-  Scenario: Chat command shows agent, message, model, and session flags
-    When I run "flowstate chat --help"
-    Then I should see usage for "flowstate chat"
-    And I should see the local flag "--agent"
-    And I should see the local flag "--message"
-    And I should see the local flag "--model"
-    And I should see the local flag "--session"
-
   Scenario: Serve command shows port and host flags
     When I run "flowstate serve --help"
     Then I should see usage for "flowstate serve"

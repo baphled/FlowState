@@ -47,6 +47,34 @@ func NewGitHub(clientID string) *GitHub {
 	}
 }
 
+// NewGitHubWithBaseURL creates a GitHub OAuth provider whose device-code
+// and token endpoints are derived from the given base URL. An empty or
+// blank baseURL yields the production GitHub endpoints. The hook exists so
+// tests and offline environments can point the device flow at a local stub
+// server via FLOWSTATE_OAUTH_BASE_URL for deterministic behaviour.
+//
+// Expected:
+//   - clientID is a valid GitHub OAuth application client ID.
+//   - baseURL is either empty or a scheme+host (optionally with a port or
+//     path prefix) such as "http://127.0.0.1:8912".
+//
+// Returns:
+//   - A configured GitHub OAuth provider.
+//
+// Side effects:
+//   - None.
+func NewGitHubWithBaseURL(clientID, baseURL string) *GitHub {
+	g := NewGitHub(clientID)
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		return g
+	}
+	g.baseURL = baseURL
+	g.deviceCodeURL = strings.TrimSuffix(baseURL, "/") + "/login/device/code"
+	g.tokenURL = strings.TrimSuffix(baseURL, "/") + "/login/oauth/access_token"
+	return g
+}
+
 // InitiateFlow starts the GitHub Device Flow authentication process.
 //
 // Expected:

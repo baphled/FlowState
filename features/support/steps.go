@@ -47,6 +47,7 @@ type StepDefinitions struct {
 	configPath    string
 
 	ollamaServer       *httptest.Server
+	oauthServer        *httptest.Server
 	realOllamaProvider *ollamaprovider.Provider
 	providerName       string
 	models             []provider.Model
@@ -313,6 +314,7 @@ func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^I should receive a vector of floats$`, s.iShouldReceiveAVectorOfFloats)
 
 	ctx.Step(`^the FlowState CLI is available$`, s.theFlowStateCLIIsAvailable)
+	ctx.Step(`^GitHub OAuth endpoints are stubbed locally$`, s.gitHubOAuthEndpointsAreStubbedLocally)
 	ctx.Step(`^I run "([^"]*)"$`, s.iRun)
 	ctx.Step(`^I should see usage for "([^"]*)"$`, s.iShouldSeeUsageFor)
 	ctx.Step(`^I should see the global flag "([^"]*)"$`, s.iShouldSeeTheGlobalFlag)
@@ -1355,7 +1357,9 @@ func (s *StepDefinitions) aFlowStateConfigurationFileExistsAt(path string) error
 		return fmt.Errorf("creating config directory %q: %w", s.tempDir, err)
 	}
 	content := []byte(`providers:
-  default: openai
+  default: ollama
+  ollama:
+    host: "http://localhost:11434"
 log_level: debug
 `)
 	if err := os.WriteFile(path, content, 0o600); err != nil {
@@ -1908,7 +1912,7 @@ func (s *StepDefinitions) theFlowStateCLIIsAvailable() error {
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to build CLI in %s: %w: %s", projectRoot, err, stderr.String())
 	}
-	return nil
+	return s.ensureOAuthStub()
 }
 
 // iRun implements a BDD step definition.
@@ -1921,7 +1925,11 @@ func (s *StepDefinitions) iRun(command string) error {
 	if len(parts) == 0 {
 		return errors.New("empty command")
 	}
-	output, exitCode := runTestCLI(parts[1:])
+	baseURL := ""
+	if s.oauthServer != nil {
+		baseURL = s.oauthServer.URL
+	}
+	output, exitCode := runTestCLI(parts[1:], baseURL)
 	s.cliOutput = output
 	s.cliExitCode = exitCode
 	return nil
@@ -1937,7 +1945,7 @@ func (s *StepDefinitions) iRun(command string) error {
 // longer fall back to OpenCode auth.json. The sandboxed config selects
 // the always-available ollama provider as the default, so app.New can
 // boot without any API keys present in the host environment.
-func runTestCLI(args []string) (output string, exitCode int) {
+func runTestCLI(args []string, oauthBaseURL string) (output string, exitCode int) {
 	const testBinaryPath = "/tmp/flowstate-test"
 	cmdArgs := append([]string{testBinaryPath}, args...)
 	cmd := &exec.Cmd{
@@ -1953,6 +1961,9 @@ func runTestCLI(args []string) (output string, exitCode int) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	if oauthBaseURL != "" {
+		cmd.Env = append(cmd.Env, "FLOWSTATE_OAUTH_BASE_URL="+oauthBaseURL)
+	}
 	runErr := cmd.Run()
 	output = stdout.String() + stderr.String()
 	if runErr != nil {
@@ -4065,5 +4076,42 @@ func (s *StepDefinitions) theSystemPromptShouldNotContainAgentsMdContent() error
 	if s.lastPrompt != "Base system prompt." {
 		return fmt.Errorf("expected only base prompt, got: %s", s.lastPrompt)
 	}
+	return nil
+}
+
+// ensureOAuthStub starts the local OAuth stub server if it is not already
+// running. The Background step "the FlowState CLI is available" now calls
+// this so any scenario that runs `flowstate auth github-copilot` resolves
+// InitiateFlow against a local server instead of github.com (a real network
+// call would hang the BDD run).
+//
+// Expected: None.
+//
+// Returns: Any error from starting the stub server.
+//
+// Side effects: Starts s.oauthServer when nil.
+func (s *StepDefinitions) ensureOAuthStub() error {
+	if s.oauthServer == nil {
+		return s.gitHubOAuthEndpointsAreStubbedLocally()
+	}
+	return nil
+}
+
+// gitHubOAuthEndpointsAreStubbedLocally starts an httptest server that
+// implements the minimal GitHub OAuth Device Flow contract: the device-code
+// endpoint returns a fixed user code and verification URI, and the token
+// endpoint approves immediately with a fake token. The server URL is
+// injected into the CLI child process via FLOWSTATE_OAUTH_BASE_URL.
+func (s *StepDefinitions) gitHubOAuthEndpointsAreStubbedLocally() error {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/login/device/code", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"device_code":"stub-device-code","user_code":"STUB-CODE","verification_uri":"https://github.com/login/device","expires_in":900,"interval":5}`))
+	})
+	mux.HandleFunc("/login/oauth/access_token", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"gho_stubtoken","token_type":"bearer","expires_in":28800,"scope":"copilot"}`))
+	})
+	s.oauthServer = httptest.NewServer(mux)
 	return nil
 }
