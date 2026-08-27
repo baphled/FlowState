@@ -9333,3 +9333,116 @@ describe('chatStore - live session-bleed bug bundle (May 2026)', () => {
     expect(store.lastHeartbeatAtBySession['session-new']).toBeUndefined()
   })
 })
+
+// ── Delegation card wrong-session fix (Aug 2026) ──────────────────────────
+//
+// Two regression contracts ported from the flowstate-web delegation bug
+// (upstream commit e0eab76 branch feature/swarm-ui — whose test files
+// live in the extracted web repo, not this stub):
+//
+//   A. bootstrap/restore race: a delegation click that lands mid-flight
+//      bootstrap (loadSessionForDelegation sets currentSessionId to the
+//      delegated child) must not be clobbered by the late-completing
+//      restoreStateFromBackend, which used to overwrite the user's
+//      selection with the persisted session id. Mirrors the documented
+//      setAgent race (chatStore.ts ~1345-1365).
+//   B. agent-id fallback ambiguity: a parent that delegated to the same
+//      agent twice must resolve a card click to the clicked card's own
+//      childSessionId, not the most-recent-wins agent-id fallback.
+describe('chatStore - delegation click vs bootstrap restore race', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('keeps the click-driven delegated child session when bootstrap completes after the click', async () => {
+    // Persisted (parent) session the restore will try to land on.
+    window.localStorage.setItem('chat.currentSessionId', 'session-parent')
+    vi.mocked(fetchSessions).mockResolvedValue([
+      {
+        id: 'session-parent',
+        agentId: 'agent-1',
+        title: 'Parent',
+        createdAt: '2026-08-27T10:00:00Z',
+        updatedAt: '2026-08-27T10:00:00Z',
+        messageCount: 0,
+      },
+      {
+        id: 'session-child-001',
+        agentId: 'executor',
+        parentId: 'session-parent',
+        title: 'Delegated Run',
+        createdAt: '2026-08-27T10:01:00Z',
+        updatedAt: '2026-08-27T10:01:00Z',
+        messageCount: 0,
+      },
+    ])
+    // Make the restore's LAST await (loadModels) slow so the restore
+    // finishes after the click — reproducing the user-visible race
+    // deterministically instead of relying on microtask interleaving.
+    vi.mocked(fetchModels).mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve([]), 10)),
+    )
+
+    const store = useChatStore()
+    // Start bootstrap, do NOT await — the click fires mid-flight.
+    const bootstrapPromise = store.bootstrap()
+    const clickPromise = store.loadSessionForDelegation({
+      childSessionId: 'session-child-001',
+      chainId: 'chain-1',
+    })
+    await Promise.all([bootstrapPromise, clickPromise])
+
+    // The click-driven selection MUST survive the late restore.
+    expect(store.currentSessionId).toBe('session-child-001')
+  })
+
+  it('resolves an ambiguous agent-id fallback to the clicked card, not the newest delegation', async () => {
+    // Parent delegated to 'executor' twice; the card the user clicked is
+    // the FIRST (older) delegation, carrying its own childSessionId.
+    vi.mocked(fetchSessions).mockResolvedValue([
+      {
+        id: 'session-parent',
+        agentId: 'agent-1',
+        title: 'Parent',
+        createdAt: '2026-08-27T10:00:00Z',
+        updatedAt: '2026-08-27T10:00:00Z',
+        messageCount: 0,
+      },
+      {
+        id: 'session-child-001',
+        agentId: 'executor',
+        parentId: 'session-parent',
+        title: 'Delegated Run 1',
+        createdAt: '2026-08-27T10:01:00Z',
+        updatedAt: '2026-08-27T10:01:00Z',
+        messageCount: 0,
+      },
+      {
+        id: 'session-child-002',
+        agentId: 'executor',
+        parentId: 'session-parent',
+        title: 'Delegated Run 2',
+        createdAt: '2026-08-27T11:00:00Z',
+        updatedAt: '2026-08-27T11:00:00Z',
+        messageCount: 0,
+      },
+    ])
+
+    const store = useChatStore()
+    store.currentSessionId = 'session-parent'
+    await store.loadSessions()
+
+    // Click on the FIRST card: agentId fallback would return
+    // session-child-002 (most-recent-wins) — the card's own
+    // childSessionId must win.
+    const loaded = await store.loadSessionForDelegation({
+      agentId: 'executor',
+      childSessionId: 'session-child-001',
+    })
+
+    expect(loaded).toBe(true)
+    expect(store.currentSessionId).toBe('session-child-001')
+  })
+})
