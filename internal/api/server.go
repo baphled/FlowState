@@ -1158,6 +1158,9 @@ func (s *Server) setupRoutes() {
 	// provider quota/cooldown status transitions. Requires ?session_id=
 	// for cross-tenant isolation (same pattern as swarm/events).
 	s.registerProtected("GET /api/v1/providers/status/stream", s.handleProviderStatusStream)
+	// Voice plan B6 — local-only transcription endpoint. Multipart WAV
+	// in, transcript JSON out; 503 when no STT binary resolves.
+	s.registerProtected("POST /api/v1/voice/transcribe", s.handleVoiceTranscribe)
 
 	// Deliverable 2 / 3 of the May 2026 context-accuracy bundle —
 	// runtime-tunable compression threshold + manual /compact
