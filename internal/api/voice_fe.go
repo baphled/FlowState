@@ -10,9 +10,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/baphled/flowstate/internal/voice"
 )
@@ -20,6 +23,21 @@ import (
 // maxVoiceUploadBytes bounds the accepted WAV size (10 MiB) so a
 // runaway client cannot exhaust temp disk.
 const maxVoiceUploadBytes = 10 << 20
+
+// maxVoiceTTSBytes bounds the synthesised text length (64 KiB) so a
+// single request cannot pin CPU and spawn unbounded piper children.
+const maxVoiceTTSBytes = 64 << 10
+
+// voiceSynthesisTimeout bounds one synthesis request so a hung
+// piper child cannot hold a handler goroutine forever.
+const voiceSynthesisTimeout = 60 * time.Second
+
+// ttsModelRe constrains a runtime tts_model patch to a path-safe
+// model name (letters, digits, underscore, hyphen, dot).
+var ttsModelRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// maxTTSModelLen bounds the tts_model patch length.
+const maxTTSModelLen = 128
 
 // VoiceTurnDispatcher is the dispatch surface the transcribe
 // endpoint needs after STT: one ephemeral, mention-scanned turn.
@@ -45,7 +63,60 @@ type VoiceSettingsStore interface {
 // when piper is unavailable.
 type VoiceSynthesiser interface {
 	// Synthesize renders text as concatenated WAV bytes.
-	Synthesize(text string) ([]byte, error)
+	Synthesize(ctx context.Context, text string) ([]byte, error)
+}
+
+// ctxSynthesiser narrows a context-aware synthesiser for the
+// TTSSynthesiserAdapter.
+type ctxSynthesiser interface {
+	Synthesize(ctx context.Context, text string) ([]byte, error)
+}
+
+// TTSSynthesiserAdapter adapts a context-aware synthesiser (the
+// production *voice.TTSTool) to the endpoint's VoiceSynthesiser,
+// enforcing a bounded synthesis timeout instead of an unbounded
+// background context.
+type TTSSynthesiserAdapter struct {
+	Synthesiser ctxSynthesiser
+}
+
+// Synthesize renders text as WAV bytes under the adapter's
+// synthesis timeout.
+//
+// Expected:
+//   - text is non-empty, already length-capped by the caller.
+//
+// Returns:
+//   - The synthesised WAV bytes.
+//   - ErrTTSUnavailable when the deadline elapses.
+//
+// Side effects:
+//   - Spawns the underlying synthesiser under a bounded context.
+func (a *TTSSynthesiserAdapter) Synthesize(text string) ([]byte, error) {
+	return a.synthesize(context.Background(), text)
+}
+
+// synthesize runs the underlying synthesiser under ctx or the
+// synthesis timeout, whichever ends first.
+//
+// Expected:
+//   - ctx carries the caller's cancellation, if any.
+//   - text is non-empty.
+//
+// Returns:
+//   - The synthesised WAV bytes.
+//   - ErrTTSUnavailable when the deadline elapses.
+//
+// Side effects:
+//   - Spawns the underlying synthesiser.
+func (a *TTSSynthesiserAdapter) synthesize(ctx context.Context, text string) ([]byte, error) {
+	ctx2, cancel := context.WithTimeout(ctx, voiceSynthesisTimeout)
+	defer cancel()
+	wav, err := a.Synthesiser.Synthesize(ctx2, text)
+	if err != nil && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)) && ctx2.Err() != nil {
+		return nil, voice.ErrTTSUnavailable
+	}
+	return wav, err
 }
 
 // handleVoiceTranscribe accepts a multipart WAV upload under the
@@ -66,8 +137,28 @@ type VoiceSynthesiser interface {
 //
 // Side effects:
 //   - Spawns the STT binary and a dispatcher turn.
+//
+// voiceUploadBodySlack allows multipart framing overhead (part
+// headers, boundaries) beyond the raw audio cap so an oversize file
+// reaches the per-file 413 check instead of a generic body error.
+const voiceUploadBodySlack = 64 << 10
+
+// handleVoiceTranscribe accepts a multipart WAV upload under the
+// "audio" field (or a raw WAV body) and dispatches the transcript
+// as an ephemeral turn.
+//
+// Expected:
+//   - w and r are wired by the mux.
+//
+// Returns:
+//   - Writes 200 {"transcript":...} on success.
+//   - 400/413 for invalid or oversized audio, 501/503/500 per the
+//     pipeline outcome.
+//
+// Side effects:
+//   - Spawns the STT binary and a dispatcher turn.
 func (s *Server) handleVoiceTranscribe(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxVoiceUploadBytes)
+	r.Body = http.MaxBytesReader(w, r.Body, maxVoiceUploadBytes+voiceUploadBodySlack)
 	if s.voiceTurnPipeline == nil {
 		writeVoiceError(w, http.StatusNotImplemented, "voice_not_wired", "voice turn pipeline is not wired")
 		return
@@ -80,10 +171,11 @@ func (s *Server) handleVoiceTranscribe(w http.ResponseWriter, r *http.Request) {
 	transcript, err := s.voiceTurnPipeline.DispatchAudio(audio)
 	if err != nil {
 		if errors.Is(err, voice.ErrSTTUnavailable) {
-			writeVoiceError(w, http.StatusServiceUnavailable, "voice_unavailable", err.Error())
+			writeVoiceError(w, http.StatusServiceUnavailable, "voice_unavailable", "speech-to-text is unavailable; install whisper or configure the STT command")
 			return
 		}
-		writeVoiceError(w, http.StatusInternalServerError, "internal", err.Error())
+		slog.Error("voice transcribe dispatch failed", "error", err)
+		writeVoiceError(w, http.StatusInternalServerError, "internal", "transcription failed")
 		return
 	}
 	writeJSON(w, voiceTranscribeResponse{Transcript: transcript})
@@ -119,9 +211,12 @@ func readVoiceUpload(r *http.Request) ([]byte, *voiceHTTPError) {
 			return nil, &voiceHTTPError{http.StatusBadRequest, "invalid_request", "missing 'audio' field"}
 		}
 		defer file.Close()
-		audio, err = io.ReadAll(io.LimitReader(file, maxVoiceUploadBytes))
+		audio, err = io.ReadAll(io.LimitReader(file, maxVoiceUploadBytes+1))
 		if err != nil {
 			return nil, &voiceHTTPError{http.StatusBadRequest, "invalid_request", "audio too large or unreadable"}
+		}
+		if len(audio) > maxVoiceUploadBytes {
+			return nil, &voiceHTTPError{http.StatusRequestEntityTooLarge, "too_large", "audio exceeds the 10 MiB limit"}
 		}
 	} else {
 		body, err := io.ReadAll(r.Body)
@@ -132,6 +227,9 @@ func readVoiceUpload(r *http.Request) ([]byte, *voiceHTTPError) {
 	}
 	if len(audio) == 0 {
 		return nil, &voiceHTTPError{http.StatusBadRequest, "invalid_request", "empty upload; send WAV audio"}
+	}
+	if len(audio) < 12 {
+		return nil, &voiceHTTPError{http.StatusBadRequest, "invalid_request", "audio too short to be a WAV header; send a complete WAV file"}
 	}
 	if !bytes.HasPrefix(audio, []byte("RIFF")) || !bytes.Contains(audio[:12], []byte("WAVE")) {
 		return nil, &voiceHTTPError{http.StatusBadRequest, "invalid_request", "only WAV audio is supported; convert webm/other formats to WAV before uploading"}
@@ -189,7 +287,7 @@ func (s *Server) handlePatchVoiceSettings(w http.ResponseWriter, r *http.Request
 	}
 	updated, err := s.voiceSettings.Patch(patch)
 	if err != nil {
-		writeVoiceError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		writeVoiceError(w, http.StatusBadRequest, "invalid_request", "settings patch rejected: values out of range or invalid tts_model")
 		return
 	}
 	writeJSON(w, updated)
@@ -225,13 +323,18 @@ func (s *Server) handleVoiceTTS(w http.ResponseWriter, r *http.Request) {
 		writeVoiceError(w, http.StatusBadRequest, "invalid_request", "'text' is required")
 		return
 	}
-	wav, err := s.voiceSynthesiser.Synthesize(body.Text)
+	if len(body.Text) > maxVoiceTTSBytes {
+		writeVoiceError(w, http.StatusRequestEntityTooLarge, "too_large", "text exceeds the 64 KiB synthesis limit")
+		return
+	}
+	wav, err := s.voiceSynthesiser.Synthesize(r.Context(), body.Text)
 	if err != nil {
 		if errors.Is(err, voice.ErrPiperUnavailable) || errors.Is(err, voice.ErrTTSUnavailable) {
-			writeVoiceError(w, http.StatusServiceUnavailable, "voice_unavailable", err.Error())
+			writeVoiceError(w, http.StatusServiceUnavailable, "voice_unavailable", "speech synthesis is unavailable; install piper or configure the TTS command")
 			return
 		}
-		writeVoiceError(w, http.StatusInternalServerError, "internal", err.Error())
+		slog.Error("voice tts synthesis failed", "error", err)
+		writeVoiceError(w, http.StatusInternalServerError, "internal", "synthesis failed")
 		return
 	}
 	w.Header().Set("Content-Type", "audio/wav")
@@ -316,7 +419,11 @@ func (s *RuntimeVoiceSettings) Patch(patch voice.SettingsPatch) (voice.Settings,
 		next.TTSEnabled = *patch.TTSEnabled
 	}
 	if patch.TTSModel != nil {
-		next.TTSModel = *patch.TTSModel
+		model := strings.TrimSpace(*patch.TTSModel)
+		if model == "" || len(model) > maxTTSModelLen || !ttsModelRe.MatchString(model) {
+			return s.settings, errors.New("tts_model must be a non-empty path-safe model name of at most 128 characters")
+		}
+		next.TTSModel = model
 	}
 	if patch.LengthScale != nil {
 		if *patch.LengthScale <= 0 || *patch.LengthScale > 3 {
@@ -364,4 +471,20 @@ type PipelineDispatcherAdapter struct {
 //   - Spawns the STT binary and one ephemeral dispatch turn.
 func (a *PipelineDispatcherAdapter) DispatchAudio(audio []byte) (string, error) {
 	return a.Pipeline.DispatchAudio(context.Background(), a.Dispatcher, audio)
+}
+
+// DispatchAudioRequest runs the pipeline's shared STT-and-dispatch
+// path under the caller's request context.
+//
+// Expected:
+//   - ctx is the HTTP request context; audio is non-empty WAV.
+//
+// Returns:
+//   - The dispatched transcript.
+//   - The pipeline's error verbatim on failure.
+//
+// Side effects:
+//   - Spawns the STT binary and one ephemeral dispatch turn.
+func (a *PipelineDispatcherAdapter) DispatchAudioRequest(ctx context.Context, audio []byte) (string, error) {
+	return a.Pipeline.DispatchAudio(ctx, a.Dispatcher, audio)
 }

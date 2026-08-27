@@ -43,6 +43,23 @@ var ErrPiperUnavailable = errors.New(
 		"and configure voice.tts_cmd or FLOWSTATE_VOICE_TTS",
 )
 
+// ErrTTSSynthTooLong is returned when Synthesize is asked to render
+// more text than the synthesis budget allows.
+var ErrTTSSynthTooLong = errors.New("voice: synthesis text exceeds the length budget")
+
+// ErrTTSSynthTooManySentences is returned when Synthesize is asked
+// to render more sentences than the per-request budget allows.
+var ErrTTSSynthTooManySentences = errors.New("voice: synthesis text exceeds the sentence budget")
+
+// MaxSynthesizeText bounds the total text length one Synthesize
+// call accepts, so a single request cannot pin CPU and spawn an
+// unbounded number of piper children.
+const MaxSynthesizeText = 64 << 10
+
+// MaxSynthesizeSentences bounds the sentence count one Synthesize
+// call accepts.
+const MaxSynthesizeSentences = 512
+
 // codeFenceRe matches fenced code blocks (``` or ~~~) so synthesis
 // skips source code entirely.
 var codeFenceRe = regexp.MustCompile("(?s)```.*?```|(?s)~~~.*?~~~")
@@ -259,11 +276,17 @@ func (t *TTSTool) Synthesize(ctx context.Context, text string) ([]byte, error) {
 	if t == nil {
 		return nil, ErrPiperUnavailable
 	}
+	if len(text) > MaxSynthesizeText {
+		return nil, ErrTTSSynthTooLong
+	}
 	cleaned := PreprocessTTS(text)
 	if cleaned == "" {
 		return nil, nil
 	}
 	sentences := splitSentences(cleaned)
+	if len(sentences) > MaxSynthesizeSentences {
+		return nil, ErrTTSSynthTooManySentences
+	}
 	var out bytes.Buffer
 	for _, sentence := range sentences {
 		wav, err := t.synthesizeSentence(ctx, sentence)

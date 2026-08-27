@@ -2,12 +2,14 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/baphled/flowstate/internal/voice"
 )
@@ -80,7 +82,9 @@ type fakeSynthesiser struct {
 	err error
 }
 
-func (f *fakeSynthesiser) Synthesize(string) ([]byte, error) { return f.wav, f.err }
+func (f *fakeSynthesiser) Synthesize(_ context.Context, _ string) ([]byte, error) {
+	return f.wav, f.err
+}
 
 // TestVoiceTTSEndpoint covers happy path, missing text, unwired
 // 501, and synthesiser failure 503.
@@ -179,10 +183,137 @@ func TestVoiceTranscribeUploadCover(t *testing.T) {
 // TestVoiceTranscribeSTTUnavailable asserts the 503 mapping.
 func TestVoiceTranscribeSTTUnavailable(t *testing.T) {
 	srv := newVoiceFEServer(t, WithVoiceTurnPipeline(&fakeTurnPipeline{err: errors.New("wrapped: " + voice.ErrSTTUnavailable.Error())}))
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/voice/transcribe", bytes.NewReader([]byte("RIFFWAVE")))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/voice/transcribe", bytes.NewReader([]byte("RIFFb\x00\x00\x00WAVEfmt ")))
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500 for wrapped (non-sentinel) error", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "wrapped") {
+		t.Fatalf("internal error detail leaked to client: %s", rec.Body.String())
+	}
+}
+
+// TestVoiceTranscribeShortBodyNoPanic asserts that 4-11 byte RIFF
+// bodies are rejected with 400 instead of panicking on the
+// audio[:12] header slice.
+func TestVoiceTranscribeShortBodyNoPanic(t *testing.T) {
+	pipeline := &fakeTurnPipeline{transcript: "x"}
+	srv := newVoiceFEServer(t, WithVoiceTurnPipeline(pipeline))
+	for _, body := range []string{"RIFF", "RIFFWAVE", "RIFFb\x00\x00"} {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/voice/transcribe", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("body %q status = %d, want 400", body, rec.Code)
+		}
+	}
+}
+
+// TestVoiceTranscribeOversizeMultipart413 asserts a multipart upload
+// over the 10 MiB cap is rejected with 413, not silently truncated.
+func TestVoiceTranscribeOversizeMultipart413(t *testing.T) {
+	pipeline := &fakeTurnPipeline{transcript: "x"}
+	srv := newVoiceFEServer(t, WithVoiceTurnPipeline(pipeline))
+	wav := make([]byte, maxVoiceUploadBytes+128)
+	copy(wav, "RIFFb\x00\x00\x00WAVEfmt ")
+
+	var body bytes.Buffer
+	body.WriteString("--X\r\nContent-Disposition: form-data; name=\"audio\"; filename=\"t.wav\"\r\nContent-Type: audio/wav\r\n\r\n")
+	body.Write(wav)
+	body.WriteString("\r\n--X--\r\n")
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/voice/transcribe", &body)
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=X")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", rec.Code)
+	}
+}
+
+// TestVoiceTTSLengthCap413 asserts text over the 64 KiB cap is
+// rejected with 413 before synthesis runs.
+func TestVoiceTTSLengthCap413(t *testing.T) {
+	called := false
+	syn := &recordingSynthesiser{called: &called}
+	srv := newVoiceFEServer(t, WithVoiceTTSSynthesizer(syn))
+	text := strings.Repeat("a", maxVoiceTTSBytes+1)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/voice/tts", strings.NewReader(`{"text":"`+text+`"}`))
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", rec.Code)
+	}
+	if called {
+		t.Fatal("synthesiser was invoked for oversized text")
+	}
+}
+
+// recordingSynthesiser records whether Synthesize was invoked.
+type recordingSynthesiser struct {
+	called *bool
+}
+
+func (r *recordingSynthesiser) Synthesize(context.Context, string) ([]byte, error) {
+	*r.called = true
+	return []byte("RIFFxxxxWAVEdata"), nil
+}
+
+// TestVoiceSettingsPatchTTSModelValidation asserts tts_model patches
+// are validated for emptiness, length, and path safety.
+func TestVoiceSettingsPatchTTSModelValidation(t *testing.T) {
+	store := NewRuntimeVoiceSettings(voice.Settings{TTSModel: "en_GB-alan-medium", LengthScale: 1, NoiseScale: 0.5, SentenceSilence: 0.2})
+	srv := newVoiceFEServer(t, WithVoiceSettings(store))
+	for _, model := range []string{"", "a b", "../etc/passwd", "x/y", "a\x00b", strings.Repeat("m", 129)} {
+		patchBody, _ := json.Marshal(map[string]any{"tts_model": model})
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/voice/settings", bytes.NewReader(patchBody))
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("model %q status = %d, want 400", model, rec.Code)
+		}
+		if got := store.Get().TTSModel; got != "en_GB-alan-medium" {
+			t.Fatalf("model %q mutated settings to %q", model, got)
+		}
+	}
+	patchBody, _ := json.Marshal(map[string]any{"tts_model": "en_US-amy-low"})
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/voice/settings", bytes.NewReader(patchBody))
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("valid model status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	if got := store.Get().TTSModel; got != "en_US-amy-low" {
+		t.Fatalf("valid model not applied, got %q", got)
+	}
+}
+
+// blockingSynthesiser blocks until its context is cancelled, for
+// timeout propagation tests.
+type blockingSynthesiser struct{}
+
+func (blockingSynthesiser) Synthesize(ctx context.Context, _ string) ([]byte, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// TestTTSSynthesiserAdapterTimeout asserts the adapter bounds
+// synthesis with a deadline even under a background context.
+func TestTTSSynthesiserAdapterTimeout(t *testing.T) {
+	adapter := &TTSSynthesiserAdapter{Synthesiser: blockingSynthesiser{}}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := adapter.synthesize(ctx, "hello")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, voice.ErrTTSUnavailable) {
+			t.Fatalf("err = %v, want ErrTTSUnavailable", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("adapter did not enforce the deadline")
 	}
 }
