@@ -9359,6 +9359,9 @@ describe('chatStore - delegation click vs bootstrap restore race', () => {
   it('keeps the click-driven delegated child session when bootstrap completes after the click', async () => {
     // Persisted (parent) session the restore will try to land on.
     window.localStorage.setItem('chat.currentSessionId', 'session-parent')
+    // The restore's view of the session list LACKS the child session,
+    // so an unguarded restore falls to the sessionForAgent (parent)
+    // branch and would clobber the click's selection with the parent.
     vi.mocked(fetchSessions).mockResolvedValue([
       {
         id: 'session-parent',
@@ -9366,15 +9369,6 @@ describe('chatStore - delegation click vs bootstrap restore race', () => {
         title: 'Parent',
         createdAt: '2026-08-27T10:00:00Z',
         updatedAt: '2026-08-27T10:00:00Z',
-        messageCount: 0,
-      },
-      {
-        id: 'session-child-001',
-        agentId: 'executor',
-        parentId: 'session-parent',
-        title: 'Delegated Run',
-        createdAt: '2026-08-27T10:01:00Z',
-        updatedAt: '2026-08-27T10:01:00Z',
         messageCount: 0,
       },
     ])
@@ -9386,6 +9380,12 @@ describe('chatStore - delegation click vs bootstrap restore race', () => {
     )
 
     const store = useChatStore()
+    // Seed the chainId map (as recordChainSession / loadSessions
+    // backfill would) so the click resolves via the chainId hot path
+    // WITHOUT awaiting loadSessions — the click completes while the
+    // restore is still blocked in loadModels.
+    store.chainSessions['chain-1'] = 'session-child-001'
+
     // Start bootstrap, do NOT await — the click fires mid-flight.
     const bootstrapPromise = store.bootstrap()
     const clickPromise = store.loadSessionForDelegation({
@@ -9395,6 +9395,9 @@ describe('chatStore - delegation click vs bootstrap restore race', () => {
     await Promise.all([bootstrapPromise, clickPromise])
 
     // The click-driven selection MUST survive the late restore.
+    // Without the snapshot guard the restore's sessionForAgent
+    // branch overwrites currentSessionId back to 'session-parent'
+    // after its delayed loadModels await resolves.
     expect(store.currentSessionId).toBe('session-child-001')
   })
 
