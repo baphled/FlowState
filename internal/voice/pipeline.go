@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	dispatchpkg "github.com/baphled/flowstate/internal/dispatch"
@@ -81,11 +82,57 @@ func (p *Pipeline) RunTurn(ctx context.Context, d Dispatcher) (string, error) {
 	}
 	defer rec.Cleanup()
 
+	audio, err := os.ReadFile(rec.Path)
+	if err != nil {
+		return "", fmt.Errorf("voice: read recording: %w", err)
+	}
+	return p.DispatchAudio(ctx, d, audio)
+}
+
+// DispatchAudio transcribes caller-supplied WAV audio and dispatches
+// the transcript as a fresh ephemeral turn. It is the shared
+// STT-and-dispatch half of a talk turn, split from host-mic capture
+// so API callers (browser uploads) and the CLI share one path.
+//
+// Expected:
+//   - ctx is non-nil; cancellation aborts the STT child.
+//   - d is a non-nil Dispatcher.
+//   - audio is WAV file bytes; empty audio is a caller error.
+//
+// Returns:
+//   - The transcript that was dispatched.
+//   - ErrSTTUnavailable when no STT binary resolves.
+//   - The dispatcher's error verbatim when dispatch fails.
+//
+// Side effects:
+//   - Spills audio to a temporary WAV, spawns the STT child, and
+//     removes the temporary file on every exit path.
+func (p *Pipeline) DispatchAudio(ctx context.Context, d Dispatcher, audio []byte) (string, error) {
+	if d == nil {
+		return "", errors.New("voice: nil dispatcher")
+	}
+	if len(audio) == 0 {
+		return "", errors.New("voice: empty audio upload")
+	}
+	tmp, err := os.CreateTemp("", "flowstate-voice-audio-*.wav")
+	if err != nil {
+		return "", fmt.Errorf("voice: stage audio: %w", err)
+	}
+	path := tmp.Name()
+	defer os.Remove(path)
+	if _, err := tmp.Write(audio); err != nil {
+		tmp.Close()
+		return "", fmt.Errorf("voice: stage audio: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("voice: stage audio: %w", err)
+	}
+
 	sttTool, err := NewSTTTool(p.STT)
 	if err != nil {
 		return "", err
 	}
-	transcript, err := sttTool.Transcribe(ctx, rec.Path)
+	transcript, err := sttTool.Transcribe(ctx, path)
 	if err != nil {
 		return "", err
 	}

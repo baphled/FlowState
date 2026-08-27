@@ -92,6 +92,9 @@ func (s *STTTool) Transcribe(ctx context.Context, path string) (string, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = nil
 	if err := cmd.Run(); err != nil {
+		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("%w: %s: %w", ErrSTTUnavailable, args[0], err)
+		}
 		return "", fmt.Errorf("voice: stt command %q failed: %w", args[0], err)
 	}
 	transcript := strings.TrimSpace(strings.TrimSpace(stdout.String()))

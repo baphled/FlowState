@@ -99,6 +99,22 @@ type Server struct {
 	// pre-Dispatcher orchestrator path.
 	dispatcher DispatcherService
 
+	// voiceTurnPipeline adapts STT + ephemeral dispatch for the
+	// browser-upload transcribe endpoint. Nil makes POST
+	// /api/v1/voice/transcribe return 501 so the SPA can tell
+	// "not wired" from "STT unavailable".
+	voiceTurnPipeline VoiceTurnDispatcher
+
+	// voiceSettings backs GET/PATCH /api/v1/voice/settings with
+	// in-memory runtime state seeded from the loaded VoiceConfig.
+	// Nil makes both endpoints return 501.
+	voiceSettings VoiceSettingsStore
+
+	// voiceSynthesiser backs POST /api/v1/voice/tts with piper WAV
+	// synthesis for browser playback. Nil makes the endpoint return
+	// 501; synthesis has no espeak-ng fallback by design.
+	voiceSynthesiser VoiceSynthesiser
+
 	// permissionRegistry holds the in-flight ModeAskUser permission
 	// requests. POST /api/v1/sessions/{id}/permission-grant calls
 	// Resolve(...) on this registry to deliver the operator's grant
@@ -239,6 +255,54 @@ func WithSessionManager(mgr *session.Manager) ServerOption {
 //   - None.
 func WithDispatcher(d DispatcherService) ServerOption {
 	return func(s *Server) { s.dispatcher = d }
+}
+
+// WithVoiceTurnPipeline installs the STT-plus-dispatch adapter the
+// browser-upload transcribe endpoint runs. When unset, POST
+// /api/v1/voice/transcribe returns 501.
+//
+// Expected:
+//   - p is a non-nil VoiceTurnDispatcher.
+//
+// Returns:
+//   - A ServerOption that installs the pipeline adapter.
+//
+// Side effects:
+//   - None until handleVoiceTranscribe reads the field.
+func WithVoiceTurnPipeline(p VoiceTurnDispatcher) ServerOption {
+	return func(s *Server) { s.voiceTurnPipeline = p }
+}
+
+// WithVoiceSettings installs the runtime voice settings store for
+// GET/PATCH /api/v1/voice/settings. When unset, both endpoints
+// return 501. The store is in-memory runtime state; values do not
+// persist across restarts.
+//
+// Expected:
+//   - store is a non-nil VoiceSettingsStore.
+//
+// Returns:
+//   - A ServerOption that installs the store.
+//
+// Side effects:
+//   - None until the settings handlers read the field.
+func WithVoiceSettings(store VoiceSettingsStore) ServerOption {
+	return func(s *Server) { s.voiceSettings = store }
+}
+
+// WithVoiceTTSSynthesizer installs the piper-backed synthesiser for
+// POST /api/v1/voice/tts. When unset, the endpoint returns 501.
+//
+// Expected:
+//   - syn is a non-nil VoiceSynthesiser.
+//
+// Returns:
+//   - A ServerOption that installs the synthesiser.
+//
+// Side effects:
+//   - None until handleVoiceTTS reads the field.
+func WithVoiceTTSSynthesizer(syn VoiceSynthesiser) ServerOption {
+	return func(s *Server) { s.voiceSynthesiser = syn }
 }
 
 // WithPermissionRegistry installs the in-process registry of suspended
@@ -1161,6 +1225,9 @@ func (s *Server) setupRoutes() {
 	// Voice plan B6 — local-only transcription endpoint. Multipart WAV
 	// in, transcript JSON out; 503 when no STT binary resolves.
 	s.registerProtected("POST /api/v1/voice/transcribe", s.handleVoiceTranscribe)
+	s.registerProtected("GET /api/v1/voice/settings", s.handleGetVoiceSettings)
+	s.registerProtected("PATCH /api/v1/voice/settings", s.handlePatchVoiceSettings)
+	s.registerProtected("POST /api/v1/voice/tts", s.handleVoiceTTS)
 
 	// Deliverable 2 / 3 of the May 2026 context-accuracy bundle —
 	// runtime-tunable compression threshold + manual /compact

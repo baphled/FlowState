@@ -6,11 +6,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
-	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -835,9 +835,6 @@ func VoiceTTSContext(sc *godog.ScenarioContext) {
 	sc.Step(`^a fake TTS command that writes spoken output$`, func() error { return ttsState.aFakeTTSCommandThatWritesSpokenOutput() })
 	sc.Step(`^a TTS tool configured with that command$`, func() error { return ttsState.aTTSToolConfiguredWithThatCommand() })
 	sc.Step(`^no TTS command is configured$`, func() error { return ttsState.noTTSCommandIsConfigured() })
-	sc.Step(`^a TTS command pointing at a nonexistent binary$`, func() error {
-		return ttsState.aTTSCommandPointingAtANonexistentBinary()
-	})
 	sc.Step(`^I speak the reply "([^"]*)"$`, func(reply string) error { return ttsState.iSpeakTheReply(reply) })
 	sc.Step(`^the TTS command receives the reply text$`, func() error { return ttsState.theTTSCommandReceivesTheReplyText() })
 	sc.Step(`^no TTS command is invoked$`, func() error { return ttsState.noTTSCommandIsInvoked() })
@@ -982,20 +979,6 @@ func VoiceAPIContext(sc *godog.ScenarioContext) {
 		return ctx, nil
 	})
 
-	sc.Step(`^I POST a WAV file to (/api/v1/voice/transcribe)$`, func(path string) error {
-		return voiceAPI.iPOSTAWAVFileToTheTranscribeEndpoint(path)
-	})
-	sc.Step(`^I POST no audio to (/api/v1/voice/transcribe)$`, func(path string) error {
-		return voiceAPI.iPOSTNoAudioToTheTranscribeEndpoint(path)
-	})
-	sc.Step(`^a fake STT command that emits "([^"]*)"$`, func(transcript string) error {
-		return voiceAPI.aFakeSTTCommandThatEmits(transcript)
-	})
-	sc.Step(`^no STT command is configured$`, func() error { return voiceAPI.noSTTCommandIsConfiguredForAPI() })
-	sc.Step(`^the response status is (\d+)$`, func(status int) error { return voiceAPI.theResponseStatusIs(status) })
-	sc.Step(`^the response contains the transcript "([^"]*)"$`, func(transcript string) error {
-		return voiceAPI.theResponseContainsTheTranscript(transcript)
-	})
 }
 
 // aFakeSTTCommandThatEmits installs a fake STT binary emitting the
