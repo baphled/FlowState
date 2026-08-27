@@ -13,14 +13,14 @@ Feature: Voice TTS synthesis for the frontend
   @voice @fe
   Scenario: Synthesising strips markdown and expands symbols
     Given a fake piper command that writes WAV bytes to stdout
-    And a TTS tool configured with that command
+    And a TTS tool configured with that command and defaults
     When I synthesise the text "use `go test`:\n```go\nfmt.Println(1)\n```\nfoo -> bar"
     Then the synthesiser receives the sentence "use go test foo to bar"
 
   @voice @fe
   Scenario: Synthesising splits long replies into sentences
     Given a fake piper command that writes WAV bytes to stdout and logs its stdin
-    And a TTS tool configured with that command
+    And a TTS tool configured with that command and defaults
     When I synthesise the text "First sentence here. Second sentence follows!"
     Then the piper command is invoked once per sentence
     And the synthesised audio is the concatenation of per-sentence WAV bytes
@@ -28,7 +28,7 @@ Feature: Voice TTS synthesis for the frontend
   @voice @fe
   Scenario: Synthesis fails clearly when piper is unavailable
     Given a TTS command pointing at a nonexistent binary
-    And a TTS tool configured with that command
+    And a TTS tool configured with that command and defaults
     When I synthesise the text "hello"
     Then synthesis fails with an ErrTTSUnavailable error
 
