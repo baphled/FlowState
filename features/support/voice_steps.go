@@ -1031,3 +1031,110 @@ func (v *voiceAPIState) noSTTCommandIsConfiguredForAPI() error {
 	_ = os.Unsetenv("FLOWSTATE_VOICE_STT")
 	return nil
 }
+
+// theTalkCommandDispatchesWithSession runs one turn pinned to a
+// session id through the dispatcher spy.
+//
+// Expected:
+//   - sessionID is the resume target.
+//
+// Returns:
+//   - An error when dispatch fails.
+//
+// Side effects:
+//   - Records the spy on the state and dispatches.
+func (v *voiceTalkState) theTalkCommandDispatchesWithSession(sessionID string) error {
+	if v.spy == nil {
+		v.spy = &dispatchSpy{}
+	}
+	req := dispatchpkg.DispatchRequest{
+		SessionID:    sessionID,
+		AgentID:      "worker",
+		Content:      v.transcript,
+		ScanMentions: false,
+	}
+	handle, err := v.spy.DispatchEphemeral(context.Background(), req, nil)
+	if err != nil {
+		return err
+	}
+	return <-handle.Done
+}
+
+// theDispatchRequestCarriesSession asserts the recorded request's
+// session anchor.
+//
+// Expected:
+//   - sessionID is the expected SessionID.
+//
+// Returns:
+//   - An error when no request was recorded or the id differs.
+func (v *voiceTalkState) theDispatchRequestCarriesSession(sessionID string) error {
+	if len(v.spy.requests) == 0 {
+		return fmt.Errorf("no dispatch requests recorded")
+	}
+	if got := v.spy.requests[0].SessionID; got != sessionID {
+		return fmt.Errorf("SessionID = %q, want %q", got, sessionID)
+	}
+	return nil
+}
+
+// theTalkCommandDispatchesOneTurn dispatches the scenario transcript
+// with mention scanning armed — the F2 @-mention passthrough shape.
+//
+// Returns:
+//   - An error when dispatch fails.
+//
+// Side effects:
+//   - Records the spy on the state and dispatches.
+func (v *voiceTalkState) theTalkCommandDispatchesOneTurn() error {
+	if v.spy == nil {
+		v.spy = &dispatchSpy{}
+	}
+	req := dispatchpkg.DispatchRequest{
+		AgentID:      "worker",
+		Content:      v.transcript,
+		ScanMentions: true,
+	}
+	handle, err := v.spy.DispatchEphemeral(context.Background(), req, nil)
+	if err != nil {
+		return err
+	}
+	return <-handle.Done
+}
+
+// theDispatchRequestCarriesScanMentionsTrue asserts the recorded
+// request scanned for @-mentions.
+//
+// Returns:
+//   - An error when ScanMentions is false on the first request.
+func (v *voiceTalkState) theDispatchRequestCarriesScanMentionsTrue() error {
+	if len(v.spy.requests) == 0 {
+		return fmt.Errorf("no dispatch requests recorded")
+	}
+	if !v.spy.requests[0].ScanMentions {
+		return fmt.Errorf("ScanMentions = false, want true")
+	}
+	return nil
+}
+
+// VoiceResumeContext registers the @f2 session-resume steps.
+//
+// Expected:
+//   - sc is a valid Godog ScenarioContext.
+//
+// Side effects:
+//   - Registers all @f2 scenario steps with the context.
+func VoiceResumeContext(sc *godog.ScenarioContext) {
+	sc.Step(`^the talk command dispatches with session "([^"]*)"$`, func(sessionID string) error {
+		return voiceCLIState.theTalkCommandDispatchesWithSession(sessionID)
+	})
+	sc.Step(`^the talk command dispatches one turn$`, func() error {
+		return voiceCLIState.theTalkCommandDispatchesOneTurn()
+	})
+	sc.Step(`^the dispatch request carries session "([^"]*)"$`, func(sessionID string) error {
+		return voiceCLIState.theDispatchRequestCarriesSession(sessionID)
+	})
+	sc.Step(`^the dispatch request carries ScanMentions true$`, func() error {
+		return voiceCLIState.theDispatchRequestCarriesScanMentionsTrue()
+	})
+}
