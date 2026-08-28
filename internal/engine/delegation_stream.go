@@ -836,6 +836,18 @@ func (d *DelegateTool) executeSync(
 					"tool_calls", result.toolCalls,
 					"last_tool", result.lastTool,
 				)
+				completedAt = time.Now().UTC()
+				baseInfo.ToolCalls = result.toolCalls
+				baseInfo.LastTool = result.lastTool
+				baseInfo.CompletedAt = &completedAt
+				hasOutput = false
+				emptyErr := fmt.Errorf("%w", ErrEmptyDelegateResponse)
+				d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
+				d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, emptyErr.Error(), target.loadSkills))
+				failChildTurnIfOwned(emptyErr)
+				d.recordChildModelAttribution(delegateSessionID, providerName, modelName)
+				d.closeSessionIfManaged(delegateSessionID)
+				return tool.Result{}, emptyErr
 			}
 			break
 		}
@@ -1034,11 +1046,15 @@ func (d *DelegateTool) runStreamWithLegacyBreaker(delegateCtx context.Context, t
 	}
 	chunks = d.withHarnessEvents(delegateCtx, target, chunks, nil, false)
 	chunks = d.wrapWithAccumulator(delegateCtx, chunks, sessionIDFromContext(delegateCtx), target.agentID)
-	res, collectErr := d.collectWithProgress(delegateCtx, chunks, time.Now())
+	res, collectErr := d.collectWithPolicy(delegateCtx, chunks, time.Now())
 	*result = res
 	if collectErr != nil {
 		d.circuitBreaker.RecordFailure()
 		return collectErr
+	}
+	if emptyErr := failClosedOnEmpty(res); emptyErr != nil {
+		d.circuitBreaker.RecordFailure()
+		return emptyErr
 	}
 	d.circuitBreaker.RecordSuccess()
 	return nil
@@ -1091,7 +1107,7 @@ func (d *DelegateTool) streamAndCollect(ctx context.Context, target delegationTa
 	}
 	chunks = d.withHarnessEvents(ctx, target, chunks, nil, false)
 	chunks = d.wrapWithAccumulator(ctx, chunks, sessionIDFromContext(ctx), target.agentID)
-	res, collectErr := d.collectWithProgress(ctx, chunks, time.Now())
+	res, collectErr := d.collectWithPolicy(ctx, chunks, time.Now())
 	*result = res
 	return collectErr
 }
@@ -1627,6 +1643,14 @@ func (d *DelegateTool) collectDelegationResult(chunks <-chan provider.StreamChun
 //
 // Side effects:
 //   - Emits ProgressEvents every 5 tool calls or every 5 seconds via deliverProgressEvent.
+//
+// Dispatch-status integrity (Aug 2026): production call sites invoke this
+// through collectWithPolicy, which (1) detaches collection from parent
+// cancellation via context.WithoutCancel so completed child work reports
+// success instead of "context canceled", and (2) fails closed with
+// ErrEmptyDelegateResponse when a drained stream produced no substantive
+// output. Both fixes close the false-negative / false-positive seams the
+// delegation_completion_integrity.feature scenarios pin.
 func (d *DelegateTool) collectWithProgress(
 	ctx context.Context,
 	chunks <-chan provider.StreamChunk,
