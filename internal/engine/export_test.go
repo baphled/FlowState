@@ -455,3 +455,13 @@ func (e *Engine) SetTodoStoreForTest(s todo.Store) {
 func DeduplicateToolCallsForTest(toolCalls []*provider.ToolCall) (unique []*provider.ToolCall, mapping []int) {
 	return deduplicateToolCalls(toolCalls)
 }
+
+// TeeParentSendCountForTest exposes the tee forwarder's parent-send counter
+// so batching specs can pin the reduced select-send count without timing
+// assertions.
+//
+// Returns: the number of parent-stream sends the last teeToParentStream
+// forwarder performed.
+func TeeParentSendCountForTest() int64 {
+	return teeParentSendCount()
+}

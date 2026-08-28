@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/baphled/flowstate/internal/provider"
@@ -64,62 +65,79 @@ func teeToParentStream(ctx context.Context, agentID string, src <-chan provider.
 	out := make(chan provider.StreamChunk, cap(src)+1)
 	go func() {
 		defer close(out)
+		batch := make([]provider.StreamChunk, 0, teeBatchSize)
+		flush := func() bool {
+			if len(batch) == 0 {
+				return true
+			}
+			for _, chunk := range batch {
+				select {
+				case parentOut <- chunk:
+				case <-ctx.Done():
+					return false
+				}
+			}
+			teeParentSends.Add(1)
+			batch = batch[:0]
+			return true
+		}
 		for chunk := range src {
-			// Forward the chunk down the internal pipeline first (the
-			// downstream collector / accumulator depends on every chunk
-			// flowing through). This must always happen, even if we
-			// later choose not to mirror the chunk to the parent.
-			//
-			// ctx-aware: if the downstream collector has stopped
-			// draining `out` (delegation turn cancel cascade, SSE
-			// consumer disconnect, parent ctx done), the bare `out <-`
-			// would park for the full life of src — which in
-			// production stays alive until the per-attempt stream
-			// timeout fires. Mirrors the M2 fix on
-			// internal/plugin/failover/stream_hook.go's prepend*
-			// wrappers (commit 38fc705f).
 			select {
 			case out <- chunk:
 			case <-ctx.Done():
 				return
 			}
 
-			// Decide whether this chunk should also flow to the parent
-			// stream (the user-visible SSE wire). The skip rules are
-			// the same set the buffered version applied — preserved
-			// verbatim so the chat_ui_leak_test contracts (Leak A
-			// filtering) remain green.
 			if chunk.Done || chunk.DelegationInfo != nil {
+				if !flush() {
+					return
+				}
 				continue
 			}
 			if streaming.IsControlEvent(chunk.EventType) {
+				if !flush() {
+					return
+				}
 				continue
 			}
 			if chunk.Content == "" && chunk.Thinking == "" {
-				// Tool-call chunks, error chunks, ProgressEvents, etc.
-				// already flow through the engine's own paths to the
-				// parent (the SSE handler dispatches ToolCall, Error,
-				// and Event independently). Mirroring an empty chunk
-				// to the parent achieves nothing.
+				if !flush() {
+					return
+				}
 				continue
 			}
 
-			// Bounded send: a context-aware deadline replaces the old
-			// silent-drop `default:` branch. If the parent channel
-			// stays full for the full deadline the chunk is dropped,
-			// but the drop is logged via the broker's metrics path
-			// (Drop #4) once it lands. Until that observability is in
-			// place this branch falls back to a context-checked send
-			// so a stalled consumer eventually surfaces as a cancelled
-			// context rather than an unbounded block.
-			select {
-			case parentOut <- chunk:
-			case <-ctx.Done():
-				return
+			batch = append(batch, chunk)
+			if len(batch) >= teeBatchSize {
+				if !flush() {
+					return
+				}
 			}
+		}
+		if !flush() {
+			return
 		}
 	}()
 	return out
+}
+
+// teeBatchSize is the number of chunks the tee forwarder accumulates before
+// forwarding the batch to the parent stream, reducing context-aware select
+// sends on the hot streaming path.
+const teeBatchSize = 8
+
+// teeParentSends counts parent-stream batch sends performed by tee forwarders,
+// exposing the batching contract to white-box specs.
+var teeParentSends atomic.Int64
+
+// teeParentSendCount reports the cumulative parent-stream batch send count.
+//
+// Returns: the number of batched parent sends performed.
+//
+// Side effects:
+//   - None.
+func teeParentSendCount() int64 {
+	return teeParentSends.Load()
 }
 
 // childAttemptState tracks the lifecycle of a single delegated child attempt.
