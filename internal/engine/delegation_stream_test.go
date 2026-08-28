@@ -135,9 +135,10 @@ var _ = Describe("teeToParentStream batching", func() {
 			case <-parentOut:
 				count++
 			default:
+				goto drained
 			}
-			break
 		}
+	drained:
 		Expect(count).To(BeNumerically("<=", 16), "parent must never see duplicated or fabricated chunks")
 	})
 })
