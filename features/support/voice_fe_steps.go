@@ -432,7 +432,7 @@ type feSynthesiser struct {
 }
 
 // Synthesize returns the fixture bytes or error.
-func (f *feSynthesiser) Synthesize(string) ([]byte, error) { return f.wav, f.err }
+func (f *feSynthesiser) Synthesize(context.Context, string) ([]byte, error) { return f.wav, f.err }
 
 // iPOSTTextToTTS posts the text payload.
 func (v *voiceFEState) iPOSTTextToTTS(text string) error {
