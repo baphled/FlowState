@@ -465,7 +465,66 @@ type Turn struct {
 	// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
 	//   Permission Mode ModeAskUser Extension (May 2026).md §17.1.
 	PermissionRequests []TurnPermissionRequest `json:"permission_requests,omitempty"`
+
+	// QuestionRequests mirrors the in-flight + recently-resolved
+	// clarifying questions for this Turn (blocking question tool).
+	// Populated by UpsertQuestionRequest when the question tool
+	// publishes EventQuestionRequired, and by the same Upsert when
+	// the api server's question subscribers observe
+	// EventQuestionAnswered / EventQuestionTimeout.
+	//
+	// Two-phase lifecycle per entry:
+	//   - Status == TurnQuestionStatusPending: the question tool is
+	//     suspended; the chat UI renders the inline QuestionPrompt.
+	//   - Status == TurnQuestionStatusAnswered / Timeout: the
+	//     resolution is broadcast onto the long-poll wire so both tabs
+	//     observe the disposition and the FE diff removes the prompt.
+	//
+	// Empty (nil) until the first question.required fires on this
+	// Turn. Frozen at the final set once the Turn reaches a terminal
+	// state.
+	QuestionRequests []TurnQuestionRequest `json:"question_requests,omitempty"`
 }
+
+// TurnQuestionRequest is the wire shape of a single in-flight or
+// recently-resolved clarifying question surfaced on the Turn's
+// long-poll payload. Mirrors the field names and JSON tags the Vue
+// chatStore reads via the poll-diff.
+//
+// RequestID is the registry key the operator's HTTP answer handler
+// calls Resolve(...) on; Question + Options + AllowMultiple are the
+// inline prompt's visual fields.
+type TurnQuestionRequest struct {
+	RequestID     string   `json:"request_id"`
+	ToolName      string   `json:"tool_name"`
+	AgentName     string   `json:"agent_name,omitempty"`
+	Question      string   `json:"question"`
+	Options       []string `json:"options,omitempty"`
+	AllowMultiple bool     `json:"allow_multiple,omitempty"`
+	Status        string   `json:"status"`
+	// Answers carries the operator's selections on a resolved entry.
+	// Empty while Status == pending and on a Timeout resolution.
+	Answers []string `json:"answers,omitempty"`
+}
+
+// Question request status values surfaced on TurnQuestionRequest.Status.
+// The vocabulary is closed and matches the three lifecycle states the
+// question tool + HTTP answer handler drive between.
+const (
+	// TurnQuestionStatusPending indicates the question tool is
+	// suspended awaiting the operator's answer. The FE renders the
+	// inline QuestionPrompt; the entry remains in
+	// chatStore.pendingQuestions until status flips.
+	TurnQuestionStatusPending = "pending"
+	// TurnQuestionStatusAnswered indicates the operator submitted an
+	// answer. Answers carries the selections.
+	TurnQuestionStatusAnswered = "answered"
+	// TurnQuestionStatusTimeout indicates the suspension timer fired
+	// with no operator response. The suspended tool call resumes with
+	// a clear no-answer result; the FE may render the entry
+	// distinctly from an answer.
+	TurnQuestionStatusTimeout = "timeout"
+)
 
 // TurnPermissionRequest is the wire shape of a single in-flight or
 // recently-resolved permission request surfaced on the Turn's long-poll
@@ -1725,6 +1784,127 @@ func permissionRequestsDiffer(live, baseline []TurnPermissionRequest) bool {
 	return false
 }
 
+// questionRequestsDiffer reports whether the live QuestionRequests
+// slice differs from the caller's baseline. Comparison considers
+// length, position, and per-entry field equality — length growth (new
+// pending question) AND per-entry Status flips (pending → answered /
+// timeout) BOTH count as differences so a single answer in one tab
+// wakes the long-poll wait in every other tab, mirroring the
+// permission R5 cross-tab guard.
+//
+// UpsertQuestionRequest preserves slice order on replace-in-place, so
+// a baseline captured at moment T against a live snapshot at T+1
+// reads the same indices for the same request_ids. Used by
+// WaitForChange's predicate.
+//
+// Expected: parameters for questionRequestsDiffer.
+// Returns: result of questionRequestsDiffer.
+// Side effects: None.
+func questionRequestsDiffer(live, baseline []TurnQuestionRequest) bool {
+	if len(live) != len(baseline) {
+		return true
+	}
+	for i := range live {
+		if !questionRequestEqual(live[i], baseline[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+// questionRequestEqual reports field-equality across two
+// TurnQuestionRequest values including the slice-typed Options and
+// Answers fields, which Go's == operator would compare by reference.
+//
+// Expected: parameters for questionRequestEqual.
+// Returns: result of questionRequestEqual.
+// Side effects: None.
+func questionRequestEqual(a, b TurnQuestionRequest) bool {
+	if a.RequestID != b.RequestID ||
+		a.ToolName != b.ToolName ||
+		a.AgentName != b.AgentName ||
+		a.Question != b.Question ||
+		a.AllowMultiple != b.AllowMultiple ||
+		a.Status != b.Status {
+		return false
+	}
+	if len(a.Options) != len(b.Options) {
+		return false
+	}
+	for i := range a.Options {
+		if a.Options[i] != b.Options[i] {
+			return false
+		}
+	}
+	if len(a.Answers) != len(b.Answers) {
+		return false
+	}
+	for i := range a.Answers {
+		if a.Answers[i] != b.Answers[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// UpsertQuestionRequest writes a TurnQuestionRequest onto a Running
+// Turn's QuestionRequests slice. If an entry with the same RequestID
+// already exists the entry is replaced in place (preserving slice
+// order so the FE's positional diff against a baseline behaves
+// deterministically); otherwise the entry is appended.
+//
+// The replace-in-place semantics underwrite the cross-tab guard: the
+// bus subscriber resolves an in-flight pending entry to its terminal
+// Status (answered / timeout) by calling Upsert with the same
+// RequestID — both tabs' long-poll waits wake on the broadcast and
+// observe the status flip, and the FE's diff removes the entry from
+// `pendingQuestions` on the non-pending value.
+//
+// No-op semantics mirror UpsertPermissionRequest:
+//   - empty turnID — silent return.
+//   - unknown turnID — silent return (tolerates a late event-bus tap
+//     after the Turn already terminated).
+//   - non-Running turnID — silent return.
+//   - empty req.RequestID — silent return.
+//
+// Broadcast gate: fires when the entry's value DIFFERS from any
+// existing entry with the same RequestID (or when the entry is new).
+// Identical-payload double-Upsert is a no-broadcast.
+//
+// Concurrency: acquires r.mu via Lock.
+//
+// Expected: parameters for UpsertQuestionRequest.
+// Returns: result of UpsertQuestionRequest.
+// Side effects: None.
+func (r *Registry) UpsertQuestionRequest(turnID string, req TurnQuestionRequest) {
+	if turnID == "" || req.RequestID == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	t, ok := r.byID[turnID]
+	if !ok {
+		return
+	}
+	if t.Status != StatusRunning {
+		return
+	}
+
+	for i := range t.QuestionRequests {
+		if t.QuestionRequests[i].RequestID == req.RequestID {
+			if questionRequestEqual(t.QuestionRequests[i], req) {
+				return
+			}
+			t.QuestionRequests[i] = req
+			r.broadcastChangeLocked()
+			return
+		}
+	}
+	t.QuestionRequests = append(t.QuestionRequests, req)
+	r.broadcastChangeLocked()
+}
+
 // UpsertPermissionRequest writes a TurnPermissionRequest onto a Running
 // Turn's PermissionRequests slice. If an entry with the same RequestID
 // already exists the entry is replaced in place (preserving slice
@@ -1868,6 +2048,9 @@ func (r *Registry) UpsertPermissionRequest(turnID string, req TurnPermissionRequ
 //     slice. Wake on length growth OR any per-entry field change
 //     (Status flip on grant / deny / timeout is the cross-tab R5
 //     signal — Permission Mode ModeAskUser Extension plan §17.1).
+//   - lastQuestionRequests — caller's last-observed QuestionRequests
+//     slice. Wake on length growth OR any per-entry field change
+//     (Status flip on answered / timeout is the cross-tab signal).
 //   - timeout — max wait duration. A zero or negative timeout means
 //     "evaluate the predicate once and return immediately".
 //
@@ -1896,6 +2079,7 @@ func (r *Registry) WaitForChange(
 	lastGateFailuresLen int,
 	lastCriticalError *TurnCriticalError,
 	lastPermissionRequests []TurnPermissionRequest,
+	lastQuestionRequests []TurnQuestionRequest,
 	timeout time.Duration,
 ) (Turn, bool) {
 	// Wall-clock deadline (NOT r.clock()) — the test fakes r.clock to
@@ -1924,6 +2108,7 @@ func (r *Registry) WaitForChange(
 			len(t.GateFailures) > lastGateFailuresLen ||
 			criticalErrorDiffers(t.CriticalError, lastCriticalError) ||
 			permissionRequestsDiffer(t.PermissionRequests, lastPermissionRequests) ||
+			questionRequestsDiffer(t.QuestionRequests, lastQuestionRequests) ||
 			t.Status != StatusRunning {
 			snap := r.snapshotLocked(t)
 			r.mu.Unlock()

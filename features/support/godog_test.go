@@ -39,6 +39,9 @@ func getOptions() *godog.Options {
 func TestFeatures(t *testing.T) {
 	opts := getOptions()
 	opts.Paths = []string{"../"}
+	if p := os.Getenv("GODOG_PATHS"); p != "" {
+		opts.Paths = []string{p}
+	}
 	opts.TestingT = t
 
 	suite := godog.TestSuite{
@@ -92,6 +95,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterVaultIndexSyncSteps(ctx)
 	RegisterVaultQueryCollectionSteps(ctx)
 	RegisterTodoSteps(ctx)
+	RegisterQuestionSteps(ctx)
 	RegisterMCPServerLifecycleSteps(ctx)
 	RegisterGateAmendmentSteps(ctx)
 	RegisterEngineSteps(ctx)

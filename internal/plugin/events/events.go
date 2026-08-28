@@ -2067,3 +2067,134 @@ func NewPermissionTimeoutEvent(data PermissionResolutionEventData, ts ...time.Ti
 		Data:      data,
 	}
 }
+
+// QuestionRequiredEventData holds the metadata published when the
+// question tool suspends awaiting the operator's answer. RequestID is
+// the registry key the question-answer HTTP handler calls Resolve on.
+type QuestionRequiredEventData struct {
+	RequestID     string
+	ToolName      string
+	Question      string
+	Options       []string
+	AllowMultiple bool
+	SessionID     string
+	ChainID       string
+}
+
+// MarshalJSON serialises QuestionRequiredEventData for the eventlogger
+// JSONL stream.
+//
+// Expected: parameters for MarshalJSON.
+// Returns: result of MarshalJSON.
+// Side effects: None.
+func (d QuestionRequiredEventData) MarshalJSON() ([]byte, error) {
+	type payload struct {
+		RequestID     string   `json:"request_id"`
+		ToolName      string   `json:"tool_name,omitempty"`
+		Question      string   `json:"question"`
+		Options       []string `json:"options,omitempty"`
+		AllowMultiple bool     `json:"allow_multiple,omitempty"`
+		SessionID     string   `json:"session_id,omitempty"`
+		ChainID       string   `json:"chain_id,omitempty"`
+	}
+	return json.Marshal(payload(d))
+}
+
+// QuestionRequiredEvent is the bus event published when the question
+// tool registers a pending question.
+type QuestionRequiredEvent struct {
+	BaseEvent
+	Data QuestionRequiredEventData
+}
+
+// NewQuestionRequiredEvent constructs a QuestionRequiredEvent stamped
+// with the canonical event-type constant.
+//
+// Expected: parameters for NewQuestionRequiredEvent.
+// Returns: result of NewQuestionRequiredEvent.
+// Side effects: None.
+func NewQuestionRequiredEvent(data QuestionRequiredEventData, ts ...time.Time) *QuestionRequiredEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &QuestionRequiredEvent{
+		BaseEvent: BaseEvent{eventType: EventQuestionRequired, timestamp: t},
+		Data:      data,
+	}
+}
+
+// QuestionAnsweredEventData is the shared payload for the terminal
+// events of a question-request lifecycle: answered and timeout.
+// Answers is empty on timeout.
+type QuestionAnsweredEventData struct {
+	RequestID string
+	SessionID string
+	ToolName  string
+	Question  string
+	Answers   []string
+}
+
+// MarshalJSON serialises QuestionAnsweredEventData for the JSONL
+// recording stream.
+//
+// Expected: parameters for MarshalJSON.
+// Returns: result of MarshalJSON.
+// Side effects: None.
+func (d QuestionAnsweredEventData) MarshalJSON() ([]byte, error) {
+	type payload struct {
+		RequestID string   `json:"request_id"`
+		SessionID string   `json:"session_id,omitempty"`
+		ToolName  string   `json:"tool_name,omitempty"`
+		Question  string   `json:"question,omitempty"`
+		Answers   []string `json:"answers,omitempty"`
+	}
+	return json.Marshal(payload(d))
+}
+
+// QuestionAnsweredEvent is published when the operator answers a
+// suspended question.
+type QuestionAnsweredEvent struct {
+	BaseEvent
+	Data QuestionAnsweredEventData
+}
+
+// NewQuestionAnsweredEvent constructs a QuestionAnsweredEvent.
+//
+// Expected: parameters for NewQuestionAnsweredEvent.
+// Returns: result of NewQuestionAnsweredEvent.
+// Side effects: None.
+func NewQuestionAnsweredEvent(data QuestionAnsweredEventData, ts ...time.Time) *QuestionAnsweredEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &QuestionAnsweredEvent{
+		BaseEvent: BaseEvent{eventType: EventQuestionAnswered, timestamp: t},
+		Data:      data,
+	}
+}
+
+// QuestionTimeoutEvent is published when the question suspension
+// window elapses with no operator answer. The suspended tool call
+// resumes with a clear no-answer result.
+type QuestionTimeoutEvent struct {
+	BaseEvent
+	Data QuestionAnsweredEventData
+}
+
+// NewQuestionTimeoutEvent constructs a QuestionTimeoutEvent.
+//
+// Expected: parameters for NewQuestionTimeoutEvent.
+// Returns: result of NewQuestionTimeoutEvent.
+// Side effects: None.
+func NewQuestionTimeoutEvent(data QuestionAnsweredEventData, ts ...time.Time) *QuestionTimeoutEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &QuestionTimeoutEvent{
+		BaseEvent: BaseEvent{eventType: EventQuestionTimeout, timestamp: t},
+		Data:      data,
+	}
+}
