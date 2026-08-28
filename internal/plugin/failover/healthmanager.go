@@ -12,6 +12,9 @@ import (
 const (
 	healthScoreFailureWeight = uint64(1) << 32
 	healthScoreMaxAge        = uint64(^uint32(0))
+
+	persistDebounceInterval = 5 * time.Second
+	persistMutationLimit    = 10
 )
 
 // healthEntry holds per-provider/model rate-limit health state.
@@ -36,6 +39,9 @@ type HealthManager struct {
 	mu          sync.RWMutex
 	data        map[ProviderModel]healthEntry
 	persistPath string
+	dirty       bool
+	mutations   int
+	lastPersist time.Time
 }
 
 // NewHealthManager creates a new HealthManager instance.
@@ -54,11 +60,75 @@ func NewHealthManager() *HealthManager {
 	}
 }
 
+// Flush persists any unsaved mutations immediately. Safe to call
+// repeatedly; a no-op when no mutations are pending since the last
+// persist. Intended for shutdown paths and tests.
+//
+// Expected: none.
+// Returns: an error if persisting to disk fails, nil otherwise.
+// Side effects: writes the health state file when dirty.
+func (hm *HealthManager) Flush() error {
+	hm.mu.Lock()
+	defer hm.mu.Unlock()
+	if !hm.dirty {
+		return nil
+	}
+	snapshot := make(map[ProviderModel]healthEntry, len(hm.data))
+	for k, v := range hm.data {
+		snapshot[k] = v
+	}
+	if err := hm.PersistState(hm.persistPath, snapshot); err != nil {
+		return err
+	}
+	hm.dirty = false
+	hm.mutations = 0
+	hm.lastPersist = time.Now()
+	return nil
+}
+
+// Stop performs a final flush of any pending mutations and releases
+// persistence resources. Intended for shutdown paths; the manager
+// remains usable afterwards but callers should treat it as terminal.
+//
+// Returns: an error if the final persist fails, nil otherwise.
+// Side effects: writes the health state file when dirty.
+func (hm *HealthManager) Stop() error {
+	return hm.Flush()
+}
+
+// maybePersistLocked flushes state to disk only when the debounce
+// interval has elapsed or the mutation budget is exhausted, so that
+// MarkRateLimited avoids a synchronous marshal-and-rename on every
+// rate-limit event. Callers must hold hm.mu.
+//
+// Expected: callers hold hm.mu exclusively.
+// Returns: nothing.
+// Side effects: may write the persist file and reset the debounce counters.
+func (hm *HealthManager) maybePersistLocked() {
+	hm.dirty = true
+	hm.mutations++
+	if hm.lastPersist.IsZero() {
+		hm.lastPersist = time.Now()
+	}
+	if hm.mutations < persistMutationLimit && time.Since(hm.lastPersist) < persistDebounceInterval {
+		return
+	}
+	snapshot := make(map[ProviderModel]healthEntry, len(hm.data))
+	for k, v := range hm.data {
+		snapshot[k] = v
+	}
+	if err := hm.PersistState(hm.persistPath, snapshot); err == nil {
+		hm.dirty = false
+		hm.mutations = 0
+		hm.lastPersist = time.Now()
+	}
+}
+
 // SetPersistPath updates the path used when persisting rate-limit state.
 //
 // Expected: path is a valid filesystem path writable by the process.
 // Returns: nothing.
-// Side effects: updates the persist path used on next MarkRateLimited call.
+// Side effects: updates the persist path used on next flush.
 func (hm *HealthManager) SetPersistPath(path string) {
 	hm.mu.Lock()
 	hm.persistPath = path
@@ -160,6 +230,7 @@ func (hm *HealthManager) ResetProviderHealth(provider, model string) error {
 	for k, v := range hm.data {
 		snapshot[k] = v
 	}
+	hm.dirty = true
 	hm.mu.Unlock()
 	return hm.PersistState(hm.persistPath, snapshot)
 }
@@ -276,6 +347,7 @@ func (hm *HealthManager) MarkRateLimited(provider, model string, retryAfter time
 			entry.consecutiveFails = 1
 		}
 		hm.data[key] = entry
+		hm.maybePersistLocked()
 		hm.mu.Unlock()
 		return
 	}
@@ -316,14 +388,8 @@ func (hm *HealthManager) MarkRateLimited(provider, model string, retryAfter time
 	}
 
 	hm.data[key] = newEntry
-	snapshot := make(map[ProviderModel]healthEntry, len(hm.data))
-	for k, v := range hm.data {
-		snapshot[k] = v
-	}
+	hm.maybePersistLocked()
 	hm.mu.Unlock()
-	if err := hm.PersistState(hm.persistPath, snapshot); err != nil {
-		_ = err
-	}
 }
 
 // RateLimitedUntil reports the wall-clock time at which the

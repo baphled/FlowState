@@ -3444,16 +3444,21 @@ func (a *App) ConstructionOptions() NewOptions {
 	return a.construction
 }
 
-// Shutdown releases resources held by the App, closing all MCP client
-// connections. Safe to call multiple times and on a nil mcpClient.
+// Shutdown releases resources held by the App, flushing any pending
+// provider-health persistence and closing all MCP client connections.
+// Safe to call multiple times and on a nil mcpClient.
 //
 // Returns:
 //   - An error if disconnection fails, nil otherwise.
 //   - nil if no MCP client is configured.
 //
 // Side effects:
+//   - Flushes the failover health manager's debounced state to disk.
 //   - Closes all MCP sessions managed by the client.
 func (a *App) Shutdown() error {
+	if a.plugins != nil && a.plugins.healthManager != nil {
+		_ = a.plugins.healthManager.Stop()
+	}
 	return a.DisconnectAll()
 }
 

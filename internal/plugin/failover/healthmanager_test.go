@@ -204,3 +204,67 @@ var _ = Describe("HealthManager", func() {
 		})
 	})
 })
+
+var _ = Describe("HealthManager persist debounce", func() {
+	var (
+		dir  string
+		path string
+		hm   *HealthManager
+	)
+
+	BeforeEach(func() {
+		var err error
+		dir, err = os.MkdirTemp("", "healthmanager-debounce-*")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() {
+			_ = os.RemoveAll(dir)
+		})
+		path = filepath.Join(dir, "provider-health.json")
+		hm = NewHealthManager()
+		hm.SetPersistPath(path)
+	})
+
+	It("defers persistence for a burst of mutations below the limits", func() {
+		for range 5 {
+			hm.MarkRateLimited("anthropic", "claude-3", time.Now().Add(1*time.Hour))
+		}
+		_, err := os.Stat(path)
+		Expect(os.IsNotExist(err)).To(BeTrue())
+		Expect(hm.Flush()).To(Succeed())
+		_, err = os.Stat(path)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("persists once the mutation budget is exhausted", func() {
+		for range persistMutationLimit {
+			hm.MarkRateLimited("openai", "gpt-4", time.Now().Add(1*time.Hour))
+		}
+		_, err := os.Stat(path)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("writes a full snapshot on the mutation-limit flush", func() {
+		for range persistMutationLimit {
+			hm.MarkRateLimited("openai", "gpt-4", time.Now().Add(1*time.Hour))
+		}
+		fresh := NewHealthManager()
+		fresh.SetPersistPath(path)
+		Expect(fresh.LoadState(path)).To(Succeed())
+		Expect(fresh.IsRateLimited("openai", "gpt-4")).To(BeTrue())
+	})
+
+	It("is a no-op when nothing is dirty", func() {
+		Expect(hm.Flush()).To(Succeed())
+		_, err := os.Stat(path)
+		Expect(os.IsNotExist(err)).To(BeTrue())
+	})
+
+	It("flushes outstanding state for shutdown", func() {
+		hm.MarkRateLimited("zai", "glm-4.6", time.Now().Add(24*time.Hour))
+		Expect(hm.Flush()).To(Succeed())
+		fresh := NewHealthManager()
+		fresh.SetPersistPath(path)
+		Expect(fresh.LoadState(path)).To(Succeed())
+		Expect(fresh.IsRateLimited("zai", "glm-4.6")).To(BeTrue())
+	})
+})

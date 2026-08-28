@@ -95,6 +95,7 @@ var _ = Describe("setupPluginRuntime", func() {
 		seeded := failover.NewHealthManager()
 		seeded.SetPersistPath(filepath.Join(cacheHome, "flowstate", "provider-health.json"))
 		seeded.MarkRateLimited("openai", "gpt-4o", time.Now().Add(2*time.Hour))
+		Expect(seeded.Flush()).To(Succeed())
 
 		cfg := &config.AppConfig{
 			Providers: config.ProvidersConfig{
