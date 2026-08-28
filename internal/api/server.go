@@ -24,6 +24,7 @@ import (
 	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/quota"
+	"github.com/baphled/flowstate/internal/questionrequest"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/streaming"
@@ -126,6 +127,17 @@ type Server struct {
 	// Nil makes POST /permission-grant return 501 so the SPA can
 	// distinguish "feature not wired" from "no in-flight request".
 	permissionRegistry *permissionrequest.Registry
+
+	// questionRegistry holds the in-flight blocking clarifying
+	// questions. POST /api/v1/sessions/{id}/question-answer calls
+	// Resolve(...) on this registry to deliver the operator's answer
+	// to the suspended question-tool goroutine. The per-turn
+	// long-poll surface (subscribeTurnQuestion*) is the cross-tab
+	// signal; this field is the resolve seam.
+	//
+	// Nil makes POST /question-answer return 501 so the SPA can
+	// distinguish "feature not wired" from "no in-flight question".
+	questionRegistry *questionrequest.Registry
 
 	// permissionWriter persists "Forever" scope grants to
 	// permissions.yaml via an atomic temp+rename+fsync under flock.
@@ -325,6 +337,27 @@ func WithVoiceTTSSynthesizer(syn VoiceSynthesiser) ServerOption {
 //     read the field.
 func WithPermissionRegistry(reg *permissionrequest.Registry) ServerOption {
 	return func(s *Server) { s.permissionRegistry = reg }
+}
+
+// WithQuestionRegistry installs the in-process registry of suspended
+// clarifying questions so POST /api/v1/sessions/{id}/question-answer
+// can resolve them with the operator's answer.
+//
+// When unset, the answer endpoint returns 501 — the wire surface
+// distinguishes "feature not built" (501) from "request_id unknown"
+// (404), mirroring WithPermissionRegistry.
+//
+// Expected:
+//   - reg is a non-nil *questionrequest.Registry.
+//
+// Returns:
+//   - A ServerOption that installs the registry.
+//
+// Side effects:
+//   - None until handleQuestionAnswer or subscribeTurnQuestion* read
+//     the field.
+func WithQuestionRegistry(reg *questionrequest.Registry) ServerOption {
+	return func(s *Server) { s.questionRegistry = reg }
 }
 
 // WithPermissionWriter installs the permissions.yaml writer the
@@ -760,6 +793,7 @@ func NewServer(
 	s.subscribeTurnGateFailed()
 	s.subscribeTurnPermissionRequired()
 	s.subscribeTurnPermissionResolved()
+	s.subscribeTurnQuestions()
 	s.setupRoutes()
 	return s
 }
@@ -1209,6 +1243,7 @@ func (s *Server) setupRoutes() {
 	// via field names (memory:
 	// project_flowstate_auth_track_mode_fingerprint).
 	s.registerProtected("POST /api/v1/sessions/{id}/permission-grant", s.handlePermissionGrant)
+	s.registerProtected("POST /api/v1/sessions/{id}/question-answer", s.handleQuestionAnswer)
 	s.registerProtected("GET /api/v1/tasks", s.handleListTasks)
 	s.registerProtected("GET /api/v1/tasks/{id}", s.handleGetTask)
 	s.registerProtected("DELETE /api/v1/tasks/{id}", s.handleCancelTask)
@@ -2107,6 +2142,7 @@ func (s *Server) handleGetTurn(w http.ResponseWriter, r *http.Request) {
 			len(baseline.GateFailures),
 			baseline.CriticalError,
 			baseline.PermissionRequests,
+			baseline.QuestionRequests,
 			longPollTimeout,
 		)
 		// ctx-cancel path returns the zero snapshot — t.ID == "" iff
@@ -3575,6 +3611,173 @@ func (s *Server) handlePermissionGrant(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, permissionGrantResponse{RequestID: req.RequestID, Scope: string(scope)})
+}
+
+// subscribeTurnQuestions wires the polling-side question subscribers
+// for the clarifying-question lifecycle. Mirrors
+// subscribeTurnPermissionRequired + subscribeTurnPermissionResolved:
+//
+//   - EventQuestionRequired upserts the pending entry onto the
+//     active Turn for the event's session_id; the long-poll
+//     WaitForChange wakes and the FE's poll-diff renders the inline
+//     QuestionPrompt.
+//   - EventQuestionAnswered / EventQuestionTimeout flip the entry's
+//     Status to its terminal value so both tabs' long-poll diffs
+//     remove the prompt.
+//
+// No-op when either the eventBus or the dispatcher's Turn registry is
+// unwired.
+//
+// Side effects:
+//   - Publishes nothing itself, but subscribes long-lived listeners
+//     to the shared eventBus; the Turn registry entries it upserts
+//     are visible to every WaitForChange long-poll caller.
+func (s *Server) subscribeTurnQuestions() {
+	if s.eventBus == nil || s.dispatcher == nil {
+		return
+	}
+	registry := s.dispatcher.TurnRegistry()
+	if registry == nil {
+		return
+	}
+	s.eventBus.Subscribe(events.EventQuestionRequired, func(msg any) {
+		qe, ok := msg.(*events.QuestionRequiredEvent)
+		if !ok {
+			return
+		}
+		turnID, ok := registry.FindActiveBySession(qe.Data.SessionID)
+		if !ok {
+			return
+		}
+		registry.UpsertQuestionRequest(turnID, turn.TurnQuestionRequest{
+			RequestID:     qe.Data.RequestID,
+			ToolName:      qe.Data.ToolName,
+			Question:      qe.Data.Question,
+			Options:       qe.Data.Options,
+			AllowMultiple: qe.Data.AllowMultiple,
+			Status:        turn.TurnQuestionStatusPending,
+		})
+	})
+	resolve := func(status string) func(msg any) {
+		return func(msg any) {
+			qe, ok := msg.(*events.QuestionAnsweredEvent)
+			if !ok {
+				return
+			}
+			turnID, ok := registry.FindActiveBySession(qe.Data.SessionID)
+			if !ok {
+				return
+			}
+			registry.UpsertQuestionRequest(turnID, turn.TurnQuestionRequest{
+				RequestID:     qe.Data.RequestID,
+				ToolName:      qe.Data.ToolName,
+				Question:      qe.Data.Question,
+				Options:       nil,
+				AllowMultiple: false,
+				Status:        status,
+				Answers:       qe.Data.Answers,
+			})
+		}
+	}
+	s.eventBus.Subscribe(events.EventQuestionAnswered, resolve(turn.TurnQuestionStatusAnswered))
+	s.eventBus.Subscribe(events.EventQuestionTimeout, resolve(turn.TurnQuestionStatusTimeout))
+}
+
+// questionAnswerRequest is the wire shape POST /question-answer
+// decodes. request_id mirrors permissionGrantRequest; answers carries
+// the operator's selected option strings (or free text when the
+// question had no options).
+type questionAnswerRequest struct {
+	RequestID string   `json:"request_id"`
+	Answers   []string `json:"answers"`
+}
+
+// questionAnswerResponse acknowledges a resolved question.
+type questionAnswerResponse struct {
+	RequestID string `json:"request_id"`
+	Status    string `json:"status"`
+}
+
+// handleQuestionAnswer resolves a suspended clarifying question with
+// the operator's answer, publishing EventQuestionAnswered so the
+// turn-registry subscriber flips the entry's Status for both tabs'
+// long-poll diffs. Mirrors handlePermissionGrant.
+//
+// Expected:
+//   - Request path parameter "id" is the session id.
+//   - Request body JSON of the form {"request_id":"...","answers":["..."]}.
+//
+// Returns:
+//   - 200 OK with {request_id, status:"answered"} on success.
+//   - 400 Bad Request on malformed body or missing fields.
+//   - 404 Not Found when request_id is unknown to the registry.
+//   - 501 Not Implemented when the registry is unwired.
+//
+// Side effects:
+//   - Calls questionrequest.Registry.Resolve which delivers the
+//     answer onto the suspended goroutine's buffered channel.
+//   - Publishes EventQuestionAnswered; the turn-registry subscriber
+//     upserts the resolved entry.
+func (s *Server) handleQuestionAnswer(w http.ResponseWriter, r *http.Request) {
+	if s.questionRegistry == nil {
+		http.Error(w, "question registry not configured", http.StatusNotImplemented)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<14)
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "session id is required", http.StatusBadRequest)
+		return
+	}
+	if s.sessionManager != nil {
+		if _, err := s.sessionManager.GetSession(id); err != nil {
+			if errors.Is(err, session.ErrSessionNotFound) {
+				http.Error(w, "session not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+	}
+	var req questionAnswerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.RequestID == "" {
+		http.Error(w, "request_id is required", http.StatusBadRequest)
+		return
+	}
+	if len(req.Answers) == 0 {
+		http.Error(w, "answers is required", http.StatusBadRequest)
+		return
+	}
+	pending, ok := s.questionRegistry.Lookup(req.RequestID)
+	if !ok {
+		http.Error(w, "question request not found", http.StatusNotFound)
+		return
+	}
+	if err := s.questionRegistry.Resolve(req.RequestID, questionrequest.QuestionAnswer{
+		RequestID: req.RequestID,
+		Answers:   req.Answers,
+	}); err != nil {
+		if errors.Is(err, questionrequest.ErrQuestionRequestNotFound) {
+			http.Error(w, "question request not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if s.eventBus != nil {
+		s.eventBus.Publish(events.EventQuestionAnswered, events.NewQuestionAnsweredEvent(events.QuestionAnsweredEventData{
+			RequestID: req.RequestID,
+			SessionID: id,
+			ToolName:  pending.ToolName,
+			Question:  pending.Question,
+			Answers:   req.Answers,
+		}))
+	}
+	writeJSON(w, questionAnswerResponse{RequestID: req.RequestID, Status: "answered"})
 }
 
 // parseGrantScope validates a string against the closed grant-scope

@@ -21,11 +21,13 @@ var _ = Describe("NewDefaultRegistry", func() {
 		Expect(registry).NotTo(BeNil())
 	})
 
-	It("returns exactly 18 tools", func() {
-		// 17 baseline tools + plan_write (added 2026-04-26 to close the
+	It("returns exactly 17 tools", func() {
+		// 16 baseline tools + plan_write (added 2026-04-26 to close the
 		// regression where plan-writer agents only stored plans in
 		// coordination_store and never landed them on disk).
-		Expect(registry.List()).To(HaveLen(18))
+		// The question tool moved to the app layer (AppendQuestionTool)
+		// because it needs the shared questionrequest.Registry.
+		Expect(registry.List()).To(HaveLen(17))
 	})
 
 	It("can retrieve plan_write tool", func() {
@@ -74,12 +76,6 @@ var _ = Describe("NewDefaultRegistry", func() {
 		t, err := registry.Get("multiedit")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(t.Name()).To(Equal("multiedit"))
-	})
-
-	It("can retrieve question tool", func() {
-		t, err := registry.Get("question")
-		Expect(err).NotTo(HaveOccurred())
-		Expect(t.Name()).To(Equal("question"))
 	})
 
 	It("can retrieve plan enter tool", func() {

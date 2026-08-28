@@ -157,6 +157,20 @@ const (
 	EventPermissionGranted  = "permission.granted"
 	EventPermissionDenied   = "permission.denied"
 	EventPermissionTimeout  = "permission.timeout"
+	// EventQuestionRequired fires when the question tool suspends a
+	// tool call awaiting the operator's answer. Payload:
+	// QuestionRequiredEventData. The api server's turn-registry
+	// subscriber upserts the pending request so the long-poll diff
+	// renders the inline QuestionPrompt.
+	EventQuestionRequired = "question.required"
+	// EventQuestionAnswered fires when the operator answers via the
+	// question-answer HTTP endpoint or the resolution races the
+	// timeout. Payload: QuestionAnsweredEventData.
+	EventQuestionAnswered = "question.answered"
+	// EventQuestionTimeout fires when the question suspension window
+	// elapses with no operator answer. Payload:
+	// QuestionAnsweredEventData (Answers empty).
+	EventQuestionTimeout = "question.timeout"
 	// EventProviderStatusChanged fires when a provider's quota/cooldown
 	// status transitions (e.g. healthy→rate_limited, rate_limited→healthy).
 	// Payload: ProviderStatusChangedEventData. Published by the engine's

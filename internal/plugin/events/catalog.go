@@ -704,6 +704,49 @@ var Catalog = []EventCatalogEntry{
 			"render the timeout state distinctly from a manual Deny.",
 	},
 	{
+		Topic:       EventQuestionRequired,
+		Constant:    "EventQuestionRequired",
+		EventType:   "question.required",
+		Struct:      "QuestionRequiredEvent",
+		Publishers:  []string{"internal/tool/question (blocking question tool)"},
+		Subscribers: []string{"api server.go (turn-registry question subscriber)"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "Published when the question tool registers a pending " +
+			"question in questionrequest.Registry and blocks. The api " +
+			"turn-registry subscriber upserts the pending entry so the " +
+			"long-poll diff renders the inline QuestionPrompt.",
+	},
+	{
+		Topic:       EventQuestionAnswered,
+		Constant:    "EventQuestionAnswered",
+		EventType:   "question.answered",
+		Struct:      "QuestionAnsweredEvent",
+		Publishers:  []string{"internal/tool/question (blocking question tool)"},
+		Subscribers: []string{"api server.go (turn-registry question subscriber)"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "Published when the operator answers a suspended question. " +
+			"The turn-registry subscriber flips the entry's status to " +
+			"answered so both tabs' long-poll diffs remove the prompt.",
+	},
+	{
+		Topic:       EventQuestionTimeout,
+		Constant:    "EventQuestionTimeout",
+		EventType:   "question.timeout",
+		Struct:      "QuestionTimeoutEvent",
+		Publishers:  []string{"internal/tool/question (blocking question tool)"},
+		Subscribers: []string{"api server.go (turn-registry question subscriber)"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "Published when the question suspension window elapses with " +
+			"no operator answer. The suspended tool call resumes with a " +
+			"clear no-answer result.",
+	},
+	{
 		Topic:       EventProviderStatusChanged,
 		Constant:    "EventProviderStatusChanged",
 		EventType:   "provider.status_changed",

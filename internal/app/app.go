@@ -41,6 +41,7 @@ import (
 	"github.com/baphled/flowstate/internal/plugin/sessionrecorder"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/ollama"
+	"github.com/baphled/flowstate/internal/questionrequest"
 	recall "github.com/baphled/flowstate/internal/recall"
 	qdrantrecall "github.com/baphled/flowstate/internal/recall/qdrant"
 	vaultrecall "github.com/baphled/flowstate/internal/recall/vault"
@@ -784,6 +785,7 @@ type engineParams struct {
 	chainStore           recall.ChainContextStore
 	learningStore        learning.Store
 	appTools             []tool.Tool
+	eventBus             *eventbus.EventBus
 	toolRegistry         *tool.Registry
 	permissionHandler    tool.PermissionHandler
 	agentsFileLoader     *agent.AgentsFileLoader
@@ -907,6 +909,12 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		return nil, err
 	}
 	registerProviderConcurrencyGauges(traced.metrics, params.providerRegistry)
+	// Blocking question tool (clarifying-question plan): construct
+	// the shared questionrequest.Registry + app event bus here so
+	// the engine's tool slice and the api server's
+	// POST /question-answer resolver share one registry.
+	questionRegistry := questionrequest.NewRegistry()
+	appEventBus := eventbus.NewEventBus()
 	tp := buildToolPipeline(params.cfg, params.mcpClientFactory)
 	applyFailoverPreferences(params.failoverManager, params.cfg)
 	contextStore := createContextStore(params.cfg)
@@ -947,6 +955,8 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		recallEmbeddingModel:   params.cfg.ResolvedEmbeddingModel(),
 		sessionEmbeddingLookup: sessionMgrHolder.lookup,
 		quotaWiring:            quotaW,
+		questionRegistry:       questionRegistry,
+		eventBus:               appEventBus,
 	}))
 	// Attach the api.QuotaAggregator adapter post-engine-construction
 	// so the engine → api edge stays one-way (engine doesn't know
@@ -1015,6 +1025,11 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		// pre-Slice-2 fixtures) Registry() returns nil and the grant
 		// endpoint surfaces 501.
 		api.WithPermissionRegistry(askUserPrompter.Registry()),
+		// Blocking question tool: the api server's POST
+		// /api/v1/sessions/{id}/question-answer resolves suspended
+		// clarifying questions through the same shared registry the
+		// engine's question tool registers into.
+		api.WithQuestionRegistry(questionRegistry),
 		// Permission Mode ModeAskUser Extension plan (May 2026), Slice 4.
 		// The "Forever" grant scope persists to permissions.yaml via
 		// the writer's atomic temp+rename+fsync under flock. Nil writer
@@ -1076,6 +1091,14 @@ type engineAssemblyParams struct {
 	// then carries nil Tracker + empty maps and the engine drops
 	// every quota path cleanly.
 	quotaWiring quotaWiring
+	// questionRegistry is the shared questionrequest.Registry the
+	// blocking question tool registers into and POST
+	// /question-answer resolves. Constructed in setupEngine near the
+	// permission registry; nil on paths that never reach that block.
+	questionRegistry *questionrequest.Registry
+	// eventBus is the app event bus the question tool publishes its
+	// lifecycle events onto.
+	eventBus *eventbus.EventBus
 }
 
 // buildEngineParams assembles the engineParams bundle from setupEngine
@@ -1098,6 +1121,10 @@ func buildEngineParams(in engineAssemblyParams) engineParams {
 	appTools = toolset.AppendMemoryTools(appTools, in.memoryClient)
 	appTools = toolset.AppendVaultTools(appTools, in.vaultHandler)
 	appTools = toolset.AppendVaultIndexTools(appTools, in.setup.cfg)
+	// Blocking question tool: bound to the shared
+	// questionrequest.Registry so POST /question-answer resolves the
+	// suspended tool call. Nil registry (early/test paths) skips it.
+	appTools = toolset.AppendQuestionTool(appTools, in.questionRegistry, in.eventBus, 0)
 	return engineParams{
 		defaultProvider:         in.traced.provider,
 		ollamaProvider:          in.setup.ollamaProvider,
@@ -1558,7 +1585,7 @@ func (h *sessionManagerHolder) lookup(sessionID string) (string, bool) {
 func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest)), *permissionPrompter) {
 	var eng *engine.Engine
 	var ensureToolsFn func(agent.Manifest)
-	appEventBus := eventbus.NewEventBus()
+	appEventBus := params.eventBus
 
 	// Permission Mode ModeAskUser Extension plan (May 2026) Slice 2.
 	// Construct the shared permission-request registry + prompter
