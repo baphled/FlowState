@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -69,33 +70,40 @@ type Engine struct {
 	preferredBaselineProvider string
 	preferredBaselineModel    string
 	preferredBaselineSet      bool
-	manifest                  agent.Manifest
-	tools                     []tool.Tool
-	skills                    []skill.Skill
-	skillsResolver            func(agent.Manifest) []skill.Skill
-	store                     *recall.FileContextStore
-	chainStore                recall.ChainContextStore
-	windowBuilder             *ctxstore.WindowBuilder
-	recallBroker              recall.Broker
-	contextAssemblyHooks      []plugin.ContextAssemblyHook
-	tokenCounter              ctxstore.TokenCounter
-	systemPromptBudget        int
-	streamTimeout             time.Duration
-	hookChain                 *hook.Chain
-	toolRegistry              *tool.Registry
-	permissionHandler         tool.PermissionHandler
-	providerRegistry          *provider.Registry
-	agentRegistry             *agent.Registry
-	swarmRegistry             *swarm.Registry
-	agentsFileLoader          *agent.AgentsFileLoader
-	lastContextResult         ctxstore.BuildResult
-	agentOverrides            map[string]string
-	preferredProvider         string
-	preferredModel            string
-	bus                       *eventbus.EventBus
-	mcpServerTools            map[string][]string
-	toolTimeout               time.Duration
-	categoryResolver          *CategoryResolver
+	// reseedFingerprint identifies the last inputs ReseedFailoverBasePreferences
+	// acted on (manifest preferred-model bytes, model policy, and the selected
+	// provider/model pair). An identical fingerprint lets the reseed skip the
+	// manifest-head + config-tail rebuild entirely. reseedCount tracks how many
+	// rebuilds ran so the cache contract is observable. Guarded by mu.
+	reseedFingerprint    string
+	reseedCount          int64
+	manifest             agent.Manifest
+	tools                []tool.Tool
+	skills               []skill.Skill
+	skillsResolver       func(agent.Manifest) []skill.Skill
+	store                *recall.FileContextStore
+	chainStore           recall.ChainContextStore
+	windowBuilder        *ctxstore.WindowBuilder
+	recallBroker         recall.Broker
+	contextAssemblyHooks []plugin.ContextAssemblyHook
+	tokenCounter         ctxstore.TokenCounter
+	systemPromptBudget   int
+	streamTimeout        time.Duration
+	hookChain            *hook.Chain
+	toolRegistry         *tool.Registry
+	permissionHandler    tool.PermissionHandler
+	providerRegistry     *provider.Registry
+	agentRegistry        *agent.Registry
+	swarmRegistry        *swarm.Registry
+	agentsFileLoader     *agent.AgentsFileLoader
+	lastContextResult    ctxstore.BuildResult
+	agentOverrides       map[string]string
+	preferredProvider    string
+	preferredModel       string
+	bus                  *eventbus.EventBus
+	mcpServerTools       map[string][]string
+	toolTimeout          time.Duration
+	categoryResolver     *CategoryResolver
 
 	// toolCallCorrelator assigns a stable FlowState-internal identifier to
 	// every tool call observed on the stream path and reuses it whenever
@@ -2137,7 +2145,15 @@ func (e *Engine) ReseedFailoverBasePreferences(manifest agent.Manifest, provider
 		return
 	}
 
+	fingerprint := reseedFingerprint(manifest, providerName, modelName)
+
 	e.mu.Lock()
+	if fingerprint == e.reseedFingerprint {
+		e.mu.Unlock()
+		return
+	}
+	e.reseedFingerprint = fingerprint
+	e.reseedCount++
 	if !e.failoverConfigBaselineSet {
 		// Snapshot the config-derived chain exactly once — this is the
 		// chain the manager carries at app startup before any per-turn
@@ -2257,6 +2273,40 @@ func (e *Engine) ReseedFailoverBasePreferences(manifest agent.Manifest, provider
 	// deduped, cascading on the head's error.
 	e.failoverManager.SetBasePreferences(prefs)
 	e.failoverManager.ClearOverride()
+}
+
+// reseedFingerprint derives a stable fingerprint of the inputs that determine
+// the reseed outcome: the manifest's preferred-model chain (bytes), its model
+// policy, and the selected provider/model pair. Any change forces a rebuild.
+//
+// Expected: parameters for reseedFingerprint.
+//
+// Returns: a stable hash identifying the reseed inputs.
+//
+// Side effects:
+//   - None.
+func reseedFingerprint(manifest agent.Manifest, providerName, modelName string) string {
+	h := sha256.New()
+	for _, p := range manifest.PreferredModels {
+		fmt.Fprintf(h, "%s/%s\n", p.Provider, p.Model)
+	}
+	fmt.Fprintf(h, "policy=%s\nselected=%s/%s\n", manifest.ModelPolicy, providerName, modelName)
+	return string(h.Sum(nil))
+}
+
+// ReseedCount reports how many times ReseedFailoverBasePreferences has
+// rebuilt the failover chain. Cached (skipped) reseeds do not increment it.
+//
+// Expected: parameters for ReseedCount.
+//
+// Returns: the number of chain rebuilds performed so far.
+//
+// Side effects:
+//   - None.
+func (e *Engine) ReseedCount() int64 {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.reseedCount
 }
 
 // EventBus returns the engine's event bus for plugin event subscriptions.
