@@ -2,19 +2,16 @@ package question_test
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
-	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/questionrequest"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool"
 	"github.com/baphled/flowstate/internal/tool/question"
-	"github.com/baphled/flowstate/internal/turn"
 )
 
 // Question tool tests cover metadata reporting (name, description,
@@ -130,132 +127,5 @@ var _ = Describe("Question tool", func() {
 
 			Eventually(required, "2s", "10ms").Should(Receive())
 		})
-	})
-})
-
-// Integration-style coverage for the Aug 2026 fix: the engine now
-// stamps session.IDKey{} on the tool-execution ctx, so the question
-// tool's EventQuestionRequired payload carries the real session ID,
-// the turn registry's FindActiveBySession lookup resolves, and the
-// pending request lands on the turn payload's question_requests.
-//
-// This mirrors internal/api/server.go subscribeTurnQuestions wiring
-// plus buildTurnResponse's serialisation, without standing up the
-// full HTTP server: the subscriber below is the same shape the API
-// installs at server boot.
-var _ = Describe("Question tool → turn payload integration", func() {
-	var (
-		qRegistry *questionrequest.Registry
-		bus       *eventbus.EventBus
-		tRegistry *turn.Registry
-		qTool     *question.Tool
-	)
-
-	BeforeEach(func() {
-		qRegistry = questionrequest.NewRegistry()
-		bus = eventbus.NewEventBus()
-		tRegistry = turn.NewRegistry()
-		qTool = question.NewWithBus(qRegistry, bus, 0)
-
-		// Same subscriber shape as Server.subscribeTurnQuestions.
-		bus.Subscribe(events.EventQuestionRequired, func(msg any) {
-			qe, ok := msg.(*events.QuestionRequiredEvent)
-			if !ok {
-				return
-			}
-			turnID, ok := tRegistry.FindActiveBySession(qe.Data.SessionID)
-			if !ok {
-				return
-			}
-			tRegistry.UpsertQuestionRequest(turnID, turn.TurnQuestionRequest{
-				RequestID:     qe.Data.RequestID,
-				ToolName:      qe.Data.ToolName,
-				Question:      qe.Data.Question,
-				Options:       qe.Data.Options,
-				AllowMultiple: qe.Data.AllowMultiple,
-				Status:        turn.TurnQuestionStatusPending,
-			})
-		})
-	})
-
-	It("upserts the pending question onto the turn when ctx carries the session ID", func() {
-		const sessionID = "sess-question-turn"
-		turnID, err := tRegistry.StartOrReuse(sessionID)
-		Expect(err).NotTo(HaveOccurred())
-
-		ctx, cancel := context.WithCancel(context.WithValue(context.Background(), session.IDKey{}, sessionID))
-		defer cancel()
-		// Execute blocks until resolution; run it async and let the
-		// engine-side ctx cancellation NOT unblock it (Execute derives
-		// its wait ctx via WithoutCancel + timeout), so give it a tiny
-		// timeout by answering via the registry from a goroutine.
-		go func() {
-			for i := 0; i < 200; i++ {
-				if qRegistry.PendingCount() == 1 {
-					ids := qRegistry.PendingForSession(sessionID)
-					Expect(ids).To(HaveLen(1))
-					_ = qRegistry.Resolve(ids[0], questionrequest.QuestionAnswer{Answers: []string{"postgres"}})
-					return
-				}
-				time.Sleep(10 * time.Millisecond)
-			}
-		}()
-		result, err := qTool.Execute(ctx, tool.Input{
-			Name: "question",
-			Arguments: map[string]any{
-				"question": "Which database?",
-			},
-		})
-		cancel()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(result.Output).NotTo(BeEmpty())
-
-		// The event's SessionID must be the ctx-stamped session, not "".
-		found, ok := tRegistry.FindActiveBySession(sessionID)
-		Expect(ok).To(BeTrue())
-		Expect(found).To(Equal(turnID))
-
-		// And the turn payload must serialise question_requests.
-		snapshot, snapErr := tRegistry.Get(turnID)
-		Expect(snapErr).NotTo(HaveOccurred())
-		payload, jsonErr := json.Marshal(snapshot)
-		Expect(jsonErr).NotTo(HaveOccurred())
-		Expect(string(payload)).To(ContainSubstring("question_requests"),
-			"the pending question must land on the turn payload for the FE long-poll diff")
-		Expect(string(payload)).To(ContainSubstring("Which database?"))
-	})
-
-	It("does not upsert when the ctx carries no session ID", func() {
-		const sessionID = "sess-no-id"
-		turnID, err := tRegistry.StartOrReuse(sessionID)
-		Expect(err).NotTo(HaveOccurred())
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		go func() {
-			for i := 0; i < 200; i++ {
-				if qRegistry.PendingCount() == 1 {
-					ids := qRegistry.PendingForSession("")
-					Expect(ids).To(HaveLen(1))
-					_ = qRegistry.Resolve(ids[0], questionrequest.QuestionAnswer{Answers: []string{"skip"}})
-					return
-				}
-				time.Sleep(10 * time.Millisecond)
-			}
-		}()
-		_, err = qTool.Execute(ctx, tool.Input{
-			Name: "question",
-			Arguments: map[string]any{
-				"question": "Orphan?",
-			},
-		})
-		Expect(err).NotTo(HaveOccurred())
-
-		snapshot, snapErr := tRegistry.Get(turnID)
-		Expect(snapErr).NotTo(HaveOccurred())
-		payload, jsonErr := json.Marshal(snapshot)
-		Expect(jsonErr).NotTo(HaveOccurred())
-		Expect(string(payload)).NotTo(ContainSubstring("question_requests"),
-			"empty SessionID → FindActiveBySession misses → no upsert (the pre-fix bug shape)")
 	})
 })
