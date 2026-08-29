@@ -1141,6 +1141,40 @@ func (s *Server) InstallAuth(bundle AuthBundle) {
 	s.setupRoutes()
 }
 
+// ApplyOption installs a ServerOption on an already-constructed
+// Server. Production wiring in internal/cli uses this to attach the
+// voice pipeline, settings store, and synthesiser after the App
+// builder has already called NewServer.
+//
+// Expected:
+//   - opt is a non-nil ServerOption.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Mutates the server in place.
+func (s *Server) ApplyOption(opt ServerOption) {
+	opt(s)
+}
+
+// DispatcherService exposes the server's DispatcherService so callers
+// outside the api package (production voice wiring in internal/cli)
+// can reuse the same unified dispatch path the chat handler uses.
+// Nil-safe: returns nil when no dispatcher is wired.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - The wired DispatcherService, or nil.
+//
+// Side effects:
+//   - None.
+func (s *Server) DispatcherService() DispatcherService {
+	return s.dispatcher
+}
+
 // securityHeaders returns a middleware that adds defensive HTTP security headers to every response.
 //
 // Expected:
