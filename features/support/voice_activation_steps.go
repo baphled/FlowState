@@ -4,7 +4,6 @@ package support
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/cucumber/godog"
@@ -15,8 +14,8 @@ import (
 // settings fetch gates the button, hold/release drives a WAV upload, and
 // the returned transcript lands in the chat input buffer.
 type pttState struct {
-	chatInput string
-	disabled  bool
+	chatInput  string
+	disabled   bool
 	transcript string
 }
 

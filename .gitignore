@@ -50,6 +50,9 @@ Thumbs.db
 dist/
 build/
 
+# Docker build context staged sources (make docker-src)
+build/
+
 # Debug
 __debug_bin*
 debug.log

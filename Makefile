@@ -407,3 +407,51 @@ help: ## Show this help
 	@echo "Usage: make [target]"
 	@echo ""
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
+
+#
+# Docker (full stack — see docker-compose.yml)
+#
+
+.PHONY: docker-src docker-build docker-up docker-up-backend docker-up-qdrant docker-up-ui docker-down docker-logs docker-clean-src
+
+# Source repos — override on the command line, e.g.
+#   make docker-up BE_BRANCH=feature/agent-platform
+BE_REPO ?= ../FlowState.git
+BE_BRANCH ?= main
+FE_REPO ?= ../flowstate-web.git
+FE_BRANCH ?= main
+
+# Resolve bare-repo paths to absolute file:// URLs and stage the requested
+# branches into build/{backend-src,ui-src}. The Dockerfiles COPY these dirs
+# in (no git clone inside the build container — host paths don't exist there).
+docker-src: ## Stage source branches into build context (BE_REPO/BE_BRANCH/FE_REPO/FE_BRANCH)
+	@mkdir -p build
+	@rm -rf build/backend-src build/ui-src
+	@BE_URL=$$(case "$(BE_REPO)" in /*|file://*) printf '%s' "$(BE_REPO)" ;; *) printf 'file://%s/%s' "$$(pwd)" "$$(dirname "$(BE_REPO)")/$$(basename "$(BE_REPO)")" ;; esac); \
+	git clone --depth 1 --branch "$(BE_BRANCH)" "$$BE_URL" build/backend-src
+	@FE_URL=$$(case "$(FE_REPO)" in /*|file://*) printf '%s' "$(FE_REPO)" ;; *) printf 'file://%s/%s' "$$(pwd)" "$$(dirname "$(FE_REPO)")/$$(basename "$(FE_REPO)")" ;; esac); \
+	git clone --depth 1 --branch "$(FE_BRANCH)" "$$FE_URL" build/ui-src
+
+docker-build: docker-src ## Build backend + UI images from staged source
+	docker compose build
+
+docker-up: docker-src ## Build and start the full stack (BE_BRANCH/FE_BRANCH override source branches)
+	docker compose up -d --build
+
+docker-up-backend: docker-src ## Start backend + dependencies
+	docker compose --profile backend up -d --build
+
+docker-up-qdrant: ## Start qdrant + ollama (pulls nomic-embed-text)
+	docker compose --profile qdrant up -d
+
+docker-up-ui: docker-src ## Start UI + full stack dependencies
+	docker compose --profile ui up -d --build
+
+docker-down: ## Stop the full stack (data volumes preserved)
+	docker compose down
+
+docker-logs: ## Tail logs for the full stack
+	docker compose logs -f
+
+docker-clean-src: ## Remove staged build-context source dirs
+	rm -rf build/backend-src build/ui-src

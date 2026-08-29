@@ -4,6 +4,16 @@ A general-purpose agentic harness platform for everyday tasks.
 
 FlowState brings the power of AI-assisted workflows to the CLI, HTTP API, and SSE surfaces. It is built for research, analysis, decision-making, and any domain where agents can help.
 
+## Docker
+
+Prefer containers? The full stack — Qdrant, Ollama, the backend API, and the web UI — runs with a single command:
+
+```bash
+docker compose up -d
+```
+
+See [Running with Docker](#running-with-docker) for profiles, branch selection, ports, and prerequisites.
+
 ## Features
 
 - **Multi-agent swarms** — Orchestrate coordinated teams of specialist agents with dependency graphs, retry policies, and external gates.
@@ -409,6 +419,58 @@ The Bubble Tea keyboard shortcuts were part of the decommissioned TUI and are no
 |---------|-------------|
 | `flowstate swarm list` | List all discovered swarms |
 | `flowstate swarm validate [<id>]` | Validate swarm manifest(s) |
+
+## Running with Docker
+
+The full stack is dockerised via `docker-compose.yml` with four services: `qdrant`, `ollama`, `backend` (the FlowState API server), and `ui` (the web frontend behind nginx). By default `.env` sets `COMPOSE_PROFILES=all`, so a plain:
+
+```bash
+docker compose up -d
+```
+
+builds and starts **everything**. (Ollama pulls the `nomic-embed-text` model on first start.)
+
+### Prerequisites
+
+- Docker with the Compose v2 plugin (`docker compose ...`). On Arch: `pacman -S docker docker-compose`.
+- Local bare repos of the backend and frontend, as siblings of this worktree:
+  - `../FlowState.git` (backend — the Makefile stages the chosen branch into the build context)
+  - `../flowstate-web.git` (UI, a separate repository)
+
+### Subsets and branch selection
+
+Start only part of the stack with the Make targets (all wrap `docker compose`):
+
+```bash
+make docker-up           # full stack (build + start)
+make docker-up-qdrant    # qdrant + ollama only
+make docker-up-backend   # backend + its dependencies
+make docker-up-ui        # UI + full-stack dependencies
+make docker-down         # stop the stack (data volumes preserved)
+make docker-logs         # tail logs
+```
+
+Images are built from specific branches of the two source repos. Override via env vars (defaults come from `.env`):
+
+```bash
+make docker-up BE_BRANCH=feature/agent-platform FE_BRANCH=main
+```
+
+> **Note:** `main` of the backend bare repo currently contains only a CLI stub — the HTTP API lives on `feature/agent-platform`, so pass `BE_BRANCH=feature/agent-platform` when you need the API server.
+
+### Ports and health checks
+
+All ports are bound to loopback only:
+
+| Service | Address | Health check |
+|---|---|---|
+| Qdrant | `127.0.0.1:6333` (REST), `127.0.0.1:6334` (gRPC) | `http://127.0.0.1:6333/healthz` |
+| Backend | `127.0.0.1:8080` | `http://127.0.0.1:8080/metrics` |
+| UI (nginx) | `127.0.0.1:5173` | proxies `/api` to the backend |
+
+Never run `docker compose down -v` against this stack without checking what the volumes hold.
+
+Further background and design notes live in the vault doc: `1. Projects/FlowState/Documentation/Features/Dockerisation.md`.
 
 ## Development
 
