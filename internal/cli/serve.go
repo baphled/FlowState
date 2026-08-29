@@ -109,6 +109,14 @@ func runServe(cmd *cobra.Command, application *app.App, opts *ServeOptions) erro
 		return fmt.Errorf("auth boot-time wiring: %w", err)
 	}
 
+	// Voice session activation — wires the local voice pipeline,
+	// runtime settings store, and TTS synthesiser onto the API
+	// server when voice.enabled is true. Disabled config degrades
+	// gracefully: every voice endpoint keeps returning 501.
+	if err := InstallVoiceFromConfig(application.API, application.Config); err != nil {
+		return fmt.Errorf("voice boot-time wiring: %w", err)
+	}
+
 	// PR1 of the Provider Quota and Spend Visibility plan (May 2026):
 	// reject the `quota.store.backend = memory + deployment_topology
 	// = multi-instance` pairing at boot per plan §"Boot validation"
