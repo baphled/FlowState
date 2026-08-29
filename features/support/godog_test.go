@@ -106,7 +106,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	VoiceTTSContext(ctx)
 	VoiceAPIContext(ctx)
 	VoiceFEContext(ctx)
-	PttContext(ctx)
+	ComposerVoiceContext(ctx)
 	RegisterFSPollutionSteps(ctx)
 	VoiceWiringContext(ctx)
 	VoiceResumeContext(ctx)
