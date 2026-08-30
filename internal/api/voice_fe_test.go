@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/baphled/flowstate/internal/turn"
 	"github.com/baphled/flowstate/internal/voice"
 )
 
@@ -315,5 +316,67 @@ func TestTTSSynthesiserAdapterTimeout(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("adapter did not enforce the deadline")
+	}
+}
+
+// TestBuildTurnResponse covers the question_requests pass-through on
+// the turnResponse wire: omitted when empty, copied when populated,
+// and coexisting with permission_requests.
+func TestBuildTurnResponse(t *testing.T) {
+	perm := turn.TurnPermissionRequest{RequestID: "perm-1", Status: "pending"}
+	q := turn.TurnQuestionRequest{RequestID: "q-1", Question: "Which?", Status: "pending"}
+
+	tests := []struct {
+		name              string
+		turn              turn.Turn
+		wantQuestionKey   bool
+		wantPermissionKey bool
+	}{
+		{
+			name:            "empty question requests omit the field",
+			turn:            turn.Turn{},
+			wantQuestionKey: false,
+		},
+		{
+			name:            "populated question requests are copied through",
+			turn:            turn.Turn{QuestionRequests: []turn.TurnQuestionRequest{q}},
+			wantQuestionKey: true,
+		},
+		{
+			name:              "mixed question and permission requests both present",
+			turn:              turn.Turn{QuestionRequests: []turn.TurnQuestionRequest{q}, PermissionRequests: []turn.TurnPermissionRequest{perm}},
+			wantQuestionKey:   true,
+			wantPermissionKey: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := buildTurnResponse(tt.turn)
+			raw, err := json.Marshal(resp)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var m map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &m); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			_, hasQ := m["question_requests"]
+			if hasQ != tt.wantQuestionKey {
+				t.Errorf("question_requests present=%v, want %v (raw: %s)", hasQ, tt.wantQuestionKey, raw)
+			}
+			_, hasP := m["permission_requests"]
+			if hasP != tt.wantPermissionKey {
+				t.Errorf("permission_requests present=%v, want %v (raw: %s)", hasP, tt.wantPermissionKey, raw)
+			}
+			if tt.wantQuestionKey {
+				var got []turn.TurnQuestionRequest
+				if err := json.Unmarshal(m["question_requests"], &got); err != nil {
+					t.Fatalf("question_requests decode: %v", err)
+				}
+				if len(got) != 1 || got[0].RequestID != "q-1" || got[0].Question != "Which?" {
+					t.Errorf("question_requests not copied through: %+v", got)
+				}
+			}
+		})
 	}
 }
