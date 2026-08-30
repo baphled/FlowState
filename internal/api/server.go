@@ -106,6 +106,11 @@ type Server struct {
 	// "not wired" from "STT unavailable".
 	voiceTurnPipeline VoiceTurnDispatcher
 
+	// voiceConversation backs POST /api/v1/voice/conversation/{start,
+	// stop,turn} with the conversation-mode session manager. When
+	// unset, all three endpoints return 501.
+	voiceConversation VoiceConversationService
+
 	// voiceSettings backs GET/PATCH /api/v1/voice/settings with
 	// in-memory runtime state seeded from the loaded VoiceConfig.
 	// Nil makes both endpoints return 501.
@@ -315,6 +320,22 @@ func WithVoiceSettings(store VoiceSettingsStore) ServerOption {
 //   - None until handleVoiceTTS reads the field.
 func WithVoiceTTSSynthesizer(syn VoiceSynthesiser) ServerOption {
 	return func(s *Server) { s.voiceSynthesiser = syn }
+}
+
+// WithVoiceConversation installs the conversation-mode service for
+// POST /api/v1/voice/conversation/{start,stop,turn}. When unset,
+// all three endpoints return 501.
+//
+// Expected:
+//   - svc is a non-nil VoiceConversationService.
+//
+// Returns:
+//   - A ServerOption that installs the conversation service.
+//
+// Side effects:
+//   - None until the conversation handlers read the field.
+func WithVoiceConversation(svc VoiceConversationService) ServerOption {
+	return func(s *Server) { s.voiceConversation = svc }
 }
 
 // WithPermissionRegistry installs the in-process registry of suspended
@@ -1297,6 +1318,9 @@ func (s *Server) setupRoutes() {
 	s.registerProtected("GET /api/v1/voice/settings", s.handleGetVoiceSettings)
 	s.registerProtected("PATCH /api/v1/voice/settings", s.handlePatchVoiceSettings)
 	s.registerProtected("POST /api/v1/voice/tts", s.handleVoiceTTS)
+	s.registerProtected("POST /api/v1/voice/conversation/start", s.handleVoiceConversationStart)
+	s.registerProtected("POST /api/v1/voice/conversation/stop", s.handleVoiceConversationStop)
+	s.registerProtected("POST /api/v1/voice/conversation/turn", s.handleVoiceConversationTurn)
 
 	// Deliverable 2 / 3 of the May 2026 context-accuracy bundle —
 	// runtime-tunable compression threshold + manual /compact
@@ -2057,6 +2081,13 @@ type turnResponse struct {
 	// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
 	//   Permission Mode ModeAskUser Extension (May 2026).md §17.1.
 	PermissionRequests []turn.TurnPermissionRequest `json:"permission_requests,omitempty"`
+	// QuestionRequests surfaces the in-flight and recently-resolved
+	// question tool requests on the Turn so the frontend poll-diff
+	// can detect pending questions and take over the chat input.
+	//
+	// `omitempty` — Turn states with no question events omit the
+	// field entirely so the FE poll-diff treats absent === unchanged.
+	QuestionRequests []turn.TurnQuestionRequest `json:"question_requests,omitempty"`
 }
 
 // handleGetTurn returns the current state of a Turn by its UUID.
@@ -2239,6 +2270,7 @@ func buildTurnResponse(t turn.Turn) turnResponse {
 		GateFailures:       t.GateFailures,
 		CriticalError:      t.CriticalError,
 		PermissionRequests: t.PermissionRequests,
+		QuestionRequests:   t.QuestionRequests,
 	}
 }
 
