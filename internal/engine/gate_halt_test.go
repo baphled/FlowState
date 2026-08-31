@@ -12,6 +12,7 @@ import (
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/permissionmode"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tool"
 )
@@ -312,5 +313,64 @@ var _ = Describe("Engine.executeToolCall — permission-mode ctx propagation (Sl
 		// Bare context.Background() has no mode stamp; FromContext
 		// canonicalises to "default" — proving the safe-fallback path.
 		Expect(engine.PermissionModeFromContext(capture.capturedCtx())).To(Equal(permissionmode.ModeDefault))
+	})
+})
+
+// Bug fix (Aug 2026): the engine's normal tool-execution path never
+// stamped session.IDKey{} on the ctx — only the delegation paths and
+// cli/run.go did. Tools that resolve their owning session from ctx
+// (question tool → EventQuestionRequired payload SessionID) received
+// an empty session ID, so the API's FindActiveBySession("") lookup
+// never upserted the pending question onto the turn. This spec pins
+// the fix: executeToolCall stamps the session ID it already holds
+// onto the dispatch ctx before invoking Tool.Execute.
+var _ = Describe("Engine.executeToolCall — session ID stamping", func() {
+	var (
+		eng     *engine.Engine
+		capture *ctxCapturingTool
+	)
+
+	BeforeEach(func() {
+		providerReg := provider.NewRegistry()
+		providerReg.Register(&mockProvider{name: "spy"})
+		capture = &ctxCapturingTool{name: "ctx-capture"}
+		eng = engine.New(engine.Config{
+			Manifest: agent.Manifest{
+				ID:   "lead",
+				Name: "Lead",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"ctx-capture"},
+				},
+			},
+			AgentRegistry: agent.NewRegistry(),
+			Registry:      providerReg,
+			ChatProvider:  &mockProvider{name: "spy"},
+		})
+		eng.AddTool(capture)
+	})
+
+	It("stamps the session ID on the ctx delivered to Tool.Execute when absent", func() {
+		_, err := eng.ExecuteToolCallForTest(context.Background(), "sess-id-stamp", &provider.ToolCall{
+			ID:        "call-1",
+			Name:      "ctx-capture",
+			Arguments: map[string]any{},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(capture.capturedCtx().Value(session.IDKey{})).To(Equal("sess-id-stamp"),
+			"executeToolCall must stamp session.IDKey{} so tools like question can resolve their owning session")
+	})
+
+	It("preserves an existing caller-stamped session ID", func() {
+		ctx := context.WithValue(context.Background(), session.IDKey{}, "caller-stamped")
+		_, err := eng.ExecuteToolCallForTest(ctx, "sess-engine", &provider.ToolCall{
+			ID:        "call-2",
+			Name:      "ctx-capture",
+			Arguments: map[string]any{},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(capture.capturedCtx().Value(session.IDKey{})).To(Equal("caller-stamped"),
+			"a caller-stamped session ID (delegation paths) must win over the engine's value")
 	})
 })

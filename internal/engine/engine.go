@@ -2708,6 +2708,17 @@ func (e *Engine) executeToolExecStage(
 //
 // Side effects: None.
 func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall *provider.ToolCall) (tool.Result, error) {
+	// Stamp the session ID on the tool-execution context so tools that
+	// resolve their owning session via session.IDKey{} (question tool's
+	// pending-question upsert, todo, background tools) work on the normal
+	// engine dispatch path. The delegation paths (delegation_stream.go:184,
+	// delegation_swarm.go:543) and cli/run.go:184 already do this; without
+	// it sessionIDFromContext(ctx) returns "" and the EventQuestionRequired
+	// payload carries an empty SessionID, so the API never upserts the
+	// pending question onto the turn.
+	if _, ok := ctx.Value(session.IDKey{}).(string); !ok {
+		ctx = context.WithValue(ctx, session.IDKey{}, sessionID)
+	}
 	if gate, blocked := e.todoStrictGate(sessionID, toolCall.Name); blocked {
 		return gate, nil
 	}
