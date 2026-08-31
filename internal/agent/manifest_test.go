@@ -199,6 +199,16 @@ var _ = Describe("Manifest", func() {
 			Expect(agent.DefaultBaseTools()).To(ContainElement("todo_clear"))
 		})
 
+		// Regression pin (chain-question-resolve-fix): the question tool must
+		// sit in the inherited base toolset. Without it the engine's runtime
+		// tool gate (executeToolCall) rejects the question tool call as "not
+		// available to agent" for any manifest that does not declare it
+		// explicitly, so no EventQuestionRequired fires and the FE never sees
+		// question_requests.
+		It("includes question so agents can ask the user mid-turn", func() {
+			Expect(agent.DefaultBaseTools()).To(ContainElement("question"))
+		})
+
 		It("returns a fresh copy so callers cannot mutate the package constant", func() {
 			first := agent.DefaultBaseTools()
 			first[0] = "mutated"
