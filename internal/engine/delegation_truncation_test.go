@@ -110,15 +110,17 @@ var _ = Describe("Tool error capture in delegation results", func() {
 				"non-error tool result content should not appear in the aggregated response — the sub-assistant's own text already summarises it")
 		})
 
-		It("captures thinking-only wrap-up text before Done", func() {
-			chunks := make(chan provider.StreamChunk, 2)
-			chunks <- provider.StreamChunk{Thinking: "Wrap-up: I have completed the plan."}
+		It("drops thinking chunks from the delegation response", func() {
+			chunks := make(chan provider.StreamChunk, 3)
+			chunks <- provider.StreamChunk{Thinking: "Thinking about cool thing."}
+			chunks <- provider.StreamChunk{Content: "I thought about cool thing, and it is this."}
 			chunks <- provider.StreamChunk{Done: true}
 			close(chunks)
 
 			result, err := engine.CollectDelegationResultForTest(delegateTool, chunks)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Response()).To(ContainSubstring("Wrap-up: I have completed the plan."))
+			Expect(result.Response()).To(Equal("I thought about cool thing, and it is this."),
+				"child-agent thinking must not be glued onto the delegation tool_result — it is persisted separately as role='thinking' rows in the child session")
 		})
 
 		It("interleaves assistant text and tool errors correctly", func() {
@@ -174,6 +176,17 @@ var _ = Describe("Tool error capture in delegation results", func() {
 			result, err := engine.CollectWithProgressForTest(ctx, delegateTool, chunks, time.Now())
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.Response()).To(Equal("assistant summary"))
+		})
+		It("drops thinking chunks from the delegation response", func() {
+			ctx := context.Background()
+			chunks := make(chan provider.StreamChunk, 2)
+			chunks <- provider.StreamChunk{Thinking: "reasoning about the task"}
+			chunks <- provider.StreamChunk{Content: "final answer"}
+			close(chunks)
+
+			result, err := engine.CollectWithProgressForTest(ctx, delegateTool, chunks, time.Now())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Response()).To(Equal("final answer"))
 		})
 	})
 })

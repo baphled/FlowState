@@ -90,6 +90,27 @@ func (c *SSEConsumer) Done() {
 	writeSSEDone(c.w, c.flusher)
 }
 
+// WriteThinking writes a JSON-encoded model-reasoning fragment as a
+// server-sent event with type "thinking". Consumed by the frontend's
+// thinking event handler (flowstate-web chatStore) which accumulates the
+// text onto the in-flight assistant message's thinking content for the
+// thinking panel; it is never rendered as the visible reply.
+//
+// Wire shape: {"type":"thinking","content":"..."} — matches the frontend
+// parser at flowstate-web src/lib/sseEvent.ts (SSEThinkingEvent).
+//
+// Expected:
+//   - content is the model-reasoning fragment from the stream chunk.
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded thinking event to the response.
+//   - Flushes the response buffer.
+//
+// Returns: result of WriteThinking.
+func (c *SSEConsumer) WriteThinking(content string) {
+	writeSSEThinking(c.w, c.flusher, content)
+}
+
 // WriteToolCall writes a JSON-encoded tool call event as a server-sent event.
 //
 // Expected:
@@ -131,9 +152,9 @@ func (c *SSEConsumer) WriteToolResult(content string) {
 // tool failures render as a dedicated error bubble instead of a normal
 // completed tool_result.
 //
-// Wire shape: {"type":"tool_error","content":"..."} — matches the
-// frontend parser at web/src/lib/sseEvent.ts:642. Empty content is
-// tolerated so the wire never throws on a malformed payload.
+// Wire shape: {"type":"tool_error","content":"..."} — matches the frontend
+// parser at web/src/lib/sseEvent.ts:642. Empty content is tolerated so
+// the wire never throws on a malformed payload.
 //
 // Expected:
 //   - content is the error text the engine stamped on the chunk

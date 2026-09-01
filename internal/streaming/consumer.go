@@ -10,6 +10,15 @@ type StreamConsumer interface {
 	Done()
 }
 
+// ThinkingConsumer is an optional interface for consumers that support
+// model-reasoning visibility. The streaming runner and the dispatcher route
+// chunk.Thinking through this channel; consumers that do not implement it
+// simply never see thinking — reasoning is never concatenated into content.
+type ThinkingConsumer interface {
+	// WriteThinking notifies the consumer of a model-reasoning fragment.
+	WriteThinking(content string)
+}
+
 // ToolCallConsumer is an optional interface for consumers that support tool call visibility.
 // Consumers may implement this interface to receive notifications when a tool call is invoked.
 type ToolCallConsumer interface {

@@ -16,16 +16,18 @@ import (
 )
 
 type mockConsumer struct {
-	chunks       []string
-	toolCalls    []string
-	toolResults  []string
-	toolErrors   []string
-	errors       []error
-	doneCount    int
-	writeErr     error
-	enableTool   bool
-	enableResult bool
-	enableError  bool
+	chunks         []string
+	toolCalls      []string
+	toolResults    []string
+	toolErrors     []string
+	errors         []error
+	doneCount      int
+	writeErr       error
+	enableTool     bool
+	enableResult   bool
+	enableError    bool
+	enableThinking bool
+	thinking       []string
 }
 
 func (m *mockConsumer) WriteChunk(content string) error {
@@ -50,6 +52,12 @@ func (m *mockConsumer) WriteToolCall(name string) {
 func (m *mockConsumer) WriteToolResult(content string) {
 	if m.enableResult {
 		m.toolResults = append(m.toolResults, content)
+	}
+}
+
+func (m *mockConsumer) WriteThinking(content string) {
+	if m.enableThinking {
+		m.thinking = append(m.thinking, content)
 	}
 }
 
@@ -336,6 +344,23 @@ var _ = Describe("Streaming", func() {
 			It("still calls Done on the consumer", func() {
 				_ = streaming.Run(ctx, streamer, consumer, "test-agent", "test message")
 				Expect(consumer.doneCount).To(Equal(1))
+			})
+		})
+
+		Context("when a chunk carries thinking", func() {
+			BeforeEach(func() {
+				consumer.enableThinking = true
+				streamer.Chunks = []provider.StreamChunk{
+					{Thinking: "reasoning about the task"},
+					{Content: "answer", Done: true},
+				}
+			})
+
+			It("calls WriteThinking on ThinkingConsumer implementations", func() {
+				err := streaming.Run(ctx, streamer, consumer, "test-agent", "test message")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(consumer.thinking).To(Equal([]string{"reasoning about the task"}))
+				Expect(consumer.chunks).To(Equal([]string{"answer"}))
 			})
 		})
 

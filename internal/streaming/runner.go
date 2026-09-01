@@ -57,6 +57,38 @@ func DeliverToolResult(c StreamConsumer, result *provider.ToolResultInfo) {
 	deliverToolResult(c, result)
 }
 
+// DeliverThinking is the exported wrapper for the thinking-reasoning
+// dispatch logic. See deliverThinking for the contract.
+//
+// Side effects:
+//   - See deliverThinking.
+//
+// Expected: parameters for DeliverThinking.
+func DeliverThinking(c StreamConsumer, thinking string) {
+	deliverThinking(c, thinking)
+}
+
+// deliverThinking routes a model-reasoning fragment to consumers that
+// implement ThinkingConsumer. Consumers without the extension interface
+// never receive thinking — it is never glued onto content.
+//
+// Expected:
+//   - c is a non-nil StreamConsumer.
+//   - thinking may be empty, in which case nothing is delivered.
+//
+// Side effects:
+//   - Calls c.WriteThinking when thinking is non-empty and supported.
+func deliverThinking(c StreamConsumer, thinking string) {
+	if thinking == "" {
+		return
+	}
+	tc, ok := c.(ThinkingConsumer)
+	if !ok {
+		return
+	}
+	tc.WriteThinking(thinking)
+}
+
 // Run drives a Streamer into a StreamConsumer, coordinating the streaming lifecycle.
 //
 // Expected:
@@ -97,6 +129,7 @@ func Run(ctx context.Context, s Streamer, c StreamConsumer, agentID, message str
 		}
 		deliverToolCall(c, chunk.ToolCall)
 		deliverToolResult(c, chunk.ToolResult)
+		deliverThinking(c, chunk.Thinking)
 		if chunk.Content != "" && writeErr == nil {
 			writeErr = c.WriteChunk(chunk.Content)
 		}

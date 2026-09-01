@@ -1632,8 +1632,6 @@ func (d *DelegateTool) collectDelegationResult(chunks <-chan provider.StreamChun
 		}
 		if chunk.Content != "" {
 			response.WriteString(chunk.Content)
-		} else if chunk.Thinking != "" {
-			response.WriteString(chunk.Thinking)
 		} else if chunk.ToolResult != nil && chunk.ToolResult.IsError {
 			response.WriteString(chunk.ToolResult.Content)
 		}
@@ -1703,8 +1701,6 @@ func (d *DelegateTool) collectWithProgress(
 			}
 			if chunk.Content != "" {
 				response.WriteString(chunk.Content)
-			} else if chunk.Thinking != "" {
-				response.WriteString(chunk.Thinking)
 			} else if chunk.ToolResult != nil && chunk.ToolResult.IsError {
 				response.WriteString(chunk.ToolResult.Content)
 			}

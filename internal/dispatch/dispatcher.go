@@ -1521,6 +1521,7 @@ func (d *Dispatcher) deliverChunkToConsumer(chunk provider.StreamChunk, consumer
 	}
 	streaming.DeliverToolCall(consumer, chunk.ToolCall)
 	streaming.DeliverToolResult(consumer, chunk.ToolResult)
+	streaming.DeliverThinking(consumer, chunk.Thinking)
 	if chunk.Content != "" {
 		if err := consumer.WriteChunk(chunk.Content); err != nil {
 			slog.Warn("dispatch: consumer chunk write failed",
