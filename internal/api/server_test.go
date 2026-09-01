@@ -6762,6 +6762,7 @@ func TestServerStillServesChat(t *testing.T) {
 		t.Fatalf("chat unexpectedly 501")
 	}
 }
+
 // These three specs pin the question-turn payload fix in
 // internal/api/server.go:
 //
@@ -6803,12 +6804,12 @@ func TestResolvePreservesOptionsAndAllowMultiple(t *testing.T) {
 	publishHeartbeat(bus, sessionID)
 
 	bus.Publish(events.EventQuestionRequired, events.NewQuestionRequiredEvent(events.QuestionRequiredEventData{
-		RequestID:    "req-preserve",
-		ToolName:     "ask_user",
-		Question:     "Pick all that apply",
-		Options:      []string{"a", "b", "c"},
+		RequestID:     "req-preserve",
+		ToolName:      "ask_user",
+		Question:      "Pick all that apply",
+		Options:       []string{"a", "b", "c"},
 		AllowMultiple: true,
-		SessionID:    sessionID,
+		SessionID:     sessionID,
 	}))
 
 	pending := findTurnQuestion(t, reg, turnID, "req-preserve")
