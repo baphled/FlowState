@@ -6762,3 +6762,149 @@ func TestServerStillServesChat(t *testing.T) {
 		t.Fatalf("chat unexpectedly 501")
 	}
 }
+// These three specs pin the question-turn payload fix in
+// internal/api/server.go:
+//
+//  1. resolve() preserves Options and AllowMultiple from the pending
+//     entry already on the Turn instead of zeroing them.
+//  2. A QuestionTimeoutEvent resolves the pending question (the
+//     type-switch must handle both event wrappers), not silently
+//     dropped.
+//  3. A question stashed then resolved before any heartbeat flush is
+//     purged from the stash (dropPendingQuestion) so a later
+//     activation flush cannot resurrect it as status=pending.
+
+func findTurnQuestion(t *testing.T, reg *turn.Registry, turnID, requestID string) turn.TurnQuestionRequest {
+	t.Helper()
+	tt, err := reg.Get(turnID)
+	if err != nil {
+		t.Fatalf("Get(%s): %v", turnID, err)
+	}
+	for _, qr := range tt.QuestionRequests {
+		if qr.RequestID == requestID {
+			return qr
+		}
+	}
+	t.Fatalf("request %s not found on turn %s (requests=%+v)", requestID, turnID, tt.QuestionRequests)
+	return turn.TurnQuestionRequest{}
+}
+
+// (a) resolve() must carry Options and AllowMultiple through from the
+// pending entry — the terminal wire entry must still be selectable.
+func TestResolvePreservesOptionsAndAllowMultiple(t *testing.T) {
+	srv, bus, reg := newQuestionServer(t)
+	defer srv.ResetPendingQuestions()
+	sessionID := "sess-preserve"
+
+	turnID, err := reg.Start(sessionID)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	publishHeartbeat(bus, sessionID)
+
+	bus.Publish(events.EventQuestionRequired, events.NewQuestionRequiredEvent(events.QuestionRequiredEventData{
+		RequestID:    "req-preserve",
+		ToolName:     "ask_user",
+		Question:     "Pick all that apply",
+		Options:      []string{"a", "b", "c"},
+		AllowMultiple: true,
+		SessionID:    sessionID,
+	}))
+
+	pending := findTurnQuestion(t, reg, turnID, "req-preserve")
+	if pending.Status != turn.TurnQuestionStatusPending {
+		t.Fatalf("expected pending before answer, got %q", pending.Status)
+	}
+
+	bus.Publish(events.EventQuestionAnswered, events.NewQuestionAnsweredEvent(events.QuestionAnsweredEventData{
+		RequestID: "req-preserve",
+		SessionID: sessionID,
+		ToolName:  "ask_user",
+		Question:  pending.Question,
+		Answers:   []string{"a"},
+	}))
+
+	resolved := findTurnQuestion(t, reg, turnID, "req-preserve")
+	if resolved.Status != turn.TurnQuestionStatusAnswered {
+		t.Fatalf("expected answered status, got %q", resolved.Status)
+	}
+	if len(resolved.Options) != len(pending.Options) {
+		t.Fatalf("resolve() dropped Options: pending=%v resolved=%v", pending.Options, resolved.Options)
+	}
+	for i, o := range pending.Options {
+		if resolved.Options[i] != o {
+			t.Fatalf("Options mismatch at %d: pending=%q resolved=%q", i, o, resolved.Options[i])
+		}
+	}
+	if !resolved.AllowMultiple {
+		t.Fatal("resolve() dropped AllowMultiple: expected true, got false")
+	}
+}
+
+// (b) A QuestionTimeoutEvent must resolve the pending question to
+// status=timeout — before the fix the resolve subscriber only
+// type-asserted *QuestionAnsweredEvent and timeouts were silently
+// dropped, leaving the entry stuck at pending forever.
+func TestQuestionTimeoutResolvesPendingQuestion(t *testing.T) {
+	srv, bus, reg := newQuestionServer(t)
+	defer srv.ResetPendingQuestions()
+	sessionID := "sess-timeout"
+
+	turnID, err := reg.Start(sessionID)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	publishHeartbeat(bus, sessionID)
+
+	publishQuestion(bus, "req-timeout", sessionID)
+
+	bus.Publish(events.EventQuestionTimeout, events.NewQuestionTimeoutEvent(events.QuestionAnsweredEventData{
+		RequestID: "req-timeout",
+		SessionID: sessionID,
+		ToolName:  "ask_user",
+		Question:  "Which flavour? (req-timeout)",
+	}))
+
+	resolved := findTurnQuestion(t, reg, turnID, "req-timeout")
+	if resolved.Status != turn.TurnQuestionStatusTimeout {
+		t.Fatalf("expected timeout status on QuestionTimeoutEvent, got %q (event silently dropped?)", resolved.Status)
+	}
+}
+
+// (c) A question stashed while no Turn is active, then resolved
+// before any heartbeat flush, must not be resurrected as
+// status=pending by a later activation flush — the stash entry is
+// purged by dropPendingQuestion at resolve time.
+func TestResolvedStashedQuestionNotResurrected(t *testing.T) {
+	srv, bus, reg := newQuestionServer(t)
+	defer srv.ResetPendingQuestions()
+	sessionID := "sess-resurrect"
+
+	// Stash while no turn is active.
+	publishQuestion(bus, "req-stash", sessionID)
+
+	// Resolve it before any heartbeat flush occurred.
+	bus.Publish(events.EventQuestionAnswered, events.NewQuestionAnsweredEvent(events.QuestionAnsweredEventData{
+		RequestID: "req-stash",
+		SessionID: sessionID,
+		ToolName:  "ask_user",
+		Answers:   []string{"a"},
+	}))
+
+	// Now activate: heartbeat triggers the activation flush.
+	turnID, err := reg.Start(sessionID)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	publishHeartbeat(bus, sessionID)
+
+	tt, err := reg.Get(turnID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	for _, qr := range tt.QuestionRequests {
+		if qr.RequestID == "req-stash" && qr.Status == turn.TurnQuestionStatusPending {
+			t.Fatalf("resolved question resurrected as pending after flush: %+v", qr)
+		}
+	}
+}

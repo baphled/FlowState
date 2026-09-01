@@ -2,6 +2,24 @@
 
 > **Reference document** for AI coding agents working on FlowState, an agentic harness daemon and platform. Read this before writing any code, making any commits, or asking for clarification. All rules here are non-negotiable unless an explicit exception is stated.
 
+## Tool Discipline
+
+Use the right tool for the job — never bash for file content manipulation:
+
+| Action | Tool | Never |
+|---|---|---|
+| Create a new file | `write` | `cat >`, `tee`, `echo >`, heredocs |
+| Modify an existing file | `edit` (or `write` for a full rewrite) | `sed -i`, `awk -i`, redirection |
+| Read a file | `read` (with `offset`/`limit` for large files) | `cat`, `head`, `tail` |
+
+Bash is reserved for builds, tests, linting, git operations, and
+process/system inspection — not for creating or editing files.
+
+**Tool-call economy:** use the least number of tool calls possible. Batch
+independent calls in a single message, read only the region you need (via
+`offset`/`limit`), and make one precise edit rather than several
+exploratory ones.
+
 ## Git Worktree Setup
 
 FlowState uses git worktrees. The structure is:
@@ -303,6 +321,7 @@ make test          # Go tests
 - Import `intents/` from `screens/`
 - Put comments inside function bodies
 - Work directly in the bare repo instead of a worktree
+- Create or modify files via bash instead of the `write`/`edit` tools
 
 ## Key Files
 
@@ -639,9 +658,10 @@ flowstate autoresearch run \
 → Surface: internal/engine/engine.go
 → Evaluator: [accept default: scripts/autoresearch-evaluators/bench.sh]
 → Driver: [accept default: scripts/autoresearch-drivers/default-assistant-driver.sh]
+→ Program: skills/autoresearch-presets/perf-preserve-behaviour.md
 → Direction: min
-→ Max trials: 15
-→ Time budget: 15m
+→ Max trials: [accept default: 15]
+→ Time budget: [accept default: 15m]
 → Confirm
 ```
 

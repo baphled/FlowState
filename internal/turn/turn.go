@@ -500,7 +500,7 @@ type TurnQuestionRequest struct {
 	AgentName     string   `json:"agent_name,omitempty"`
 	Question      string   `json:"question"`
 	Options       []string `json:"options,omitempty"`
-	AllowMultiple bool     `json:"allow_multiple,omitempty"`
+	AllowMultiple bool     `json:"allow_multiple"`
 	Status        string   `json:"status"`
 	// Answers carries the operator's selections on a resolved entry.
 	// Empty while Status == pending and on a Timeout resolution.

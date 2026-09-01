@@ -2267,7 +2267,7 @@ func buildTurnResponse(t turn.Turn) turnResponse {
 	if msgs == nil {
 		msgs = []session.Message{}
 	}
-	return turnResponse{
+	resp := turnResponse{
 		TurnID:             t.ID,
 		SessionID:          t.SessionID,
 		Status:             string(t.Status),
@@ -2289,6 +2289,9 @@ func buildTurnResponse(t turn.Turn) turnResponse {
 		PermissionRequests: t.PermissionRequests,
 		QuestionRequests:   t.QuestionRequests,
 	}
+	slog.Debug("question-path: buildTurnResponse",
+		"session_id", t.SessionID, "turn_id", t.ID, "question_requests", len(t.QuestionRequests))
+	return resp
 }
 
 // handleSessionTodos returns the todo list for the specified session.
@@ -3734,15 +3737,21 @@ func (s *Server) subscribeTurnQuestions() {
 		}
 		queue := append(s.pendingQuestions[sessionID], req)
 		if len(queue) > maxPendingQuestionsPerSession {
+			slog.Warn("question-path: pending question stash trimmed to cap",
+				"session_id", sessionID, "cap", maxPendingQuestionsPerSession)
 			queue = queue[len(queue)-maxPendingQuestionsPerSession:]
 		}
 		s.pendingQuestions[sessionID] = queue
+		slog.Debug("question-path: question stashed (no active turn)",
+			"session_id", sessionID, "request_id", req.RequestID, "stash_len", len(queue))
 	}
 	s.eventBus.Subscribe(events.EventQuestionRequired, func(msg any) {
 		qe, ok := msg.(*events.QuestionRequiredEvent)
 		if !ok {
 			return
 		}
+		slog.Debug("question-path: question.required published",
+			"session_id", qe.Data.SessionID, "request_id", qe.Data.RequestID)
 		turnID, ok := registry.FindActiveBySession(qe.Data.SessionID)
 		if !ok {
 			stashQuestion(qe.Data.SessionID, turn.TurnQuestionRequest{
@@ -3763,6 +3772,8 @@ func (s *Server) subscribeTurnQuestions() {
 			AllowMultiple: qe.Data.AllowMultiple,
 			Status:        turn.TurnQuestionStatusPending,
 		})
+		slog.Debug("question-path: question upserted onto active turn",
+			"session_id", qe.Data.SessionID, "turn_id", turnID, "request_id", qe.Data.RequestID)
 	})
 	// Activation flush: a heartbeat for a session with no prior
 	// stash-flush is the first observable signal that the session's
@@ -3775,25 +3786,49 @@ func (s *Server) subscribeTurnQuestions() {
 		}
 		s.flushPendingQuestions(registry, hb.Data.SessionID)
 	})
+	// resolve flips a pending entry to its terminal status while
+	// preserving the fields the terminal event payload does not carry
+	// (Options, AllowMultiple — the FE re-renders the SAME wire entry
+	// from the terminal poll and must not lose its selectable
+	// content). It also purges any stashed pending copy of the same
+	// request so a later activation flush cannot resurrect an
+	// already-resolved question as status=pending.
 	resolve := func(status string) func(msg any) {
 		return func(msg any) {
-			qe, ok := msg.(*events.QuestionAnsweredEvent)
+			// EventQuestionAnswered and EventQuestionTimeout both
+			// carry QuestionAnsweredEventData; extract it from
+			// either wrapper.
+			var data events.QuestionAnsweredEventData
+			switch ev := msg.(type) {
+			case *events.QuestionAnsweredEvent:
+				data = ev.Data
+			case *events.QuestionTimeoutEvent:
+				data = ev.Data
+			default:
+				return
+			}
+			s.dropPendingQuestion(data.SessionID, data.RequestID)
+			turnID, ok := registry.FindActiveBySession(data.SessionID)
 			if !ok {
 				return
 			}
-			turnID, ok := registry.FindActiveBySession(qe.Data.SessionID)
-			if !ok {
-				return
+			req := turn.TurnQuestionRequest{
+				RequestID: data.RequestID,
+				ToolName:  data.ToolName,
+				Question:  data.Question,
+				Status:    status,
+				Answers:   data.Answers,
 			}
-			registry.UpsertQuestionRequest(turnID, turn.TurnQuestionRequest{
-				RequestID:     qe.Data.RequestID,
-				ToolName:      qe.Data.ToolName,
-				Question:      qe.Data.Question,
-				Options:       nil,
-				AllowMultiple: false,
-				Status:        status,
-				Answers:       qe.Data.Answers,
-			})
+			if existing, err := registry.Get(turnID); err == nil {
+				for _, qr := range existing.QuestionRequests {
+					if qr.RequestID == data.RequestID {
+						req.Options = qr.Options
+						req.AllowMultiple = qr.AllowMultiple
+						break
+					}
+				}
+			}
+			registry.UpsertQuestionRequest(turnID, req)
 		}
 	}
 	s.eventBus.Subscribe(events.EventQuestionAnswered, resolve(turn.TurnQuestionStatusAnswered))
@@ -3829,6 +3864,8 @@ func (s *Server) flushPendingQuestions(registry *turn.Registry, sessionID string
 	for _, req := range pending {
 		registry.UpsertQuestionRequest(turnID, req)
 	}
+	slog.Debug("question-path: flushed pending questions onto active turn",
+		"session_id", sessionID, "turn_id", turnID, "flushed", len(pending))
 }
 
 // requeuePendingQuestions restores a drained-but-undeliverable stash
@@ -3851,6 +3888,38 @@ func (s *Server) requeuePendingQuestions(sessionID string, pending []turn.TurnQu
 		queue = queue[len(queue)-maxPendingQuestionsPerSession:]
 	}
 	s.pendingQuestions[sessionID] = queue
+}
+
+// dropPendingQuestion removes a single stashed pending question by
+// request_id. Called by the resolve subscriber so a question that
+// resolved (answered/timeout) before its stash was flushed can never
+// be resurrected onto a live Turn as status=pending by a later
+// activation flush — that wire entry's POST /question-answer would
+// 404 (the questionrequest registry entry is already gone).
+//
+// Expected:
+//   - sessionID is the session whose stash may hold the request.
+//   - requestID identifies the resolved question.
+//
+// Returns: Nothing.
+// Side effects:
+//   - Mutates s.pendingQuestions under its mutex.
+func (s *Server) dropPendingQuestion(sessionID, requestID string) {
+	s.pendingQuestionsMu.Lock()
+	defer s.pendingQuestionsMu.Unlock()
+	queue := s.pendingQuestions[sessionID]
+	kept := queue[:0]
+	for _, q := range queue {
+		if q.RequestID == requestID {
+			continue
+		}
+		kept = append(kept, q)
+	}
+	if len(kept) == 0 {
+		delete(s.pendingQuestions, sessionID)
+		return
+	}
+	s.pendingQuestions[sessionID] = kept
 }
 
 // ResetPendingQuestions clears every stashed question payload. Test

@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -172,24 +173,18 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 	if t.registry == nil {
 		return tool.Result{}, errors.New("question registry is not configured")
 	}
-	question, ok := input.Arguments["question"].(string)
-	if !ok || strings.TrimSpace(question) == "" {
-		return tool.Result{}, errors.New("question argument is required")
-	}
-
-	options, err := parseOptions(input.Arguments["options"])
+	args, err := parseArguments(ctx, input)
 	if err != nil {
 		return tool.Result{}, err
 	}
-	allowMultiple, _ := input.Arguments["allow_multiple"].(bool)
 
 	requestID := uuid.NewString()
 	req := questionrequest.QuestionRequest{
 		RequestID:     requestID,
 		ToolName:      t.Name(),
-		Question:      question,
-		Options:       options,
-		AllowMultiple: allowMultiple,
+		Question:      args.question,
+		Options:       args.options,
+		AllowMultiple: args.allowMultiple,
 		SessionID:     sessionIDFromContext(ctx),
 		CreatedAt:     time.Now(),
 	}
@@ -207,6 +202,56 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 	}
 	t.publishAnswered(req, answer)
 	return answerResult(req, answer), nil
+}
+
+// parseArguments validates the question tool arguments and logs the
+// parse outcome so malformed invocations are diagnosable from logs.
+//
+// Expected:
+//   - input.Arguments carries a non-empty "question" string, an
+//     optional "options" []any of strings, and an optional
+//     "allow_multiple" bool.
+//
+// Returns:
+//   - The parsed arguments, or an error describing the first failure.
+//
+// Side effects:
+//   - Emits structured warn/debug log lines.
+func parseArguments(ctx context.Context, input tool.Input) (questionArguments, error) {
+	argKeys := make([]string, 0, len(input.Arguments))
+	for k := range input.Arguments {
+		argKeys = append(argKeys, k)
+	}
+	question, ok := input.Arguments["question"].(string)
+	if !ok || strings.TrimSpace(question) == "" {
+		slog.Warn("question-path: question tool argument missing or empty",
+			"session_id", sessionIDFromContext(ctx),
+			"arguments_nil", input.Arguments == nil,
+			"argument_keys", argKeys,
+			"parsed_question", truncateForLog(question))
+		if input.Arguments == nil {
+			return questionArguments{}, errors.New("question arguments failed to parse: nil map from provider argument decoding")
+		}
+		return questionArguments{}, errors.New("question argument is required")
+	}
+	slog.Debug("question-path: question tool parsed arguments",
+		"session_id", sessionIDFromContext(ctx),
+		"argument_keys", argKeys,
+		"question", truncateForLog(question))
+	options, err := parseOptions(input.Arguments["options"])
+	if err != nil {
+		return questionArguments{}, err
+	}
+	allowMultiple, _ := input.Arguments["allow_multiple"].(bool)
+	return questionArguments{question: question, options: options, allowMultiple: allowMultiple}, nil
+}
+
+// questionArguments holds the validated fields of a question tool
+// invocation.
+type questionArguments struct {
+	question      string
+	options       []string
+	allowMultiple bool
 }
 
 // parseOptions extracts and validates the optional options argument.
@@ -233,6 +278,25 @@ func parseOptions(raw any) ([]string, error) {
 		options = append(options, option)
 	}
 	return options, nil
+}
+
+// truncateForLog shortens a question string for structured logging so
+// long prompts don't flood log output.
+//
+// Expected:
+//   - s may be any string, including empty.
+//
+// Returns:
+//   - s unchanged when at most 80 bytes, else the first 80 bytes plus
+//     an ellipsis.
+//
+// Side effects:
+//   - None.
+func truncateForLog(s string) string {
+	if len(s) <= 80 {
+		return s
+	}
+	return s[:80] + "…"
 }
 
 // sessionIDFromContext reads the active session ID the engine stamps
