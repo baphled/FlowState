@@ -6572,7 +6572,6 @@ var _ = Describe("Phase-4-Commit-2 — retired SSE / WebSocket routes return 404
 	})
 })
 
-
 // newQuestionServer builds a Server wired with a real event bus and a
 // real Dispatcher so subscribeTurnQuestions attaches its handlers to a
 // genuine Turn registry. The MockStreamer never actually streams in
