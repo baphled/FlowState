@@ -35,13 +35,16 @@ import (
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/questionrequest"
 	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/testutils"
+	"github.com/baphled/flowstate/internal/tool"
 	"github.com/baphled/flowstate/internal/tool/pathguard"
+	"github.com/baphled/flowstate/internal/tool/question"
 	todo "github.com/baphled/flowstate/internal/tool/todo"
 	"github.com/baphled/flowstate/internal/turn"
 	"gopkg.in/yaml.v3"
@@ -6907,5 +6910,96 @@ func TestResolvedStashedQuestionNotResurrected(t *testing.T) {
 		if qr.RequestID == "req-stash" && qr.Status == turn.TurnQuestionStatusPending {
 			t.Fatalf("resolved question resurrected as pending after flush: %+v", qr)
 		}
+	}
+}
+
+// Pinning spec for the live question-turn-payload bug: the question tool
+// publishes EventQuestionRequired on the same bus instance the API server
+// subscribed to via the app-construction wiring (setupEngine creates
+// appEventBus + question registry, buildEngineParams binds the tool to that
+// bus, api.WithEventBus receives the same bus). With the broken wiring
+// (engineParams.eventBus never set from engineAssemblyParams), createEngine
+// got a nil bus and engine.New built a SECOND phantom bus; the API server
+// subscribed on the phantom while the tool published on the original —
+// subscribeTurnQuestions never fired and buildTurnResponse reported
+// question_requests=0.
+//
+// This spec reproduces the live path end-to-end: an active turn, the
+// question tool's own Execute publishing on the shared bus, and the GET
+// /turns/{id} wire response.
+func TestQuestionToolPublishReachesActiveTurnWireResponse(t *testing.T) {
+	agentReg := agent.NewRegistry()
+	agentReg.Register(&agent.Manifest{ID: "test-agent", Name: "Test Agent"})
+	reg := turn.NewRegistry()
+	streamer := &testutils.MockStreamer{Chunks: []provider.StreamChunk{{Content: "ok"}, {Done: true}}}
+	dispatcher := dispatch.NewWithTurns(streamer, nil, nil, agentReg, nil, reg)
+	bus := eventbus.NewEventBus()
+	srv := api.NewServer(streamer, agentReg, discovery.NewAgentDiscovery(nil), nil,
+		api.WithEventBus(bus),
+		api.WithDispatcher(dispatcher),
+	)
+
+	// Question tool wired exactly as buildEngineParams wires it
+	// (toolset.AppendQuestionTool with the shared registry + bus).
+	qreg := questionrequest.NewRegistry()
+	qtool := question.NewWithBus(qreg, bus, 0)
+
+	sessionID := "sess-pin-live"
+	turnID, err := reg.Start(sessionID)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Drive the tool's real publish path. Execute blocks until answered
+	// or timeout; publishRequired fires at registration. Run it with a
+	// short-lived context and cancel so the test doesn't hang; the
+	// EventQuestionRequired publish has already happened synchronously.
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), session.IDKey{}, sessionID))
+	go func() {
+		res, err := qtool.Execute(ctx, tool.Input{Arguments: map[string]any{
+			"question": "Which flavour?",
+			"options":  []string{"a", "b"},
+		}})
+		_ = res
+		_ = err
+		cancel()
+	}()
+
+	// The subscriber upserts synchronously on Publish; poll briefly for
+	// the async registration to land.
+	var got int
+	for i := 0; i < 50; i++ {
+		tt, err := reg.Get(turnID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if got = len(tt.QuestionRequests); got == 1 {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if got != 1 {
+		t.Fatalf("expected question_requests=1 on active turn, got %d", got)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/"+sessionID+"/turns/"+turnID, nil)
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET turn status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		QuestionRequests []struct {
+			Question string `json:"question"`
+		} `json:"question_requests"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v body=%s", err, rec.Body.String())
+	}
+	if len(resp.QuestionRequests) != 1 {
+		t.Fatalf("turn response question_requests=%d, want 1 (body=%s)", len(resp.QuestionRequests), rec.Body.String())
+	}
+	if got := resp.QuestionRequests[0].Question; got != "Which flavour?" {
+		t.Fatalf("question_requests[0].question=%q, want %q", got, "Which flavour?")
 	}
 }
