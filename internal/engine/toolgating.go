@@ -192,6 +192,17 @@ func BuildAllowedToolSet(manifest agent.Manifest, mcpServerTools map[string][]st
 	// pre-action, etc.) and must never be excludable.
 	allowed["skill_load"] = true
 
+	// Blocking question tool (Aug 2026): the question tool is a
+	// harness-level interaction primitive like skill_load — every
+	// agent can ask the operator a clarifying question without
+	// declaring it per-manifest. The concrete tool is only
+	// registered on app-wired engines (AppendQuestionTool), so on
+	// test/NewForTest engines without a question registry the flag is
+	// a harmless no-op. Not subject to ToolsDeny: agents cannot be
+	// silenced from asking clarifying questions, mirroring the
+	// permission-request ask flow.
+	allowed["question"] = true
+
 	// P12: suggest_delegate is a read-only escape hatch. The
 	// corresponding tool is only attached to the engine for
 	// CanDelegate=false agents, so this flag is a no-op when the tool

@@ -192,7 +192,7 @@ var _ = Describe("Engine swarm-lead tool cap (Orchestrator Self-Execution)", fun
 			Expect(allowed["write"]).To(BeFalse(),
 				"write is an execution tool the planner lead does not declare — it must be stripped from a swarm-lead turn")
 			// Invariant: every surviving tool is in the lead's set.
-			leadSet := map[string]bool{"delegate": true, "coordination_store": true, "skill_load": true, "todowrite": true, "todo_update": true, "todo_append": true, "todo_insert": true, "todo_clear": true, "plan_list": true, "plan_read": true, "suggest_delegate": true, "background_output": true, "background_cancel": true}
+			leadSet := map[string]bool{"delegate": true, "coordination_store": true, "skill_load": true, "todowrite": true, "todo_update": true, "todo_append": true, "todo_insert": true, "todo_clear": true, "question": true, "plan_list": true, "plan_read": true, "suggest_delegate": true, "background_output": true, "background_cancel": true}
 			for name, on := range allowed {
 				if on {
 					Expect(leadSet[name]).To(BeTrue(),

@@ -303,6 +303,8 @@ func appendGateDirective(message string, gateErr error) string {
 //
 // Side effects:
 //   - None.
+//
+//lint:ignore unreachable-func exported seam for the features/engine/gate_amendment_directive.feature BDD glue (features/support/gate_amendment_steps.go).
 func AppendGateDirective(message string, gateErr error) string {
 	return appendGateDirective(message, gateErr)
 }

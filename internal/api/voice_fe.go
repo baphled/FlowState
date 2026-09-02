@@ -92,6 +92,8 @@ type TTSSynthesiserAdapter struct {
 //
 // Side effects:
 //   - Spawns the underlying synthesiser under a bounded context.
+//
+//lint:ignore unreachable-func load-bearing for the features/voice/frontend_turns.feature BDD glue (features/support/voice_fe_steps.go); implements the endpoint VoiceSynthesiser seam.
 func (a *TTSSynthesiserAdapter) Synthesize(text string) ([]byte, error) {
 	return a.synthesize(context.Background(), text)
 }
@@ -469,6 +471,8 @@ type PipelineDispatcherAdapter struct {
 //
 // Side effects:
 //   - Spawns the STT binary and one ephemeral dispatch turn.
+//
+//lint:ignore unreachable-func load-bearing for the features/voice/frontend_turns.feature BDD glue (features/support/voice_fe_steps.go); implements the VoiceTurnDispatcher seam.
 func (a *PipelineDispatcherAdapter) DispatchAudio(audio []byte) (string, error) {
 	return a.Pipeline.DispatchAudio(context.Background(), a.Dispatcher, audio)
 }
@@ -485,6 +489,8 @@ func (a *PipelineDispatcherAdapter) DispatchAudio(audio []byte) (string, error) 
 //
 // Side effects:
 //   - Spawns the STT binary and one ephemeral dispatch turn.
+//
+//lint:ignore unreachable-func request-scoped variant retained for the transcribe endpoint wiring; the BDD glue and future request-scoped callers exercise it outside this call graph.
 func (a *PipelineDispatcherAdapter) DispatchAudioRequest(ctx context.Context, audio []byte) (string, error) {
 	return a.Pipeline.DispatchAudio(ctx, a.Dispatcher, audio)
 }

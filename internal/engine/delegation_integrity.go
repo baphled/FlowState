@@ -127,6 +127,8 @@ func CollectWithProgressForTest(ctx context.Context, d *DelegateTool, chunks <-c
 //
 // Side effects:
 //   - None.
+//
+//lint:ignore unreachable-func exported seam for the features/engine BDD glue (features/support/delegation_integrity_steps.go).
 func HasSubstantiveOutputForTest(val []byte) bool {
 	return hasSubstantiveOutput(val)
 }
@@ -146,6 +148,8 @@ func HasSubstantiveOutputForTest(val []byte) bool {
 //
 // Side effects:
 //   - Emits ProgressEvents as collectWithProgress does.
+//
+//lint:ignore unreachable-func exported seam applying the production trustworthy completion policy for features/support/delegation_integrity_steps.go.
 func CollectDelegationCompletion(ctx context.Context, d *DelegateTool, chunks <-chan provider.StreamChunk, startedAt time.Time) (DelegationResultForTest, error) {
 	res, err := d.collectWithPolicy(ctx, chunks, startedAt)
 	if err != nil {
