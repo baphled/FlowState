@@ -517,7 +517,7 @@ func streamResponse(
 	// the request-level streamer the caller provides. Keep the
 	// caller's streamer for now by overriding the orchestrator's
 	// streamer for this call:
-	orch := orchestrator.New(
+	orch := orchestrator.New( //nolint:contextcheck // orchestrator owns a dispatcher-lifecycle base context internally; call-level ctx is passed per operation
 		application.Engine,
 		application.Registry,
 		application.SwarmRegistry,

@@ -198,6 +198,7 @@ type Dispatcher struct {
 	// drains the chunks channel. Never nil — New / NewWithTurns
 	// always wire a registry instance.
 	turnRegistry  *turn.Registry
+	lifecycle     *DispatcherLifecycle
 	sessionQueues sync.Map
 	// engineMu serialises cross-session engine state mutations
 	// (SetSwarmContext, ManifestSnapshot, ReseedFailoverBasePreferences)
@@ -288,7 +289,57 @@ func NewWithTurns(
 		agentRegistry:  agentRegistry,
 		sessionManager: sessionManager,
 		turnRegistry:   turnRegistry,
+		lifecycle:      newDispatcherLifecycle(context.Background()),
 	}
+}
+
+// NewWithRootContext wires a Dispatcher whose shutdown surface is
+// bound to a caller-supplied root context. Cancelling the root context
+// (or calling Shutdown) terminates every in-flight and queued dispatch
+// that was deliberately decoupled from its HTTP caller via
+// context.WithoutCancel — the quit-means-quit contract.
+//
+// Expected:
+//   - rootCtx is the application root context. nil falls back to
+//     context.Background.
+//   - remaining parameters mirror NewWithTurns.
+//
+// Returns:
+//   - A configured *Dispatcher bound to rootCtx.
+//
+// Side effects:
+//   - Cancellation of rootCtx cancels all live stream contexts.
+func NewWithRootContext(
+	rootCtx context.Context,
+	streamer Streamer,
+	dispatchEngine swarm.DispatchEngine,
+	swarmRegistry *swarm.Registry,
+	agentRegistry *agent.Registry,
+	sessionManager SessionManager,
+	turnRegistry *turn.Registry,
+) *Dispatcher {
+	d := NewWithTurns(streamer, dispatchEngine, swarmRegistry, agentRegistry, sessionManager, turnRegistry) //nolint:contextcheck // NewWithTurns owns its own background base context; this call immediately replaces it with rootCtx
+	d.lifecycle = newDispatcherLifecycle(rootCtx)
+	return d
+}
+
+// Shutdown terminates the dispatcher: cancels the dispatcher-owned
+// base context (killing every live stream), closes all session
+// queues, and rejects subsequent dispatches with ErrShutdown.
+// Idempotent and safe for concurrent use.
+//
+// Expected: parameters for Shutdown.
+// Returns: result of Shutdown.
+// Side effects: cancels all in-flight streams and drains queues.
+func (d *Dispatcher) Shutdown() error {
+	d.lifecycle.Stop()
+	d.sessionQueues.Range(func(_, value any) bool {
+		if queue, ok := value.(*sessionQueue); ok {
+			queue.close()
+		}
+		return true
+	})
+	return nil
 }
 
 // TurnRegistry returns the Dispatcher's Turn registry so Phase 2's
@@ -486,6 +537,9 @@ func (d *Dispatcher) DispatchEphemeral(
 	if d.streamer == nil {
 		return EphemeralHandle{}, errors.New("dispatch: streamer not configured")
 	}
+	if err := d.rejectIfStopped(); err != nil {
+		return EphemeralHandle{}, err
+	}
 
 	leadID, swarmCtx, err := d.resolve(req)
 	if err != nil {
@@ -498,7 +552,7 @@ func (d *Dispatcher) DispatchEphemeral(
 	// means /api/chat (and every future ephemeral caller) inherits the
 	// fix without needing to re-apply context.WithoutCancel at the
 	// handler edge.
-	streamCtx := context.WithoutCancel(ctx)
+	streamCtx := d.lifecycle.deriveStreamCtx(ctx)
 	// Attach the per-turn swarm scope (may be nil for plain-agent
 	// dispatches) so the delegate gate reads the dispatch-time
 	// decision off ctx instead of the shared engine state. See the
@@ -509,10 +563,28 @@ func (d *Dispatcher) DispatchEphemeral(
 	done := make(chan error, 1)
 	go func() {
 		defer close(done)
-		done <- d.runEphemeralStream(streamCtx, leadID, swarmCtx, req, consumer)
+		err := d.runEphemeralStream(streamCtx, leadID, swarmCtx, req, consumer)
+		if err == nil {
+			err = streamCtx.Err()
+		}
+		done <- err
 	}()
 
 	return EphemeralHandle{Done: done}, nil
+}
+
+// rejectIfStopped guards every dispatch entry point: after Shutdown
+// the dispatcher refuses new work so a quitting process never accepts
+// prompts it will never finish.
+//
+// Expected: parameters for rejectIfStopped.
+// Returns: result of rejectIfStopped.
+// Side effects: None.
+func (d *Dispatcher) rejectIfStopped() error {
+	if d.lifecycle.isStopped() {
+		return ErrShutdown
+	}
+	return nil
 }
 
 // RunEphemeralSync is the synchronous-await variant of DispatchEphemeral.
@@ -724,6 +796,9 @@ func (d *Dispatcher) DispatchSessioned(
 	if d.sessionManager == nil {
 		return SessionedHandle{}, errors.New("dispatch: sessionManager not configured")
 	}
+	if err := d.rejectIfStopped(); err != nil {
+		return SessionedHandle{}, err
+	}
 
 	// Phase 1 — Turn-Based Post-Then-Poll Architecture (May 2026).
 	//
@@ -804,7 +879,7 @@ func (d *Dispatcher) DispatchSessioned(
 	// /messages handler boundary); centralising it inside Dispatcher
 	// means every sessioned caller inherits the fix without needing to
 	// re-apply context.WithoutCancel at the handler edge.
-	streamCtx := context.WithoutCancel(ctx)
+	streamCtx := d.lifecycle.deriveStreamCtx(ctx)
 	// Phase 1 — inject the freshly-minted turn_id so every downstream
 	// consumer (engine, accumulator) can read it via
 	// turn.TurnIDFromContext / session.AccumulatorTurnIDFromContext

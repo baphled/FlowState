@@ -3306,7 +3306,7 @@ func (s *Server) handleUpdateSessionAgent(w http.ResponseWriter, r *http.Request
 	// switched agents (the session reported the new agent but the
 	// engine streamed under the old one). Closes Audit Finding 3 (web
 	// half).
-	orch := orchestrator.New(s.dispatchEngine, s.registry, s.swarmRegistry, s.streamer, nil, s.sessionManager)
+	orch := orchestrator.New(s.dispatchEngine, s.registry, s.swarmRegistry, s.streamer, nil, s.sessionManager) //nolint:contextcheck // orchestrator owns a dispatcher-lifecycle base context internally; request ctx is passed per-call to SwitchAgent
 	if _, err := orch.SwitchAgent(r.Context(), id, req.AgentID); err != nil {
 		// SessionManager.UpdateSessionAgent reports session-not-found
 		// via the wrapped error — preserve the existing 404 contract
@@ -3373,7 +3373,7 @@ func (s *Server) handleUpdateSessionModel(w http.ResponseWriter, r *http.Request
 	// half (SetModelPreference) lands alongside the session-manager
 	// metadata update. Same parity gap as the agent route — closes
 	// Audit Finding 3 (web half).
-	orch := orchestrator.New(s.dispatchEngine, s.registry, s.swarmRegistry, s.streamer, nil, s.sessionManager)
+	orch := orchestrator.New(s.dispatchEngine, s.registry, s.swarmRegistry, s.streamer, nil, s.sessionManager) //nolint:contextcheck // orchestrator owns a dispatcher-lifecycle base context internally; request ctx is passed per-call to SwitchModel
 	if err := orch.SwitchModel(r.Context(), id, req.ProviderID, req.ModelID); err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return

@@ -5,6 +5,7 @@ package support
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/cucumber/godog"
@@ -61,6 +62,10 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterSkillSteps(ctx, s)
 	RegisterMemorySteps(ctx)
 	RegisterSkillAutoloadingSteps(ctx)
+	RegisterAlwaysActiveSkillSteps(ctx)
+	if os.Getenv("GODOG_TAGS") == "@wip" || strings.Contains(os.Getenv("GODOG_PATHS"), "dispatch") {
+		RegisterQuitSteps(ctx)
+	}
 	RegisterHarnessSteps(ctx)
 	RegisterSessionEnrichmentSteps(ctx, s)
 	RegisterSessionForkSteps(ctx, s)
