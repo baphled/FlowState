@@ -461,6 +461,7 @@ func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the planner agent is configured$`, s.thePlannerAgentIsConfigured)
 	ctx.Step(`^the executor agent is configured$`, s.theExecutorAgentIsConfigured)
 	ctx.Step(`^an explorer agent loaded from a markdown definition$`, s.anExplorerAgentLoadedFromMarkdown)
+	ctx.Step(`^an agent manifest with capabilities tools "([^"]*)"$`, s.anAgentManifestWithCapabilitiesTools)
 	ctx.Step(`^the system prompt is built$`, s.theSystemPromptIsBuilt)
 	ctx.Step(`^the prompt should contain planning instructions$`, s.thePromptShouldContainPlanningInstructions)
 	ctx.Step(`^the prompt should contain execution instructions$`, s.thePromptShouldContainExecutionInstructions)
@@ -3830,6 +3831,31 @@ func (s *StepDefinitions) configureAgentEngine(id, name, defaultPrompt string) e
 	s.agentEngine = engine.New(engine.Config{
 		Registry:         registry,
 		Manifest:         manifest,
+		AgentsFileLoader: agent.NewAgentsFileLoader("", ""),
+		FailoverManager:  failover.NewManager(registry, failover.NewHealthManager(), 5*time.Minute),
+	})
+	return nil
+}
+
+// anAgentManifestWithCapabilitiesTools creates an engine whose manifest
+// carries exactly the comma-separated tools list, without loading any
+// on-disk agent markdown.
+//
+// Expected: tools is a non-empty comma-separated list of tool names.
+// Returns: nil on success, or an error if engine creation fails.
+// Side effects: Creates s.agentEngine with the synthesized manifest.
+func (s *StepDefinitions) anAgentManifestWithCapabilitiesTools(tools string) error {
+	registry := provider.NewRegistry()
+	s.agentEngine = engine.New(engine.Config{
+		Registry: registry,
+		Manifest: agent.Manifest{
+			ID:   "prompt-guard-probe",
+			Name: "Prompt Guard Probe",
+			Instructions: agent.Instructions{
+				SystemPrompt: "You are a prompt guard probe agent.",
+			},
+			Capabilities: agent.Capabilities{Tools: strings.Split(tools, ",")},
+		},
 		AgentsFileLoader: agent.NewAgentsFileLoader("", ""),
 		FailoverManager:  failover.NewManager(registry, failover.NewHealthManager(), 5*time.Minute),
 	})

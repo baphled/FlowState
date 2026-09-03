@@ -31,6 +31,12 @@ var _ = Describe("CoordinationTool", func() {
 		})
 	})
 
+	Describe("Description", func() {
+		It("forbids direct access to the backing coordination.json file", func() {
+			Expect(t.Description()).To(ContainSubstring("Never access the backing coordination.json file directly."))
+		})
+	})
+
 	Describe("Schema", func() {
 		It("returns a valid schema with required parameters", func() {
 			s := t.Schema()

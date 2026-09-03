@@ -14,7 +14,7 @@ import (
 
 const (
 	toolName        = "coordination_store"
-	toolDescription = "Inter-agent handoff store for delegation chains: publish contracted outputs for other agents and read theirs. Not general storage and never user-facing output — write user-requested content to files with the write tool"
+	toolDescription = "Inter-agent handoff store for delegation chains: publish contracted outputs for other agents and read theirs. Not general storage and never user-facing output — write user-requested content to files with the write tool. Never access the backing coordination.json file directly."
 
 	operationGet    = "get"
 	operationSet    = "set"

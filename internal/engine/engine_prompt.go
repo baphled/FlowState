@@ -164,6 +164,8 @@ func (e *Engine) assembleSystemPromptLocked(manifest agent.Manifest, skills []sk
 
 	base += buildToolUsageRequirement(manifest)
 
+	base += "\n\nNEVER read or write `coordination.json` (the coordination-store backing file) via file tools or shell commands; coordination data moves only through sanctioned tools and CLI verbs.\n"
+
 	return base
 }
 
@@ -266,7 +268,8 @@ func buildToolUsageRequirement(manifest agent.Manifest) string {
 			"`coordination_store` tool — the system validates that the tool call " +
 			"occurred. Outside a delegation chain, do not use `coordination_store`. " +
 			"When asked to write something, use the `write` tool: writing means " +
-			"writing to a file.\n"
+			"writing to a file.\n\n" +
+			"Coordination-store data MUST ONLY be written through the `coordination_store` tool and read through that tool or sanctioned CLI verbs (`flowstate coordination`, `flowstate autoresearch`). NEVER read, create, or edit the backing store file (`coordination.json`, by default `~/.local/share/flowstate/coordination.json`) using the read/write/edit tools, `bash`, `cat`, or shell redirection. Coordination keys are entries inside that single JSON file — no per-key files exist. Direct file writes are invisible to the running process and are silently overwritten on its next persist. This is a hard prohibition with no exceptions.\n"
 	}
 
 	return ""
