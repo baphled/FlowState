@@ -831,10 +831,72 @@ var _ = Describe("Manager", func() {
 
 			loaded, err := mgr.GetSession(sess.ID)
 			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusActive)),
+				"the FIRST tool_use_no_calls sentinel is softened under the streak cap — "+
+					"the Z.AI GLM family emits these as false positives on healthy turns; "+
+					"the session stays active for a corrective continuation")
+		})
+		It("escalates to failed once the streak reaches DefaultToolAnomalyStreakCap", func() {
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+			for i := 0; i < session.DefaultToolAnomalyStreakCap; i++ {
+				mgr.AppendMessage(sess.ID, session.Message{
+					Role:       "assistant",
+					StopReason: session.StopReasonToolUseNoCalls,
+				})
+			}
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
 			Expect(loaded.Status).To(Equal(string(session.StatusFailed)),
-				"tool_use_no_calls on an assistant message MUST flip the session to failed — "+
-					"the provider violated the wire contract and the failure must surface "+
-					"immediately rather than completing silently")
+				"a sustained streak of tool-use-anomaly turns indicates a genuine model pathology — "+
+					"the session must escalate to failed once the streak reaches the cap")
+		})
+
+		It("does not downgrade a previously-completed session to failed (escalates instead)", func() {
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(mgr.CloseSession(sess.ID)).To(Succeed())
+
+			for i := 0; i < session.DefaultToolAnomalyStreakCap; i++ {
+				mgr.AppendMessage(sess.ID, session.Message{
+					Role:       "assistant",
+					StopReason: session.StopReasonToolUseNoCalls,
+				})
+			}
+
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusFailed)),
+				"a sustained contract-violation streak escalates a (likely premature) completed seal to failed — "+
+					"completed is not protected against the higher-precedence failure signal")
+		})
+
+		It("does not flip a previously-failed session away from failed (idempotent)", func() {
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+
+			for i := 0; i < session.DefaultToolAnomalyStreakCap; i++ {
+				mgr.AppendMessage(sess.ID, session.Message{
+					Role:       "assistant",
+					StopReason: session.StopReasonToolUseNoCalls,
+				})
+			}
+
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusFailed)))
+
+			// A further event of the same shape is a no-op on status.
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:       "assistant",
+				StopReason: session.StopReasonToolUseNoCalls,
+			})
+
+			loaded, err = mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusFailed)),
+				"the flip is idempotent — repeated contract-violation events on a failed session keep it failed")
 		})
 
 		It("does not flip active when a non-assistant message carries StopReasonToolUseNoCalls (defensive)", func() {
@@ -863,15 +925,17 @@ var _ = Describe("Manager", func() {
 
 			Expect(mgr.CloseSession(sess.ID)).To(Succeed())
 
-			mgr.AppendMessage(sess.ID, session.Message{
-				Role:       "assistant",
-				StopReason: session.StopReasonToolUseNoCalls,
-			})
+			for i := 0; i < session.DefaultToolAnomalyStreakCap; i++ {
+				mgr.AppendMessage(sess.ID, session.Message{
+					Role:       "assistant",
+					StopReason: session.StopReasonToolUseNoCalls,
+				})
+			}
 
 			loaded, err := mgr.GetSession(sess.ID)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(loaded.Status).To(Equal(string(session.StatusFailed)),
-				"a contract-violation event escalates a (likely premature) completed seal to failed — "+
+				"a sustained contract-violation streak escalates a (likely premature) completed seal to failed — "+
 					"completed is not protected against the higher-precedence failure signal")
 		})
 
@@ -879,10 +943,12 @@ var _ = Describe("Manager", func() {
 			sess, err := mgr.CreateSession("agent-x")
 			Expect(err).NotTo(HaveOccurred())
 
-			mgr.AppendMessage(sess.ID, session.Message{
-				Role:       "assistant",
-				StopReason: session.StopReasonToolUseNoCalls,
-			})
+			for i := 0; i < session.DefaultToolAnomalyStreakCap; i++ {
+				mgr.AppendMessage(sess.ID, session.Message{
+					Role:       "assistant",
+					StopReason: session.StopReasonToolUseNoCalls,
+				})
+			}
 
 			loaded, err := mgr.GetSession(sess.ID)
 			Expect(err).NotTo(HaveOccurred())
@@ -959,20 +1025,35 @@ var _ = Describe("Manager", func() {
 
 			loaded, err := mgr.GetSession(sess.ID)
 			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusActive)),
+				"the FIRST abandoned_tool sentinel is softened under the streak cap — "+
+					"the Z.AI GLM family emits these as false positives; the session stays active")
+		})
+		It("escalates to failed once the abandoned_tool streak reaches DefaultToolAnomalyStreakCap", func() {
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+			for i := 0; i < session.DefaultToolAnomalyStreakCap; i++ {
+				mgr.AppendMessage(sess.ID, session.Message{
+					Role:       "assistant",
+					StopReason: session.StopReasonAbandonedTool,
+				})
+			}
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
 			Expect(loaded.Status).To(Equal(string(session.StatusFailed)),
-				"abandoned_tool on an assistant message MUST flip the session to failed — "+
-					"the model committed to a tool call in thinking but never emitted it; "+
-					"the failure must surface immediately rather than completing silently")
+				"a sustained abandoned_tool streak is a genuine model pathology — escalate at the cap")
 		})
 
 		It("does not flip a previously-failed session away from failed (idempotent)", func() {
 			sess, err := mgr.CreateSession("agent-x")
 			Expect(err).NotTo(HaveOccurred())
 
-			mgr.AppendMessage(sess.ID, session.Message{
-				Role:       "assistant",
-				StopReason: session.StopReasonAbandonedTool,
-			})
+			for i := 0; i < session.DefaultToolAnomalyStreakCap; i++ {
+				mgr.AppendMessage(sess.ID, session.Message{
+					Role:       "assistant",
+					StopReason: session.StopReasonAbandonedTool,
+				})
+			}
 
 			loaded, err := mgr.GetSession(sess.ID)
 			Expect(err).NotTo(HaveOccurred())
@@ -1031,16 +1112,19 @@ var _ = Describe("Manager", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(sess.Status).To(Equal(string(session.StatusActive)))
 
-			// First: trigger the failed flip with a sentinel.
-			mgr.AppendMessage(sess.ID, session.Message{
-				Role:       "assistant",
-				StopReason: session.StopReasonToolUseNoCalls,
-			})
+			// First: trigger the failed flip with a full streak of
+			// sentinels (a single one is softened under the cap).
+			for i := 0; i < session.DefaultToolAnomalyStreakCap; i++ {
+				mgr.AppendMessage(sess.ID, session.Message{
+					Role:       "assistant",
+					StopReason: session.StopReasonToolUseNoCalls,
+				})
+			}
 
 			loaded, err := mgr.GetSession(sess.ID)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(loaded.Status).To(Equal(string(session.StatusFailed)),
-				"precondition: sentinel stamps the session as failed")
+				"precondition: a sentinel streak stamps the session as failed")
 
 			// Then: a healthy assistant message arrives (the engine's
 			// tool-loop continuation injected a continuation prompt and
@@ -1063,11 +1147,13 @@ var _ = Describe("Manager", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(sess.Status).To(Equal(string(session.StatusActive)))
 
-			// First sentinel: active -> failed.
-			mgr.AppendMessage(sess.ID, session.Message{
-				Role:       "assistant",
-				StopReason: session.StopReasonToolUseNoCalls,
-			})
+			// A full streak of sentinels: active -> failed.
+			for i := 0; i < session.DefaultToolAnomalyStreakCap; i++ {
+				mgr.AppendMessage(sess.ID, session.Message{
+					Role:       "assistant",
+					StopReason: session.StopReasonToolUseNoCalls,
+				})
+			}
 
 			loaded, err := mgr.GetSession(sess.ID)
 			Expect(err).NotTo(HaveOccurred())
@@ -1153,11 +1239,13 @@ var _ = Describe("Manager", func() {
 			sess, err := mgr.CreateSession("agent-x")
 			Expect(err).NotTo(HaveOccurred())
 
-			// Trigger failed flip.
-			mgr.AppendMessage(sess.ID, session.Message{
-				Role:       "assistant",
-				StopReason: session.StopReasonToolUseNoCalls,
-			})
+			// Trigger failed flip with a full streak.
+			for i := 0; i < session.DefaultToolAnomalyStreakCap; i++ {
+				mgr.AppendMessage(sess.ID, session.Message{
+					Role:       "assistant",
+					StopReason: session.StopReasonToolUseNoCalls,
+				})
+			}
 
 			loaded, err := mgr.GetSession(sess.ID)
 			Expect(err).NotTo(HaveOccurred())

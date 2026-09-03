@@ -48,6 +48,21 @@ const (
 // in the last 30 minutes is by definition still alive).
 const DefaultOrphanGrace = 30 * time.Minute
 
+// DefaultToolAnomalyStreakCap is the number of consecutive tool-use-
+// anomaly assistant messages (ToolUseNoCalls or AbandonedTool) tolerated
+// before the session escalates to failed. The Z.AI GLM provider family
+// stamps these sentinels as false positives on otherwise healthy turns,
+// so a single occurrence is softened under a corrective continuation;
+// a sustained streak indicates a genuine model pathology.
+const DefaultToolAnomalyStreakCap = 3
+
+// ToolAnomalyCorrectivePrompt is the corrective instruction the engine
+// re-sends after a tolerated tool-use-anomaly turn, nudging the model
+// to either emit the tool calls it committed to in thinking or produce
+// a plain assistant answer.
+const ToolAnomalyCorrectivePrompt = "Your previous turn announced a tool call but emitted none. " +
+	"Either issue the tool call now using the available tool schema, or answer directly in plain text."
+
 // Message represents a single message in a session's conversation history.
 //
 // ModelName / ProviderName carry the (model, provider) pair that produced
@@ -239,13 +254,22 @@ type Recorder interface {
 
 // Manager handles session lifecycle and message routing.
 type Manager struct {
-	sessions      map[string]*Session
-	mu            sync.RWMutex
-	streamer      streaming.Streamer
-	notifications map[string][]streaming.CompletionNotificationEvent
-	notifMu       sync.Mutex
-	recorder      Recorder
-	sessionsDir   string
+	sessions map[string]*Session
+	// toolAnomalyStreaks counts consecutive tool-use-anomaly assistant
+	// messages (ToolUseNoCalls, AbandonedTool) per session. The Z.AI
+	// GLM provider family emits these sentinels as false positives on
+	// otherwise healthy turns, so the first occurrences are tolerated
+	// under a corrective continuation rather than failing the session;
+	// only DefaultToolAnomalyStreakCap consecutive anomalies escalate
+	// to failed. A healthy assistant message resets the streak. Read
+	// and written under m.mu.
+	toolAnomalyStreaks map[string]int
+	mu                 sync.RWMutex
+	streamer           streaming.Streamer
+	notifications      map[string][]streaming.CompletionNotificationEvent
+	notifMu            sync.Mutex
+	recorder           Recorder
+	sessionsDir        string
 	// orphanGrace is the age threshold the boot-time orphan sweep
 	// applies inside RestoreSessions. Zero means use DefaultOrphanGrace.
 	// Negative means "disable the sweep" — exposed so tests and
@@ -310,11 +334,12 @@ type Manager struct {
 //   - Allocates the manager's internal session map.
 func NewManager(streamer streaming.Streamer) *Manager {
 	return &Manager{
-		sessions:      make(map[string]*Session),
-		streamer:      streamer,
-		notifications: make(map[string][]streaming.CompletionNotificationEvent),
-		inflight:      make(map[string]context.CancelFunc),
-		mcpGrants:     make(map[string]map[string]struct{}),
+		sessions:           make(map[string]*Session),
+		toolAnomalyStreaks: make(map[string]int),
+		streamer:           streamer,
+		notifications:      make(map[string][]streaming.CompletionNotificationEvent),
+		inflight:           make(map[string]context.CancelFunc),
+		mcpGrants:          make(map[string]map[string]struct{}),
 	}
 }
 
@@ -1297,6 +1322,19 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 		// higher-precedence signal than a (now-known-premature) seal;
 		// abandoned sessions are reaped artefacts that don't accept
 		// further mutations.
+		toolAnomaly := msg.StopReason == StopReasonToolUseNoCalls ||
+			msg.StopReason == StopReasonAbandonedTool
+		if toolAnomaly {
+			m.toolAnomalyStreaks[sessionID]++
+			if m.toolAnomalyStreaks[sessionID] < DefaultToolAnomalyStreakCap {
+				sess.Status = string(StatusActive)
+				sess.FailureReason = ""
+				m.mu.Unlock()
+				return
+			}
+		} else {
+			delete(m.toolAnomalyStreaks, sessionID)
+		}
 		if (msg.StopReason == StopReasonStreamTruncated ||
 			msg.StopReason == StopReasonToolUseNoCalls ||
 			msg.StopReason == StopReasonAbandonedTool ||
