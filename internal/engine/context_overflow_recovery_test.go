@@ -537,7 +537,6 @@ var _ = Describe("Engine naive truncation fallback when summariser is unavailabl
 			ChatProvider:      prov,
 			Manifest:          agent.Manifest{ID: "overflow-truncation-agent", Name: "Overflow Truncation Agent", Instructions: agent.Instructions{SystemPrompt: "sys"}, ContextManagement: cm},
 			Store:             store,
-			TokenCounter:      &wordTokenCounter{limit: 100},
 			AutoCompactor:     ctxstore.NewAutoCompactor(summariser),
 			CompressionConfig: cfg,
 		})

@@ -4460,8 +4460,9 @@ func (e *Engine) ModelContextLimit() int {
 }
 
 // ResolveContextLength returns the context window limit for the given provider/model.
-// It delegates to the failover manager's resolver if available, or returns the
-// engine's configured systemPromptBudget fallback otherwise.
+// It delegates to the failover manager's resolver if available, then the
+// token counter's ModelLimit, and finally the engine's systemPromptBudget
+// fallback.
 //
 // Expected:
 //   - providerName and model identify a known provider/model pair.
@@ -4476,6 +4477,11 @@ func (e *Engine) ModelContextLimit() int {
 func (e *Engine) ResolveContextLength(providerName, model string) int {
 	if e.failoverManager != nil {
 		return e.failoverManager.ResolveContextLength(providerName, model)
+	}
+	if e.tokenCounter != nil {
+		if resolved := e.tokenCounter.ModelLimit(model); resolved > 0 {
+			return resolved
+		}
 	}
 	return e.resolvedSystemPromptBudget()
 }
