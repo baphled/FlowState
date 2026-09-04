@@ -67,12 +67,6 @@ func (m *mockConsumer) WriteToolError(content string) {
 	}
 }
 
-func (m *mockConsumer) WriteThinking(content string) {
-	if m.enableThinking {
-		m.thinking = append(m.thinking, content)
-	}
-}
-
 // resultOnlyMockConsumer satisfies StreamConsumer + ToolResultConsumer but
 // deliberately does NOT implement ToolErrorConsumer. Used to pin the
 // backward-compat fallback in deliverToolResult: legacy consumers (CLI

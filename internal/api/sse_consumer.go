@@ -171,27 +171,6 @@ func (c *SSEConsumer) WriteToolError(content string) {
 	writeSSEToolError(c.w, c.flusher, content)
 }
 
-// WriteThinking writes a JSON-encoded model-reasoning fragment as a
-// server-sent event with type "thinking". Consumed by the frontend's
-// handleThinkingEvent (flowstate-web chatStore) which accumulates the
-// text onto the in-flight assistant message's thinkingContent field for
-// the ThinkingPanel; it is never rendered as the visible reply.
-//
-// Wire shape: {"type":"thinking","content":"..."} — matches the frontend
-// parser at flowstate-web src/lib/sseEvent.ts (SSEThinkingEvent).
-//
-// Expected:
-//   - content is the model-reasoning fragment from the stream chunk.
-//
-// Side effects:
-//   - Writes SSE data line with JSON-encoded thinking event to the response.
-//   - Flushes the response buffer.
-//
-// Returns: result of WriteThinking.
-func (c *SSEConsumer) WriteThinking(content string) {
-	writeSSEThinking(c.w, c.flusher, content)
-}
-
 // WriteHarnessRetry writes a JSON-encoded harness retry event as a server-sent event.
 //
 // Expected:
