@@ -1,10 +1,12 @@
 package learning_test
 
 import (
+	"context"
+	"testing"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"context"
 	"encoding/json"
 	"fmt"
 
@@ -355,3 +357,13 @@ var _ = Describe("LearningHook (AC2-AC4 RED phase)", func() {
 		})
 	})
 })
+
+func TestHookNilClientWarnsOnceAndReturnsNil(t *testing.T) {
+	hook := learning.NewLearningHook(nil)
+	if err := hook.Handle(context.Background(), &learning.ToolCallResult{Outcome: "ok"}); err != nil {
+		t.Fatalf("nil client must not error, got %v", err)
+	}
+	if err := hook.Handle(context.Background(), &learning.ToolCallResult{Outcome: "ok"}); err != nil {
+		t.Fatalf("nil client must not error on second call, got %v", err)
+	}
+}

@@ -1,6 +1,7 @@
 package recall
 
 import (
+	"log/slog"
 	"reflect"
 
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
@@ -45,6 +46,9 @@ func RegisterRecallTools(cfg any) []tool.Tool {
 	}
 
 	if store == nil || embedder == nil || tokenCounter == nil || model == "" {
+		slog.Error("recall tools not registered: missing dependencies",
+			"store", store != nil, "embedding_provider", embedder != nil,
+			"token_counter", tokenCounter != nil, "embedding_model", model != "")
 		return nil
 	}
 

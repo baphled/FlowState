@@ -77,3 +77,23 @@ func (stubTokenCounter) ModelLimit(string) int { return 1 }
 var _ provider.Provider = stubProvider{}
 var _ ctxstore.TokenCounter = stubTokenCounter{}
 var _ tool.Tool = (*recall.SearchContextTool)(nil)
+
+var _ = Describe("RegisterRecallTools nil handling", func() {
+	It("returns nil for a nil config pointer", func() {
+		Expect(recall.RegisterRecallTools(nil)).To(BeNil())
+	})
+
+	It("returns nil and logs missing dependencies when deps are absent", func() {
+		cfg := &engine.Config{}
+		Expect(recall.RegisterRecallTools(cfg)).To(BeNil())
+		Expect(cfg.Tools).To(BeEmpty())
+	})
+
+	It("returns nil when only the model name is missing", func() {
+		cfg := &engine.Config{}
+		cfg.Store = recall.NewEmptyContextStore("m")
+		cfg.EmbeddingProvider = stubProvider{}
+		cfg.TokenCounter = stubTokenCounter{}
+		Expect(recall.RegisterRecallTools(cfg)).To(BeNil())
+	})
+})

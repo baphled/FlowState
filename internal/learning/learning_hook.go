@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"runtime"
 	"strings"
+	"sync"
 )
 
 // extractCallStack returns the function names from the current call stack.
@@ -57,7 +59,9 @@ const AgentIDKey contextKeyType = "AgentID"
 
 // Hook implements the hook logic.
 type Hook struct {
-	client MemoryClient
+	client    MemoryClient
+	nilOnce   sync.Once
+	nilWarned bool
 }
 
 // NewLearningHook creates a new learning hook with the given memory client.
@@ -116,10 +120,30 @@ func (h *Hook) Handle(ctx context.Context, result *ToolCallResult) (err error) {
 	}
 
 	if h.client == nil {
+		h.warnNilClientOnce()
 		return nil
 	}
 	writeErr := h.client.WriteLearningRecord(record)
 	return sanitiseError(writeErr)
+}
+
+// warnNilClientOnce emits a single structured error when the hook was
+// constructed without a MemoryClient, so a misconfigured deployment is
+// surfaced at startup without spamming every subsequent tool call.
+//
+// Expected:
+//   - h.client is nil.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Logs one slog.Error on the first invocation only.
+func (h *Hook) warnNilClientOnce() {
+	h.nilOnce.Do(func() {
+		h.nilWarned = true
+		slog.Error("learning hook has no memory client; learning capture disabled")
+	})
 }
 
 // sanitiseError returns an error whose Error() method is guaranteed not to

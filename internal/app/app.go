@@ -797,6 +797,7 @@ type engineParams struct {
 	dispatcher           *external.Dispatcher
 	skillDir             string
 	recallBroker         recall.Broker
+	sessionStartAdapter  *SessionStartLearningAdapter
 	// compression carries the three-layer compression dependencies that
 	// must flow into the Engine for L1/L2/L3 to activate. Zero values on
 	// any field disable the corresponding layer. See buildCompressionComponents.
@@ -1128,6 +1129,7 @@ func buildEngineParams(in engineAssemblyParams) engineParams {
 	return engineParams{
 		defaultProvider:         in.traced.provider,
 		ollamaProvider:          in.setup.ollamaProvider,
+		sessionStartAdapter:     NewSessionStartLearningAdapter(in.broker, 5),
 		providerRegistry:        in.setup.providerRegistry,
 		agentRegistry:           in.setup.agentRegistry,
 		defaultManifest:         in.setup.defaultManifest,

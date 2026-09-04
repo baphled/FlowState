@@ -916,7 +916,9 @@ type SessionLookup interface {
 func New(cfg Config) *Engine {
 	windowBuilder := buildWindowBuilder(cfg)
 
-	recall.RegisterRecallTools(&cfg)
+	if registered := recall.RegisterRecallTools(&cfg); registered == nil {
+		slog.Error("engine: no recall tools registered; recall dependencies unavailable")
+	}
 
 	timeout := cfg.StreamTimeout
 	if timeout == 0 {
