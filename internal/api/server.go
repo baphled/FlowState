@@ -1272,6 +1272,15 @@ func (s *Server) setupRoutes() {
 	// POST /messages to read the engine-emitted messages and the
 	// running → completed | failed status transition.
 	s.registerProtected("GET /api/v1/sessions/{id}/turns/{turn_id}", s.handleGetTurn)
+	// User-initiated cancel surface for the post-then-poll wire
+	// (Phase-4-Commit-2 of "Turn-Based Post-Then-Poll Architecture
+	// (May 2026)" retired the session-scoped SSE cancel).
+	// Fires the session manager's inflight cancel — the engine turn,
+	// provider stream, and context-aware child processes (bash tools
+	// via exec.CommandContext) stop immediately — and settles the
+	// Turn registry entry as "cancelled". Idempotent: cancelling an
+	// already-terminal turn returns its current state.
+	s.registerProtected("DELETE /api/v1/sessions/{id}/turns/{turn_id}", s.handleCancelTurn)
 	s.registerProtected("GET /api/v1/sessions/{id}/messages", s.handleSessionMessages)
 	s.registerProtected("GET /api/v1/sessions/{id}/todos", s.handleSessionTodos)
 	s.registerProtected("GET /api/v1/sessions/{id}/children", s.handleSessionChildren)
@@ -2231,6 +2240,95 @@ func (s *Server) handleGetTurn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, buildTurnResponse(t))
+}
+
+// handleCancelTurn cancels the in-flight turn for a session — the
+// server-side half of the chat UI's Stop / Esc-Esc gesture.
+//
+// Phase-4-Commit-2 of "Turn-Based Post-Then-Poll Architecture (May
+// 2026)" retired the session-scoped SSE cancel surface; this
+// endpoint restores cancel for the post-then-poll wire. It fires the session manager's inflight
+// context cancel (Manager.CancelInflight) so the engine turn,
+// provider stream, and any context-aware child processes (bash tools
+// via exec.CommandContext) stop immediately, then settles the Turn
+// registry entry as StatusCancelled so the long-poll wire surfaces
+// the terminal state.
+//
+// Expected:
+//   - Request path parameter "id" is the session id (route symmetry —
+//     like handleGetTurn, the registry is keyed by turn_id alone).
+//   - Request path parameter "turn_id" is the Turn UUID returned by
+//     POST /messages.
+//
+// Returns:
+//   - 200 OK with turnResponse JSON. A Running turn settles as
+//     "cancelled" and the response carries the terminal state; an
+//     already-terminal turn returns its existing state (idempotent
+//     cancel — safe for a double Stop / Esc-Esc press).
+//   - 404 Not Found when the turn_id is unknown.
+//   - 400 Bad Request when turn_id is empty.
+//   - 501 Not Implemented when the session manager / dispatcher / turn
+//     registry is not configured.
+//
+// Side effects:
+//   - Cancels the session's inflight stream context (kills the engine
+//     turn + context-aware child processes).
+//   - Settles the Turn registry entry to StatusCancelled.
+func (s *Server) handleCancelTurn(w http.ResponseWriter, r *http.Request) {
+	if s.sessionManager == nil {
+		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
+		return
+	}
+	if s.dispatcher == nil {
+		http.Error(w, "dispatcher not configured", http.StatusNotImplemented)
+		return
+	}
+	registry := s.dispatcher.TurnRegistry()
+	if registry == nil {
+		http.Error(w, "turn registry not configured", http.StatusNotImplemented)
+		return
+	}
+	turnID := r.PathValue("turn_id")
+	if turnID == "" {
+		http.Error(w, "turn_id required", http.StatusBadRequest)
+		return
+	}
+
+	t, err := registry.Get(turnID)
+	if err != nil {
+		if errors.Is(err, turn.ErrTurnNotFound) {
+			http.Error(w, "turn not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	// Already terminal — idempotent cancel. Return the current state.
+	if t.Status != turn.StatusRunning {
+		writeJSON(w, buildTurnResponse(t))
+		return
+	}
+
+	// Stop the engine first: fire the inflight context cancel. This
+	// propagates to the provider stream and to context-aware child
+	// processes (bash tools via exec.CommandContext) so the session
+	// stops generating immediately. The dispatcher's turn-lifecycle
+	// wrap would also settle the ctx-cancelled terminal chunk as
+	// StatusCancelled; settling here too makes the response
+	// deterministically carry the terminal state. Both paths are
+	// terminal-guarded, so the loser of the race no-ops with
+	// ErrTurnTerminal.
+	s.sessionManager.CancelInflight(t.SessionID)
+	if err := registry.Cancel(turnID); err != nil && !errors.Is(err, turn.ErrTurnTerminal) {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	settled, err := registry.Get(turnID)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, buildTurnResponse(settled))
 }
 
 // buildTurnResponse constructs the wire response for a given turn snapshot,
