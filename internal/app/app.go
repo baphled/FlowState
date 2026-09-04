@@ -2325,6 +2325,8 @@ func buildSwarmGateRunner(planOutputDir string) swarm.GateRunner {
 	runner.Register(swarm.EvidenceGroundingGateKind, swarm.NewEvidenceGroundingRunner(""))
 	runner.Register(swarm.ArtifactPublishedGateKind, swarm.NewArtifactPublishedRunner(planOutputDir, nil))
 	runner.Register(swarm.FSPollutionGateKind, swarm.NewFSPollutionRunner("", nil))
+	runner.Register(swarm.PersistenceCompletenessGateKind, swarm.NewPersistenceCompletenessRunner())
+	runner.Register(swarm.TargetSpecificityGateKind, swarm.NewTargetSpecificityRunner())
 	return runner
 }
 
