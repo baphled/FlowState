@@ -1,5 +1,4 @@
-.PHONY: all build run test test-e2e test-external test-recall bdd bdd-smoke bdd-wip fmt lint check check-docblocks check-untested-packages check-note-comments check-keyword-adr check-gating-drift clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks debug-session debug-latest debug-errors session-overview log-analysis parse-recording session-history session-history-detail session-ids evidence-pack qdrant-up qdrant-down qdrant-logs qdrant-status
-
+.PHONY: all build run test test-e2e test-external test-recall bdd bdd-smoke bdd-wip fmt lint check check-docblocks check-untested-packages check-note-comments check-keyword-adr check-gating-drift check-controller-line-cap clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks debug-session debug-latest debug-errors session-overview log-analysis parse-recording session-history session-history-detail session-ids qdrant-up qdrant-down qdrant-logs qdrant-status
 # Binary name
 BINARY_NAME=flowstate
 BUILD_DIR=./build
@@ -145,6 +144,10 @@ check-gating-drift: ## Flag struct fields whose docstring names a gating identif
 	@echo "Checking docstring-vs-impl gating drift..."
 	@GOTOOLCHAIN=go1.26.1 go run ./cmd/gatingdrift/... ./internal/...
 
+check-controller-line-cap: ## Enforce line cap on the unified dispatch controller (successor of the Slice S2 chat-controller guard)
+	@echo "Checking dispatch controller line cap..."
+	@bash scripts/check-controller-line-cap.sh
+
 check-agent-manifests: build ## Validate embedded agent manifests against category→tools rules
 	@echo "Validating embedded agent manifests..."
 	@./build/flowstate agents validate --agents-dir internal/app/agents
@@ -153,7 +156,7 @@ check-swarm-manifests: build ## Validate embedded swarm manifests and surface ch
 	@echo "Validating embedded swarm manifests..."
 	@./build/flowstate swarm validate --swarm-dir internal/app/swarms
 
-check: build fmt lint test coverage-check check-docblocks check-untested-packages check-note-comments check-keyword-adr check-gating-drift check-agent-manifests check-swarm-manifests check-test-file-convention check-funlen-ratchet ## Run all checks
+check: build fmt lint test coverage-check check-docblocks check-untested-packages check-note-comments check-keyword-adr check-gating-drift check-controller-line-cap check-agent-manifests check-swarm-manifests check-test-file-convention check-funlen-ratchet ## Run all checks
 
 .PHONY: check-funlen-ratchet
 check-funlen-ratchet: ## Enforce funlen (50 lines/40 statements) ratchet baseline

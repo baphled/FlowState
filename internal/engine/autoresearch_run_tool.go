@@ -75,8 +75,10 @@ func (t *AutoresearchRunTool) CanDelegate() bool { return true }
 //
 // Expected: parameters for Description.
 func (t *AutoresearchRunTool) Description() string {
-	return "Launch an autoresearch optimisation run as a background task. " +
-		"Returns task_id immediately; poll background_output for results."
+	return "Run an autoresearch optimisation loop on a surface file. " +
+		"By default (wait=true) blocks until the run completes and returns the final result — " +
+		"no polling required. Pass wait=false to get a task_id immediately and poll manually " +
+		"via background_output(block=true, timeout=600000)."
 }
 
 // Schema returns the JSON schema for the tool input.
@@ -129,25 +131,35 @@ func (t *AutoresearchRunTool) Schema() tool.Schema {
 				Type:        "integer",
 				Description: "Stop after this many consecutive no-improve trials. Default 5.",
 			},
+			"program": {
+				Type:        "string",
+				Description: "Skill name or path used as the driver's PROGRAM section. Default 'autoresearch'. Use a custom skill name to swap the optimisation persona.",
+			},
+			"wait": {
+				Type:        "boolean",
+				Description: "If true (default), block until the run completes and return the final result. If false, return task_id immediately for manual polling via background_output.",
+			},
 		},
 		Required: []string{"surface", "driver_script", "evaluator_script"},
 	}
 }
 
-// Execute validates inputs, builds opts, and launches the run as a
-// background task. Returns {"task_id": "<id>", "status": "running"}
-// immediately.
+// Execute validates inputs, builds opts, and runs the autoresearch loop.
+// By default (wait=true or wait omitted) it blocks until the run completes
+// and returns the final result JSON. When wait=false it launches the run as
+// a background task and returns {"task_id": "<id>", "status": "running"}
+// immediately for manual polling via background_output.
 //
 // Expected:
 //   - ctx is a valid context.
 //   - input.Arguments contains "surface", "driver_script", and "evaluator_script".
 //
 // Returns:
-//   - A tool.Result containing task_id and status=running.
+//   - A tool.Result containing the run result (wait=true) or task_id (wait=false).
 //   - An error if any required field is missing or empty.
 //
 // Side effects:
-//   - Launches a goroutine via BackgroundTaskManager.Launch.
+//   - Launches a goroutine via BackgroundTaskManager.Launch; blocks on it when wait=true.
 func (t *AutoresearchRunTool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
 	surface, _ := input.Arguments["surface"].(string)
 	driverScript, _ := input.Arguments["driver_script"].(string)
@@ -216,6 +228,16 @@ func (t *AutoresearchRunTool) Execute(ctx context.Context, input tool.Input) (to
 		opts.NoImproveWindow = 5
 	}
 
+	if program, ok := input.Arguments["program"].(string); ok && program != "" {
+		opts.Program = program
+	}
+
+	// wait defaults to true; only false when the caller explicitly passes wait=false.
+	wait := true
+	if v, ok := input.Arguments["wait"].(bool); ok {
+		wait = v
+	}
+
 	taskID := opts.RunID
 
 	fn := func(taskCtx context.Context) (string, error) {
@@ -233,13 +255,50 @@ func (t *AutoresearchRunTool) Execute(ctx context.Context, input tool.Input) (to
 
 	t.manager.Launch(context.WithoutCancel(ctx), taskID, "autoresearch", "autoresearch: "+surface, fn)
 
-	resp, err := json.Marshal(map[string]string{
-		"task_id": taskID,
-		"status":  "running",
-	})
-	if err != nil {
-		return tool.Result{}, err
+	if !wait {
+		resp, err := json.Marshal(map[string]string{
+			"task_id": taskID,
+			"status":  "running",
+		})
+		if err != nil {
+			return tool.Result{}, err
+		}
+		return tool.Result{Output: string(resp)}, nil
 	}
 
-	return tool.Result{Output: string(resp)}, nil
+	// wait=true (default): poll until the task reaches a terminal state.
+	const pollInterval = 500 * time.Millisecond
+	for {
+		select {
+		case <-ctx.Done():
+			return tool.Result{}, ctx.Err()
+		default:
+		}
+
+		task, found := t.manager.Get(taskID)
+		if !found {
+			return tool.Result{}, errors.New("autoresearch_run: task not found after launch")
+		}
+
+		status := task.Status.Load()
+		if isTerminalStatus(status) {
+			result := map[string]interface{}{
+				"task_id": taskID,
+				"status":  status,
+			}
+			if task.Result != "" {
+				result["result"] = task.Result
+			}
+			if task.Error != nil {
+				result["error"] = task.Error.Error()
+			}
+			resp, err := json.Marshal(result)
+			if err != nil {
+				return tool.Result{}, err
+			}
+			return tool.Result{Output: string(resp)}, nil
+		}
+
+		time.Sleep(pollInterval)
+	}
 }

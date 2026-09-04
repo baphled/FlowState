@@ -676,13 +676,14 @@ var _ = Describe("AutoresearchRunTool", func() {
 	})
 
 	Context("AutoresearchRunTool", func() {
-		It("Execute returns task_id and status=running immediately", func() {
+		It("with wait=false returns task_id and status=running immediately", func() {
 			input := tool.Input{
 				Name: "autoresearch_run",
 				Arguments: map[string]any{
 					"surface":          "/some/surface.md",
 					"driver_script":    "/some/driver.sh",
 					"evaluator_script": "/some/scorer.sh",
+					"wait":             false,
 				},
 			}
 			result, err := artTool.Execute(ctx, input)
@@ -693,6 +694,26 @@ var _ = Describe("AutoresearchRunTool", func() {
 			Expect(output).To(HaveKey("task_id"))
 			Expect(output["task_id"]).NotTo(BeEmpty())
 			Expect(output["status"]).To(Equal("running"))
+		})
+
+		It("with wait=true (default) blocks and returns the completed result", func() {
+			input := tool.Input{
+				Name: "autoresearch_run",
+				Arguments: map[string]any{
+					"surface":          "/some/surface.md",
+					"driver_script":    "/some/driver.sh",
+					"evaluator_script": "/some/scorer.sh",
+					"run_id":           "wait-default-test",
+				},
+			}
+			result, err := artTool.Execute(ctx, input)
+			Expect(err).NotTo(HaveOccurred())
+
+			var output map[string]any
+			Expect(json.Unmarshal([]byte(result.Output), &output)).To(Succeed())
+			Expect(output["task_id"]).To(Equal("wait-default-test"))
+			Expect(output["status"]).To(Equal("completed"))
+			Expect(output).To(HaveKey("result"))
 		})
 
 		It("returns an error when surface is missing", func() {
@@ -734,7 +755,7 @@ var _ = Describe("AutoresearchRunTool", func() {
 			Expect(err.Error()).To(ContainSubstring("evaluator_script"))
 		})
 
-		It("uses provided run_id as task_id", func() {
+		It("uses provided run_id as task_id (wait=false)", func() {
 			input := tool.Input{
 				Name: "autoresearch_run",
 				Arguments: map[string]any{
@@ -742,6 +763,7 @@ var _ = Describe("AutoresearchRunTool", func() {
 					"driver_script":    "/some/driver.sh",
 					"evaluator_script": "/some/scorer.sh",
 					"run_id":           "explicit-run-id",
+					"wait":             false,
 				},
 			}
 			result, err := artTool.Execute(ctx, input)
@@ -752,8 +774,8 @@ var _ = Describe("AutoresearchRunTool", func() {
 			Expect(output["task_id"]).To(Equal("explicit-run-id"))
 		})
 
-		It("completes the background task and exposes result JSON via background_output", func() {
-			// Execute returns immediately with task_id; the stub runner
+		It("completes the background task and exposes result JSON via background_output (wait=false)", func() {
+			// wait=false: Execute returns immediately with task_id; the stub runner
 			// returns a fixed AutoresearchResult with no blocking.
 			input := tool.Input{
 				Name: "autoresearch_run",
@@ -762,6 +784,7 @@ var _ = Describe("AutoresearchRunTool", func() {
 					"driver_script":    "/some/driver.sh",
 					"evaluator_script": "/some/scorer.sh",
 					"run_id":           "bg-integration-test",
+					"wait":             false,
 				},
 			}
 			result, err := artTool.Execute(ctx, input)

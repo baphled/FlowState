@@ -3313,7 +3313,8 @@ echo 1
 			appRunner := cli.NewAutoresearchAppRunner(testApp)
 			artTool := engine.NewAutoresearchRunTool(mgr, appRunner)
 
-			// Execute with max_trials=1 to keep the run fast.
+			// Execute with max_trials=1 to keep the run fast; wait=false so
+			// the launch contract (task_id + status=running) is observable.
 			input := tool.Input{
 				Name: "autoresearch_run",
 				Arguments: map[string]any{
@@ -3324,6 +3325,7 @@ echo 1
 					"max_trials":       float64(1),
 					"time_budget":      "30s",
 					"metric_direction": "min",
+					"wait":             false,
 				},
 			}
 			execResult, err := artTool.Execute(ctx, input)

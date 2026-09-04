@@ -103,7 +103,7 @@ func (b *BackgroundOutputTool) Schema() tool.Schema {
 			},
 			"timeout": {
 				Type:        "integer",
-				Description: "Maximum time in milliseconds to wait when block=true",
+				Description: "Maximum time in milliseconds to wait when block=true. Default 120000 (2 min). Use 600000+ for autoresearch tasks.",
 			},
 			"full_session": {
 				Type:        "boolean",

@@ -306,6 +306,10 @@ Proactively suggest autoresearch when:
 - The surface is a planner-class manifest (prefer `planner-quality` preset).
 - The surface is a Go source file with benchmarks (prefer `perf-preserve-behaviour` preset).
 
+**Pruning:** Use `autoresearch_prune` to clean up stale run records. Call
+`autoresearch_prune(dry_run=true)` to preview, then `autoresearch_prune(all=true)` or
+`autoresearch_prune(older_than="168h")` to delete.
+
 ## Constraints
 
 - You can invoke `plan_list` and `plan_read` directly for questions about existing FlowState plans. For any other file or codebase inspection you still depend on delegation to specialist agents.

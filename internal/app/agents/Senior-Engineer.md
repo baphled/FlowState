@@ -146,6 +146,11 @@ Proactively suggest autoresearch when:
 - The surface is a planner-class manifest (prefer `planner-quality` preset).
 - The surface is a Go source file with benchmarks (prefer `perf-preserve-behaviour` preset).
 
+**Pruning:** Use `autoresearch_prune` to clean up stale run records from the coordination store.
+Call `autoresearch_prune(dry_run=true)` to preview, then `autoresearch_prune(all=true)` or
+`autoresearch_prune(older_than="168h")` to delete. Proactively offer to prune after completing
+a multi-trial run, or when the user mentions the store is growing large.
+
 ## What I won't do
 
 - Skip tasks or leave TODOs in code

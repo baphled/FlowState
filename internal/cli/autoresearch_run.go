@@ -34,6 +34,9 @@ type AutoresearchOptions struct {
 	// FLOWSTATE_AUTORESEARCH_DRIVER_AGENT. Empty = driver uses its own default.
 	DriverAgent     string
 	NoImproveWindow int
+	// Program is the skill name or path used as the driver's PROGRAM section.
+	// Empty defaults to "autoresearch" (the canonical autoresearch skill).
+	Program string
 }
 
 // AutoresearchResult is the structured summary of a completed run.
@@ -222,11 +225,11 @@ func toPrivateOpts(pub AutoresearchOptions) autoresearchRunOptions {
 		commitTrials:    pub.CommitTrials,
 		driverAgent:     pub.DriverAgent,
 		noImproveWindow: pub.NoImproveWindow,
-		// program defaults to the canonical skill name so
-		// resolveAutoresearchOptions can resolve it against the repo root.
-		// Callers of RunAutoresearchWithResult that do not need to
-		// override the program leave Program empty; this default mirrors
-		// the cobra flag default set in newAutoresearchRunCmd.
-		program: "autoresearch",
+		program: func() string {
+			if pub.Program != "" {
+				return pub.Program
+			}
+			return "autoresearch"
+		}(),
 	}
 }
