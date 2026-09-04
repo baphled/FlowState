@@ -143,17 +143,67 @@ func HasSubstantiveOutputForTest(val []byte) bool {
 // Side effects:
 //   - Emits ProgressEvents as collectWithProgress does.
 func CollectDelegationCompletion(ctx context.Context, d *DelegateTool, chunks <-chan provider.StreamChunk, startedAt time.Time) (DelegationResultForTest, error) {
+	res, err := d.collectWithPolicy(ctx, chunks, startedAt)
+	if err != nil {
+		return DelegationResultForTest{}, err
+	}
+	if emptyErr := failClosedOnEmpty(res); emptyErr != nil {
+		return DelegationResultForTest{}, emptyErr
+	}
+	return DelegationResultForTest(res), nil
+}
+
+// collectWithPolicy is the production collection seam: it applies the
+// trustworthy completion policy around collectWithProgress so child
+// completion state outranks parent cancellation and an empty completion
+// fails closed.
+//
+// Expected:
+//   - ctx is the parent stream context.
+//   - chunks is the child stream channel.
+//   - startedAt is the delegation start time.
+//
+// Returns:
+//   - The collected result plus any stream, cancellation, or terminal
+//     empty-response error.
+//
+// Side effects:
+//   - Emits ProgressEvents as collectWithProgress does.
+func (d *DelegateTool) collectWithPolicy(ctx context.Context, chunks <-chan provider.StreamChunk, startedAt time.Time) (delegationResult, error) {
 	policy := DefaultCollectPolicy()
 	collectCtx, collectCancel := policy.ApplyCollectPolicy(ctx)
 	defer collectCancel()
 	res, err := d.collectWithProgress(collectCtx, chunks, startedAt)
 	if err != nil {
-		return DelegationResultForTest{}, err
+		return res, err
 	}
-	if emptyErr := policy.TerminalEmptyResponseError(res.response); emptyErr != nil {
-		return DelegationResultForTest{}, emptyErr
+	// Detach-on-cancel is fail-open ONLY for work that exists. When the
+	// parent ctx has already fired (deadline or cancel) and the drained
+	// stream produced no substantive output, the cancellation outranks
+	// the empty completion - a stalled member must surface its
+	// DeadlineExceeded, not an empty success (delegation_swarm_test.go
+	// MemberTimeout contract).
+	if parentErr := ctx.Err(); parentErr != nil && !hasSubstantiveOutput([]byte(res.response)) {
+		return res, parentErr
 	}
 	return res, nil
+}
+
+// failClosedOnEmpty converts a drained-but-empty collection into the
+// terminal empty-response error on paths where no post-member gate will
+// judge the output. Gate-wired swarms keep their GateError semantics.
+//
+// Expected:
+//   - res is the collected child result with err nil.
+//
+// Returns:
+//   - ErrEmptyDelegateResponse when the response carries no substantive
+//     output; nil otherwise.
+//
+// Side effects:
+//   - None.
+func failClosedOnEmpty(res delegationResult) error {
+	return DefaultCollectPolicy().TerminalEmptyResponseError(res.response)
 }
 
 // Response returns the accumulated response text of a collected delegation
