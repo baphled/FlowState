@@ -912,7 +912,25 @@ func RunGate(ctx context.Context, spec GateSpec, in GateInput) error {
 // Returns: result of runBuiltinGate.
 // Side effects: None.
 func runBuiltinGate(_ context.Context, spec GateSpec, in GateInput) error {
-	if spec.Kind != "builtin:result-schema" {
+	switch spec.Kind {
+	case "builtin:result-schema":
+	// Policy-driven payload gates are dispatched through the
+	// registered MultiRunner backend in production (see
+	// buildSwarmGateRunner); this legacy entry point still gives
+	// a useful answer for target-specificity because GateInput
+	// carries the payload + policy inline.
+	return runTargetSpecificityFromInput(spec, in)
+	case PersistenceCompletenessGateKind:
+		// Persistence-completeness needs the coord-store handle that
+		// only GateArgs carries; route through the MultiRunner.
+		return &GateError{
+			GateName: spec.Name,
+			GateKind: spec.Kind,
+			When:     spec.When,
+			MemberID: in.MemberID,
+			Reason: "persistence-completeness gates must dispatch through the registered runner (MultiRunner) — legacy RunGate path lacks the coordination-store handle",
+		}
+	default:
 		return fmt.Errorf("gate %q: unsupported builtin kind %q", spec.Name, spec.Kind)
 	}
 	if spec.SchemaRef == "" {
