@@ -182,6 +182,14 @@ var defaultBaseTools = []string{
 	"todo_insert",
 	"todo_clear",
 	"skill_load",
+
+	// Inherited floor for the mid-turn user-question tool. Without it
+	// the engine's runtime tool gate (executeToolCall) rejects the
+	// question call as "not available to agent" for any manifest that
+	// does not declare it explicitly, so no EventQuestionRequired is
+	// emitted and the FE never sees question_requests (chain-
+	// question-resolve-fix).
+	"question",
 }
 
 // DefaultBaseTools exposes the inherit-by-default base toolset for
