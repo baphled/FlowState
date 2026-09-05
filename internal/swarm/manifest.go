@@ -416,6 +416,13 @@ type GateSpec struct {
 	// coord-store slot the gate validates.
 	OutputKey string `json:"output_key,omitempty" yaml:"output_key,omitempty"`
 
+	// Policy carries the gate's declarative policy block (the same
+	// `policy:` mapping ext gates read from their subprocess
+	// manifests). Consumed by builtin policy-driven gates such as
+	// builtin:persistence-completeness and
+	// builtin:target-specificity; gates that do not need it ignore it.
+	Policy map[string]any `json:"policy,omitempty" yaml:"policy,omitempty"`
+
 	// Precedence selects the evaluation tier per addendum §7 A6.
 	// CRITICAL gates run before HIGH which run before MEDIUM which run
 	// before LOW; ties preserve manifest order. Empty falls back to
@@ -466,17 +473,18 @@ type GateSpec struct {
 //   - Mutates the receiver's fields in place.
 func (g *GateSpec) UnmarshalYAML(value *yaml.Node) error {
 	type rawGateSpec struct {
-		Name          string        `yaml:"name"`
-		Kind          string        `yaml:"kind"`
-		SchemaRef     string        `yaml:"schema_ref"`
-		When          string        `yaml:"when"`
-		Target        string        `yaml:"target"`
-		OutputKey     string        `yaml:"output_key"`
-		Precedence    Precedence    `yaml:"precedence"`
-		FailurePolicy FailurePolicy `yaml:"failurePolicy"`
-		Timeout       string        `yaml:"timeout"`
-		DeferInterval string        `yaml:"defer_interval"`
-		DeferTimeout  string        `yaml:"defer_timeout"`
+		Name          string         `yaml:"name"`
+		Kind          string         `yaml:"kind"`
+		SchemaRef     string         `yaml:"schema_ref"`
+		When          string         `yaml:"when"`
+		Target        string         `yaml:"target"`
+		OutputKey     string         `yaml:"output_key"`
+		Policy        map[string]any `yaml:"policy"`
+		Precedence    Precedence     `yaml:"precedence"`
+		FailurePolicy FailurePolicy  `yaml:"failurePolicy"`
+		Timeout       string         `yaml:"timeout"`
+		DeferInterval string         `yaml:"defer_interval"`
+		DeferTimeout  string         `yaml:"defer_timeout"`
 	}
 	var raw rawGateSpec
 	if err := value.Decode(&raw); err != nil {
@@ -488,6 +496,7 @@ func (g *GateSpec) UnmarshalYAML(value *yaml.Node) error {
 	g.When = raw.When
 	g.Target = raw.Target
 	g.OutputKey = raw.OutputKey
+	g.Policy = raw.Policy
 	g.Precedence = raw.Precedence
 	g.FailurePolicy = raw.FailurePolicy
 	if raw.Timeout != "" {

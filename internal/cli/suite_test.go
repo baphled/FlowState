@@ -53,6 +53,16 @@ func TestCLI(t *testing.T) {
 	// executes in.
 	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Clean(filepath.Join(prev, "..", "..")))
 
+	// Disable commit signing for every git subprocess the suite
+	// spawns: the developer's global config may enable GPG signing,
+	// which fails ("gpg failed to sign the data") in sandboxed
+	// environments. Test repos are throwaway and never signed.
+	t.Setenv("GIT_CONFIG_COUNT", "2")
+	t.Setenv("GIT_CONFIG_KEY_0", "commit.gpgsign")
+	t.Setenv("GIT_CONFIG_VALUE_0", "false")
+	t.Setenv("GIT_CONFIG_KEY_1", "tag.gpgsign")
+	t.Setenv("GIT_CONFIG_VALUE_1", "false")
+
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "CLI Suite")
 }
