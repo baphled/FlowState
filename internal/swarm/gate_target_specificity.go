@@ -105,12 +105,18 @@ func NewTargetSpecificityRunner() GateRunner {
 // Side effects:
 //   - Read-only coord-store probes via readMemberOutput.
 func (r *targetSpecificityRunner) Run(_ context.Context, gate GateSpec, args GateArgs) error {
-	if args.CoordStore == nil {
-		return newGateFailure(gate, args, "coordination store unavailable", nil)
-	}
 	policy, err := targetSpecificityPolicyFromSpec(gate)
 	if err != nil {
 		return newGateFailure(gate, args, err.Error(), err)
+	}
+	// Disabled check (no identifiers, no citation/path counting) is
+	// evaluated BEFORE the coord-store probe so a pre-brief run does
+	// not fail on a missing key.
+	if len(policy.TargetIdentifiers) == 0 && !policy.AcceptEvidenceCitations && !policy.AcceptFilePaths {
+		return nil
+	}
+	if args.CoordStore == nil {
+		return newGateFailure(gate, args, "coordination store unavailable", nil)
 	}
 	payload, err := readMemberOutput(gate, args)
 	if err != nil {
@@ -125,12 +131,6 @@ func (r *targetSpecificityRunner) Run(_ context.Context, gate GateSpec, args Gat
 	}
 	if policy.AcceptEvidenceCitations || policy.AcceptFilePaths || len(policy.TargetIdentifiers) > 0 {
 		if len(matched) >= required && len(text) >= policy.MinChars {
-			return nil
-		}
-		if len(policy.TargetIdentifiers) == 0 && (policy.AcceptEvidenceCitations || policy.AcceptFilePaths) && len(matched) >= required {
-			return nil
-		}
-		if len(policy.TargetIdentifiers) == 0 && !policy.AcceptEvidenceCitations && !policy.AcceptFilePaths {
 			return nil
 		}
 	} else {
@@ -177,11 +177,14 @@ func targetSpecificityPolicyFromSpec(gate GateSpec) (TargetSpecificityPolicy, er
 // Side effects: None.
 func matchTargetReferences(text string, policy TargetSpecificityPolicy) (matched []string, unmatched []string) {
 	seen := map[string]struct{}{}
+	lowerText := strings.ToLower(text)
 	for _, id := range policy.TargetIdentifiers {
 		if id == "" {
 			continue
 		}
-		if strings.Contains(text, id) {
+		// Case-insensitive per the task contract: the brief may cite
+		// "N-Vyro.io" while the member writes "n-vyro.io".
+		if strings.Contains(lowerText, strings.ToLower(id)) {
 			if _, dup := seen[id]; !dup {
 				seen[id] = struct{}{}
 				matched = append(matched, id)
@@ -247,6 +250,33 @@ func formatSpecificityFailure(gate GateSpec, matched, unmatched []string, requir
 func runTargetSpecificityFromInput(ctx context.Context, spec GateSpec, in GateInput) error {
 	if len(in.Policy) > 0 {
 		spec.Policy = in.Policy
+	}
+	// When the caller supplies the payload inline (ext-gate
+	// dispatchers thread GateInput.Payload), evaluate directly so the
+	// legacy path works without a coord store; otherwise fall through
+	// to the runner's coord-store probe.
+	policy, err := targetSpecificityPolicyFromSpec(spec)
+	if err != nil {
+		return newGateFailure(spec, GateArgs{SwarmID: in.SwarmID, MemberID: in.MemberID}, err.Error(), err)
+	}
+	if len(policy.TargetIdentifiers) == 0 && !policy.AcceptEvidenceCitations && !policy.AcceptFilePaths {
+		return nil
+	}
+	if len(in.Payload) > 0 {
+		args := GateArgs{SwarmID: in.SwarmID, MemberID: in.MemberID}
+		text := string(in.Payload)
+		matched, unmatched := matchTargetReferences(text, policy)
+		required := policy.MinReferences
+		if required <= 0 {
+			required = 1
+		}
+		if len(matched) >= required && len(text) >= policy.MinChars {
+			return nil
+		}
+		if len(text) < policy.MinChars {
+			return newGateFailure(spec, args, fmt.Sprintf("output too short: %d chars < min_chars %d; output does not reference target-specific evidence", len(text), policy.MinChars), nil)
+		}
+		return newGateFailure(spec, args, formatSpecificityFailure(spec, matched, unmatched, required), nil)
 	}
 	return (&targetSpecificityRunner{}).Run(ctx, spec, GateArgs{
 		SwarmID:  in.SwarmID,

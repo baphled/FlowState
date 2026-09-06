@@ -97,6 +97,8 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterLearningBridgeSteps(ctx)
 	RegisterAdultingMemorySteps(ctx)
 	RegisterFSPollutionSteps(ctx)
+	RegisterPersistenceCompletenessSteps(ctx)
+	RegisterTargetSpecificitySteps(ctx)
 	RegisterAdultingDeadlineSteps(ctx)
 	RegisterVaultIndexSyncSteps(ctx)
 	RegisterVaultQueryCollectionSteps(ctx)
