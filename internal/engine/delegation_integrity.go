@@ -64,11 +64,7 @@ func DefaultCollectPolicy() CollectPolicy {
 //   - None.
 func (p CollectPolicy) ApplyCollectPolicy(parentCtx context.Context) (context.Context, context.CancelFunc) {
 	if p.DetachOnParentCancel {
-		detached := context.WithoutCancel(parentCtx)
-		if deadline, ok := parentCtx.Deadline(); ok {
-			return context.WithDeadline(detached, deadline)
-		}
-		return context.WithCancel(detached)
+		return context.WithCancel(context.WithoutCancel(parentCtx))
 	}
 	return context.WithCancel(parentCtx)
 }
@@ -127,8 +123,6 @@ func CollectWithProgressForTest(ctx context.Context, d *DelegateTool, chunks <-c
 //
 // Side effects:
 //   - None.
-//
-//lint:ignore unreachable-func exported seam for the features/engine BDD glue (features/support/delegation_integrity_steps.go).
 func HasSubstantiveOutputForTest(val []byte) bool {
 	return hasSubstantiveOutput(val)
 }
@@ -148,8 +142,6 @@ func HasSubstantiveOutputForTest(val []byte) bool {
 //
 // Side effects:
 //   - Emits ProgressEvents as collectWithProgress does.
-//
-//lint:ignore unreachable-func exported seam applying the production trustworthy completion policy for features/support/delegation_integrity_steps.go.
 func CollectDelegationCompletion(ctx context.Context, d *DelegateTool, chunks <-chan provider.StreamChunk, startedAt time.Time) (DelegationResultForTest, error) {
 	res, err := d.collectWithPolicy(ctx, chunks, startedAt)
 	if err != nil {
@@ -188,7 +180,7 @@ func (d *DelegateTool) collectWithPolicy(ctx context.Context, chunks <-chan prov
 	// Detach-on-cancel is fail-open ONLY for work that exists. When the
 	// parent ctx has already fired (deadline or cancel) and the drained
 	// stream produced no substantive output, the cancellation outranks
-	// the empty completion — a stalled member must surface its
+	// the empty completion - a stalled member must surface its
 	// DeadlineExceeded, not an empty success (delegation_swarm_test.go
 	// MemberTimeout contract).
 	if parentErr := ctx.Err(); parentErr != nil && !hasSubstantiveOutput([]byte(res.response)) {

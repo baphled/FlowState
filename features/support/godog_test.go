@@ -5,7 +5,6 @@ package support
 
 import (
 	"os"
-	"strings"
 	"testing"
 
 	"github.com/cucumber/godog"
@@ -40,9 +39,6 @@ func getOptions() *godog.Options {
 func TestFeatures(t *testing.T) {
 	opts := getOptions()
 	opts.Paths = []string{"../"}
-	if p := os.Getenv("GODOG_PATHS"); p != "" {
-		opts.Paths = []string{p}
-	}
 	opts.TestingT = t
 
 	suite := godog.TestSuite{
@@ -62,10 +58,6 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterSkillSteps(ctx, s)
 	RegisterMemorySteps(ctx)
 	RegisterSkillAutoloadingSteps(ctx)
-	RegisterAlwaysActiveSkillSteps(ctx)
-	if os.Getenv("GODOG_TAGS") == "@wip" || strings.Contains(os.Getenv("GODOG_PATHS"), "dispatch") {
-		RegisterQuitSteps(ctx)
-	}
 	RegisterHarnessSteps(ctx)
 	RegisterSessionEnrichmentSteps(ctx, s)
 	RegisterSessionForkSteps(ctx, s)
@@ -103,20 +95,10 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterVaultIndexSyncSteps(ctx)
 	RegisterVaultQueryCollectionSteps(ctx)
 	RegisterTodoSteps(ctx)
-	RegisterQuestionSteps(ctx)
 	RegisterMCPServerLifecycleSteps(ctx)
 	RegisterGateAmendmentSteps(ctx)
-	RegisterEngineSteps(ctx)
-	registerOpenAICompatClassificationSteps(ctx)
 	RegisterDelegationIntegritySteps(ctx)
 	VoiceTalkContext(ctx)
 	VoiceCLIContext(ctx)
 	VoiceTTSContext(ctx)
-	VoiceAPIContext(ctx)
-	VoiceFEContext(ctx)
-	VoiceConversationContext(ctx)
-	ComposerVoiceContext(ctx)
-	RegisterFSPollutionSteps(ctx)
-	VoiceWiringContext(ctx)
-	VoiceResumeContext(ctx)
 }
