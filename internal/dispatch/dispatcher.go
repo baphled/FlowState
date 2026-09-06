@@ -1074,7 +1074,15 @@ func (d *Dispatcher) DispatchSessioned(
 				d.engineMu.Unlock()
 			}
 			releaseGateSync()
-			d.logTurnRegistryError("Fail", d.turnRegistry.Fail(turnID, streamErr), turnID)
+			// A user-initiated cancel (DELETE /turns/{turn_id}) can land
+			// here synchronously when the inflight cancel fires before
+			// the streamer yields its first chunk. That is a deliberate
+			// stop, not a failure — settle the turn as StatusCancelled.
+			if errors.Is(streamErr, context.Canceled) {
+				d.logTurnRegistryError("Cancel", d.turnRegistry.Cancel(turnID), turnID)
+			} else {
+				d.logTurnRegistryError("Fail", d.turnRegistry.Fail(turnID, streamErr), turnID)
+			}
 			d.drainQueue(req.SessionID)
 			return
 		}
@@ -1137,9 +1145,10 @@ func (d *Dispatcher) reseedDispatchFailover(agentID, providerName, modelName str
 
 // wrapWithTurnLifecycle observes the chunks channel as it drains and
 // fires the terminal turn.Registry transition exactly once when src
-// closes. The terminal call is Fail when the last chunk carried a
-// non-nil Error (engine surface for provider errors and ctx-cancel),
-// Complete otherwise. The wrap also captures the (provider, model)
+// closes. The terminal call is Cancel when the last chunk carried a
+// context.Canceled error (engine surface for a user-initiated cancel
+// via DELETE /turns/{turn_id}), Fail when it carried any other
+// non-nil Error, Complete otherwise. The wrap also captures the (provider, model)
 // pair from every chunk that carries it so a mid-stream failover —
 // where the engine restamps ProviderID/ModelID after switching
 // candidates — surfaces the FINAL pair on the Turn record, matching
@@ -1281,12 +1290,23 @@ func (d *Dispatcher) wrapWithTurnLifecycle(
 			}
 			out <- chunk
 		}
-		// Terminal transition — exactly one of {Fail, Complete} fires.
-		// Errors from the registry call are swallowed: an ErrTurnTerminal
-		// would only happen if a producer-side bug already transitioned
-		// the turn (e.g. a future test injecting a Complete) and is not
-		// actionable from this seam.
+		// Terminal transition — exactly one of {Cancel, Fail, Complete}
+		// fires. Errors from the registry call are swallowed: an
+		// ErrTurnTerminal means another producer already transitioned
+		// the turn (the cancel-endpoint handler settles synchronously
+		// after firing the inflight cancel, so the loser of that race
+		// legitimately lands here) and is not actionable from this seam.
 		if terminalErr != nil {
+			// context.Canceled is the engine's surface for a
+			// user-initiated stop — the chat UI's Stop / Esc-Esc
+			// gesture fired the session manager's inflight cancel and
+			// the stream teed this terminal chunk. Settle as
+			// StatusCancelled, not StatusFailed, so the long-poll wire
+			// and the frontend don't render a cancelled turn as an error.
+			if errors.Is(terminalErr, context.Canceled) {
+				d.logTurnRegistryError("Cancel", d.turnRegistry.Cancel(turnID), turnID)
+				return
+			}
 			d.logTurnRegistryError("Fail", d.turnRegistry.Fail(turnID, terminalErr), turnID)
 			return
 		}

@@ -5216,6 +5216,83 @@ var _ = Describe("Turn-based poll endpoints (POST /messages + GET /turns/{turn_i
 			"GET /turns/{turn_id} must 404 when the registry has never seen the id; pre-restart turn_ids are explicitly out-of-scope at v1")
 	})
 
+	It("DELETE /turns/{turn_id} cancels a running turn — returns status=cancelled and is idempotent", func() {
+		// dripStreamer with a slow drip keeps the turn Running long
+		// enough to observe it mid-flight, then the DELETE fires the
+		// session manager's inflight cancel. The dripStreamer honours
+		// ctx.Done by emitting {Error: ctx.Err(), Done: true}, which
+		// the turn-lifecycle wrap maps to StatusCancelled — a user
+		// stop, not a failure. The handler also settles synchronously,
+		// so the response deterministically carries the terminal state.
+		setup([]provider.StreamChunk{
+			{Content: "first"},
+			{Content: "second"},
+			{Done: true},
+		}, 200*time.Millisecond)
+
+		sess, err := mgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+
+		_, body, _ := postMessage(sess.ID, "start")
+		turnID, _ := body["turn_id"].(string)
+		Expect(turnID).NotTo(BeEmpty())
+
+		// Confirm the turn is mid-flight before cancelling.
+		Eventually(func() bool {
+			st, getBody, _ := getTurn(sess.ID, turnID)
+			gotStatus, _ := getBody["status"].(string)
+			return st == http.StatusOK && gotStatus == "running"
+		}, "3s", "20ms").Should(BeTrue())
+
+		del := func() (int, map[string]any, []byte) {
+			req, err := http.NewRequest(http.MethodDelete,
+				httpSrv.URL+"/api/v1/sessions/"+sess.ID+"/turns/"+turnID, nil)
+			Expect(err).NotTo(HaveOccurred())
+			resp, err := http.DefaultClient.Do(req) //nolint:bodyclose
+			Expect(err).NotTo(HaveOccurred())
+			defer resp.Body.Close()
+			raw, err := io.ReadAll(resp.Body)
+			Expect(err).NotTo(HaveOccurred())
+			var out map[string]any
+			if len(raw) > 0 && raw[0] == '{' {
+				_ = json.Unmarshal(raw, &out)
+			}
+			return resp.StatusCode, out, raw
+		}
+
+		status, out, raw := del()
+		Expect(status).To(Equal(http.StatusOK))
+		Expect(out["status"]).To(Equal("cancelled"),
+			"the cancel response must carry the terminal status=cancelled; body=%s", string(raw))
+		Expect(out["completed_at"]).NotTo(BeNil(),
+			"a cancelled turn must carry completed_at like any terminal state")
+		Expect(out).NotTo(HaveKey("error"),
+			"a cancelled turn must not carry an error string (zero-value Error is omitempty-dropped)")
+
+		// Idempotent: a second cancel returns the same terminal state.
+		status2, out2, raw2 := del()
+		Expect(status2).To(Equal(http.StatusOK))
+		Expect(out2["status"]).To(Equal("cancelled"),
+			"a second cancel of an already-terminal turn must be idempotent; body=%s", string(raw2))
+	})
+
+	It("DELETE /turns/{unknown_id} returns 404", func() {
+		setup([]provider.StreamChunk{{Done: true}}, 5*time.Millisecond)
+
+		sess, err := mgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+
+		unknown := "00000000-0000-4000-8000-000000000000"
+		req, err := http.NewRequest(http.MethodDelete,
+			httpSrv.URL+"/api/v1/sessions/"+sess.ID+"/turns/"+unknown, nil)
+		Expect(err).NotTo(HaveOccurred())
+		resp, err := http.DefaultClient.Do(req) //nolint:bodyclose
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusNotFound),
+			"DELETE /turns/{turn_id} must 404 when the registry has never seen the id")
+	})
+
 	It("MessagesAdded excludes the user message that triggered the turn", func() {
 		setup([]provider.StreamChunk{
 			{Content: "reply"},

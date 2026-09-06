@@ -731,6 +731,48 @@ var _ = Describe("Dispatcher.DispatchSessioned — Turn integration", func() {
 		})
 	})
 
+	Context("when the engine emits a context.Canceled terminal chunk (user-initiated cancel)", func() {
+		It("settles the turn as StatusCancelled, not StatusFailed", func() {
+			// The session manager's inflight cancel fires the engine's
+			// ctx; the stream surfaces it as {Error: context.Canceled,
+			// Done: true}. The wrap goroutine must map that to Cancel —
+			// a user stop is a deliberate terminal state, not a failure.
+			probe := &turnProbeStreamer{
+				chunks: []provider.StreamChunk{
+					{Content: "partial"},
+					{Error: context.Canceled, Done: true},
+				},
+				emitInterval: 5 * time.Millisecond,
+			}
+			mgr := &turnSessionManager{
+				sess:     session.Session{ID: "sess-cancel-ctx", AgentID: "default-assistant"},
+				streamer: probe,
+			}
+			turns := turn.NewRegistry()
+			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, turns)
+
+			handle, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
+				SessionID:    "sess-cancel-ctx",
+				AgentID:      "default-assistant",
+				Content:      "trigger",
+				ScanMentions: false,
+			}, nil)
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func() turn.Status {
+				t, gerr := turns.Get(handle.TurnID)
+				if gerr != nil {
+					return ""
+				}
+				return t.Status
+			}, "2s", "10ms").Should(Equal(turn.StatusCancelled))
+
+			t, _ := turns.Get(handle.TurnID)
+			Expect(t.Error).To(BeEmpty(),
+				"a cancelled turn must not carry an error string — user cancels are not failures")
+		})
+	})
+
 	Context("when a second DispatchSessioned fires on the same session while the first is still running", func() {
 		It("queues the second call and drains it after the first turn finishes", func() {
 			probe := &turnProbeStreamer{

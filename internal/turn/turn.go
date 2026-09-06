@@ -52,10 +52,11 @@ import (
 
 // Status is the lifecycle stage of a Turn. Transitions are
 // monotonic: a Turn starts in StatusRunning and ends in either
-// StatusCompleted (clean stream completion) or StatusFailed
-// (provider error / engine error). Once terminal, the Turn is
-// frozen — subsequent Append / Complete / Fail calls return an
-// error rather than silently mutating the row.
+// StatusCompleted (clean stream completion), StatusFailed (provider
+// error / engine error), or StatusCancelled (user-initiated stop via
+// DELETE /turns/{turn_id}). Once terminal, the Turn is frozen —
+// subsequent Append / Complete / Fail / Cancel calls return an error
+// rather than silently mutating the row.
 type Status string
 
 const (
@@ -73,6 +74,12 @@ const (
 	// mid-stream provider FAILOVER is NOT a Failed turn — only a
 	// genuine engine error after failover exhaustion is.
 	StatusFailed Status = "failed"
+	// StatusCancelled is the user-initiated-stop terminal state. Set
+	// by Cancel. The Turn's CompletedAt is non-nil; Error is empty —
+	// a user cancel is a deliberate stop, not a failure. Surfaces on
+	// the wire so the frontend's long-poll treats the turn as finished
+	// without rendering an error presentation.
+	StatusCancelled Status = "cancelled"
 )
 
 // ModelInfo carries the (provider, model) pair the Turn ran under.
@@ -594,8 +601,9 @@ var ErrTurnConflict = errors.New("turn: conflict — a turn is already running f
 // At v1, turn_ids predating server restart return this error.
 var ErrTurnNotFound = errors.New("turn: not found")
 
-// ErrTurnTerminal fires when Append / Complete / Fail is called on
-// a turn that has already reached StatusCompleted or StatusFailed.
+// ErrTurnTerminal fires when Append / Complete / Fail / Cancel is
+// called on a turn that has already reached a terminal state
+// (StatusCompleted, StatusFailed, or StatusCancelled).
 // Indicates a producer-side ordering bug (e.g. the accumulator
 // appending after the dispatcher's wrap goroutine already called
 // Complete). Surfaced rather than silently swallowed so the bug is
@@ -978,6 +986,52 @@ func (r *Registry) Fail(turnID string, cause error) error {
 	}
 	// Wake any long-poll waiters — terminal-state transition; same
 	// reasoning as Complete.
+	r.broadcastChangeLocked()
+	return nil
+}
+
+// Cancel transitions a Running turn to StatusCancelled — the
+// terminal state for a user-initiated stop (the chat UI's Stop /
+// Esc-Esc gesture, backed by DELETE /api/v1/sessions/{id}/turns/{turn_id}).
+// Mirrors Fail's bookkeeping: stamps CompletedAt + DurationMs, clears
+// the byActiveSession entry, and broadcasts so long-poll waiters
+// observe the terminal transition. Unlike Fail, Error is left empty —
+// a user cancel is not a failure.
+//
+// Expected:
+//   - turnID is the turn_id from TurnIDFromContext.
+//
+// Returns:
+//   - nil on success.
+//   - ErrTurnNotFound when turnID is unknown.
+//   - ErrTurnTerminal when the turn is already in a terminal state.
+//
+// Side effects:
+//   - Mutates the Turn's Status, CompletedAt.
+//   - Removes the byActiveSession entry for this turn's sessionID.
+func (r *Registry) Cancel(turnID string) error {
+	if turnID == "" {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	t, ok := r.byID[turnID]
+	if !ok {
+		return ErrTurnNotFound
+	}
+	if t.Status != StatusRunning {
+		return ErrTurnTerminal
+	}
+	now := r.clock()
+	t.Status = StatusCancelled
+	t.CompletedAt = &now
+	t.DurationMs = now.Sub(t.StartedAt).Milliseconds()
+	if active, found := r.byActiveSession[t.SessionID]; found && active == turnID {
+		delete(r.byActiveSession, t.SessionID)
+	}
+	// Wake any long-poll waiters — terminal-state transition; same
+	// reasoning as Complete / Fail.
 	r.broadcastChangeLocked()
 	return nil
 }

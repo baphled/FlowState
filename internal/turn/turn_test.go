@@ -302,6 +302,50 @@ var _ = Describe("Registry", func() {
 		})
 	})
 
+	Context("Cancel", func() {
+		It("transitions Status to cancelled without populating Error", func() {
+			id, err := reg.Start("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(reg.Cancel(id)).To(Succeed())
+
+			t, getErr := reg.Get(id)
+			Expect(getErr).NotTo(HaveOccurred())
+			Expect(t.Status).To(Equal(turn.StatusCancelled))
+			Expect(t.CompletedAt).NotTo(BeNil())
+			Expect(t.Error).To(BeEmpty(),
+				"a user cancel is not a failure — Error must stay empty")
+		})
+
+		It("releases the per-session conflict gate after Cancel", func() {
+			id, err := reg.Start("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(reg.Cancel(id)).To(Succeed())
+
+			_, err = reg.Start("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("is terminal — Append after Cancel returns ErrTurnTerminal", func() {
+			id, err := reg.Start("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(reg.Cancel(id)).To(Succeed())
+
+			err = reg.Append(id, session.Message{Role: "assistant", Content: "late"})
+			Expect(err).To(MatchError(turn.ErrTurnTerminal))
+		})
+
+		It("returns ErrTurnTerminal when Fail already fired", func() {
+			id, err := reg.Start("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(reg.Fail(id, errors.New("x"))).To(Succeed())
+
+			err = reg.Cancel(id)
+			Expect(err).To(MatchError(turn.ErrTurnTerminal),
+				"a failed turn cannot be cancelled — terminal states are absorbing")
+		})
+	})
+
 	Context("Get", func() {
 		It("returns ErrTurnNotFound for an unknown turn id", func() {
 			_, err := reg.Get("never-minted")
