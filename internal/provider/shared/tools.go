@@ -2,6 +2,7 @@ package shared
 
 import (
 	"encoding/json"
+	"log/slog"
 
 	"github.com/baphled/flowstate/internal/provider"
 )
@@ -49,12 +50,24 @@ func BuildBaseToolSchema(t provider.Tool) BaseToolSchema {
 // Side effects:
 //   - None.
 func ParseToolArguments(raw string) map[string]interface{} {
+	slog.Debug("question-path: ParseToolArguments entry", "raw_len", len(raw))
 	if raw == "" {
+		slog.Warn("question-path: ParseToolArguments empty raw argument, returning nil")
 		return nil
 	}
 	var args map[string]interface{}
-	if err := json.Unmarshal([]byte(raw), &args); err != nil {
-		return nil
+	if err := json.Unmarshal([]byte(raw), &args); err == nil {
+		slog.Debug("question-path: ParseToolArguments decoded object", "keys", len(args))
+		return args
 	}
-	return args
+	var inner string
+	if err := json.Unmarshal([]byte(raw), &inner); err == nil {
+		var args2 map[string]interface{}
+		if err2 := json.Unmarshal([]byte(inner), &args2); err2 == nil {
+			slog.Warn("question-path: ParseToolArguments re-decoded double-encoded string args", "keys", len(args2))
+			return args2
+		}
+	}
+	slog.Warn("question-path: ParseToolArguments unparseable argument payload, returning nil", "raw_len", len(raw))
+	return nil
 }

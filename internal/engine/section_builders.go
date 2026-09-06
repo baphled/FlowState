@@ -263,3 +263,61 @@ func buildTemporalSection(nowFunc func() time.Time) string {
 	now := nowFunc().UTC()
 	return "## Temporal Context\n\nToday is " + now.Format("2006-01-02") + " (" + now.Format("Monday") + ", UTC)"
 }
+
+// fileToolSet is the set of capability tools that trigger the
+// tool-discipline section. Agents without any of these tools (e.g.
+// pure-orchestration agents) never see file-tool guidance.
+var fileToolSet = map[string]bool{
+	"bash":  true,
+	"read":  true,
+	"write": true,
+	"edit":  true,
+}
+
+// buildToolDisciplineSection renders the Tool Discipline section that
+// steers agents towards purpose-built file tools and economical tool
+// use. Agents repeatedly fell back to bash for file CRUD (cat >, tee,
+// heredocs, sed -i) and issued one-tool-call-per-message, burning
+// tokens and inviting shell-quoting bugs; this section makes the
+// expected behaviour explicit at prompt level.
+//
+// The section is only rendered when the manifest actually has at
+// least one file tool — an agent without read/write/edit/bash would
+// otherwise receive guidance about tools it cannot call.
+//
+// Expected:
+//   - manifest is the manifest the prompt is being built for; its
+//     Capabilities.Tools list is inspected.
+//
+// Returns:
+//   - A markdown Tool Discipline section, or an empty string when the
+//     manifest has none of the file tools.
+//
+// Side effects:
+//   - None.
+func buildToolDisciplineSection(manifest agent.Manifest) string {
+	has := false
+	for _, t := range manifest.Capabilities.Tools {
+		if fileToolSet[t] {
+			has = true
+			break
+		}
+	}
+	if !has {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("## Tool Discipline\n\n")
+	b.WriteString("Use purpose-built file tools, not bash:\n")
+	b.WriteString("- Creating a new file → use the `write` tool\n")
+	b.WriteString("- Modifying an existing file → use the `edit` tool\n")
+	b.WriteString("- Reading files → use the `read` tool (with offset/limit for large files)\n")
+	b.WriteString("- Never create or modify files via bash (`cat >`, `tee`, heredocs, `sed -i`, `awk -i`) when `write`/`edit` are available; never read via `cat`/`head`/`tail` when `read` is available\n")
+	b.WriteString("- Bash is for builds, tests, linting, git, and process/system inspection only\n\n")
+	b.WriteString("Tool-call economy — use the least number of tool calls possible:\n")
+	b.WriteString("- Batch independent tool calls in a single message\n")
+	b.WriteString("- Read only the region of a file you need (offset/limit)\n")
+	b.WriteString("- Prefer one precise edit over multiple rewrites")
+	return b.String()
+}

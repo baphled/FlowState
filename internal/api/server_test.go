@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -34,13 +35,16 @@ import (
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/questionrequest"
 	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/testutils"
+	"github.com/baphled/flowstate/internal/tool"
 	"github.com/baphled/flowstate/internal/tool/pathguard"
+	"github.com/baphled/flowstate/internal/tool/question"
 	todo "github.com/baphled/flowstate/internal/tool/todo"
 	"github.com/baphled/flowstate/internal/turn"
 	"gopkg.in/yaml.v3"
@@ -6647,3 +6651,432 @@ var _ = Describe("Phase-4-Commit-2 — retired SSE / WebSocket routes return 404
 			"server.go must not reference sessionBroker — Phase-4-Commit-2 retired the broker entirely")
 	})
 })
+
+// newQuestionServer builds a Server wired with a real event bus and a
+// real Dispatcher so subscribeTurnQuestions attaches its handlers to a
+// genuine Turn registry. The MockStreamer never actually streams in
+// these tests — activation is driven by publishing
+// EventStreamingHeartbeat, the same bus signal production uses.
+func newQuestionServer(t *testing.T) (*api.Server, *eventbus.EventBus, *turn.Registry) {
+	t.Helper()
+	streamer := &testutils.MockStreamer{
+		Chunks: []provider.StreamChunk{{Content: "ok"}, {Done: true}},
+	}
+	registry := agent.NewRegistry()
+	registry.Register(&agent.Manifest{ID: "test-agent", Name: "Test Agent"})
+	disc := discovery.NewAgentDiscovery(nil)
+	reg := turn.NewRegistry()
+	dispatcher := dispatch.NewWithTurns(streamer, nil, nil, registry, nil, reg)
+	bus := eventbus.NewEventBus()
+	srv := api.NewServer(streamer, registry, disc, nil,
+		api.WithEventBus(bus),
+		api.WithDispatcher(dispatcher),
+	)
+	return srv, bus, reg
+}
+
+func publishQuestion(bus *eventbus.EventBus, requestID, sessionID string) {
+	bus.Publish(events.EventQuestionRequired, events.NewQuestionRequiredEvent(events.QuestionRequiredEventData{
+		RequestID: requestID,
+		ToolName:  "ask_user",
+		Question:  "Which flavour? (" + requestID + ")",
+		Options:   []string{"a", "b"},
+		SessionID: sessionID,
+	}))
+}
+
+func publishHeartbeat(bus *eventbus.EventBus, sessionID string) {
+	bus.Publish(events.EventStreamingHeartbeat, events.NewStreamingHeartbeatEvent(events.StreamingHeartbeatEventData{
+		SessionID: sessionID,
+		Phase:     "thinking",
+	}))
+}
+
+func turnQuestionRequestIDs(t *testing.T, reg *turn.Registry, turnID string) []string {
+	t.Helper()
+	tt, err := reg.Get(turnID)
+	if err != nil {
+		t.Fatalf("Get(%s): %v", turnID, err)
+	}
+	ids := make([]string, 0, len(tt.QuestionRequests))
+	for _, qr := range tt.QuestionRequests {
+		ids = append(ids, qr.RequestID)
+	}
+	return ids
+}
+
+func contains(list []string, want string) bool {
+	for _, v := range list {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
+// A question published before any Turn is active must be stashed and
+// delivered onto the Turn's question_requests once the Turn activates.
+func TestQuestionBeforeTurnActivationIsDelivered(t *testing.T) {
+	srv, bus, reg := newQuestionServer(t)
+	defer srv.ResetPendingQuestions()
+	sessionID := "sess-defer"
+
+	publishQuestion(bus, "req-early", sessionID)
+
+	turnID, err := reg.Start(sessionID)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	publishHeartbeat(bus, sessionID)
+
+	ids := turnQuestionRequestIDs(t, reg, turnID)
+	if !contains(ids, "req-early") {
+		t.Fatalf("expected stashed req-early in question_requests, got %v", ids)
+	}
+}
+
+// A question published while a Turn is active must land immediately —
+// regression guard for the deferral path masking the happy path.
+func TestQuestionAfterActiveTurnDeliveredImmediately(t *testing.T) {
+	srv, bus, reg := newQuestionServer(t)
+	defer srv.ResetPendingQuestions()
+	sessionID := "sess-active"
+
+	turnID, err := reg.Start(sessionID)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	publishHeartbeat(bus, sessionID)
+
+	publishQuestion(bus, "req-live", sessionID)
+
+	ids := turnQuestionRequestIDs(t, reg, turnID)
+	if !contains(ids, "req-live") {
+		t.Fatalf("expected req-live in question_requests, got %v", ids)
+	}
+}
+
+// The per-session stash is bounded: stuffing far more than the cap
+// keeps only the newest entries, and the remainder never leak onto
+// the Turn.
+func TestPendingQuestionsBoundedNoLeak(t *testing.T) {
+	srv, bus, reg := newQuestionServer(t)
+	defer srv.ResetPendingQuestions()
+	sessionID := "sess-bound"
+
+	const total = 32
+	for i := 0; i < total; i++ {
+		publishQuestion(bus, "req-bulk", sessionID)
+	}
+	publishHeartbeat(bus, sessionID)
+
+	srv.ResetPendingQuestions()
+
+	turnID, err := reg.Start(sessionID)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	publishHeartbeat(bus, sessionID)
+	publishQuestion(bus, "req-after-reset", sessionID)
+
+	ids := turnQuestionRequestIDs(t, reg, turnID)
+	if len(ids) != 1 || ids[0] != "req-after-reset" {
+		t.Fatalf("expected only req-after-reset after Reset, got %v", ids)
+	}
+}
+
+// Concurrent question publishes interleaved with turn activation must
+// be race-free and loss-free for the entries that survive the cap.
+// Run with -race.
+func TestConcurrentPublishesWithActivationRace(t *testing.T) {
+	srv, bus, reg := newQuestionServer(t)
+	defer srv.ResetPendingQuestions()
+	sessionID := "sess-race"
+
+	const goroutines = 16
+	var wg sync.WaitGroup
+	wg.Add(goroutines + 1)
+
+	go func() {
+		defer wg.Done()
+		turnID, err := reg.Start(sessionID)
+		if err != nil {
+			t.Errorf("Start: %v", err)
+			return
+		}
+		publishHeartbeat(bus, sessionID)
+		_ = turnID
+	}()
+
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			publishQuestion(bus, "req-conc", sessionID)
+			publishHeartbeat(bus, sessionID)
+		}()
+	}
+	wg.Wait()
+
+	turnID, ok := reg.FindActiveBySession(sessionID)
+	if !ok {
+		t.Fatal("no active turn after race")
+	}
+	ids := turnQuestionRequestIDs(t, reg, turnID)
+	if len(ids) > 1 {
+		t.Fatalf("expected deduped single entry, got %v", ids)
+	}
+	if len(ids) == 1 && ids[0] != "req-conc" {
+		t.Fatalf("unexpected request id %v", ids)
+	}
+}
+
+// The deferral wiring must not disturb unrelated HTTP surfaces.
+func TestServerStillServesChat(t *testing.T) {
+	srv, _, _ := newQuestionServer(t)
+	defer srv.ResetPendingQuestions()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code == http.StatusNotImplemented {
+		t.Fatalf("chat unexpectedly 501")
+	}
+}
+
+// These three specs pin the question-turn payload fix in
+// internal/api/server.go:
+//
+//  1. resolve() preserves Options and AllowMultiple from the pending
+//     entry already on the Turn instead of zeroing them.
+//  2. A QuestionTimeoutEvent resolves the pending question (the
+//     type-switch must handle both event wrappers), not silently
+//     dropped.
+//  3. A question stashed then resolved before any heartbeat flush is
+//     purged from the stash (dropPendingQuestion) so a later
+//     activation flush cannot resurrect it as status=pending.
+
+func findTurnQuestion(t *testing.T, reg *turn.Registry, turnID, requestID string) turn.TurnQuestionRequest {
+	t.Helper()
+	tt, err := reg.Get(turnID)
+	if err != nil {
+		t.Fatalf("Get(%s): %v", turnID, err)
+	}
+	for _, qr := range tt.QuestionRequests {
+		if qr.RequestID == requestID {
+			return qr
+		}
+	}
+	t.Fatalf("request %s not found on turn %s (requests=%+v)", requestID, turnID, tt.QuestionRequests)
+	return turn.TurnQuestionRequest{}
+}
+
+// (a) resolve() must carry Options and AllowMultiple through from the
+// pending entry — the terminal wire entry must still be selectable.
+func TestResolvePreservesOptionsAndAllowMultiple(t *testing.T) {
+	srv, bus, reg := newQuestionServer(t)
+	defer srv.ResetPendingQuestions()
+	sessionID := "sess-preserve"
+
+	turnID, err := reg.Start(sessionID)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	publishHeartbeat(bus, sessionID)
+
+	bus.Publish(events.EventQuestionRequired, events.NewQuestionRequiredEvent(events.QuestionRequiredEventData{
+		RequestID:     "req-preserve",
+		ToolName:      "ask_user",
+		Question:      "Pick all that apply",
+		Options:       []string{"a", "b", "c"},
+		AllowMultiple: true,
+		SessionID:     sessionID,
+	}))
+
+	pending := findTurnQuestion(t, reg, turnID, "req-preserve")
+	if pending.Status != turn.TurnQuestionStatusPending {
+		t.Fatalf("expected pending before answer, got %q", pending.Status)
+	}
+
+	bus.Publish(events.EventQuestionAnswered, events.NewQuestionAnsweredEvent(events.QuestionAnsweredEventData{
+		RequestID: "req-preserve",
+		SessionID: sessionID,
+		ToolName:  "ask_user",
+		Question:  pending.Question,
+		Answers:   []string{"a"},
+	}))
+
+	resolved := findTurnQuestion(t, reg, turnID, "req-preserve")
+	if resolved.Status != turn.TurnQuestionStatusAnswered {
+		t.Fatalf("expected answered status, got %q", resolved.Status)
+	}
+	if len(resolved.Options) != len(pending.Options) {
+		t.Fatalf("resolve() dropped Options: pending=%v resolved=%v", pending.Options, resolved.Options)
+	}
+	for i, o := range pending.Options {
+		if resolved.Options[i] != o {
+			t.Fatalf("Options mismatch at %d: pending=%q resolved=%q", i, o, resolved.Options[i])
+		}
+	}
+	if !resolved.AllowMultiple {
+		t.Fatal("resolve() dropped AllowMultiple: expected true, got false")
+	}
+}
+
+// (b) A QuestionTimeoutEvent must resolve the pending question to
+// status=timeout — before the fix the resolve subscriber only
+// type-asserted *QuestionAnsweredEvent and timeouts were silently
+// dropped, leaving the entry stuck at pending forever.
+func TestQuestionTimeoutResolvesPendingQuestion(t *testing.T) {
+	srv, bus, reg := newQuestionServer(t)
+	defer srv.ResetPendingQuestions()
+	sessionID := "sess-timeout"
+
+	turnID, err := reg.Start(sessionID)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	publishHeartbeat(bus, sessionID)
+
+	publishQuestion(bus, "req-timeout", sessionID)
+
+	bus.Publish(events.EventQuestionTimeout, events.NewQuestionTimeoutEvent(events.QuestionAnsweredEventData{
+		RequestID: "req-timeout",
+		SessionID: sessionID,
+		ToolName:  "ask_user",
+		Question:  "Which flavour? (req-timeout)",
+	}))
+
+	resolved := findTurnQuestion(t, reg, turnID, "req-timeout")
+	if resolved.Status != turn.TurnQuestionStatusTimeout {
+		t.Fatalf("expected timeout status on QuestionTimeoutEvent, got %q (event silently dropped?)", resolved.Status)
+	}
+}
+
+// (c) A question stashed while no Turn is active, then resolved
+// before any heartbeat flush, must not be resurrected as
+// status=pending by a later activation flush — the stash entry is
+// purged by dropPendingQuestion at resolve time.
+func TestResolvedStashedQuestionNotResurrected(t *testing.T) {
+	srv, bus, reg := newQuestionServer(t)
+	defer srv.ResetPendingQuestions()
+	sessionID := "sess-resurrect"
+
+	// Stash while no turn is active.
+	publishQuestion(bus, "req-stash", sessionID)
+
+	// Resolve it before any heartbeat flush occurred.
+	bus.Publish(events.EventQuestionAnswered, events.NewQuestionAnsweredEvent(events.QuestionAnsweredEventData{
+		RequestID: "req-stash",
+		SessionID: sessionID,
+		ToolName:  "ask_user",
+		Answers:   []string{"a"},
+	}))
+
+	// Now activate: heartbeat triggers the activation flush.
+	turnID, err := reg.Start(sessionID)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	publishHeartbeat(bus, sessionID)
+
+	tt, err := reg.Get(turnID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	for _, qr := range tt.QuestionRequests {
+		if qr.RequestID == "req-stash" && qr.Status == turn.TurnQuestionStatusPending {
+			t.Fatalf("resolved question resurrected as pending after flush: %+v", qr)
+		}
+	}
+}
+
+// Pinning spec for the live question-turn-payload bug: the question tool
+// publishes EventQuestionRequired on the same bus instance the API server
+// subscribed to via the app-construction wiring (setupEngine creates
+// appEventBus + question registry, buildEngineParams binds the tool to that
+// bus, api.WithEventBus receives the same bus). With the broken wiring
+// (engineParams.eventBus never set from engineAssemblyParams), createEngine
+// got a nil bus and engine.New built a SECOND phantom bus; the API server
+// subscribed on the phantom while the tool published on the original —
+// subscribeTurnQuestions never fired and buildTurnResponse reported
+// question_requests=0.
+//
+// This spec reproduces the live path end-to-end: an active turn, the
+// question tool's own Execute publishing on the shared bus, and the GET
+// /turns/{id} wire response.
+func TestQuestionToolPublishReachesActiveTurnWireResponse(t *testing.T) {
+	agentReg := agent.NewRegistry()
+	agentReg.Register(&agent.Manifest{ID: "test-agent", Name: "Test Agent"})
+	reg := turn.NewRegistry()
+	streamer := &testutils.MockStreamer{Chunks: []provider.StreamChunk{{Content: "ok"}, {Done: true}}}
+	dispatcher := dispatch.NewWithTurns(streamer, nil, nil, agentReg, nil, reg)
+	bus := eventbus.NewEventBus()
+	srv := api.NewServer(streamer, agentReg, discovery.NewAgentDiscovery(nil), nil,
+		api.WithEventBus(bus),
+		api.WithDispatcher(dispatcher),
+	)
+
+	// Question tool wired exactly as buildEngineParams wires it
+	// (toolset.AppendQuestionTool with the shared registry + bus).
+	qreg := questionrequest.NewRegistry()
+	qtool := question.NewWithBus(qreg, bus, 0)
+
+	sessionID := "sess-pin-live"
+	turnID, err := reg.Start(sessionID)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Drive the tool's real publish path. Execute blocks until answered
+	// or timeout; publishRequired fires at registration. Run it with a
+	// short-lived context and cancel so the test doesn't hang; the
+	// EventQuestionRequired publish has already happened synchronously.
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), session.IDKey{}, sessionID))
+	go func() {
+		res, err := qtool.Execute(ctx, tool.Input{Arguments: map[string]any{
+			"question": "Which flavour?",
+			"options":  []string{"a", "b"},
+		}})
+		_ = res
+		_ = err
+		cancel()
+	}()
+
+	// The subscriber upserts synchronously on Publish; poll briefly for
+	// the async registration to land.
+	var got int
+	for i := 0; i < 50; i++ {
+		tt, err := reg.Get(turnID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if got = len(tt.QuestionRequests); got == 1 {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if got != 1 {
+		t.Fatalf("expected question_requests=1 on active turn, got %d", got)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/"+sessionID+"/turns/"+turnID, nil)
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET turn status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		QuestionRequests []struct {
+			Question string `json:"question"`
+		} `json:"question_requests"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v body=%s", err, rec.Body.String())
+	}
+	if len(resp.QuestionRequests) != 1 {
+		t.Fatalf("turn response question_requests=%d, want 1 (body=%s)", len(resp.QuestionRequests), rec.Body.String())
+	}
+	if got := resp.QuestionRequests[0].Question; got != "Which flavour?" {
+		t.Fatalf("question_requests[0].question=%q, want %q", got, "Which flavour?")
+	}
+}

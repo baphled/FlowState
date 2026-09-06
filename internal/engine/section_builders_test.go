@@ -180,6 +180,53 @@ var _ = Describe("Section Builders", func() {
 		})
 	})
 
+	Describe("buildToolDisciplineSection", func() {
+		Context("when the manifest has file tools", func() {
+			It("includes the purpose-built file tools rule", func() {
+				manifest := agent.Manifest{Capabilities: agent.Capabilities{Tools: []string{"bash", "read", "write", "edit"}}}
+
+				result := buildToolDisciplineSection(manifest)
+
+				Expect(result).To(ContainSubstring("## Tool Discipline"))
+				Expect(result).To(ContainSubstring("Use purpose-built file tools, not bash"))
+				Expect(result).To(ContainSubstring("use the `write` tool"))
+				Expect(result).To(ContainSubstring("use the `edit` tool"))
+				Expect(result).To(ContainSubstring("use the `read` tool (with offset/limit for large files)"))
+				Expect(result).To(ContainSubstring("`sed -i`"))
+				Expect(result).To(ContainSubstring("Bash is for builds, tests, linting, git, and process/system inspection only"))
+			})
+
+			It("includes the tool-call economy rule", func() {
+				manifest := agent.Manifest{Capabilities: agent.Capabilities{Tools: []string{"read"}}}
+
+				result := buildToolDisciplineSection(manifest)
+
+				Expect(result).To(ContainSubstring("Tool-call economy"))
+				Expect(result).To(ContainSubstring("Batch independent tool calls in a single message"))
+				Expect(result).To(ContainSubstring("Read only the region of a file you need (offset/limit)"))
+				Expect(result).To(ContainSubstring("Prefer one precise edit over multiple rewrites"))
+			})
+
+			It("renders when only one file tool is present", func() {
+				manifest := agent.Manifest{Capabilities: agent.Capabilities{Tools: []string{"bash", "grep", "glob"}}}
+
+				Expect(buildToolDisciplineSection(manifest)).NotTo(BeEmpty())
+			})
+		})
+
+		Context("when the manifest has no file tools", func() {
+			It("returns an empty string", func() {
+				manifest := agent.Manifest{Capabilities: agent.Capabilities{Tools: []string{"suggest_delegate", "delegate"}}}
+
+				Expect(buildToolDisciplineSection(manifest)).To(BeEmpty())
+			})
+
+			It("returns an empty string for a manifest with no tools at all", func() {
+				Expect(buildToolDisciplineSection(agent.Manifest{})).To(BeEmpty())
+			})
+		})
+	})
+
 	Describe("filterByAllowlist", func() {
 		It("filters agents by ID", func() {
 			agents := []*agent.Manifest{

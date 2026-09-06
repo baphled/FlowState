@@ -133,6 +133,10 @@ func (e *Engine) assembleSystemPromptLocked(manifest agent.Manifest, skills []sk
 
 	base = base + "\n\n" + buildTemporalSection(e.nowFunc)
 
+	if section := buildToolDisciplineSection(manifest); section != "" {
+		base = base + "\n\n" + section
+	}
+
 	if e.agentsFileLoader != nil && !e.skipAgentFiles {
 		if !e.agentFilesCached {
 			e.cachedAgentFiles = e.agentsFileLoader.LoadFiles()

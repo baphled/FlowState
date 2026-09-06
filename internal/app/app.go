@@ -1165,6 +1165,15 @@ func buildEngineParams(in engineAssemblyParams) engineParams {
 		recallEmbeddingModel:    in.recallEmbeddingModel,
 		sessionEmbeddingLookup:  in.sessionEmbeddingLookup,
 		guard:                   in.tools.guard,
+		// Pin the question-turn-payload fix (Sep 2026): buildEngineParams
+		// previously dropped the appEventBus, so createEngine's
+		// engine.Config.EventBus was nil and engine.New (engine.go:926)
+		// silently constructed a SECOND bus. api.WithEventBus(eng.EventBus())
+		// (app.go:1005) then subscribed on that phantom bus while the
+		// question tool published on the original appEventBus (app.go:917) —
+		// EventQuestionRequired never reached subscribeTurnQuestions and
+		// question_requests was left empty.
+		eventBus: in.eventBus,
 	}
 }
 
