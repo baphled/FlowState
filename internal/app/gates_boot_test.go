@@ -50,6 +50,68 @@ echo nope
 	})
 })
 
+var _ = Describe("ValidateDiscoveredGateReferences", func() {
+	BeforeEach(func() {
+		swarm.ResetExtGateRegistryForTest()
+	})
+
+	It("rejects a swarm gate referencing an ext kind with no discovered manifest", func() {
+		root := writeGate("present-gate", "present.sh", `#!/bin/bash
+echo '{"pass": true}'
+`)
+
+		reg := swarm.NewRegistry()
+		reg.Register(&swarm.Manifest{
+			ID: "swarm-dangling-gate",
+			Harness: swarm.HarnessConfig{Gates: []swarm.GateSpec{{
+				Name: "dangling",
+				Kind: "ext:not-discovered",
+				When: "pre",
+			}}},
+		})
+
+		err := app.ValidateDiscoveredGateReferences(context.Background(), &config.AppConfig{GatesDir: root}, reg)
+
+		Expect(err).To(MatchError(ContainSubstring("ext:not-discovered")))
+	})
+
+	It("accepts ext kinds backed by a discovered manifest", func() {
+		root := writeGate("present-gate", "present.sh", `#!/bin/bash
+echo '{"pass": true}'
+`)
+
+		reg := swarm.NewRegistry()
+		reg.Register(&swarm.Manifest{
+			ID: "swarm-ok-gate",
+			Harness: swarm.HarnessConfig{Gates: []swarm.GateSpec{{
+				Name: "ok",
+				Kind: "ext:present-gate",
+				When: "pre",
+			}}},
+		})
+
+		err := app.ValidateDiscoveredGateReferences(context.Background(), &config.AppConfig{GatesDir: root}, reg)
+
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("is a no-op with an empty gates dir and no ext references", func() {
+		reg := swarm.NewRegistry()
+		reg.Register(&swarm.Manifest{
+			ID: "swarm-builtin-only",
+			Harness: swarm.HarnessConfig{Gates: []swarm.GateSpec{{
+				Name: "schema",
+				Kind: "builtin:result-schema",
+				When: "post",
+			}}},
+		})
+
+		err := app.ValidateDiscoveredGateReferences(context.Background(), &config.AppConfig{GatesDir: "/tmp/does-not-exist-gates"}, reg)
+
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
 func writeGate(name, execName, body string) string {
 	root, err := os.MkdirTemp("", "gates-boot-*")
 	Expect(err).ToNot(HaveOccurred())
