@@ -58,15 +58,19 @@ exec: ./gate.sh`,
 		Expect(got).To(BeEmpty())
 	})
 
-	It("returns the malformed manifest's error wrapped with its path", func() {
+	It("skips the malformed manifest and discovers the healthy sibling", func() {
 		root := newGatesDir(map[string]string{
 			"broken": `name: ""
 exec: ./gate.sh`,
+			"healthy": `name: healthy
+exec: ./gate.sh`,
 		})
 
-		_, err := gates.Discover(root)
+		got, err := gates.Discover(root)
 
-		Expect(err).To(MatchError(ContainSubstring("broken/manifest.yml")))
+		Expect(err).ToNot(HaveOccurred())
+		Expect(got).To(HaveLen(1))
+		Expect(got[0].Name).To(Equal("healthy"))
 	})
 })
 

@@ -390,6 +390,10 @@ func NewWithOptions(cfg *config.AppConfig, opts NewOptions) (*App, error) {
 	for _, err := range RegisterDiscoveredGates(context.Background(), cfg) {
 		slog.Warn("ext gate registration failed", "err", err)
 	}
+	if err := swarm.ValidateRegistryGateKinds(swarmRegistry); err != nil {
+		slog.Error("swarm registry references unregistered gate kinds", "err", err)
+		return nil, fmt.Errorf("validating swarm gate kinds: %w", err)
+	}
 	defaultManifest := selectDefaultManifest(agentRegistry, cfg.DefaultAgent)
 	skills, alwaysActiveSkills := loadSkills(cfg, defaultManifest)
 	sessionStore, learningStore, err := createDataStores(cfg, ollamaProvider)

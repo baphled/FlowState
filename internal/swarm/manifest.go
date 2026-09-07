@@ -743,6 +743,13 @@ func (m *Manifest) Validate(v Validator) error {
 		return err
 	}
 
+	if err := ValidateBuiltinGateKindsRegistered(m.Harness.Gates); err != nil {
+		if verr, ok := err.(*ValidationError); ok {
+			return verr
+		}
+		return err
+	}
+
 	if err := m.validateHarness(); err != nil {
 		return err
 	}

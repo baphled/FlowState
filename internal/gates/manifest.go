@@ -117,6 +117,17 @@ func applyManifestDefaults(m *Manifest) {
 	if m.Timeout == 0 {
 		m.Timeout = 30 * time.Second
 	}
+	// Some historical ext-gate manifests omit the exec field even
+	// though the bundle ships a runnable gate.py next to the
+	// manifest. Default Exec to ./gate.py when present so discovery
+	// still registers these gates; a bundle with neither an exec
+	// field nor a gate.py fails validateManifest ("exec: required")
+	// and is skipped by Discover.
+	if strings.TrimSpace(m.Exec) == "" {
+		if _, err := os.Stat(filepath.Join(m.Dir, "gate.py")); err == nil {
+			m.Exec = "./gate.py"
+		}
+	}
 }
 
 // validateManifest enforces Name and Exec presence and a non-negative

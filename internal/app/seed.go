@@ -884,7 +884,13 @@ func chmodGateExec(bundleDir string) error {
 	}
 	exec := extractExecField(body)
 	if exec == "" {
-		return fmt.Errorf("manifest %s has no exec field", manifestPath)
+		// applyManifestDefaults (internal/gates) treats a bundle
+		// with a gate.py next to its manifest but no exec field as
+		// exec: ./gate.py. Mirror that fallback here so the seeded
+		// exec still gets its chmod.
+		if _, statErr := os.Stat(filepath.Join(bundleDir, "gate.py")); statErr == nil {
+			exec = "./gate.py"
+		}
 	}
 	execPath := exec
 	if !filepath.IsAbs(execPath) {

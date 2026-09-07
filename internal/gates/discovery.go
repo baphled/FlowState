@@ -37,7 +37,13 @@ func Discover(gatesDir string) ([]Manifest, error) {
 		}
 		m, err := LoadManifest(manifestPath)
 		if err != nil {
-			return nil, err
+			// A malformed or incomplete gate manifest (e.g. a
+			// policy-only manifest without exec) is user config, not
+			// a boot-blocking condition: discovery skips it so the
+			// remaining gates still register. Bootstrap validation
+			// (ValidateRegistryGateKinds) is the fail-fast layer for
+			// a swarm actually referencing an unregistered gate.
+			continue
 		}
 		out = append(out, m)
 	}

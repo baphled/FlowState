@@ -40,9 +40,9 @@ var _ = Describe("swarm command", func() {
 			"harness:\n" +
 			"  gates:\n" +
 			"    - name: g1\n" +
-			"      kind: builtin:noop\n" +
+			"      kind: builtin:result-schema\n" +
 			"    - name: g2\n" +
-			"      kind: builtin:noop\n"
+			"      kind: builtin:result-schema\n"
 	}
 
 	BeforeEach(func() {
