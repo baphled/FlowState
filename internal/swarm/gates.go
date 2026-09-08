@@ -368,6 +368,24 @@ func (m *MultiRunner) Run(ctx context.Context, gate GateSpec, args GateArgs) err
 		return runner.Run(ctx, gate, args)
 	}
 	if strings.HasPrefix(gate.Kind, gateKindExtPrefix) {
+		// Dispatch-time registration check: surface the missing ext
+		// gate BEFORE payload composition so a config error is hard,
+		// actionable, and never retried by the engine's gate-retry
+		// loops (isGateNotRegisteredError keys off this signature).
+		// Pre-fix, a missing coord-store key composed the payload first
+		// and the "not registered" plain error only surfaced after —
+		// on paths that treated it as a retriable member-output miss.
+		short := strings.TrimPrefix(gate.Kind, gateKindExtPrefix)
+		if _, ok := LookupExtGate(short); !ok {
+			return &GateError{
+				GateName: gate.Name,
+				GateKind: gate.Kind,
+				When:     gate.When,
+				SwarmID:  args.SwarmID,
+				MemberID: args.MemberID,
+				Reason:   fmt.Sprintf("ext gate %q is not registered — check the swarm manifest's gate kind and the gates directory registration at boot", gate.Kind),
+			}
+		}
 		input, err := gateInputFromArgs(gate, args)
 		if err != nil {
 			return err
