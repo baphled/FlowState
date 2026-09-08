@@ -48,6 +48,38 @@ echo nope
 		_, ok := swarm.LookupExtGate("broken")
 		Expect(ok).To(BeFalse())
 	})
+
+	It("registers the valid gate when a sibling manifest is malformed", func() {
+		root := writeGate("good", "good.sh", `#!/bin/bash
+echo '{"pass": true}'
+`)
+		bad := filepath.Join(root, "broken")
+		Expect(os.MkdirAll(bad, 0o700)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(bad, "manifest.yml"), []byte("name: [unclosed"), 0o600)).To(Succeed())
+
+		errs := app.RegisterDiscoveredGates(context.Background(), &config.AppConfig{GatesDir: root})
+
+		Expect(errs).To(HaveLen(1))
+		Expect(errs[0].Error()).To(ContainSubstring("broken"),
+			"the boot failure must name the offending gate dir")
+		_, ok := swarm.LookupExtGate("good")
+		Expect(ok).To(BeTrue(),
+			"a malformed sibling manifest must not unregister valid gates")
+	})
+
+	It("summarises registration failures naming every offending gate", func() {
+		root := writeGate("broken", "missing-exec.sh", `#!/bin/bash
+echo nope
+`)
+		Expect(os.Remove(filepath.Join(root, "broken", "missing-exec.sh"))).To(Succeed())
+
+		errs := app.RegisterDiscoveredGates(context.Background(), &config.AppConfig{GatesDir: root})
+
+		Expect(app.SummariseGateRegistrationFailures(nil)).To(BeEmpty())
+		summary := app.SummariseGateRegistrationFailures(errs)
+		Expect(summary).To(ContainSubstring("1 failure(s)"))
+		Expect(summary).To(ContainSubstring("broken"))
+	})
 })
 
 var _ = Describe("ValidateDiscoveredGateReferences", func() {

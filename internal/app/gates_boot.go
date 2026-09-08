@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/gates"
@@ -12,7 +13,9 @@ import (
 // discoverGateManifests runs gates.Discover over cfg.GatesDir once so
 // boot helpers share a single filesystem walk. A missing or unconfigured
 // gates dir yields nil manifests without error — boot proceeds with no
-// external gates.
+// external gates. Discovery skip-and-collects malformed manifests, so a
+// non-nil error can accompany the valid manifests it returned; callers
+// decide how much of that partial failure is boot-fatal.
 //
 // Expected: parameters for discoverGateManifests.
 // Returns: discovered manifests and any discovery error.
@@ -23,30 +26,31 @@ func discoverGateManifests(cfg *config.AppConfig) ([]gates.Manifest, error) {
 	}
 	manifests, err := gates.Discover(cfg.GatesDir)
 	if err != nil {
-		return nil, fmt.Errorf("gate discovery: %w", err)
+		return manifests, fmt.Errorf("gate discovery: %w", err)
 	}
 	return manifests, nil
 }
 
 // RegisterDiscoveredGates walks cfg.GatesDir and registers each manifest
 // in the swarm-package's ext-gate registry. Per-gate failures are
-// returned as a slice without aborting boot — adjacent gates still
-// register, and a swarm referencing a failed gate fails per its
-// failurePolicy at dispatch time. ctx is reserved for future cancel-
-// during-discovery support; v0 discovery is synchronous and fast.
+// returned as a slice without aborting boot — discovery skips
+// malformed manifests so valid siblings still register, and a swarm
+// referencing a failed gate fails per its failurePolicy at dispatch
+// time. ctx is reserved for future cancel-during-discovery support;
+// v0 discovery is synchronous and fast.
 //
 // Expected: parameters for RegisterDiscoveredGates.
 // Returns: result of RegisterDiscoveredGates.
 // Side effects: None.
 func RegisterDiscoveredGates(_ context.Context, cfg *config.AppConfig) []error {
 	manifests, err := discoverGateManifests(cfg)
-	if err != nil {
-		return []error{err}
-	}
 	var errs []error
+	if err != nil {
+		errs = append(errs, err)
+	}
 	for _, m := range manifests {
-		if err := swarm.RegisterExtGateFromManifest(m); err != nil {
-			errs = append(errs, fmt.Errorf("register %q: %w", m.Name, err))
+		if regErr := swarm.RegisterExtGateFromManifest(m); regErr != nil {
+			errs = append(errs, fmt.Errorf("register %q: %w", m.Name, regErr))
 		}
 	}
 	return errs
@@ -58,7 +62,10 @@ func RegisterDiscoveredGates(_ context.Context, cfg *config.AppConfig) []error {
 // registration and surfaces a swarm pointing at a gate whose manifest
 // is malformed, incomplete (skipped by discovery), or absent — the
 // gap left open by ValidateRegistryGateKinds, which only sees gates
-// that registered successfully.
+// that registered successfully. Partial discovery failures (skipped
+// malformed manifests) are not boot-fatal here: RegisterDiscoveredGates
+// already surfaces them at error level, and boot stays non-fatal per
+// the discovery-resilience contract.
 //
 // Expected:
 //   - cfg carries the gates dir to re-discover (nil/empty dir is a
@@ -75,14 +82,32 @@ func ValidateDiscoveredGateReferences(_ context.Context, cfg *config.AppConfig, 
 	if reg == nil {
 		return nil
 	}
-	manifests, err := discoverGateManifests(cfg)
-	if err != nil {
-		return err
-	}
+	manifests, _ := discoverGateManifests(cfg)
 	for _, m := range reg.List() {
 		if err := swarm.ValidateDiscoveredExtGateKinds(m.Harness.Gates, manifests); err != nil {
 			return fmt.Errorf("swarm %q: %w", m.ID, err)
 		}
 	}
 	return nil
+}
+
+// SummariseGateRegistrationFailures renders a boot log line naming
+// every offending gate so an operator can locate the bad manifest
+// from the error alone. Boot stays non-fatal; the caller logs this
+// summary at error level.
+//
+// Expected: parameters for SummariseGateRegistrationFailures.
+// Returns: result of SummariseGateRegistrationFailures.
+// Side effects: None.
+func SummariseGateRegistrationFailures(errs []error) string {
+	if len(errs) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(errs))
+	for _, err := range errs {
+		if err != nil {
+			parts = append(parts, err.Error())
+		}
+	}
+	return fmt.Sprintf("ext gate registration: %d failure(s): %s", len(parts), strings.Join(parts, "; "))
 }

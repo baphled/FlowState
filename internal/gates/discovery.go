@@ -1,6 +1,7 @@
 package gates
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,10 +14,11 @@ const manifestFilename = "manifest.yml"
 // subdirectories without a manifest.yml are silently ignored. A
 // missing gatesDir is not an error — boot proceeds with no gates.
 //
-// The first malformed manifest aborts the walk; the returned error is
-// wrapped with the offending path so the operator can locate it. If
-// load-and-skip-malformed-entries is desired later, switch this to
-// accumulate via errors.Join.
+// Malformed manifests are skipped-and-collected: every valid
+// sibling still registers, and each malformed manifest surfaces as a
+// per-directory error joined into the returned error so one bad
+// manifest cannot silently unregister every ext gate. The returned
+// manifests are usable even when the error is non-nil.
 //
 // Expected: parameters for Discover.
 // Returns: result of Discover.
@@ -27,6 +29,7 @@ func Discover(gatesDir string) ([]Manifest, error) {
 		return nil, err
 	}
 	var out []Manifest
+	var skipped []error
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -37,17 +40,12 @@ func Discover(gatesDir string) ([]Manifest, error) {
 		}
 		m, err := LoadManifest(manifestPath)
 		if err != nil {
-			// A malformed or incomplete gate manifest (e.g. a
-			// policy-only manifest without exec) is user config, not
-			// a boot-blocking condition: discovery skips it so the
-			// remaining gates still register. Bootstrap validation
-			// (ValidateRegistryGateKinds) is the fail-fast layer for
-			// a swarm actually referencing an unregistered gate.
+			skipped = append(skipped, fmt.Errorf("gate %q: %w", e.Name(), err))
 			continue
 		}
 		out = append(out, m)
 	}
-	return out, nil
+	return out, errors.Join(skipped...)
 }
 
 // readGatesDir is the missing-dir-tolerant directory read used by

@@ -68,7 +68,8 @@ exec: ./gate.sh`,
 
 		got, err := gates.Discover(root)
 
-		Expect(err).ToNot(HaveOccurred())
+		Expect(err).To(MatchError(ContainSubstring(`gate "broken"`)),
+			"the skipped manifest must be named so operators can locate it")
 		Expect(got).To(HaveLen(1))
 		Expect(got[0].Name).To(Equal("healthy"))
 	})
