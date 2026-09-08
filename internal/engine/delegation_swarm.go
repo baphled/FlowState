@@ -725,12 +725,32 @@ func (d *DelegateTool) resolveSubSwarm(memberID string) *swarm.Manifest {
 // before they release the semaphore slot — matches the §T37
 // contract.
 //
+// Gate-failure retry parity (item b): the sequential path
+// (executeSync) re-dispatches the SAME member with the gate
+// directive appended — up to PostMemberGateMaxAttempts — before the
+// GateError becomes terminal (delegation_stream.go retry loop). The
+// parallel path previously returned the hook's GateError to
+// DispatchMembers on the FIRST miss, which cancelled in-flight peers
+// immediately: one narrate-without-write miss killed the whole swarm
+// on a parallel manifest while the same manifest with parallel:false
+// retried. The hook now owns a bounded retry loop mirroring
+// executeSync: on a gate miss it re-runs the member dispatch for
+// that member with appendGateDirective applied to the retry prompt,
+// then re-evaluates the gates. A member whose failure is NOT a
+// *swarm.GateError (dispatch error) or whose GateError carries a
+// gate-not-registered configuration signature is terminal
+// immediately — re-dispatching cannot fix a missing gate
+// registration, and the error must surface as a hard, actionable
+// config failure.
+//
 // Returns:
 //   - The MemberPostHook closure; nil when no gate runner is wired
 //     so the dispatcher skips the hook entirely.
 //
 // Side effects:
-//   - On invocation: calls dispatchPostMemberGates on the engine.
+//   - On invocation: calls dispatchPostMemberGates on the engine,
+//     and on a retriable gate miss re-dispatches the member through
+//     the same per-swarm Runner the initial dispatch used.
 //
 // Expected: parameters for buildPostMemberHook.
 func (d *DelegateTool) buildPostMemberHook() swarm.MemberPostHook {
@@ -744,19 +764,104 @@ func (d *DelegateTool) buildPostMemberHook() swarm.MemberPostHook {
 		// failure. Structured so the failed path falls through to a
 		// single terminal nil return rather than returning nil from
 		// inside the error branch.
-		var gateErr error
-		if runErr == nil {
-			// Parallel dispatch (DispatchMembers) does not thread the
-			// lead's per-member chainID into the hook, so pass "" here:
-			// the result-schema runner then suffix-scans for any
-			// "<chain>/<suffix>" key rather than pinning one chainID.
-			// Planning-loop runs sequentially (parallel: false) via
-			// executeSync, which passes the concrete chainID — this hook
-			// path only fires for genuinely-parallel swarms.
+		if runErr != nil {
+			return nil
+		}
+		// Parallel dispatch (DispatchMembers) does not thread the
+		// lead's per-member chainID into the hook, so pass "" here:
+		// the result-schema runner then suffix-scans for any
+		// "<chain>/<suffix>" key rather than pinning one chainID.
+		// Planning-loop runs sequentially (parallel: false) via
+		// executeSync, which passes the concrete chainID — this hook
+		// path only fires for genuinely-parallel swarms.
+		gateErr := d.dispatchPostMemberGates(ctx, memberID, "")
+		if gateErr == nil {
+			return nil
+		}
+		// Gate-not-registered is a configuration error, not a member
+		// output problem — re-dispatching cannot fix it. Surface it
+		// terminally so the operator sees a hard, actionable error
+		// naming the gate kind instead of N pointless retries.
+		if isGateNotRegisteredError(gateErr) {
+			return gateErr
+		}
+		// Bounded re-delegation parity with executeSync: re-dispatch
+		// the member with the gate directive appended, re-evaluate,
+		// and only surface the GateError once the budget is spent.
+		for attempt := 1; attempt < PostMemberGateMaxAttempts; attempt++ {
+			if d.redispatchMemberAfterGateMiss(ctx, memberID, gateErr) != nil {
+				// The re-dispatch itself failed (stream / runner
+				// error). That error is terminal — matching the
+				// sequential path's "stream error is never retried
+				// here" contract.
+				break
+			}
 			gateErr = d.dispatchPostMemberGates(ctx, memberID, "")
+			if gateErr == nil {
+				return nil
+			}
+			if isGateNotRegisteredError(gateErr) {
+				return gateErr
+			}
 		}
 		return gateErr
 	}
+}
+
+// isGateNotRegisteredError reports whether err is (or wraps) the
+// gate-not-registered configuration failure. DispatchExt returns the
+// sentinel for an ext:<name> kind with no registered runner; that
+// signature must never enter the re-delegation retry loop.
+//
+// Expected:
+//   - err is the gate dispatch error under inspection.
+//
+// Returns:
+//   - true when err's chain mentions the not-registered signature.
+//
+// Side effects: None.
+func isGateNotRegisteredError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "is not registered")
+}
+
+// redispatchMemberAfterGateMiss re-dispatches memberID through the
+// per-swarm Runner with the gate failure directive appended to the
+// retry prompt — the parallel-path mirror of executeSync's
+// `target.message = appendGateDirective(...)` + continue.
+//
+// Expected:
+//   - ctx is the per-member dispatch context.
+//   - memberID is the agent whose post-member gate just failed.
+//   - gateErr is the GateError driving the retry.
+//
+// Returns:
+//   - nil when the re-dispatch stream completed.
+//   - The runner error otherwise (terminal — no further retries).
+//
+// Side effects:
+//   - Runs a full member stream through the cached per-swarm Runner.
+func (d *DelegateTool) redispatchMemberAfterGateMiss(ctx context.Context, memberID string, gateErr error) error {
+	canonicalID, eng, ok := d.lookupEngineByID(memberID)
+	if !ok {
+		return fmt.Errorf("no engine for swarm member %q", memberID)
+	}
+	swarmCtx, ok := d.activeSwarmContextForCtx(ctx)
+	if !ok || swarmCtx == nil {
+		return gateErr
+	}
+	runner := d.runnerForSwarm(swarmCtx.SwarmID, d.manifestForSwarm(swarmCtx.SwarmID))
+	target := delegationTarget{
+		agentID: canonicalID,
+		engine:  eng,
+		message: appendGateDirective("", gateErr),
+	}
+	var result delegationResult
+	return runner.Dispatch(ctx, canonicalID, func(innerCtx context.Context, _ string) error {
+		return d.streamAndCollect(innerCtx, target, &result)
+	})
 }
 
 // salvageMemberOutputIfMissing is the FINAL-attempt floor under the
