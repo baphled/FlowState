@@ -2863,6 +2863,77 @@ var _ = Describe("Engine", func() {
 			})
 		})
 
+		Context("when failover lands on a smaller-context provider", func() {
+			It("returns the failover winner's limit instead of Preferences()[0]", func() {
+				// Models the production zai/Anthropic failover: the head
+				// preference (anthropic, 200K) errors, the second provider
+				// (zai, 128K) serves the stream. The overflow gate must
+				// budget from the provider that actually carried the
+				// conversation, not the (now-dead) first preference.
+				anthropicProvider := &mockProvider{
+					name:      "anthropic",
+					streamErr: errors.New("anthropic unavailable"),
+					models: []provider.Model{
+						{ID: "claude-sonnet-4-6", Provider: "anthropic", ContextLength: 200000},
+					},
+				}
+				zaiProvider := &mockProvider{
+					name: "zai",
+					streamChunks: []provider.StreamChunk{
+						{Content: "zai response", Done: true},
+					},
+					models: []provider.Model{
+						{ID: "glm-4.6", Provider: "zai", ContextLength: 128000},
+					},
+				}
+
+				failoverRegistry := provider.NewRegistry()
+				failoverRegistry.Register(anthropicProvider)
+				failoverRegistry.Register(zaiProvider)
+
+				failoverHealth := failover.NewHealthManager()
+				failoverManager := failover.NewManager(failoverRegistry, failoverHealth, 5*time.Minute)
+				failoverManager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+					{Provider: "zai", Model: "glm-4.6"},
+				})
+
+				failoverManifest := agent.Manifest{
+					ID:         "test-agent",
+					Name:       "Test Agent",
+					Complexity: "standard",
+					Instructions: agent.Instructions{
+						SystemPrompt: "You are a helpful assistant.",
+					},
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+
+				eng := engine.New(engine.Config{
+					Registry:        failoverRegistry,
+					FailoverManager: failoverManager,
+					Manifest:        failoverManifest,
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Hello")
+				Expect(err).NotTo(HaveOccurred())
+				for chunk := range chunks {
+					if chunk.EventType == "provider_changed" || chunk.EventType == "model_active" {
+						continue
+					}
+				}
+
+				// The stream was actually served by zai.
+				Expect(eng.LastProvider()).To(Equal("zai"))
+				Expect(eng.LastModel()).To(Equal("glm-4.6"))
+				Expect(zaiProvider.StreamCallCount()).To(BeNumerically(">", 0))
+
+				// The gate must budget from the failover winner (128K),
+				// not the first preference (200K).
+				Expect(eng.ModelContextLimit()).To(Equal(128000))
+			})
+		})
+
 		Context("after SetModelPreference changes to a different provider", func() {
 			It("returns the new model limit even after a previous stream used a different model", func() {
 				registry := provider.NewRegistry()

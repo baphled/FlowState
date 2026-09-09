@@ -4470,7 +4470,26 @@ func (e *Engine) LastContextResult() ctxstore.BuildResult {
 //
 // Expected: parameters for ModelContextLimit.
 func (e *Engine) ModelContextLimit() int {
+	// Budget from the provider/model that the NEXT stream will actually
+	// target, not blindly from the first configured preference:
+	//
+	//  1. an explicit user override (SetModelPreference) wins;
+	//  2. otherwise the failover winner (LastProvider/LastModel) — after
+	//     a failover (e.g. anthropic 200K → zai 128K) the head preference
+	//     is stale and the gate must budget from the provider that
+	//     actually carries the conversation;
+	//  3. otherwise the first configured preference.
 	if e.failoverManager != nil {
+		if pref, ok := e.failoverManager.Override(); ok {
+			if limit := e.failoverManager.ResolveContextLength(pref.Provider, pref.Model); limit > 0 {
+				return limit
+			}
+		}
+		if p, m := e.failoverManager.LastProvider(), e.failoverManager.LastModel(); p != "" && m != "" {
+			if limit := e.failoverManager.ResolveContextLength(p, m); limit > 0 {
+				return limit
+			}
+		}
 		prefs := e.failoverManager.Preferences()
 		if len(prefs) > 0 {
 			return e.failoverManager.ResolveContextLength(prefs[0].Provider, prefs[0].Model)
