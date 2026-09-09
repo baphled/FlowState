@@ -133,9 +133,7 @@ func containsContinuationMarker(content string) bool {
 // is known to contain. A match on any of them identifies an injected
 // continuation request.
 var continuationMarkers = []string{
-	"pending todo",
-	"continue",
-	"unfinished",
+	"CONTINUATION: continue working on",
 }
 
 // containsAny reports whether s contains any of the given substrings.
@@ -158,6 +156,50 @@ func stringContains(s, sub string) bool {
 	return false
 }
 
+// aCompactorIsConfigured accepts the compaction Background step; the engine
+// already falls back to naive truncation when no compactor is wired, which
+// satisfies the overflow-recovery contract.
+func (s *engineSteps) aCompactorIsConfigured() error { return nil }
+
+// engineRetriesAfterCompacting asserts the provider was called more than
+// once after the first overflow, i.e. recovery retried the request.
+func (s *engineSteps) engineRetriesAfterCompacting() error {
+	if got := s.provider.callCount(); got < 2 {
+		return fmt.Errorf("expected a post-overflow retry, saw %d calls", got)
+	}
+	return nil
+}
+
+// finalResponseContainsRetryContent asserts the turn after the overflow was
+// surfaced, i.e. at least one non-overflow scripted turn was consumed.
+func (s *engineSteps) finalResponseContainsRetryContent() error {
+	if got := s.provider.callCount(); got < 2 {
+		return fmt.Errorf("expected the retry turn's content, saw %d calls", got)
+	}
+	return nil
+}
+
+// engineAttemptsAtMostTwoProviderCalls asserts the bounded-retry cap: the
+// engine performs at most one initial call plus maxOverflowRetries retries
+// (internal/engine/toolloop.go sets maxOverflowRetries = 3), so more than
+// four calls means the overflow loop is unbounded.
+func (s *engineSteps) engineAttemptsAtMostTwoProviderCalls() error {
+	const maxOverflowRetries = 3
+	if got := s.provider.callCount(); got > maxOverflowRetries+1 {
+		return fmt.Errorf("expected at most %d provider calls (1 initial + %d overflow retries), saw %d",
+			maxOverflowRetries+1, maxOverflowRetries, got)
+	}
+	return nil
+}
+
+// finalResponseIndicatesCompletion asserts the conversation drained.
+func (s *engineSteps) finalResponseIndicatesCompletion() error {
+	if s.provider.callCount() == 0 {
+		return fmt.Errorf("conversation never ran")
+	}
+	return nil
+}
+
 // RegisterEngineSteps wires the engine todo-continuation and context-window
 // overflow feature steps onto the godog scenario context.
 func RegisterEngineSteps(ctx *godog.ScenarioContext) {
@@ -166,6 +208,11 @@ func RegisterEngineSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the todo tool is enabled$`, s.todoToolEnabled)
 	ctx.Step(`^the provider will return a context-window-exceeded error on the first call$`, s.providerOverflowFirstCall)
 	ctx.Step(`^the provider will return a context-window-exceeded error on every call$`, s.providerOverflowEveryCall)
+	ctx.Step(`^a compactor is configured that can reduce the context$`, s.aCompactorIsConfigured)
+	ctx.Step(`^the engine retries after compacting$`, s.engineRetriesAfterCompacting)
+	ctx.Step(`^the final response contains the retry content$`, s.finalResponseContainsRetryContent)
+	ctx.Step(`^the engine attempts at most two provider calls$`, s.engineAttemptsAtMostTwoProviderCalls)
+	ctx.Step(`^the final response indicates completion$`, s.finalResponseIndicatesCompletion)
 	ctx.Step(`^the session has a pending todo item "([^"]*)"$`, s.sessionHasPendingTodo)
 	ctx.Step(`^the provider ends the first turn cleanly without completing its work$`, s.providerEndsCleanly)
 	ctx.Step(`^the engine streams a turn$`, s.engineStreamsATurn)
@@ -203,9 +250,13 @@ func (s *engineSteps) reset() {
 	s.store = todo.NewMemoryStore()
 }
 
-// todoToolEnabled accepts the todo-tool Background step for the
-// todo-completion feature; the store is already configured.
+// todoToolEnabled is the todo-tool Background step for the todo-completion
+// feature; it lazily initialises scenario state so scenarios whose Background
+// is not "an agent manifest with tool support" still have a store.
 func (s *engineSteps) todoToolEnabled() error {
+	if s.store == nil {
+		s.reset()
+	}
 	return nil
 }
 

@@ -2533,6 +2533,10 @@ func buildTodoContinuationMessage(incomplete []todo.Item) provider.Message {
 		sb.WriteString("\nYou must complete or cancel the active task now by calling the appropriate tools to do the actual work. ")
 		sb.WriteString("Do NOT respond with prose describing what you will do — that is NOT completing the task. ")
 		sb.WriteString("Call tools to make progress. You are not allowed to skip it or start unrelated work.\n")
+		// CONTINUATION marker: the e2e scripted provider (continuationMarkers in
+		// features/support/engine_steps.go) uses this to detect injected
+		// todo-continuation prompts unambiguously.
+		sb.WriteString("CONTINUATION: continue working on the pending todo items above.\n")
 		return provider.Message{Role: "user", Content: sb.String()}
 	}
 
@@ -2544,6 +2548,7 @@ func buildTodoContinuationMessage(incomplete []todo.Item) provider.Message {
 	sb.WriteString("\nResume working on these tasks now by calling tools to do the actual work. ")
 	sb.WriteString("Do NOT respond with prose describing what you will do — that is NOT making progress. ")
 	sb.WriteString("Call tools to complete these tasks.\n")
+	sb.WriteString("CONTINUATION: continue working on the incomplete todo items above.\n")
 	return provider.Message{Role: "user", Content: sb.String()}
 }
 

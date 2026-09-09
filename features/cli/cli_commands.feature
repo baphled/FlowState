@@ -49,6 +49,6 @@ Feature: CLI Commands
     When I run "flowstate session list"
     Then I should see output containing "session"
 
-   Scenario: Session resume subcommand accepts a session identifier
+   Scenario: Session resume subcommand is decommissioned in favour of the web UI
      When I run "flowstate session resume session-123"
-     Then I should see output containing "session-123"
+     Then I should see output containing "unknown command"
