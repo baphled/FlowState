@@ -120,6 +120,7 @@ func (e *Engine) streamWithToolLoop(
 	delegationGraceUsed := false
 	finalResponseGraceUsed := false
 	forcedSummaryUsed := false
+	skillsGuardRejectionLoop := false
 	updateTodoContinuationProgress := func(current []todo.Item) {
 		if !workedSinceContinuation && slices.Equal(lastTodoContinuationSnapshot, current) {
 			noProgressContinuations++
@@ -923,7 +924,8 @@ func (e *Engine) streamWithToolLoop(
 			toolResults[i] = er.toolResult
 			if !er.toolResult.IsError && er.toolResult.Error == nil {
 				batchAllRejected = false
-			} else if !strings.Contains(er.toolResult.Output, "not available to agent") {
+			} else if !strings.Contains(er.toolResult.Output, "not available to agent") &&
+				!strings.Contains(er.toolResult.Output, "must load your always-active skills via") {
 				batchAllRejected = false
 			}
 		}
@@ -931,6 +933,12 @@ func (e *Engine) streamWithToolLoop(
 			consecutiveRejectedToolCalls++
 		} else {
 			consecutiveRejectedToolCalls = 0
+		}
+		if batchGuardOutput(execResults) != "" &&
+			strings.Contains(batchGuardOutput(execResults),
+				"must load your always-active skills via") &&
+			consecutiveRejectedToolCalls >= maxRejectedToolCalls {
+			skillsGuardRejectionLoop = true
 		}
 		messages = e.appendToolResultsBatchToMessages(messages, result.toolCalls, toolResults)
 
@@ -1019,6 +1027,16 @@ func (e *Engine) streamWithToolLoop(
 		durationTripped := e.maxToolLoopDuration > 0 && elapsed >= e.maxToolLoopDuration
 		sameToolTripped := e.maxSameToolPatternCalls > 0 && sameToolPatternRun >= e.maxSameToolPatternCalls
 		rejectionTripped := consecutiveRejectedToolCalls >= maxRejectedToolCalls
+		if skillsGuardRejectionLoop {
+			e.warnDeliveryToolBypassCtx(ctx, sessionID)
+			outChan <- provider.StreamChunk{
+				Done:       true,
+				StopReason: session.StopReasonToolLoopExceeded,
+				ModelID:    e.lastModelCtx(ctx),
+				ProviderID: e.lastProviderCtx(ctx),
+			}
+			return
+		}
 		if repeatTripped || backstopTripped || durationTripped || sameToolTripped || rejectionTripped {
 			reason := "iteration_backstop"
 			if repeatTripped {
@@ -1697,13 +1715,30 @@ func (e *Engine) executeDeduplicatedToolCalls(
 	return fullResults
 }
 
-// executeToolCallBatch runs all tool calls concurrently and returns results in
-// the same order as the input slice. A single-element batch still goes through
-// this path so the message-assembly code is uniform.
+// batchGuardOutput concatenates the tool-result outputs of a batch so
+// callers can classify which guard produced a rejection without
+// inspecting individual entries.
 //
-// Expected: parameters for executeToolCallBatch.
-// Returns: result of executeToolCallBatch.
+// Expected: execResults is the batch whose outputs are being classified.
+// Returns: the concatenation of every tool-result output in the batch.
 // Side effects: None.
+func batchGuardOutput(execResults []toolCallExecResult) string {
+	var sb strings.Builder
+	for _, er := range execResults {
+		sb.WriteString(er.toolResult.Output)
+	}
+	return sb.String()
+}
+
+// executeToolCallBatch runs a batch of tool calls, sequentially when any
+// target modifies shared state and in parallel otherwise.
+//
+// Expected: ctx carries the stream output channel, sessionID identifies
+// the session, toolCalls is the batch to execute, outChan receives
+// streaming chunks.
+// Returns: one toolCallExecResult per call, in input order.
+// Side effects: executes each tool call, which may have its own side
+// effects, and emits tool lifecycle chunks to outChan.
 func (e *Engine) executeToolCallBatch(
 	ctx context.Context, sessionID string, toolCalls []*provider.ToolCall, outChan chan<- provider.StreamChunk,
 ) []toolCallExecResult {
