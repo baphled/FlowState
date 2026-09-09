@@ -4,12 +4,15 @@ package support
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/cucumber/godog"
 
 	"github.com/baphled/flowstate/internal/agent"
+	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
@@ -26,6 +29,30 @@ type engineSteps struct {
 	provider *engineScriptedProvider
 	store    *todo.MemoryStore
 	session  string
+	// compactor, when configured, is injected into the engine so the
+	// overflow recovery path can fire a real summariser.
+	compactor *ctxstore.AutoCompactor
+	// lastContent holds the streamed assistant content for
+	// retry-content assertions.
+	lastContent string
+}
+
+// engineSummariser is a scripted ctxstore.Summariser that returns a
+// valid CompactionSummary payload so the engine's auto-compaction can
+// succeed on demand.
+type engineSummariser struct{}
+
+// Summarise returns a minimal valid compaction summary JSON payload.
+func (engineSummariser) Summarise(context.Context, string, string, []provider.Message) (string, error) {
+	summary := ctxstore.CompactionSummary{
+		Intent:    "continue the turn after compaction",
+		NextSteps: []string{"resume work"},
+	}
+	data, err := json.Marshal(summary)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }
 
 // engineScriptedProvider replays a scripted sequence of turns and records how
@@ -166,6 +193,7 @@ func RegisterEngineSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the todo tool is enabled$`, s.todoToolEnabled)
 	ctx.Step(`^the provider will return a context-window-exceeded error on the first call$`, s.providerOverflowFirstCall)
 	ctx.Step(`^the provider will return a context-window-exceeded error on every call$`, s.providerOverflowEveryCall)
+	ctx.Step(`^a compactor is configured that can reduce the context$`, s.compactorConfigured)
 	ctx.Step(`^the session has a pending todo item "([^"]*)"$`, s.sessionHasPendingTodo)
 	ctx.Step(`^the provider ends the first turn cleanly without completing its work$`, s.providerEndsCleanly)
 	ctx.Step(`^the engine streams a turn$`, s.engineStreamsATurn)
@@ -174,6 +202,9 @@ func RegisterEngineSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the engine does not call the provider more than once$`, s.engineCallsAtMostOnce)
 	ctx.Step(`^the todo-continuation is not attempted$`, s.todoContinuationNotAttempted)
 	ctx.Step(`^the todo-continuation is attempted$`, s.todoContinuationAttempted)
+	ctx.Step(`^the engine retries after compacting$`, s.engineRetriesAfterCompacting)
+	ctx.Step(`^the final response contains the retry content$`, s.finalResponseContainsRetryContent)
+	ctx.Step(`^the engine attempts at most two provider calls$`, s.engineAttemptsAtMostTwoProviderCalls)
 	ctx.Step(`^an agent has added a pending todo "([^"]*)"$`, s.agentHasPendingTodo)
 	ctx.Step(`^an agent has no pending todos$`, s.agentHasNoPendingTodos)
 	ctx.Step(`^the model ends its turn without completing the todo$`, s.modelEndsTurnWithoutCompleting)
@@ -201,6 +232,8 @@ func (s *engineSteps) reset() {
 		script: []engineTurn{{content: "Working on it."}},
 	}
 	s.store = todo.NewMemoryStore()
+	s.compactor = nil
+	s.lastContent = ""
 }
 
 // todoToolEnabled accepts the todo-tool Background step for the
@@ -231,8 +264,21 @@ func (s *engineSteps) providerEndsCleanly() error {
 	return nil
 }
 
+// compactorConfigured wires a summariser-backed AutoCompactor so the
+// engine's overflow recovery can fire real compaction.
+func (s *engineSteps) compactorConfigured() error {
+	s.compactor = ctxstore.NewAutoCompactor(engineSummariser{})
+	return nil
+}
+
 // sessionHasPendingTodo seeds the todo store with one pending item.
+// The store is rebuilt lazily because the Background step for other
+// features (todo_tools_are_enabled) deliberately nils it, and a nil
+// store would panic in Set.
 func (s *engineSteps) sessionHasPendingTodo(content string) error {
+	if s.store == nil {
+		s.store = todo.NewMemoryStore()
+	}
 	return s.store.Set(s.session, []todo.Item{
 		{Content: content, Status: "pending", Priority: "high"},
 	})
@@ -284,10 +330,11 @@ func (s *engineSteps) runTurn() error {
 		Capabilities: agent.Capabilities{Tools: []string{"echo", "todowrite"}},
 	}
 	eng := engine.New(engine.Config{
-		ChatProvider: s.provider,
-		Manifest:     *manifest,
-		Tools:        []tool.Tool{},
-		TodoStore:    s.store,
+		ChatProvider:  s.provider,
+		Manifest:      *manifest,
+		Tools:         []tool.Tool{},
+		TodoStore:     s.store,
+		AutoCompactor: s.compactor,
 	})
 
 	ctx := context.WithValue(context.Background(), session.IDKey{}, s.session)
@@ -295,7 +342,12 @@ func (s *engineSteps) runTurn() error {
 	if err != nil {
 		return err
 	}
-	for range chunks {
+	for chunk := range chunks {
+		if chunk.Content != "" {
+			s.mu.Lock()
+			s.lastContent = s.lastContent + chunk.Content
+			s.mu.Unlock()
+		}
 	}
 	return nil
 }
@@ -337,6 +389,35 @@ func (s *engineSteps) todoContinuationNotAttempted() error {
 func (s *engineSteps) todoContinuationAttempted() error {
 	if got := s.provider.continuationCount(); got == 0 {
 		return fmt.Errorf("expected a todo-continuation to be attempted")
+	}
+	return nil
+}
+
+// engineRetriesAfterCompacting asserts the engine called the provider
+// again after the overflow, exercising the compaction recovery path.
+func (s *engineSteps) engineRetriesAfterCompacting() error {
+	if got := s.provider.callCount(); got < 2 {
+		return fmt.Errorf("expected a retry after compaction, saw %d provider calls", got)
+	}
+	return nil
+}
+
+// finalResponseContainsRetryContent asserts the recovered turn's
+// content reached the stream consumer.
+func (s *engineSteps) finalResponseContainsRetryContent() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !strings.Contains(s.lastContent, "All done.") {
+		return fmt.Errorf("expected the retry content in the final response, got %q", s.lastContent)
+	}
+	return nil
+}
+
+// engineAttemptsAtMostTwoProviderCalls asserts the bounded-retry
+// contract: one initial call plus at most one overflow retry.
+func (s *engineSteps) engineAttemptsAtMostTwoProviderCalls() error {
+	if got := s.provider.callCount(); got > 2 {
+		return fmt.Errorf("expected at most two provider calls, saw %d", got)
 	}
 	return nil
 }
