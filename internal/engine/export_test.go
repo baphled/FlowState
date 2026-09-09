@@ -10,6 +10,7 @@ import (
 	pluginpkg "github.com/baphled/flowstate/internal/plugin"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
+	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/tool"
 	"github.com/baphled/flowstate/internal/tool/todo"
 	"github.com/baphled/flowstate/internal/turn"
@@ -464,4 +465,28 @@ func DeduplicateToolCallsForTest(toolCalls []*provider.ToolCall) (unique []*prov
 // forwarder performed.
 func TeeParentSendCountForTest() int64 {
 	return teeParentSendCount()
+}
+
+// SetSkillsForTest replaces the engine's construction-time always-active
+// skill slice so deterministic-injection specs can seed content without
+// a skill directory on disk.
+func SetSkillsForTest(e *Engine, skills []skill.Skill) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.skills = skills
+}
+
+// SkillLoadCompletedForTest exposes skillLoadCompleted for gate specs.
+func SkillLoadCompletedForTest(e *Engine, sessionID string) bool {
+	return e.skillLoadCompleted(sessionID)
+}
+
+// MarkSkillLoadCalledForTest exposes markSkillLoadCalled for gate specs.
+func MarkSkillLoadCalledForTest(e *Engine, sessionID string) {
+	e.markSkillLoadCalled(sessionID)
+}
+
+// SkillGuardRejectionCountForTest exposes skillGuardRejectionCount.
+func SkillGuardRejectionCountForTest(e *Engine, sessionID string) int {
+	return e.skillGuardRejectionCount(sessionID)
 }

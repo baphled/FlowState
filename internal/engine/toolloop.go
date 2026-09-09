@@ -2704,6 +2704,7 @@ func (e *Engine) markSkillLoadCalled(sessionID string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.skillLoadCalled[sessionID] = true
+	delete(e.skillGuardRejections, sessionID)
 }
 
 // requiresDeliveryTool reports whether the active manifest declares any

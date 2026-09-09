@@ -252,6 +252,12 @@ type Engine struct {
 	// skills are loaded before any other tool call.
 	skillLoadCalled map[string]bool
 
+	// skillGuardRejections tracks per-session consecutive skills-first
+	// guard rejections. After SkillGuardCircuitBreakerThreshold
+	// consecutive rejections the guard trips its circuit breaker and
+	// auto-satisfies the gate instead of rejecting a further call.
+	skillGuardRejections map[string]int
+
 	// deliveryToolCalled tracks per-session whether any manifest-declared
 	// delivery tool has been successfully invoked. Used by the delivery
 	// tool enforcement gate in streamWithToolLoop to catch the
@@ -1134,6 +1140,7 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		sessionTodoContinuationCount:     make(map[string]int),
 		sessionTodoLastSnapshot:          make(map[string][]todo.Item),
 		skillLoadCalled:                  make(map[string]bool),
+		skillGuardRejections:             make(map[string]int),
 		deliveryToolCalled:               make(map[string]bool),
 		sessionManifests:                 make(map[string]*agent.Manifest),
 		sessionComplexity:                make(map[string]TaskComplexity),
@@ -2855,11 +2862,25 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 		// never both.
 		if toolCall.Name != "skill_load" && e.skillsLoadRequired() {
 			if !e.skillLoadCompleted(sessionID) {
-				return tool.Result{
-					Output:  "You must load your always-active skills via `skill_load(name=...)` before making any other tool call. Call `skill_load` for each of your always-active skills first.",
-					IsError: true,
-					Error:   fmt.Errorf("skills must be loaded before other tool calls"),
-				}, nil
+				// P1 (July 2026) — deterministic injection first: when
+				// always-active skill content is resolvable the guard
+				// bakes it into the session and proceeds with the
+				// original call, so the happy path never rejects.
+				if e.autoInjectAlwaysActiveSkills(sessionID) {
+					slog.Info("skills-first gate auto-injected always-active skills", "session", sessionID)
+				} else if e.skillGuardRejectionCount(sessionID) >= SkillGuardCircuitBreakerThreshold {
+					// Circuit breaker: three consecutive rejections without
+					// compliance mean the guard is wedging the session.
+					// Auto-satisfy the gate and let the call through.
+					e.tripSkillGuardCircuitBreaker(sessionID)
+				} else {
+					e.recordSkillGuardRejection(sessionID)
+					return tool.Result{
+						Output:  "You must load your always-active skills via `skill_load(name=...)` before making any other tool call. Call `skill_load` for each of your always-active skills first.",
+						IsError: true,
+						Error:   fmt.Errorf("skills must be loaded before other tool calls"),
+					}, nil
+				}
 			}
 		}
 		slog.Info("engine tool call", "tool", toolCall.Name)
