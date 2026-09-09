@@ -516,6 +516,22 @@ func (e *Engine) streamWithToolLoop(
 						var retryErr error
 						providerChunks, retryErr = e.retryStreamForToolResult(retryCtx, sessionID, messages, attempt)
 						if retryErr == nil {
+							// Compaction succeeded and the retry
+							// stream opened cleanly — the overflow
+							// is recovered, not terminal. Clear the
+							// taint so a clean post-compaction turn
+							// with pending todos can still drive the
+							// todo-continuation loop (Ginkgo:
+							// "compacts before re-sending a near-limit
+							// continuation turn"). The taint stays
+							// set when compaction could NOT fire
+							// (naive-truncation fallback below),
+							// which is what the BDD contract
+							// "Context-window overflow does not
+							// trigger todo-continuation" pins: an
+							// unrecoverable overflow must not spin
+							// the continuation loop.
+							sawContextOverflow = false
 							attempt++
 							e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 							continue

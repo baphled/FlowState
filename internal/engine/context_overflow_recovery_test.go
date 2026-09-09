@@ -171,7 +171,15 @@ var _ = Describe("Engine context-window overflow recovery", func() {
 				"engine must truncate and retry the provider when no compactor is configured")
 		})
 
-		It("still triggers todo-continuation after overflow recovery when pending todos exist", func() {
+		// Pinned by the BDD contract "Context-window overflow does
+		// not trigger todo-continuation" (RED commit 2b7b6618): a
+		// provider-returned context-window overflow with no compactor
+		// available must suppress todo-continuation — the taint stays
+		// set because the naive-truncation recovery cannot prove the
+		// window recovered. Continuation resumes only after a real
+		// compaction succeeds (see "compacts before re-sending a
+		// near-limit continuation turn" below).
+		It("does not trigger todo-continuation after an unrecoverable overflow even when pending todos exist", func() {
 			prov := &overflowScriptedProvider{
 				name: "overflow-todo-prov",
 				script: []overflowProviderTurn{
@@ -197,8 +205,8 @@ var _ = Describe("Engine context-window overflow recovery", func() {
 			_, closed := drain(chunks)
 			Expect(closed).To(BeTrue(), "channel must close")
 
-			Expect(prov.callCount()).To(Equal(5),
-				"todo-continuation should continue after overflow recovery when pending todos remain")
+			Expect(prov.callCount()).To(Equal(2),
+				"overflow with no compactor must suppress todo-continuation: initial call plus one bounded retry only")
 		})
 
 		It("does not fire todo-continuation when todoStore is nil", func() {
