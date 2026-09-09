@@ -490,3 +490,9 @@ func MarkSkillLoadCalledForTest(e *Engine, sessionID string) {
 func SkillGuardRejectionCountForTest(e *Engine, sessionID string) int {
 	return e.skillGuardRejectionCount(sessionID)
 }
+
+// CapPersistedToolResultForTest exposes capPersistedToolResult so the
+// P2 persistence-cap specs can pin the truncation contract.
+func CapPersistedToolResultForTest(content string) string {
+	return capPersistedToolResult(content)
+}

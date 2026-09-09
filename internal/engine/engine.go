@@ -3291,7 +3291,7 @@ func (e *Engine) storeToolResult(toolCall *provider.ToolCall, result tool.Result
 	// "failed: ..." real failures.
 	e.store.Append(provider.Message{
 		Role:    "tool",
-		Content: content,
+		Content: capPersistedToolResult(content),
 		IsError: result.Error != nil,
 		ToolCalls: []provider.ToolCall{
 			{ID: toolCall.ID, Name: toolCall.Name},
