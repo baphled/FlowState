@@ -280,9 +280,7 @@ func (s *engineSteps) reset() {
 func (s *engineSteps) todoToolEnabled() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.store == nil {
-		s.reset()
-	}
+	s.reset()
 	return nil
 }
 
@@ -418,15 +416,15 @@ func (s *engineSteps) agentHasNoPendingTodos() error {
 	return s.store.Set(s.session, nil)
 }
 
-// modelEndsTurnWithoutCompleting accepts the step; the script already stops
-// without completing the todo.
+// modelEndsTurnWithoutCompleting streams the scripted turn whose work
+// stops short of completing the seeded todo.
 func (s *engineSteps) modelEndsTurnWithoutCompleting() error {
-	return nil
+	return s.runTurn()
 }
 
-// modelEndsTurnCleanly accepts the step; the script already ends cleanly.
+// modelEndsTurnCleanly streams the scripted clean turn.
 func (s *engineSteps) modelEndsTurnCleanly() error {
-	return nil
+	return s.runTurn()
 }
 
 // engineStreamsATurn runs one engine turn against the scripted provider.
