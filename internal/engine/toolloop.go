@@ -475,11 +475,33 @@ func (e *Engine) streamWithToolLoop(
 					)
 					compacted := e.emitMidToolLoopRefresh(ctx, sessionID, outChan, messages)
 					if compacted {
-						if rebuilt := e.rebuildContextWindowAfterMidLoopCompaction(ctx, sessionID, messages); rebuilt != nil {
+						// rebuildContextWindow reassembles from the
+						// persisted store, which still carries every
+						// message (nothing is cold when the 50-message
+						// sliding window retains the whole transcript),
+						// so the estimate stays ~est > usable and the
+						// retry would re-hit the gate. Mirror
+						// maybeCompactForRetry instead: system +
+						// todo + summary + token-bounded hot tail that
+						// provably fits the usable budget.
+						summary := e.lastCompactionSummaryText()
+						if rebuilt := e.rebuildContextWindowTokenBounded(ctx, sessionID, messages, summary); rebuilt != nil {
 							messages = rebuilt
 						}
+						// Force-compaction happened (or the gate tier
+						// agreed), but the rebuilt window can still
+						// sit above the gate's usable budget — the
+						// cold prefix is replaced by the summary but
+						// the hot tail plus summary may remain over
+						// the refusal boundary. Mirror
+						// maybeCompactForRetry's proven pattern:
+						// skip the proactive overflow gate on this
+						// one retry so the real provider (whose
+						// limit differs from the fallback-derived
+						// estimate) gets the final say.
+						retryCtx := session.WithSkipContextWindowOverflowCheck(ctx)
 						var retryErr error
-						providerChunks, retryErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
+						providerChunks, retryErr = e.retryStreamForToolResult(retryCtx, sessionID, messages, attempt)
 						if retryErr == nil {
 							attempt++
 							e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)

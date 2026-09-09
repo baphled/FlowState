@@ -1340,6 +1340,115 @@ func (e *Engine) rebuildContextWindowAfterMidLoopCompaction(ctx context.Context,
 	return nil
 }
 
+// lastCompactionSummaryText returns the most recent compaction summary
+// text (the "[auto-compacted summary]: <json>" string) or "" when no
+// compaction has fired (or the last one failed). Thread-safe read of the
+// maybeAutoCompactExplicit / maybeAutoCompact write side.
+//
+// Expected:
+//   - Receiver may be nil; nil returns "".
+//
+// Returns:
+//   - The "[auto-compacted summary]: <json>" string, or "" when no
+//     summary is recorded or marshalling fails.
+//
+// Side effects:
+//   - Acquires buildStateMu for the duration of the read.
+func (e *Engine) lastCompactionSummaryText() string {
+	if e == nil {
+		return ""
+	}
+	e.buildStateMu.Lock()
+	defer e.buildStateMu.Unlock()
+	if e.lastCompactionSummary == nil {
+		return ""
+	}
+	b, err := json.Marshal(*e.lastCompactionSummary)
+	if err != nil {
+		return ""
+	}
+	return "[auto-compacted summary]: " + string(b)
+}
+
+// rebuildContextWindowTokenBounded rebuilds the mid-tool-loop message
+// slice after a compaction has fired: system prompt + todo context +
+// compaction summary + a token-bounded hot tail. The tail is the newest
+// run of live messages whose estimated token cost (plus the fixed
+// prefix) fits the usable context budget (limit - output reserve, as the
+// proactive overflow gate computes it). Oldest tail messages are dropped
+// until the estimate fits; at least one tail message is always kept so
+// the provider still sees the newest tool exchange.
+//
+// This mirrors maybeCompactForRetry's rebuild shape (toolloop.go) but
+// adds the token bound the retry path lacks because its 50-message
+// sliding window retains everything when the transcript is short — the
+// diagnosis behind P3: compaction fired but the rebuild reassembled the
+// full swollen store (~3648 est vs ~2776 usable) so the retry re-hit
+// the gate.
+//
+// Expected:
+//   - ctx carries the provider/model resolution keys and system-prompt
+//     build context.
+//   - sessionID identifies the session for todo-context assembly.
+//   - messages is the live tool-loop slice; never empty.
+//   - summary may be "" (no compaction summary available).
+//
+// Returns:
+//   - The rebuilt slice, or nil when a usable budget cannot be resolved
+//     or the inputs are degenerate — callers fall back to their prior
+//     message slice.
+//
+// Side effects:
+//   - None beyond reading engine state (token counter, resolver).
+func (e *Engine) rebuildContextWindowTokenBounded(ctx context.Context, sessionID string, messages []provider.Message, summary string) []provider.Message {
+	if e == nil || e.tokenCounter == nil || len(messages) == 0 {
+		return nil
+	}
+	prov := e.lastProviderCtx(ctx)
+	model := e.lastModelCtx(ctx)
+	limit := e.ResolveContextLength(prov, model)
+	if limit <= 0 {
+		return nil
+	}
+	req := provider.ChatRequest{
+		Provider: prov,
+		Model:    model,
+		Messages: messages,
+		Tools:    e.buildToolSchemasCtx(ctx),
+	}
+	usable := limit - e.outputReserveFor(&req)
+	if usable < 1 {
+		usable = 1
+	}
+
+	// Drop the live user turn's antecedents only via the tail bound —
+	// never drop the newest message.
+	for len(messages) > 1 {
+		estimated := e.estimateRequestTokens(&provider.ChatRequest{
+			Provider: prov,
+			Model:    model,
+			Messages: messages,
+			Tools:    req.Tools,
+		})
+		if summary != "" {
+			estimated += e.tokenCounter.Count(summary)
+		}
+		if estimated <= usable {
+			break
+		}
+		messages = messages[1:]
+	}
+
+	rebuilt := make([]provider.Message, 0, len(messages)+4)
+	rebuilt = append(rebuilt, provider.Message{Role: "system", Content: e.BuildSystemPromptCtx(ctx)})
+	rebuilt = e.appendTodoContext(rebuilt, sessionID)
+	if summary != "" {
+		rebuilt = append(rebuilt, provider.Message{Role: "assistant", Content: summary})
+	}
+	rebuilt = append(rebuilt, messages...)
+	return rebuilt
+}
+
 // MaybeCompactForModel resolves the supplied (newProvider, newModel)
 // pair through the registry pipeline (ResolveContextLength /
 // ResolveOutputLimit) and force-fires the auto-compactor when the
