@@ -28,6 +28,11 @@ import (
 	"github.com/baphled/flowstate/internal/tool/todo"
 )
 
+// maxOverflowRetries bounds context-window overflow recovery to a single
+// retry so a turn makes at most two provider calls (the initial request
+// plus one post-compaction retry) before completing with whatever it has.
+const maxOverflowRetries = 1
+
 // streamWithToolLoop processes streaming chunks, handles tool calls, and loops until completion.
 //
 // Expected:
@@ -104,8 +109,8 @@ func (e *Engine) streamWithToolLoop(
 	sameToolPatternRun := 0
 	lastToolNames := ""
 	const maxToolUseNoCallsRetries = 3
-	const maxOverflowRetries = 3
 	var toolUseNoCallsAttempts int
+	sawContextOverflow := false
 	overflowRetries := 0
 	const maxDeliveryRetries = 3
 	var deliveryRetries int
@@ -138,7 +143,7 @@ func (e *Engine) streamWithToolLoop(
 		maxTodoContinuations int,
 		logReason string,
 	) (bool, provider.Message) {
-		if e.todoStore == nil {
+		if e.todoStore == nil || sawContextOverflow {
 			return false, provider.Message{}
 		}
 
@@ -467,6 +472,7 @@ func (e *Engine) streamWithToolLoop(
 				continue
 			}
 			if result.contextOverflow {
+				sawContextOverflow = true
 				if overflowRetries < maxOverflowRetries {
 					overflowRetries++
 					slog.Warn("context window overflow detected, attempting compaction and retry",
@@ -474,8 +480,14 @@ func (e *Engine) streamWithToolLoop(
 						"overflow_retry", overflowRetries,
 						"max_overflow_retries", maxOverflowRetries,
 					)
-					compacted := e.emitMidToolLoopRefresh(ctx, sessionID, outChan, messages)
-					if compacted {
+					forceManifest := e.Manifest()
+					forceBudget := e.ModelContextLimit()
+					compacted := ""
+					if forceBudget > 0 {
+						compacted = e.maybeAutoCompactExplicit(ctx, sessionID, &forceManifest, forceBudget, "tool_result_wave", messages)
+					}
+					compactedViaRefresh := compacted != "" || e.emitMidToolLoopRefresh(ctx, sessionID, outChan, messages)
+					if compactedViaRefresh {
 						// rebuildContextWindow reassembles from the
 						// persisted store, which still carries every
 						// message (nothing is cold when the 50-message
@@ -540,9 +552,7 @@ func (e *Engine) streamWithToolLoop(
 						"overflow_retries", overflowRetries,
 					)
 				}
-				if completeAfterTodoCheck("context overflow retries exhausted") {
-					continue
-				}
+				e.completeResponse(ctx, sessionID, responseContent, thinkingContent)
 				return
 			}
 			if result.responseContent == "" && len(result.toolCalls) == 0 {
@@ -560,6 +570,10 @@ func (e *Engine) streamWithToolLoop(
 				if completeAfterTodoCheck("empty response with no tool calls") {
 					continue
 				}
+				return
+			}
+			if sawContextOverflow {
+				e.completeResponse(ctx, sessionID, responseContent, thinkingContent)
 				return
 			}
 			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore {

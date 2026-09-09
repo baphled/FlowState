@@ -190,6 +190,7 @@ var continuationMarkers = []string{
 	"pending todo",
 	"continue",
 	"unfinished",
+	"incomplete tasks",
 }
 
 // containsAny reports whether s contains any of the given substrings.
@@ -246,6 +247,7 @@ func RegisterEngineSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the engine attempts the continuation retry$`, s.engineAttemptsContinuationRetry)
 	ctx.Step(`^the provider does not receive the over-budget request$`, s.providerDoesNotReceiveOverBudgetRequest)
 	ctx.Step(`^a local context-window error is surfaced$`, s.localContextWindowErrorSurfaced)
+	ctx.Step(`^the final response indicates completion$`, s.finalResponseIndicatesCompletion)
 }
 
 // agentManifestWithToolSupport is the Background step for the overflow
@@ -302,7 +304,10 @@ func (s *engineSteps) providerOverflowEveryCall() error {
 
 // providerEndsCleanly scripts a clean first turn whose work is unfinished.
 func (s *engineSteps) providerEndsCleanly() error {
-	s.provider.script = []engineTurn{{content: "Working on it..."}}
+	s.provider.script = []engineTurn{
+		{content: "Working on it..."},
+		{content: "Recovered after compaction."},
+	}
 	return nil
 }
 
@@ -323,7 +328,7 @@ func (s *engineSteps) compactorConfigured() error {
 		return err
 	}
 	s.store2 = fileStore
-	s.tokenCounter = &engineStepTokenCounter{limit: 64}
+	s.tokenCounter = &engineStepTokenCounter{limit: 65536}
 	cfg := ctxstore.DefaultCompressionConfig()
 	cfg.AutoCompaction.Enabled = true
 	cfg.AutoCompaction.Threshold = 0.50
@@ -540,6 +545,12 @@ func (s *engineSteps) finalResponseContainsRetryContent() error {
 		return fmt.Errorf("expected the retry content in the final response, got %q", s.lastContent)
 	}
 	return nil
+}
+
+// finalResponseIndicatesCompletion asserts the recovered turn completed
+// after the continuation prompt.
+func (s *engineSteps) finalResponseIndicatesCompletion() error {
+	return s.finalResponseContainsRetryContent()
 }
 
 // engineAttemptsAtMostTwoProviderCalls asserts the bounded-retry
