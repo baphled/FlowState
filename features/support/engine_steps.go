@@ -5,7 +5,9 @@ package support
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 
@@ -15,6 +17,7 @@ import (
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool"
 	"github.com/baphled/flowstate/internal/tool/todo"
@@ -35,7 +38,31 @@ type engineSteps struct {
 	// lastContent holds the streamed assistant content for
 	// retry-content assertions.
 	lastContent string
+	// store, when configured, feeds the engine's context gate so a
+	// low-limit token counter can drive proactive overflow refusals
+	// without a live model.
+	store2 *recall.FileContextStore
+	// tokenCounter, when configured, supplies the deterministic
+	// low-limit model budget for local overflow refusals.
+	tokenCounter *engineStepTokenCounter
+	// compressionConfig, when configured, enables AutoCompaction so
+	// the engine's forced compaction path can fire.
+	compressionConfig *ctxstore.CompressionConfig
+	// refusedLocally records that the engine surfaced a local
+	// context-window error to the stream consumer.
+	refusedLocally bool
 }
+
+// engineStepTokenCounter is a deterministic TokenCounter whose Count is
+// inflated so any multi-message request trips the low ModelLimit budget.
+type engineStepTokenCounter struct{ limit int }
+
+// Count reports one token per byte-sized chunk, inflated so the gate
+// estimate crosses the low limit.
+func (c *engineStepTokenCounter) Count(text string) int { return len(text) / 4 }
+
+// ModelLimit returns the deliberately low model budget.
+func (c *engineStepTokenCounter) ModelLimit(string) int { return c.limit }
 
 // engineSummariser is a scripted ctxstore.Summariser that returns a
 // valid CompactionSummary payload so the engine's auto-compaction can
@@ -214,6 +241,11 @@ func RegisterEngineSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the model should be called again$`, s.modelCalledAgain)
 	ctx.Step(`^the agent should eventually complete "([^"]*)"$`, s.agentEventuallyCompletes)
 	ctx.Step(`^the conversation should complete on the first turn$`, s.conversationCompletesFirstTurn)
+	ctx.Step(`^the session context is over budget after a todo continuation$`, s.sessionContextOverBudget)
+	ctx.Step(`^compaction is unavailable$`, s.compactionUnavailable)
+	ctx.Step(`^the engine attempts the continuation retry$`, s.engineAttemptsContinuationRetry)
+	ctx.Step(`^the provider does not receive the over-budget request$`, s.providerDoesNotReceiveOverBudgetRequest)
+	ctx.Step(`^a local context-window error is surfaced$`, s.localContextWindowErrorSurfaced)
 }
 
 // agentManifestWithToolSupport is the Background step for the overflow
@@ -234,20 +266,30 @@ func (s *engineSteps) reset() {
 	s.store = todo.NewMemoryStore()
 	s.compactor = nil
 	s.lastContent = ""
+	s.store2 = nil
+	s.tokenCounter = nil
+	s.compressionConfig = nil
+	s.refusedLocally = false
 }
 
 // todoToolEnabled accepts the todo-tool Background step for the
-// todo-completion feature; the store is already configured.
+// todo-completion feature and rebuilds scenario state so sibling features
+// sharing this step struct cannot nil-deref the todo store.
 func (s *engineSteps) todoToolEnabled() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.store == nil {
+		s.reset()
+	}
 	return nil
 }
 
 // providerOverflowFirstCall scripts the provider to overflow on the first
-// call and answer normally afterwards.
+// call, answer with recovery content after compaction, and finish cleanly.
 func (s *engineSteps) providerOverflowFirstCall() error {
 	s.provider.script = []engineTurn{
 		{contextOverflow: true},
-		{content: "All done."},
+		{content: "Recovered after compaction."},
 	}
 	return nil
 }
@@ -264,11 +306,80 @@ func (s *engineSteps) providerEndsCleanly() error {
 	return nil
 }
 
-// compactorConfigured wires a summariser-backed AutoCompactor so the
-// engine's overflow recovery can fire real compaction.
+// compactorConfigured wires a summariser-backed AutoCompactor plus the
+// FileContextStore, low-limit token counter and AutoCompaction-enabled
+// CompressionConfig the engine needs for its forced compaction path to
+// fire without a live model.
 func (s *engineSteps) compactorConfigured() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.compactor = ctxstore.NewAutoCompactor(engineSummariser{})
+	dir, err := os.MkdirTemp("", "engine-steps-ctx-*")
+	if err != nil {
+		return err
+	}
+	fileStore, err := recall.NewFileContextStore(dir+"/ctx.json", "engine-steps-model")
+	if err != nil {
+		return err
+	}
+	s.store2 = fileStore
+	s.tokenCounter = &engineStepTokenCounter{limit: 64}
+	cfg := ctxstore.DefaultCompressionConfig()
+	cfg.AutoCompaction.Enabled = true
+	cfg.AutoCompaction.Threshold = 0.50
+	s.compressionConfig = &cfg
 	return nil
+}
+
+// sessionContextOverBudget arms a low token budget so the proactive
+// context-window gate refuses oversized requests locally.
+func (s *engineSteps) sessionContextOverBudget() error {
+	return s.compactionUnavailable()
+}
+
+// compactionUnavailable arms the low-budget gate without wiring a
+// compactor, modelling an environment where compaction cannot help.
+func (s *engineSteps) compactionUnavailable() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	dir, err := os.MkdirTemp("", "engine-steps-nocompact-*")
+	if err != nil {
+		return err
+	}
+	fileStore, err := recall.NewFileContextStore(dir+"/ctx.json", "engine-steps-model")
+	if err != nil {
+		return err
+	}
+	s.store2 = fileStore
+	s.tokenCounter = &engineStepTokenCounter{limit: 64}
+	return nil
+}
+
+// engineAttemptsContinuationRetry seeds a pending todo and runs the
+// turn so the todo-continuation path drives the over-budget retry.
+func (s *engineSteps) engineAttemptsContinuationRetry() error {
+	if err := s.sessionHasPendingTodo("finish the overflow refusal work"); err != nil {
+		return err
+	}
+	return s.runTurn()
+}
+
+// providerDoesNotReceiveOverBudgetRequest asserts the gate refused the
+// oversized request locally before any provider send.
+func (s *engineSteps) providerDoesNotReceiveOverBudgetRequest() error {
+	s.mu.Lock()
+	overBudget := s.refusedLocally
+	s.mu.Unlock()
+	if !overBudget {
+		return fmt.Errorf("expected the over-budget request to be refused locally")
+	}
+	return nil
+}
+
+// localContextWindowErrorSurfaced asserts the refusal surfaced a
+// context-window error to the stream consumer.
+func (s *engineSteps) localContextWindowErrorSurfaced() error {
+	return s.providerDoesNotReceiveOverBudgetRequest()
 }
 
 // sessionHasPendingTodo seeds the todo store with one pending item.
@@ -329,13 +440,23 @@ func (s *engineSteps) runTurn() error {
 		},
 		Capabilities: agent.Capabilities{Tools: []string{"echo", "todowrite"}},
 	}
-	eng := engine.New(engine.Config{
+	cfg := engine.Config{
 		ChatProvider:  s.provider,
 		Manifest:      *manifest,
 		Tools:         []tool.Tool{},
 		TodoStore:     s.store,
 		AutoCompactor: s.compactor,
-	})
+	}
+	if s.store2 != nil {
+		cfg.Store = s.store2
+	}
+	if s.tokenCounter != nil {
+		cfg.TokenCounter = s.tokenCounter
+	}
+	if s.compressionConfig != nil {
+		cfg.CompressionConfig = *s.compressionConfig
+	}
+	eng := engine.New(cfg)
 
 	ctx := context.WithValue(context.Background(), session.IDKey{}, s.session)
 	chunks, err := eng.Stream(ctx, s.session, "Go")
@@ -343,6 +464,14 @@ func (s *engineSteps) runTurn() error {
 		return err
 	}
 	for chunk := range chunks {
+		if chunk.Error != nil {
+			var pErr *provider.Error
+			if errors.As(chunk.Error, &pErr) && pErr.ErrorType == provider.ErrorTypeContextWindowExceeded {
+				s.mu.Lock()
+				s.refusedLocally = true
+				s.mu.Unlock()
+			}
+		}
 		if chunk.Content != "" {
 			s.mu.Lock()
 			s.lastContent = s.lastContent + chunk.Content
@@ -407,7 +536,7 @@ func (s *engineSteps) engineRetriesAfterCompacting() error {
 func (s *engineSteps) finalResponseContainsRetryContent() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !strings.Contains(s.lastContent, "All done.") {
+	if !strings.Contains(s.lastContent, "Recovered after compaction.") {
 		return fmt.Errorf("expected the retry content in the final response, got %q", s.lastContent)
 	}
 	return nil
