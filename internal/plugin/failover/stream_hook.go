@@ -1697,7 +1697,55 @@ func (sh *StreamHook) publishFailoverError(
 	)
 	if sh.eventBus != nil {
 		sh.eventBus.Publish(events.EventProviderError, events.NewProviderErrorEvent(data))
+		sh.publishFailoverNotification(ctx, candidate, err)
 	}
+}
+
+// PublishFailoverErrorForTest exposes publishFailoverError for tests
+// that assert the failover error and notification events.
+//
+// Expected: parameters mirror publishFailoverError.
+// Returns: none.
+// Side effects: publishes provider.error and notification events.
+func (sh *StreamHook) PublishFailoverErrorForTest(
+	ctx context.Context,
+	candidate provider.ModelPreference,
+	err error,
+) {
+	sh.publishFailoverError(ctx, candidate, provider.RequestDebugStats{}, err, attemptDebugMeta{})
+}
+
+// publishFailoverNotification surfaces a failed failover attempt as a
+// user-facing NotificationEvent so the client can render a warning that
+// the active provider was switched away from.
+//
+// Expected:
+//   - ctx is the attempt context (may carry the session ID).
+//   - candidate identifies the provider/model pair that failed.
+//   - err describes the failure.
+//
+// Returns: none.
+// Side effects: publishes a `notification` event on the bus when wired.
+func (sh *StreamHook) publishFailoverNotification(
+	ctx context.Context,
+	candidate provider.ModelPreference,
+	err error,
+) {
+	if sh.eventBus == nil {
+		return
+	}
+	sessionID := ""
+	if id, ok := ctx.Value(session.IDKey{}).(string); ok {
+		sessionID = id
+	}
+	sh.eventBus.Publish(events.EventNotification, events.NewNotificationEvent(events.NotificationEventData{
+		ID:       fmt.Sprintf("failover:%s:%s:%s", sessionID, candidate.Provider, candidate.Model),
+		Type:     events.NotificationTypeFailover,
+		Severity: events.NotificationSeverityWarning,
+		Message:  fmt.Sprintf("Failing over from %s/%s: %v", candidate.Provider, candidate.Model, err),
+		Provider: candidate.Provider,
+		Model:    candidate.Model,
+	}))
 }
 
 // currentProviderConcurrencyStats ...

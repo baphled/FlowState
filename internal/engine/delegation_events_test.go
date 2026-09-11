@@ -6,10 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/baphled/flowstate/internal/swarm"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-
-	"github.com/baphled/flowstate/internal/swarm"
 )
 
 var _ = Describe("appendGateDirective", func() {

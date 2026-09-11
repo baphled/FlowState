@@ -3,6 +3,7 @@ package failover
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -153,7 +154,28 @@ func (d *RateLimitDetector) HandleError(event any) {
 		d.bus.Publish(events.EventProviderRateLimited, events.NewProviderEvent(events.ProviderEventData{
 			ProviderName: data.ProviderName,
 		}))
+		d.publishCooldownNotification(data.ProviderName, data.ModelName, cooldown)
 	}
+}
+
+// publishCooldownNotification surfaces a provider cooldown as a
+// user-facing NotificationEvent so the client can render a warning.
+//
+// Expected:
+//   - provider and model identify the pair entering cooldown.
+//   - cooldown is the applied duration.
+//
+// Returns: none.
+// Side effects: publishes a `notification` event on the bus.
+func (d *RateLimitDetector) publishCooldownNotification(provider, model string, cooldown time.Duration) {
+	d.bus.Publish(events.EventNotification, events.NewNotificationEvent(events.NotificationEventData{
+		ID:       fmt.Sprintf("cooldown:%s:%s", provider, model),
+		Type:     events.NotificationTypeCooldown,
+		Severity: events.NotificationSeverityWarning,
+		Message:  fmt.Sprintf("Provider %s entered a %s cooldown", provider, cooldown.Truncate(time.Second)),
+		Provider: provider,
+		Model:    model,
+	}))
 }
 
 // isRateLimitedError checks if the error indicates a rate-limit condition.

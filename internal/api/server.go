@@ -1334,6 +1334,11 @@ func (s *Server) setupRoutes() {
 	// PR3/C7 wraps it in the auth chain so the session_id filter becomes
 	// defence-in-depth rather than the sole check.
 	s.registerProtected("GET /api/swarm/events", s.handleSwarmEvents)
+	// Notification SSE stream — user-facing notification events (turn
+	// lifecycle, task failures, provider cooldown/failover) matching the
+	// web contract (commit 3cce511f): JSON with id/type/severity/message/
+	// provider/model keys.
+	s.registerProtected("GET /api/v1/notifications/events", s.handleNotificationEvents)
 	// Provider Status SSE stream — dedicated endpoint for real-time
 	// provider quota/cooldown status transitions. Requires ?session_id=
 	// for cross-tenant isolation (same pattern as swarm/events).
@@ -2788,9 +2793,100 @@ func (s *Server) handleSwarmEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleNotificationEvents streams user-facing notification events as SSE.
+//
+// This handler subscribes to the `notification` topic on the EventBus and
+// forwards NotificationEvent payloads as JSON objects carrying the web
+// contract keys (commit 3cce511f): id, type, severity, message, provider,
+// and model. Non-notification events on the topic are ignored.
+//
+// Mirrors handleSwarmEvents' non-blocking forwarder: a slow or disconnected
+// consumer drops events rather than wedging bus.Publish, with deferred
+// Unsubscribe on disconnect.
+//
+// Expected:
+//   - w is a valid http.ResponseWriter supporting Flusher.
+//   - r is the incoming request; client disconnect ends the stream.
+//
+// Returns: none (streams until the client disconnects).
+// Side effects: subscribes to the bus for the stream duration.
+func (s *Server) handleNotificationEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusNotImplemented)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	if len(s.originPatterns) > 0 {
+		w.Header().Set("Access-Control-Allow-Origin", s.originPatterns[0])
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+	}
+
+	if s.eventBus == nil {
+		writeSSE(w, flusher, `{"error":"event bus not configured"}`)
+		flusher.Flush()
+		return
+	}
+
+	eventCh := make(chan interface{}, 64)
+	stopCh := make(chan struct{})
+
+	forward := func(msg any) {
+		evt, ok := msg.(*events.NotificationEvent)
+		if !ok {
+			return
+		}
+		select {
+		case eventCh <- evt:
+		case <-stopCh:
+		default:
+			// eventCh full — drop the event rather than wedge Publish.
+		}
+	}
+	s.eventBus.Subscribe(events.EventNotification, forward)
+	defer s.eventBus.Unsubscribe(events.EventNotification, forward)
+	closeForward := true
+	defer func() {
+		if closeForward {
+			close(stopCh)
+		}
+	}()
+
+	writeSSE(w, flusher, `{"type":"connected"}`)
+	flusher.Flush()
+
+	for {
+		select {
+		case <-stopCh:
+			return
+		case ev := <-eventCh:
+			evt, ok := ev.(*events.NotificationEvent)
+			if !ok {
+				continue
+			}
+			jsonData, err := json.Marshal(evt.Data)
+			if err != nil {
+				continue
+			}
+			writeSSE(w, flusher, string(jsonData))
+			flusher.Flush()
+		case <-r.Context().Done():
+			closeForward = false
+			close(stopCh)
+			return
+		}
+	}
+}
+
 // eventBelongsToSession reports whether the given bus event is in scope for
-// the supplied session id, used by handleSwarmEvents to enforce H5
-// (cross-tenant leak).
 //
 // Tool execute, background task, and tool start/end events all carry a single
 // SessionID field — match it directly. Delegation events span two sessions

@@ -11,15 +11,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-
 	"github.com/baphled/flowstate/internal/hook"
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 type mockStreamProvider struct {

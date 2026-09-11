@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
@@ -560,12 +561,16 @@ func (d *DelegateTool) executeSync(
 		// require a child id (the SSE click-through path) treat empty
 		// as "no navigable target" and fall back to surfacing the
 		// failure on the parent timeline.
-		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, "", gateErr.Error(), target.loadSkills))
+		failedData := buildDelegationEventData(baseInfo, parentSessionID, "", gateErr.Error(), target.loadSkills)
+		d.publishDelegationEvent("failed", failedData)
+		d.publishNotification(events.NotificationTypeTaskFailed, failedData, failedData.Error)
 		return tool.Result{}, gateErr
 	}
 	if gateErr := d.dispatchPreMemberGates(ctx, target.agentID, baseInfo.ChainID); gateErr != nil {
 		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
-		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, "", gateErr.Error(), target.loadSkills))
+		failedData := buildDelegationEventData(baseInfo, parentSessionID, "", gateErr.Error(), target.loadSkills)
+		d.publishDelegationEvent("failed", failedData)
+		d.publishNotification(events.NotificationTypeTaskFailed, failedData, failedData.Error)
 		return tool.Result{}, gateErr
 	}
 
@@ -745,7 +750,9 @@ func (d *DelegateTool) executeSync(
 			baseInfo.LastTool = result.lastTool
 			baseInfo.CompletedAt = &completedAt
 			d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
-			d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, dispatchErr.Error(), target.loadSkills))
+			failedData := buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, dispatchErr.Error(), target.loadSkills)
+			d.publishDelegationEvent("failed", failedData)
+			d.publishNotification(events.NotificationTypeTaskFailed, failedData, failedData.Error)
 			// Fail the child Turn BEFORE closeSessionIfManaged so the
 			// byActiveSession entry clears before the session itself is
 			// torn down — mirrors dispatcher.go:929-936 terminal-then-
@@ -789,7 +796,9 @@ func (d *DelegateTool) executeSync(
 					hasOutput = false
 					msg := fmt.Sprintf("delegated session failed before writing required coordination_store key %s: %s", expectedOutputKey, fallback.FailureSummary)
 					d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
-					d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, msg, target.loadSkills))
+					failedData := buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, msg, target.loadSkills)
+					d.publishDelegationEvent("failed", failedData)
+					d.publishNotification(events.NotificationTypeTaskFailed, failedData, failedData.Error)
 					slog.Warn("delegated session consumed engine-persisted delivery failure fallback",
 						"session", delegateSessionID,
 						"agent_id", target.agentID,
@@ -814,7 +823,9 @@ func (d *DelegateTool) executeSync(
 					baseInfo.LastTool = result.lastTool
 					baseInfo.CompletedAt = &completedAt
 					d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
-					d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, fmt.Sprintf("delegated session missing required coordination_store key %s", expectedOutputKey), target.loadSkills))
+					failedData := buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, fmt.Sprintf("delegated session missing required coordination_store key %s", expectedOutputKey), target.loadSkills)
+					d.publishDelegationEvent("failed", failedData)
+					d.publishNotification(events.NotificationTypeTaskFailed, failedData, failedData.Error)
 					d.recordChildModelAttribution(delegateSessionID, target.engine.LastProvider(), target.engine.LastModel())
 					d.closeSessionIfManaged(delegateSessionID)
 					return tool.Result{}, fmt.Errorf("delegated session missing required coordination_store key %q", expectedOutputKey)
@@ -861,7 +872,9 @@ func (d *DelegateTool) executeSync(
 				hasOutput = false
 				emptyErr := fmt.Errorf("%w", ErrEmptyDelegateResponse)
 				d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
-				d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, emptyErr.Error(), target.loadSkills))
+				failedData := buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, emptyErr.Error(), target.loadSkills)
+				d.publishDelegationEvent("failed", failedData)
+				d.publishNotification(events.NotificationTypeTaskFailed, failedData, failedData.Error)
 				failChildTurnIfOwned(emptyErr)
 				d.recordChildModelAttribution(delegateSessionID, providerName, modelName)
 				d.closeSessionIfManaged(delegateSessionID)
@@ -915,7 +928,9 @@ func (d *DelegateTool) executeSync(
 		baseInfo.LastTool = result.lastTool
 		baseInfo.CompletedAt = &completedAt
 		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
-		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, gateErr.Error(), target.loadSkills))
+		failedData := buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, gateErr.Error(), target.loadSkills)
+		d.publishDelegationEvent("failed", failedData)
+		d.publishNotification(events.NotificationTypeTaskFailed, failedData, failedData.Error)
 		completeChildTurn(providerName, modelName)
 		failChildTurnIfOwned(gateErr)
 		// Stamp the actually-used pair on the child session before sealing so
@@ -937,7 +952,9 @@ func (d *DelegateTool) executeSync(
 	baseInfo.LastTool = result.lastTool
 	baseInfo.CompletedAt = &completedAt
 	d.emitDelegationEvent(outChan, hasOutput, baseInfo, "completed")
-	d.publishDelegationEvent("completed", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, "", target.loadSkills))
+	completedData := buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, "", target.loadSkills)
+	d.publishDelegationEvent("completed", completedData)
+	d.publishNotification(events.NotificationTypeTurnComplete, completedData, "")
 	// Complete the child Turn BEFORE closeSessionIfManaged so the
 	// byActiveSession entry clears in the terminal-then-cleanup order
 	// (matches dispatcher.go:933-936).
@@ -1253,7 +1270,9 @@ func (d *DelegateTool) executeBackgroundTask(
 			completedAt := time.Now().UTC()
 			baseInfo.CompletedAt = &completedAt
 			d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
-			d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, taskID, err.Error(), target.loadSkills))
+			failedData := buildDelegationEventData(baseInfo, parentSessionID, taskID, err.Error(), target.loadSkills)
+			d.publishDelegationEvent("failed", failedData)
+			d.publishNotification(events.NotificationTypeTaskFailed, failedData, failedData.Error)
 			d.closeSessionIfManaged(taskID)
 			return "", fmt.Errorf("delegation failed: %w", err)
 		}
@@ -1275,7 +1294,9 @@ func (d *DelegateTool) executeBackgroundTask(
 			baseInfo.LastTool = result.lastTool
 			baseInfo.CompletedAt = &completedAt
 			d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
-			d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, taskID, err.Error(), target.loadSkills))
+			failedData := buildDelegationEventData(baseInfo, parentSessionID, taskID, err.Error(), target.loadSkills)
+			d.publishDelegationEvent("failed", failedData)
+			d.publishNotification(events.NotificationTypeTaskFailed, failedData, failedData.Error)
 			d.closeSessionIfManaged(taskID)
 			return "", err
 		}
@@ -1294,7 +1315,9 @@ func (d *DelegateTool) executeBackgroundTask(
 	baseInfo.LastTool = result.lastTool
 	baseInfo.CompletedAt = &completedAt
 	d.emitDelegationEvent(outChan, hasOutput, baseInfo, "completed")
-	d.publishDelegationEvent("completed", buildDelegationEventData(baseInfo, parentSessionID, taskID, "", target.loadSkills))
+	completedData := buildDelegationEventData(baseInfo, parentSessionID, taskID, "", target.loadSkills)
+	d.publishDelegationEvent("completed", completedData)
+	d.publishNotification(events.NotificationTypeTurnComplete, completedData, "")
 
 	d.closeSessionIfManaged(taskID)
 

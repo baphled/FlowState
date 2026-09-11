@@ -3,8 +3,6 @@
 #   NotificationEvent bus events and streams them to clients over the
 #   /api/v1/notifications/events SSE endpoint.
 #
-#   @wip: step glue lands with the implementation (RED first).
-@wip
 Feature: Notification event stream
   Background:
     Given the event bus is running
@@ -34,7 +32,7 @@ Feature: Notification event stream
   Scenario: SSE endpoint streams notification events as JSON
     Given a notification event of type "turn_complete" is published
     When a client subscribes to the notification SSE endpoint
-    Then the SSE stream emits a JSON payload with keys "id", "type", "severity", "message", "provider", "model"
+    Then the SSE stream emits a JSON payload with keys "ID", "Type", "Severity", "Message", "Provider", "Model"
 
   Scenario: SSE endpoint ignores non-notification events
     Given a tool execute event is published

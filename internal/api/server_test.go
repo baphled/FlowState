@@ -23,9 +23,6 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/api"
 	"github.com/baphled/flowstate/internal/discovery"
@@ -47,10 +44,11 @@ import (
 	"github.com/baphled/flowstate/internal/tool/question"
 	todo "github.com/baphled/flowstate/internal/tool/todo"
 	"github.com/baphled/flowstate/internal/turn"
-	"gopkg.in/yaml.v3"
-
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"gopkg.in/yaml.v3"
 )
 
 // dripStreamer mimics the real engine streamer: it returns the chunks
