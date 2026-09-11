@@ -178,4 +178,10 @@ const (
 	// the API layer's SSE fan-out for real-time provider status updates.
 	// ADR 002 — Provider Status SSE Side-Channel (July 2026).
 	EventProviderStatusChanged = "provider.status_changed"
+	// EventNotification is the bus event for user-facing notifications
+	// (turn_complete, task_failed, cooldown, failover). Payload:
+	// NotificationEventData. Published by the engine turn lifecycle and
+	// the failover health manager; consumed by the API layer's
+	// notifications SSE endpoint (GET /api/v1/notifications/events).
+	EventNotification = "notification"
 )

@@ -33,12 +33,21 @@ func getOptions() *godog.Options {
 	if f := os.Getenv("GODOG_FORMAT"); f != "" {
 		opts.Format = f
 	}
+	// GODOG_PATHS narrows the suite to specific feature files or dirs,
+	// enabling scoped runs (e.g. a single feature) without dragging in
+	// the whole suite — critical because some shared scenarios use
+	// long-backoff retry loops that exceed go test timeouts.
+	if p := os.Getenv("GODOG_PATHS"); p != "" {
+		opts.Paths = []string{p}
+	}
 	return opts
 }
 
 func TestFeatures(t *testing.T) {
 	opts := getOptions()
-	opts.Paths = []string{"../"}
+	if len(opts.Paths) == 0 {
+		opts.Paths = []string{"../"}
+	}
 	opts.TestingT = t
 
 	suite := godog.TestSuite{
@@ -98,6 +107,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterTodoSteps(ctx)
 	RegisterMCPServerLifecycleSteps(ctx)
 	RegisterGateAmendmentSteps(ctx)
+	RegisterNotificationStreamSteps(ctx)
 	RegisterDelegationIntegritySteps(ctx)
 	VoiceTalkContext(ctx)
 	VoiceCLIContext(ctx)

@@ -9,13 +9,12 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 func TestFailover(t *testing.T) {
@@ -711,5 +710,66 @@ var _ = Describe("HealthManager", func() {
 		for range 5 {
 			<-ch
 		}
+	})
+})
+
+// Cooldown notification specs — restored after the test-file
+// consolidation accident discarded detector_notifications_test.go.
+// publishCooldownNotification fires when HandleError classifies a
+// provider error into a health cooldown: a `notification` bus event
+// with type=cooldown / severity=warning and provider+model attribution.
+var _ = Describe("RateLimitDetector cooldown notification", func() {
+	var (
+		bus      *eventbus.EventBus
+		health   *failover.HealthManager
+		detector *failover.RateLimitDetector
+	)
+
+	BeforeEach(func() {
+		var err error
+		dir, err := os.MkdirTemp("", "failover-detector-notif-*")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() {
+			_ = os.RemoveAll(dir)
+		})
+		bus = eventbus.NewEventBus()
+		health = failover.NewHealthManager()
+		health.SetPersistPath(filepath.Join(dir, "provider-health.json"))
+		detector = failover.NewRateLimitDetector(bus, health)
+	})
+
+	It("publishes a cooldown notification when a rate-limit error is detected", func() {
+		var notif *events.NotificationEvent
+		bus.Subscribe(events.EventNotification, func(event any) {
+			notif = event.(*events.NotificationEvent)
+		})
+
+		detector.HandleError(events.NewProviderErrorEvent(events.ProviderErrorEventData{
+			ProviderName: "anthropic",
+			ModelName:    "claude-sonnet-4-6",
+			Error:        errors.New("rate_limit exceeded"),
+		}))
+
+		Expect(notif).NotTo(BeNil())
+		Expect(notif.Data.Type).To(Equal(events.NotificationTypeCooldown))
+		Expect(notif.Data.Severity).To(Equal(events.NotificationSeverityWarning))
+		Expect(notif.Data.Provider).To(Equal("anthropic"))
+		Expect(notif.Data.Model).To(Equal("claude-sonnet-4-6"))
+		Expect(notif.Data.Message).To(ContainSubstring("cooldown"))
+		Expect(notif.Data.ID).To(ContainSubstring("cooldown:anthropic"))
+	})
+
+	It("does not publish a cooldown notification for non-rate-limit errors", func() {
+		published := false
+		bus.Subscribe(events.EventNotification, func(event any) {
+			published = true
+		})
+
+		detector.HandleError(events.NewProviderErrorEvent(events.ProviderErrorEventData{
+			ProviderName: "anthropic",
+			Error:        errors.New("invalid request: missing parameter"),
+		}))
+
+		Expect(published).To(BeFalse())
 	})
 })

@@ -2198,3 +2198,63 @@ func NewQuestionTimeoutEvent(data QuestionAnsweredEventData, ts ...time.Time) *Q
 		Data:      data,
 	}
 }
+
+// Notification types and severities for NotificationEventData.Type and
+// NotificationEventData.Severity.
+const (
+	NotificationTypeTurnComplete = "turn_complete"
+	NotificationTypeTaskFailed   = "task_failed"
+	NotificationTypeCooldown     = "cooldown"
+	NotificationTypeFailover     = "failover"
+
+	NotificationSeverityInfo    = "info"
+	NotificationSeverityWarning = "warning"
+	NotificationSeverityError   = "error"
+)
+
+// NotificationEventData holds data for user-facing notification events.
+//
+// Expected: used as payload for NotificationEvent.
+// Returns: struct with notification event fields.
+// Side effects: none.
+type NotificationEventData struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Severity string `json:"severity"`
+	Message  string `json:"message"`
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+}
+
+// NotificationEvent represents a user-facing notification event published by
+// the engine turn lifecycle and the failover health manager.
+//
+// Expected:
+//   - Embeds BaseEvent with eventType "notification".
+//   - Data carries id, type, severity, message, provider, and model.
+//
+// Returns: struct for notification events.
+// Side effects: none.
+type NotificationEvent struct {
+	BaseEvent
+	Data NotificationEventData
+}
+
+// NewNotificationEvent creates a new NotificationEvent.
+//
+// Expected:
+//   - Sets eventType to "notification".
+//   - Sets timestamp to now if not provided.
+//
+// Returns: pointer to new NotificationEvent.
+// Side effects: none.
+func NewNotificationEvent(data NotificationEventData, ts ...time.Time) *NotificationEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &NotificationEvent{
+		BaseEvent: BaseEvent{eventType: EventNotification, timestamp: t},
+		Data:      data,
+	}
+}

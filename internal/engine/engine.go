@@ -4314,6 +4314,7 @@ func (e *Engine) storeResponse(ctx context.Context, content, thinking string) {
 //   - Publishes a provider.response event on the engine bus.
 func (e *Engine) completeResponse(ctx context.Context, sessionID string, content, thinking string) {
 	e.warnDeliveryToolBypassCtx(ctx, sessionID)
+	e.publishTurnCompleteNotification(ctx, sessionID)
 	e.storeResponse(ctx, content, thinking)
 	e.publishProviderResponseEventCtx(ctx, sessionID, content)
 }

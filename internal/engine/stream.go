@@ -1079,3 +1079,35 @@ func (e *Engine) baseStreamHandler() hook.HandlerFunc {
 		return nil, errors.New("no provider available: configure either ChatProvider or FailoverManager")
 	}
 }
+
+// publishTurnCompleteNotification fires a user-facing turn_complete
+// NotificationEvent when the plain (non-delegated) engine turn
+// completes, so the SSE /api/v1/notifications/events stream covers
+// every turn lifecycle — not only delegated ones (which publish via
+// DelegateTool.publishNotification in delegation_events.go). Fires from
+// completeResponse, the single terminal seam shared by every clean
+// turn-completion path in the tool loop.
+//
+// Expected:
+//   - ctx may carry a bound manifest (agentID) from Stream().
+//   - sessionID identifies the completed session.
+//
+// Returns: none.
+// Side effects: publishes `notification` on the bus when wired.
+func (e *Engine) publishTurnCompleteNotification(ctx context.Context, sessionID string) {
+	if e.bus == nil {
+		return
+	}
+	notifID := sessionID
+	if agentID := e.activeAgentID(ctx); agentID != "" {
+		notifID = agentID + "/" + sessionID
+	}
+	e.bus.Publish(events.EventNotification, events.NewNotificationEvent(events.NotificationEventData{
+		ID:       notifID,
+		Type:     events.NotificationTypeTurnComplete,
+		Severity: events.NotificationSeverityInfo,
+		Message:  "Turn complete",
+		Provider: e.lastProviderCtx(ctx),
+		Model:    e.lastModelCtx(ctx),
+	}))
+}

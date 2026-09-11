@@ -11,15 +11,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-
 	"github.com/baphled/flowstate/internal/hook"
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 type mockStreamProvider struct {
@@ -2866,6 +2865,85 @@ var _ = Describe("StreamHook wait-for-recovery", func() {
 			Expect(chunks[0].Content).To(Equal("After recovery"))
 			Expect(atomic.LoadInt32(&calls)).To(Equal(int32(2)))
 			Expect(sleepDurations).To(HaveLen(2))
+		})
+	})
+})
+
+// Failover notification specs — restored after the test-file
+// consolidation accident discarded stream_hook_notifications_test.go.
+// publishFailoverNotification fires from the failover error path when
+// a StreamHook is wired with a bus: a `notification` event with
+// type=failover / severity=warning naming the candidate it failed
+// over from.
+var _ = Describe("StreamHook failover notification", func() {
+	var (
+		manager  *failover.Manager
+		registry *provider.Registry
+		health   *failover.HealthManager
+		bus      *eventbus.EventBus
+		sh       *failover.StreamHook
+	)
+
+	BeforeEach(func() {
+		registry = provider.NewRegistry()
+		health = failover.NewHealthManager()
+		manager = failover.NewManager(registry, health, 2*time.Second)
+		bus = eventbus.NewEventBus()
+		sh = failover.NewStreamHook(manager, bus, "")
+	})
+
+	Context("when the first candidate fails and the second succeeds", func() {
+		BeforeEach(func() {
+			registry.Register(&mockStreamProvider{
+				name: "anthropic",
+				streamFn: asyncErrorStreamFn(&provider.Error{
+					ErrorType: provider.ErrorTypeRateLimit,
+					Provider:  "anthropic",
+					Message:   "429 rate limited",
+				}),
+			})
+			registry.Register(&mockStreamProvider{
+				name: "zai",
+				streamFn: successStreamFn(
+					provider.StreamChunk{Content: "Fallback content", Done: true},
+				),
+			})
+			manager.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+				{Provider: "zai", Model: "glm-4.6"},
+			})
+		})
+
+		It("publishes a failover notification naming the failed candidate", func() {
+			var notifs []*events.NotificationEvent
+			bus.Subscribe(events.EventNotification, func(event any) {
+				notif, ok := event.(*events.NotificationEvent)
+				if ok {
+					notifs = append(notifs, notif)
+				}
+			})
+
+			handler := sh.Execute(baseHandler(registry))
+			ch, err := handler(context.Background(), &provider.ChatRequest{})
+			Expect(err).NotTo(HaveOccurred())
+			for chunk := range ch {
+				_ = chunk
+			}
+
+			var failoverNotif *events.NotificationEvent
+			for _, n := range notifs {
+				if n.Data.Type == events.NotificationTypeFailover {
+					failoverNotif = n
+					break
+				}
+			}
+			Expect(failoverNotif).NotTo(BeNil(),
+				"a failover attempt must surface a notification event on the bus")
+			Expect(failoverNotif.Data.Severity).To(Equal(events.NotificationSeverityWarning))
+			Expect(failoverNotif.Data.Provider).To(Equal("anthropic"))
+			Expect(failoverNotif.Data.Model).To(Equal("claude-sonnet-4-6"))
+			Expect(failoverNotif.Data.Message).To(ContainSubstring("Failing over"))
+			Expect(failoverNotif.Data.ID).To(ContainSubstring("failover:"))
 		})
 	})
 })

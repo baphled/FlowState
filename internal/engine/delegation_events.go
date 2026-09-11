@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/baphled/flowstate/internal/gates"
@@ -188,6 +189,44 @@ func joinGateKey(parts ...string) string {
 		}
 	}
 	return strings.Join(out, "/")
+}
+
+// publishNotification publishes a user-facing NotificationEvent onto the
+// installed bus (when one is wired). The type string drives the payload:
+// events.NotificationTypeTurnComplete for clean turn completion and
+// events.NotificationTypeTaskFailed for terminal failures, with the
+// failure reason embedded in the message.
+//
+// Expected:
+//   - typ is one of events.NotificationTypeTurnComplete or
+//     events.NotificationTypeTaskFailed.
+//   - data is the delegation lifecycle payload; ProviderName and
+//     ModelName populate the notification attribution fields when known.
+//   - reason carries the failure message for task_failed; ignored for
+//     turn_complete.
+//
+// Side effects:
+//   - Publishes `notification` on the bus when wired; otherwise a no-op.
+//
+// Returns: result of publishNotification.
+func (d *DelegateTool) publishNotification(typ string, data events.DelegationEventData, reason string) {
+	if d.eventBus == nil {
+		return
+	}
+	severity := events.NotificationSeverityInfo
+	message := fmt.Sprintf("Delegated turn for %s completed", data.TargetAgent)
+	if typ == events.NotificationTypeTaskFailed {
+		severity = events.NotificationSeverityError
+		message = fmt.Sprintf("Task failed: %s", reason)
+	}
+	d.eventBus.Publish(events.EventNotification, events.NewNotificationEvent(events.NotificationEventData{
+		ID:       data.ChainID,
+		Type:     typ,
+		Severity: severity,
+		Message:  message,
+		Provider: data.ProviderName,
+		Model:    data.ModelName,
+	}))
 }
 
 // publishDelegationEvent publishes a delegation lifecycle event onto the
