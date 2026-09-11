@@ -56,6 +56,20 @@ const DefaultOrphanGrace = 30 * time.Minute
 // a sustained streak indicates a genuine model pathology.
 const DefaultToolAnomalyStreakCap = 3
 
+// PersistMutationLimit is the number of deferred session mutations
+// (message appends and other sidecar-worthy changes) buffered before
+// the batched persistence path forces a synchronous sidecar write.
+// Mirrors the failover health manager's persistMutationLimit debounce
+// pattern (c8ff7583): bursty turns coalesce into one atomic write
+// instead of one full-history marshal + fsync + rename per message.
+const PersistMutationLimit = 20
+
+// PersistDebounceInterval bounds how long a dirty session can stay
+// unwritten when it stays under PersistMutationLimit. Unused until a
+// time-driven sweeper is added; the mutation counter alone gates the
+// flush today, matching the health manager's dual-threshold shape.
+const PersistDebounceInterval = 5 * time.Second
+
 // ToolAnomalyCorrectivePrompt is the corrective instruction the engine
 // re-sends after a tolerated tool-use-anomaly turn, nudging the model
 // to either emit the tool calls it committed to in thinking or produce
@@ -265,11 +279,17 @@ type Manager struct {
 	// and written under m.mu.
 	toolAnomalyStreaks map[string]int
 	mu                 sync.RWMutex
-	streamer           streaming.Streamer
-	notifications      map[string][]streaming.CompletionNotificationEvent
-	notifMu            sync.Mutex
-	recorder           Recorder
-	sessionsDir        string
+	// persistDirty counts buffered sidecar mutations per session since
+	// the last write. Non-zero entries mark sessions whose in-memory
+	// state is newer than the on-disk .meta.json sidecar; the batched
+	// append path increments it instead of writing synchronously.
+	// Read and written under m.mu.
+	persistDirty  map[string]int
+	streamer      streaming.Streamer
+	notifications map[string][]streaming.CompletionNotificationEvent
+	notifMu       sync.Mutex
+	recorder      Recorder
+	sessionsDir   string
 	// orphanGrace is the age threshold the boot-time orphan sweep
 	// applies inside RestoreSessions. Zero means use DefaultOrphanGrace.
 	// Negative means "disable the sweep" — exposed so tests and
@@ -336,6 +356,7 @@ func NewManager(streamer streaming.Streamer) *Manager {
 	return &Manager{
 		sessions:           make(map[string]*Session),
 		toolAnomalyStreaks: make(map[string]int),
+		persistDirty:       make(map[string]int),
 		streamer:           streamer,
 		notifications:      make(map[string][]streaming.CompletionNotificationEvent),
 		inflight:           make(map[string]context.CancelFunc),
@@ -571,6 +592,72 @@ func (m *Manager) SetOrphanGrace(d time.Duration) {
 	m.orphanGrace = d
 }
 
+// markPersistDirtyLocked records a pending sidecar write for sess and
+// flushes synchronously once PersistMutationLimit mutations have
+// accumulated, so append-heavy turns coalesce into single atomic
+// writes instead of one full-history marshal + fsync per message.
+// The caller MUST hold m.mu.
+//
+// Expected:
+//   - sess is the mutated session; nil and unpersisted managers no-op.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Increments the per-session dirty counter and may write the
+//     .meta.json sidecar, resetting the counter.
+func (m *Manager) markPersistDirtyLocked(sess *Session) {
+	if m.sessionsDir == "" || sess == nil {
+		return
+	}
+	m.persistDirty[sess.ID]++
+	if m.persistDirty[sess.ID] < PersistMutationLimit {
+		return
+	}
+	m.persistLocked(sess)
+	delete(m.persistDirty, sess.ID)
+}
+
+// FlushPendingPersists writes the sidecar of every session with
+// buffered mutations. Intended for shutdown paths (App.Shutdown) and
+// tests; safe to call repeatedly — a no-op when nothing is dirty.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - The first persist error encountered, if any; remaining dirty
+//     sessions are still attempted.
+//
+// Side effects:
+//   - Writes each dirty session's .meta.json sidecar atomically.
+func (m *Manager) FlushPendingPersists() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var firstErr error
+	for id, count := range m.persistDirty {
+		if count <= 0 {
+			delete(m.persistDirty, id)
+			continue
+		}
+		sess := m.sessions[id]
+		if sess == nil {
+			delete(m.persistDirty, id)
+			continue
+		}
+		fn := m.persistFn
+		if fn == nil {
+			fn = PersistSession
+		}
+		if err := fn(m.sessionsDir, sess); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		delete(m.persistDirty, id)
+	}
+	return firstErr
+}
+
 // persistLocked writes the session to disk when sessionsDir is set.
 // The caller MUST hold m.mu (read or write). Errors are swallowed to
 // avoid blocking the message hot path; persistence is best-effort.
@@ -587,6 +674,7 @@ func (m *Manager) persistLocked(sess *Session) {
 		fn = PersistSession
 	}
 	_ = fn(m.sessionsDir, sess)
+	delete(m.persistDirty, sess.ID)
 }
 
 // EnsureSession is an alias for RegisterSession that matches the interface name
@@ -1275,13 +1363,16 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 	}
 	sess.Messages = append(sess.Messages, msg)
 
+	var mustPersist bool
 	if msg.Role == "assistant" {
 		if !sess.ModelPinned {
 			if msg.ModelName != "" {
 				sess.CurrentModelID = msg.ModelName
+				mustPersist = true
 			}
 			if msg.ProviderName != "" {
 				sess.CurrentProviderID = msg.ProviderName
+				mustPersist = true
 			}
 		}
 		// Surfaced-failure flip (Bugs E, F and G, May 2026). When the
@@ -1327,7 +1418,10 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 		if toolAnomaly {
 			m.toolAnomalyStreaks[sessionID]++
 			if m.toolAnomalyStreaks[sessionID] < DefaultToolAnomalyStreakCap {
-				sess.Status = string(StatusActive)
+				if sess.Status != string(StatusActive) {
+					sess.Status = string(StatusActive)
+					mustPersist = true
+				}
 				sess.FailureReason = ""
 				m.mu.Unlock()
 				return
@@ -1335,6 +1429,7 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 		} else {
 			delete(m.toolAnomalyStreaks, sessionID)
 		}
+		mustPersist = true
 		if (msg.StopReason == StopReasonStreamTruncated ||
 			msg.StopReason == StopReasonToolUseNoCalls ||
 			msg.StopReason == StopReasonAbandonedTool ||
@@ -1373,27 +1468,29 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 		}
 	}
 
-	// Snapshot the fields needed for persistence under the lock, then release
-	// before doing I/O so GetSession readers are not blocked by disk writes.
-	sessionsDir := m.sessionsDir
-	persistFn := m.persistFn
-	var snapshot *Session
-	if sessionsDir != "" {
+	// Batched persistence (P1): mark the session dirty instead of
+	// writing synchronously. The append hot path previously paid a
+	// full-history json.Marshal + fsync + rename per message — the
+	// dominant CPU cost on large dogfood sessions (see
+	// BenchmarkAppendSessionMessage). The mutation counter forces a
+	// coalesced write once PersistMutationLimit appends accumulate.
+	if mustPersist {
+		sessionsDir := m.sessionsDir
+		persistFn := m.persistFn
 		snap := *sess
 		msgs := make([]Message, len(sess.Messages))
 		copy(msgs, sess.Messages)
 		snap.Messages = msgs
-		snapshot = &snap
-	}
-	m.mu.Unlock()
-
-	if snapshot != nil {
+		m.mu.Unlock()
 		fn := persistFn
 		if fn == nil {
 			fn = PersistSession
 		}
-		_ = fn(sessionsDir, snapshot)
+		_ = fn(sessionsDir, &snap)
+		return
 	}
+	m.markPersistDirtyLocked(sess)
+	m.mu.Unlock()
 }
 
 // SendMessage sends a message to the session and streams the response.

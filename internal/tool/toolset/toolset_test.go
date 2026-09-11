@@ -60,7 +60,7 @@ var _ = Describe("NewDefaultRegistry", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		value := reflect.ValueOf(registered)
-		Expect(value.Kind()).To(Equal(reflect.Ptr))
+		Expect(value.Kind()).To(Equal(reflect.Pointer))
 		Expect(value.Elem().Type().PkgPath()).To(Equal("github.com/baphled/flowstate/internal/tool/websearch"))
 
 		field := value.Elem().FieldByName("apiKey")
