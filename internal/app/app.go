@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/baphled/flowstate/internal/agent"
@@ -3408,6 +3409,25 @@ func (a *App) MetricsHandler() http.Handler {
 	return promhttp.HandlerFor(a.metricsRegistry, promhttp.HandlerOpts{})
 }
 
+// MetricsHandlerForTest builds the same Prometheus handler the serve
+// path installs at /metrics, against a registry populated with the
+// standard Go runtime and process collectors plus the FlowState
+// recorder metrics. Intended for the e2e BDD glue that asserts the
+// exposition contains go_*/process_* families.
+//
+// Returns:
+//   - A non-nil http.Handler serving the full metrics exposition.
+//
+// Side effects:
+//   - None.
+func MetricsHandlerForTest() http.Handler {
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(collectors.NewGoCollector())
+	reg.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
+	_ = tracer.NewPrometheusRecorder(reg)
+	return promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
+}
+
 // SetModel overrides the engine's model preference to use the specified model.
 //
 // Expected:
@@ -4509,6 +4529,8 @@ func buildTracedProvider(
 	providerRegistry *provider.Registry,
 ) (tracedBundle, error) {
 	metricsReg := prometheus.NewRegistry()
+	metricsReg.MustRegister(collectors.NewGoCollector())
+	metricsReg.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	recorder := tracer.NewPrometheusRecorder(metricsReg)
 	providers := providerRegistry.List()
 	if len(providers) == 0 {

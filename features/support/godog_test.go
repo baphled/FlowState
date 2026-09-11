@@ -110,6 +110,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterNotificationStreamSteps(ctx)
 	RegisterDelegationIntegritySteps(ctx)
 	RegisterPprofSteps(ctx)
+	RegisterPrometheusRuntimeSteps(ctx)
 	VoiceTalkContext(ctx)
 	VoiceCLIContext(ctx)
 	VoiceTTSContext(ctx)

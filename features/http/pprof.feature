@@ -6,15 +6,18 @@ Feature: Flag-gated pprof instrumentation
   Background:
     Given FlowState is running
 
+  @pprof
   Scenario: pprof is disabled by default
     When the serve command starts with no pprof flag
     Then no pprof server is listening
 
+  @pprof
   Scenario: pprof serves on the flagged address
     When the serve command starts with pprof address "localhost:0"
     Then the pprof server is listening
     And "GET /debug/pprof/" returns a profile index
 
+  @pprof
   Scenario: pprof refuses a non-loopback address
     When the serve command starts with pprof address "0.0.0.0:6060"
     Then serve startup fails with a non-loopback pprof address error
