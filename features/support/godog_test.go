@@ -111,6 +111,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterDelegationIntegritySteps(ctx)
 	RegisterPprofSteps(ctx)
 	RegisterPrometheusRuntimeSteps(ctx)
+	RegisterBatchedPersistenceSteps(ctx)
 	VoiceTalkContext(ctx)
 	VoiceCLIContext(ctx)
 	VoiceTTSContext(ctx)

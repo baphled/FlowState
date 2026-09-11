@@ -3500,6 +3500,9 @@ func (a *App) Shutdown() error {
 	if a.plugins != nil && a.plugins.healthManager != nil {
 		_ = a.plugins.healthManager.Stop()
 	}
+	if a.sessionManager != nil {
+		_ = a.sessionManager.FlushPendingPersists()
+	}
 	return a.DisconnectAll()
 }
 
