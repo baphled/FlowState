@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -43,6 +45,67 @@ type engineShutdowner interface {
 type ServeOptions struct {
 	Port int
 	Host string
+	// PprofAddr enables the net/http/pprof debug server when non-empty.
+	// Empty (the default) leaves profiling endpoints unexposed.
+	PprofAddr string
+}
+
+// DefaultPprofAddr returns the default --pprof-addr value. The pprof
+// server is off unless the operator explicitly opts in.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - An empty string (profiling disabled).
+//
+// Side effects:
+//   - None.
+func DefaultPprofAddr() string { return "" }
+
+// StartPprofServerForTest exposes startPprofServer to the e2e BDD glue.
+//
+// Expected:
+//   - addr is a loopback host:port string.
+//
+// Returns:
+//   - The bound listener and nil error, or nil and an error.
+//
+// Side effects:
+//   - Binds a loopback TCP listener serving the pprof mux.
+func StartPprofServerForTest(addr string) (net.Listener, error) {
+	return startPprofServer(addr)
+}
+
+// startPprofServer validates addr and starts the net/http/pprof debug
+// server on a background listener. See the exported wrappers for the
+// behavioural contract; this is the internal entry point.
+//
+// Expected:
+//   - addr is a loopback-only host:port string.
+//
+// Returns:
+//   - The bound listener and nil error, or nil and a descriptive error.
+//
+// Side effects:
+//   - Binds a TCP listener and serves pprof traffic on it.
+func startPprofServer(addr string) (net.Listener, error) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, fmt.Errorf("parsing --pprof-addr %q: %w", addr, err)
+	}
+	if host != "" && host != "localhost" {
+		ip := net.ParseIP(host)
+		if ip == nil || !(ip.IsLoopback()) {
+			return nil, fmt.Errorf("--pprof-addr %q must be loopback-only (localhost or 127.0.0.0/8 or ::1)", addr)
+		}
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("binding pprof listener %q: %w", addr, err)
+	}
+	go func() { _ = http.Serve(ln, http.DefaultServeMux) }()
+	return ln, nil
 }
 
 // newServeCmd creates the serve command for starting the HTTP API server.
@@ -81,6 +144,7 @@ func newServeCmd(getApp func() *app.App) *cobra.Command {
 	flags := cmd.Flags()
 	flags.IntVar(&opts.Port, "port", opts.Port, "Port to bind the HTTP server to")
 	flags.StringVar(&opts.Host, "host", opts.Host, "Host interface to bind the HTTP server to")
+	flags.StringVar(&opts.PprofAddr, "pprof-addr", "", "Loopback host:port to serve net/http/pprof on (default off)")
 
 	return cmd
 }
@@ -99,6 +163,17 @@ func newServeCmd(getApp func() *app.App) *cobra.Command {
 //   - Starts HTTP server, listens for interrupt signals, performs graceful shutdown.
 func runServe(cmd *cobra.Command, application *app.App, opts *ServeOptions) error {
 	addr := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
+
+	var pprofLn net.Listener
+	if opts.PprofAddr != "" {
+		ln, err := startPprofServer(opts.PprofAddr)
+		if err != nil {
+			return err
+		}
+		pprofLn = ln
+		defer func() { _ = pprofLn.Close() }()
+		slog.Info("pprof server listening", "addr", opts.PprofAddr)
+	}
 
 	// PR5/C10 — boot-time auth wiring. Composes config layer (cfg.Auth)
 	// with env vars (FLOWSTATE_AUTH_*) per plan §"Bootstrap UX"
