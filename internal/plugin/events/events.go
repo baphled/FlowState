@@ -2218,12 +2218,12 @@ const (
 // Returns: struct with notification event fields.
 // Side effects: none.
 type NotificationEventData struct {
-	ID       string
-	Type     string
-	Severity string
-	Message  string
-	Provider string
-	Model    string
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Severity string `json:"severity"`
+	Message  string `json:"message"`
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
 }
 
 // NotificationEvent represents a user-facing notification event published by

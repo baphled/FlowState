@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/swarm"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -115,3 +117,66 @@ func TestAppendGateDirectiveIgnoresNonGateError(t *testing.T) {
 		t.Fatalf("got %q, want unchanged %q", got, msg)
 	}
 }
+
+// Notification publisher specs — restored after the test-file
+// consolidation accident discarded delegation_events_notifications_test.go.
+// publishNotification projects a delegation lifecycle payload onto the
+// `notification` bus topic: turn_complete/info for clean completion,
+// task_failed/error with the reason in the message for failures, and
+// a silent no-op when no bus is wired.
+var _ = Describe("DelegateTool.publishNotification", func() {
+	nonNilBusData := events.DelegationEventData{
+		ChainID:         "chain-notif-1",
+		ParentSessionID: "parent-1",
+		ChildSessionID:  "child-1",
+		SourceAgent:     "orchestrator",
+		TargetAgent:     "qa-agent",
+		ProviderName:    "anthropic",
+		ModelName:       "claude-sonnet-4-6",
+	}
+
+	It("publishes turn_complete with info severity and attribution", func() {
+		bus := eventbus.NewEventBus()
+		d := &DelegateTool{eventBus: bus}
+
+		var notif *events.NotificationEvent
+		bus.Subscribe(events.EventNotification, func(event any) {
+			notif = event.(*events.NotificationEvent)
+		})
+
+		d.publishNotification(events.NotificationTypeTurnComplete, nonNilBusData, "")
+
+		Expect(notif).NotTo(BeNil())
+		Expect(notif.Data.Type).To(Equal(events.NotificationTypeTurnComplete))
+		Expect(notif.Data.Severity).To(Equal(events.NotificationSeverityInfo))
+		Expect(notif.Data.ID).To(Equal("chain-notif-1"))
+		Expect(notif.Data.Provider).To(Equal("anthropic"))
+		Expect(notif.Data.Model).To(Equal("claude-sonnet-4-6"))
+		Expect(notif.Data.Message).To(ContainSubstring("qa-agent"))
+		Expect(notif.Data.Message).To(ContainSubstring("completed"))
+	})
+
+	It("publishes task_failed with error severity and the reason in the message", func() {
+		bus := eventbus.NewEventBus()
+		d := &DelegateTool{eventBus: bus}
+
+		var notif *events.NotificationEvent
+		bus.Subscribe(events.EventNotification, func(event any) {
+			notif = event.(*events.NotificationEvent)
+		})
+
+		d.publishNotification(events.NotificationTypeTaskFailed, nonNilBusData, "provider exploded")
+
+		Expect(notif).NotTo(BeNil())
+		Expect(notif.Data.Type).To(Equal(events.NotificationTypeTaskFailed))
+		Expect(notif.Data.Severity).To(Equal(events.NotificationSeverityError))
+		Expect(notif.Data.Message).To(ContainSubstring("provider exploded"))
+	})
+
+	It("is a no-op when no event bus is wired", func() {
+		d := &DelegateTool{}
+		Expect(func() {
+			d.publishNotification(events.NotificationTypeTurnComplete, nonNilBusData, "")
+		}).NotTo(Panic())
+	})
+})

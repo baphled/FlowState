@@ -7078,3 +7078,127 @@ func TestQuestionToolPublishReachesActiveTurnWireResponse(t *testing.T) {
 		t.Fatalf("question_requests[0].question=%q, want %q", got, "Which flavour?")
 	}
 }
+
+// Notification SSE specs — restored after the test-file consolidation
+// accident discarded server_notifications_test.go. The
+// GET /api/v1/notifications/events endpoint subscribes to the
+// `notification` bus topic and forwards NotificationEvent payloads as
+// SSE JSON with the lowercase web-contract keys (commit 3cce511f):
+// id/type/severity/message/provider/model. Non-notification events on
+// the topic are ignored; the first frame is the connected marker.
+var _ = Describe("GET /api/v1/notifications/events SSE stream", func() {
+	var (
+		bus *eventbus.EventBus
+		srv *api.Server
+		hs  *httptest.Server
+	)
+
+	BeforeEach(func() {
+		bus = eventbus.NewEventBus()
+		srv = api.NewServer(nil, nil, nil, nil, api.WithEventBus(bus))
+		hs = httptest.NewServer(srv.Handler())
+	})
+
+	AfterEach(func() {
+		hs.Close()
+	})
+
+	publishAndDrain := func(publish func()) []map[string]any {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, hs.URL+"/api/v1/notifications/events", http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+
+		respCh := make(chan *http.Response, 1)
+		go func() {
+			resp, doErr := http.DefaultClient.Do(req)
+			if doErr == nil {
+				respCh <- resp
+			}
+		}()
+
+		// Give the handler time to subscribe before publishing.
+		time.Sleep(80 * time.Millisecond)
+		publish()
+
+		var resp *http.Response
+		Eventually(respCh, 2*time.Second).Should(Receive(&resp))
+
+		eventsCh := make(chan []map[string]any, 1)
+		go func() {
+			defer resp.Body.Close()
+			reader := bufio.NewReader(resp.Body)
+			var collected []map[string]any
+			for {
+				line, readErr := reader.ReadString('\n')
+				trimmed := strings.TrimSpace(line)
+				if strings.HasPrefix(trimmed, "data: ") {
+					payload := strings.TrimPrefix(trimmed, "data: ")
+					var parsed map[string]any
+					if json.Unmarshal([]byte(payload), &parsed) == nil {
+						collected = append(collected, parsed)
+					}
+				}
+				if readErr != nil {
+					break
+				}
+				if len(collected) >= 2 {
+					// connected + notification
+					break
+				}
+			}
+			eventsCh <- collected
+		}()
+
+		var collected []map[string]any
+		Eventually(eventsCh, 3*time.Second).Should(Receive(&collected))
+		return collected
+	}
+
+	It("streams a notification with the lowercase wire keys id/type/severity/message/provider/model", func() {
+		collected := publishAndDrain(func() {
+			bus.Publish(events.EventNotification, events.NewNotificationEvent(events.NotificationEventData{
+				ID:       "notif-sse-1",
+				Type:     events.NotificationTypeTurnComplete,
+				Severity: events.NotificationSeverityInfo,
+				Message:  "Turn complete",
+				Provider: "anthropic",
+				Model:    "claude-sonnet-4-6",
+			}))
+		})
+
+		var notif map[string]any
+		for _, ev := range collected {
+			if _, ok := ev["type"]; ok {
+				if t, _ := ev["type"].(string); t == "turn_complete" {
+					notif = ev
+					break
+				}
+			}
+		}
+		Expect(notif).NotTo(BeNil(),
+			"the SSE stream must forward notification payloads when the bus publishes one")
+		Expect(notif).To(SatisfyAll(
+			HaveKeyWithValue("id", "notif-sse-1"),
+			HaveKeyWithValue("type", "turn_complete"),
+			HaveKeyWithValue("severity", "info"),
+			HaveKeyWithValue("message", "Turn complete"),
+			HaveKeyWithValue("provider", "anthropic"),
+			HaveKeyWithValue("model", "claude-sonnet-4-6"),
+		))
+		Expect(notif).NotTo(HaveKey("ID"),
+			"the wire format uses lowercase keys — an uppercase ID key means the json tags regressed")
+	})
+
+	It("ignores non-notification events published on the topic", func() {
+		collected := publishAndDrain(func() {
+			bus.Publish(events.EventNotification, "not-a-notification-event")
+		})
+
+		for _, ev := range collected {
+			Expect(ev).NotTo(SatisfyAll(
+				HaveKey("id"), HaveKey("severity")), "non-notification events must be dropped by the forwarder")
+		}
+	})
+})

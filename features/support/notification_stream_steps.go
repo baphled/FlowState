@@ -235,7 +235,7 @@ func (s *NotificationStreamSteps) clientSubscribes() error {
 	for _, frame := range frames {
 		var payload map[string]any
 		if json.Unmarshal([]byte(frame), &payload) == nil {
-			if _, isNotification := payload["Type"]; isNotification {
+			if _, isNotification := payload["type"]; isNotification {
 				s.lastPayload = payload
 				return nil
 			}
