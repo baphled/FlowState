@@ -11,3 +11,13 @@ func ExtractPrimaryArgForTest(name string, args map[string]any) string {
 func (m *Manager) SetPersistFnForTest(fn func(dir string, sess *Session) error) {
 	m.persistFn = fn
 }
+
+// AppendSessionMessageForTest exposes the unexported appendSessionMessage hot path
+// so that in-repo benchmarks (see manager_bench_test.go) can drive it directly.
+func (m *Manager) AppendSessionMessageForTest(sessionID string, msg Message) {
+	m.appendSessionMessage(sessionID, msg)
+}
+
+// MetaFileSuffixForTest exposes the persistence sidecar suffix so benchmarks
+// can assert the baseline sidecar exists before measuring.
+const MetaFileSuffixForTest = metaFileSuffix

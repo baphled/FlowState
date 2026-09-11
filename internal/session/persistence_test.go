@@ -2,8 +2,10 @@ package session_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -510,3 +512,46 @@ var _ = Describe("Session persistence", func() {
 		})
 	})
 })
+
+// BenchmarkAppendSessionMessage measures the cost of appending one
+// message to a large persisted session — the P0/P1 hot path where
+// every append re-marshals the full history with fsync+rename. The
+// bN loop uses b.StopTimer/StartTimer so the pre-fill (seeding
+// history and writing the baseline sidecar) is excluded; only the
+// per-append cost is measured.
+func BenchmarkAppendSessionMessage(b *testing.B) {
+	for _, size := range []int{100, 1000, 3000} {
+		b.Run(fmt.Sprintf("history_%d", size), func(b *testing.B) {
+			dir := b.TempDir()
+			m := session.NewManager(nil)
+			m.SetSessionsDir(dir)
+			sess, err := m.CreateSession("bench-agent")
+			if err != nil {
+				b.Fatalf("CreateSession: %v", err)
+			}
+			for i := 0; i < size; i++ {
+				m.AppendSessionMessageForTest(sess.ID, session.Message{
+					ID:   fmt.Sprintf("seed-%d", i),
+					Role: "user",
+					Content: fmt.Sprintf(
+						"seed message %d with a realistic amount of body text to approximate dogfood payloads",
+						i,
+					),
+				})
+			}
+			sidecar := filepath.Join(dir, sess.ID+session.MetaFileSuffixForTest)
+			if _, err := os.Stat(sidecar); err != nil {
+				b.Fatalf("baseline sidecar missing: %v", err)
+			}
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				m.AppendSessionMessageForTest(sess.ID, session.Message{
+					ID:      fmt.Sprintf("bench-%d", i),
+					Role:    "user",
+					Content: "benchmark append payload",
+				})
+			}
+			b.StopTimer()
+		})
+	}
+}
