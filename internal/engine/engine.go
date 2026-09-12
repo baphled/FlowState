@@ -37,6 +37,23 @@ import (
 	"github.com/baphled/flowstate/internal/engine/lifecycle"
 )
 
+// errToolNotAvailableFmt is the user-facing message returned when a tool is
+// outside the calling agent's manifest scope. It suggests delegation as the
+// remedy and lists the tools the agent actually has.
+const errToolNotAvailableFmt = "Error: '%s' not available to agent '%s'. Available tools: [%s]. " +
+	"Delegate to a specialist whose toolset includes '%s' if the work requires it."
+
+// errSkillsMustLoadFirst is the error payload for the skills-first gate:
+// agents whose manifest pins active-by-default skills must call skill_load
+// before any other tool call.
+const errSkillsMustLoadFirst = "You must load your active skills via `skill_load(name=...)` " +
+	"before making any other tool call. Invoke `skill_load` for each of your active skills first."
+
+// errTodoNoWorkDone is the error payload rejecting a todo-completion call
+// when no work tool was invoked since the previous completion.
+const errTodoNoWorkDone = "You cannot complete this todo item without doing any work since the last one. " +
+	"Call a work tool (bash, read, write, search_nodes, etc.) to accomplish the task before marking it complete."
+
 const (
 	streamBufferSize     = 16
 	defaultStreamTimeout = 5 * time.Minute
@@ -2776,7 +2793,7 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 			// or manifest scoping). Callers using
 			// errors.Is(tool.ErrToolNotFound) match both shapes.
 			msg := fmt.Sprintf(
-				"Error: '%s' not available to agent '%s'. Available tools: [%s]. Delegate to a specialist whose toolset includes '%s' if the work requires it.",
+				errToolNotAvailableFmt,
 				toolCall.Name, agentID, strings.Join(names, ", "), toolCall.Name,
 			)
 
@@ -2856,7 +2873,7 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 		if toolCall.Name != "skill_load" && e.skillsLoadRequired() {
 			if !e.skillLoadCompleted(sessionID) {
 				return tool.Result{
-					Output:  "You must load your always-active skills via `skill_load(name=...)` before making any other tool call. Call `skill_load` for each of your always-active skills first.",
+					Output:  errSkillsMustLoadFirst,
 					IsError: true,
 					Error:   fmt.Errorf("skills must be loaded before other tool calls"),
 				}, nil
@@ -2921,7 +2938,7 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 					e.mu.Unlock()
 					if seen {
 						return tool.Result{
-							Output:  "You cannot complete this todo item without doing any work since the last one. Call a work tool (bash, read, write, search_nodes, etc.) to accomplish the task before marking it complete.",
+							Output:  errTodoNoWorkDone,
 							IsError: true,
 							Error:   fmt.Errorf("todo completion rejected: no work done since last completion"),
 						}, nil
@@ -3757,7 +3774,12 @@ func (e *Engine) IngestForFactsForTest(ctx context.Context, sessionID string, ms
 //
 // Side effects:
 //   - Sends one context-usage chunk on outChan when successful.
-func (e *Engine) emitMidToolLoopRefresh(ctx context.Context, sessionID string, outChan chan<- provider.StreamChunk, liveMessages []provider.Message) bool {
+func (e *Engine) emitMidToolLoopRefresh(
+	ctx context.Context,
+	sessionID string,
+	outChan chan<- provider.StreamChunk,
+	liveMessages []provider.Message,
+) bool {
 	if e == nil || e.store == nil || sessionID == "" {
 		return false
 	}
@@ -3917,7 +3939,12 @@ func (e *Engine) tryEmitContextUsage(sessionID, body string, outChan chan<- prov
 //   - Writes at most one context_usage StreamChunk to outChan.
 //
 // Returns: result of emitPostRetryContextUsage.
-func (e *Engine) emitPostRetryContextUsage(ctx context.Context, sessionID string, messages []provider.Message, outChan chan<- provider.StreamChunk) {
+func (e *Engine) emitPostRetryContextUsage(
+	ctx context.Context,
+	sessionID string,
+	messages []provider.Message,
+	outChan chan<- provider.StreamChunk,
+) {
 	if e == nil || outChan == nil {
 		return
 	}
@@ -4217,7 +4244,13 @@ func (e *Engine) dispatchContextAssemblyHooks(
 //   - Publishes EventPromptGenerated and EventContextWindowBuilt if bus is non-nil.
 //
 // Returns: result of publishContextWindowEvents.
-func (e *Engine) publishContextWindowEvents(ctx context.Context, sessionID string, systemPrompt string, tokenBudget int, result ctxstore.BuildResult) {
+func (e *Engine) publishContextWindowEvents(
+	ctx context.Context,
+	sessionID string,
+	systemPrompt string,
+	tokenBudget int,
+	result ctxstore.BuildResult,
+) {
 	if e.bus == nil {
 		return
 	}
