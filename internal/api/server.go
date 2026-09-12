@@ -3044,6 +3044,7 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
 	if messages == nil {
 		messages = []session.Message{}
 	}
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	writeJSON(w, messages)
 }
 
