@@ -1609,6 +1609,16 @@ var _ = Describe("GET /api/v1/sessions/{id}/messages JSON contract", func() {
 		Expect(body).To(Equal("[]"), "restored session with nil Messages must serialise to [] not null")
 	})
 
+	It("sets no-store Cache-Control so browsers never serve a stale payload", func() {
+		mgr.RestoreSessions([]*session.Session{{ID: "cache-1", AgentID: "agent-z"}})
+
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/cache-1/messages", http.NoBody)
+		srv.Handler().ServeHTTP(recorder, req)
+
+		Expect(recorder.Code).To(Equal(http.StatusOK))
+		Expect(recorder.Header().Get("Cache-Control")).To(Equal("no-cache, no-store, must-revalidate"))
+	})
+
 	It("returns 404 for an unknown session id", func() {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/does-not-exist/messages", http.NoBody)
 		srv.Handler().ServeHTTP(recorder, req)
