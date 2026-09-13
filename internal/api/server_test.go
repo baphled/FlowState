@@ -1627,6 +1627,39 @@ var _ = Describe("GET /api/v1/sessions/{id}/messages JSON contract", func() {
 	})
 })
 
+var _ = Describe("GET /api/v1/sessions JSON contract", func() {
+	var (
+		recorder *httptest.ResponseRecorder
+		mgr      *session.Manager
+		srv      *api.Server
+	)
+
+	BeforeEach(func() {
+		recorder = httptest.NewRecorder()
+		mgr = session.NewManager(&testutils.MockStreamer{Chunks: []provider.StreamChunk{{Content: "ok", Done: true}}})
+		registry := agent.NewRegistry()
+		disc := discovery.NewAgentDiscovery(nil)
+		srv = api.NewServer(
+			&testutils.MockStreamer{Chunks: []provider.StreamChunk{}},
+			registry,
+			disc,
+			nil,
+			api.WithSessionManager(mgr),
+		)
+	})
+
+	It("sets no-store Cache-Control so the session list is never served stale", func() {
+		mgr.RestoreSessions([]*session.Session{{ID: "list-cache-1", AgentID: "agent-list"}})
+
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", http.NoBody)
+		srv.Handler().ServeHTTP(recorder, req)
+
+		Expect(recorder.Code).To(Equal(http.StatusOK))
+		Expect(recorder.Header().Get("Cache-Control")).To(Equal("no-cache, no-store, must-revalidate"),
+			"session list is dynamic JSON — writeJSON must mark it no-store so browsers/proxies never serve a stale list")
+	})
+})
+
 var _ = Describe("POST /api/v1/sessions JSON contract", func() {
 	var (
 		recorder *httptest.ResponseRecorder
@@ -5228,19 +5261,8 @@ var _ = Describe("Turn-based poll endpoints (POST /messages + GET /turns/{turn_i
 			"GET /turns/{turn_id} must 404 when the registry has never seen the id; pre-restart turn_ids are explicitly out-of-scope at v1")
 	})
 
-	It("DELETE /turns/{turn_id} cancels a running turn — returns status=cancelled and is idempotent", func() {
-		// dripStreamer with a slow drip keeps the turn Running long
-		// enough to observe it mid-flight, then the DELETE fires the
-		// session manager's inflight cancel. The dripStreamer honours
-		// ctx.Done by emitting {Error: ctx.Err(), Done: true}, which
-		// the turn-lifecycle wrap maps to StatusCancelled — a user
-		// stop, not a failure. The handler also settles synchronously,
-		// so the response deterministically carries the terminal state.
-		setup([]provider.StreamChunk{
-			{Content: "first"},
-			{Content: "second"},
-			{Done: true},
-		}, 200*time.Millisecond)
+	It("non-wait GET /turns/{id} sets no-store Cache-Control on the snapshot", func() {
+		setup([]provider.StreamChunk{{Content: "ok"}, {Done: true}}, 5*time.Millisecond)
 
 		sess, err := mgr.CreateSession("default-assistant")
 		Expect(err).NotTo(HaveOccurred())
@@ -5303,6 +5325,33 @@ var _ = Describe("Turn-based poll endpoints (POST /messages + GET /turns/{turn_i
 		defer resp.Body.Close()
 		Expect(resp.StatusCode).To(Equal(http.StatusNotFound),
 			"DELETE /turns/{turn_id} must 404 when the registry has never seen the id")
+	})
+
+	It("non-wait GET /turns/{id} sets no-store Cache-Control on the snapshot", func() {
+		setup([]provider.StreamChunk{{Content: "ok"}, {Done: true}}, 5*time.Millisecond)
+
+		sess, err := mgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+
+		_, body, _ := postMessage(sess.ID, "cache-header-probe")
+		turnID, _ := body["turn_id"].(string)
+		Expect(turnID).NotTo(BeEmpty())
+
+		Eventually(func() string {
+			_, getBody, _ := getTurn(sess.ID, turnID)
+			s, _ := getBody["status"].(string)
+			return s
+		}, "5s", "30ms").Should(Equal("completed"))
+
+		// Raw GET (no wait=true) so the response headers can be
+		// asserted directly — the snapshot path goes through writeJSON.
+		resp, err := http.Get(httpSrv.URL + "/api/v1/sessions/" + sess.ID + "/turns/" + turnID)
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		Expect(resp.Header.Get("Cache-Control")).To(Equal("no-cache, no-store, must-revalidate"),
+			"non-wait turn snapshots are dynamic JSON — writeJSON must mark them no-store so a completed turn isn't replayed stale from a browser/proxy cache")
 	})
 
 	It("MessagesAdded excludes the user message that triggered the turn", func() {

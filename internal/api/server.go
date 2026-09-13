@@ -3355,10 +3355,13 @@ func projectDelegationEvent(data events.DelegationEventData, status string, ts t
 //
 // Side effects:
 //   - Sets Content-Type header to application/json.
+//   - Sets Cache-Control header to no-cache, no-store, must-revalidate
+//     so dynamic JSON is never served stale by browser or proxy caches.
 //   - Writes HTTP 200 status code.
 //   - Writes JSON-encoded data to response body.
 func writeJSON(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(data); err != nil {
 		return
