@@ -33,20 +33,14 @@ func getOptions() *godog.Options {
 	if f := os.Getenv("GODOG_FORMAT"); f != "" {
 		opts.Format = f
 	}
-	// GODOG_PATHS narrows the suite to specific feature files or dirs,
-	// enabling scoped runs (e.g. a single feature) without dragging in
-	// the whole suite — critical because some shared scenarios use
-	// long-backoff retry loops that exceed go test timeouts.
-	if p := os.Getenv("GODOG_PATHS"); p != "" {
-		opts.Paths = []string{p}
-	}
 	return opts
 }
 
 func TestFeatures(t *testing.T) {
 	opts := getOptions()
-	if len(opts.Paths) == 0 {
-		opts.Paths = []string{"../"}
+	opts.Paths = []string{"../"}
+	if p := os.Getenv("GODOG_PATHS"); p != "" {
+		opts.Paths = []string{p}
 	}
 	opts.TestingT = t
 
@@ -95,24 +89,16 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterSessionMemorySteps(ctx)
 	RegisterCompressionE2ESteps(ctx)
 	RegisterRecallLearningSteps(ctx)
-	RegisterLearningBridgeSteps(ctx)
 	RegisterAdultingMemorySteps(ctx)
 	RegisterFSPollutionSteps(ctx)
-	RegisterPersistenceCompletenessSteps(ctx)
-	RegisterTargetSpecificitySteps(ctx)
-	RegisterGateFailureBlockingSteps(ctx)
 	RegisterAdultingDeadlineSteps(ctx)
 	RegisterVaultIndexSyncSteps(ctx)
 	RegisterVaultQueryCollectionSteps(ctx)
 	RegisterTodoSteps(ctx)
+	RegisterQuestionSteps(ctx)
 	RegisterMCPServerLifecycleSteps(ctx)
 	RegisterGateAmendmentSteps(ctx)
-	RegisterNotificationStreamSteps(ctx)
-	RegisterDelegationIntegritySteps(ctx)
-	RegisterPprofSteps(ctx)
-	RegisterPrometheusRuntimeSteps(ctx)
-	RegisterBatchedPersistenceSteps(ctx)
+	RegisterEngineSteps(ctx)
+	registerOpenAICompatClassificationSteps(ctx)
 	VoiceTalkContext(ctx)
-	VoiceCLIContext(ctx)
-	VoiceTTSContext(ctx)
 }
