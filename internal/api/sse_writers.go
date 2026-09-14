@@ -3,9 +3,51 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/baphled/flowstate/internal/streaming"
 )
+
+// sseHeartbeatInterval is the keep-alive cadence for the long-lived SSE
+// event-stream handlers (handleSwarmEvents, handleNotificationEvents).
+// Clients run ~60s stall timers; a 20s comment keep-alive keeps healthy
+// idle connections well clear of that threshold while remaining cheap.
+const sseHeartbeatInterval = 20 * time.Second
+
+// resetSSEHeartbeat restarts a heartbeat timer after a real event was sent,
+// so busy streams do not emit keep-alives (only genuinely idle intervals do).
+//
+// Expected:
+//   - t is a live timer created by time.NewTimer(sseHeartbeatInterval).
+//
+// Returns: none.
+// Side effects: drains and resets the timer to a full sseHeartbeatInterval.
+func resetSSEHeartbeat(t *time.Timer) {
+	if !t.Stop() {
+		select {
+		case <-t.C:
+		default:
+		}
+	}
+	t.Reset(sseHeartbeatInterval)
+}
+
+// writeSSEComment emits an SSE comment line (`: ping`). Per the SSE spec
+// comment lines are ignored by EventSource clients but still reset
+// transport-level stall timers, making them the ideal keep-alive.
+//
+// Expected:
+//   - w supports http.Flusher (SSE handlers guarantee this).
+//   - text is a single-line comment body without leading ':'.
+//
+// Returns: none.
+// Side effects: writes ": <text>\n\n" to the stream and flushes it.
+func writeSSEComment(w http.ResponseWriter, flusher http.Flusher, text string) {
+	if _, err := w.Write([]byte(": " + text + "\n\n")); err != nil {
+		return
+	}
+	flusher.Flush()
+}
 
 // SSE writer helpers for the ephemeral `/api/chat` endpoint.
 //

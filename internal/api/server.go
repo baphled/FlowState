@@ -2770,6 +2770,14 @@ func (s *Server) handleSwarmEvents(w http.ResponseWriter, r *http.Request) {
 	writeSSE(w, flusher, `{"type":"connected"}`)
 	flusher.Flush()
 
+	// SSE heartbeat (Sep 2026): idle streams were falsely flagged as stalled
+	// by clients running ~60s stall timers, killing healthy connections.
+	// Emit an SSE comment keep-alive (`: ping`) every sseHeartbeatInterval,
+	// but only when no real event was sent in the interval — the timer is
+	// reset on every forwarded event, so busy streams never carry pings.
+	heartbeat := time.NewTimer(sseHeartbeatInterval)
+	defer heartbeat.Stop()
+
 	for {
 		select {
 		case <-stopCh:
@@ -2787,6 +2795,9 @@ func (s *Server) handleSwarmEvents(w http.ResponseWriter, r *http.Request) {
 			}
 			writeSSE(w, flusher, string(jsonData))
 			flusher.Flush()
+			resetSSEHeartbeat(heartbeat)
+		case <-heartbeat.C:
+			writeSSEComment(w, flusher, "ping")
 		case <-r.Context().Done():
 			return
 		}
@@ -2863,6 +2874,12 @@ func (s *Server) handleNotificationEvents(w http.ResponseWriter, r *http.Request
 	writeSSE(w, flusher, `{"type":"connected"}`)
 	flusher.Flush()
 
+	// SSE heartbeat (Sep 2026): mirrors handleSwarmEvents — idle streams get
+	// a `: ping` comment keep-alive so client stall timers never fire on a
+	// healthy connection; busy streams reset the timer and never ping.
+	heartbeat := time.NewTimer(sseHeartbeatInterval)
+	defer heartbeat.Stop()
+
 	for {
 		select {
 		case <-stopCh:
@@ -2878,6 +2895,9 @@ func (s *Server) handleNotificationEvents(w http.ResponseWriter, r *http.Request
 			}
 			writeSSE(w, flusher, string(jsonData))
 			flusher.Flush()
+			resetSSEHeartbeat(heartbeat)
+		case <-heartbeat.C:
+			writeSSEComment(w, flusher, "ping")
 		case <-r.Context().Done():
 			closeForward = false
 			close(stopCh)

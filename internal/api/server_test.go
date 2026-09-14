@@ -7261,3 +7261,74 @@ var _ = Describe("GET /api/v1/notifications/events SSE stream", func() {
 		}
 	})
 })
+
+var _ = Describe("SSE heartbeat keep-alive", func() {
+	var (
+		bus *eventbus.EventBus
+		srv *api.Server
+		hs  *httptest.Server
+	)
+
+	BeforeEach(func() {
+		bus = eventbus.NewEventBus()
+		srv = api.NewServer(nil, nil, nil, nil, api.WithEventBus(bus))
+		hs = httptest.NewServer(srv.Handler())
+	})
+
+	AfterEach(func() {
+		hs.Close()
+	})
+
+	readKeepAlive := func(url string) (string, bool) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+		req.Header.Set("Authorization", "Bearer test-session-token")
+
+		respCh := make(chan *http.Response, 1)
+		go func() {
+			if resp, doErr := http.DefaultClient.Do(req); doErr == nil {
+				respCh <- resp
+			}
+		}()
+
+		var resp *http.Response
+		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
+		defer resp.Body.Close()
+
+		lineCh := make(chan string, 8)
+		go func() {
+			reader := bufio.NewReader(resp.Body)
+			for {
+				line, readErr := reader.ReadString('\n')
+				if readErr != nil {
+					close(lineCh)
+					return
+				}
+				if strings.HasPrefix(strings.TrimSpace(line), ":") {
+					lineCh <- strings.TrimSpace(line)
+				}
+			}
+		}()
+
+		select {
+		case l, ok := <-lineCh:
+			return l, ok
+		case <-ctx.Done():
+			return "", false
+		}
+	}
+
+	It("emits `: ping` keep-alives on idle swarm event streams", Label("slow"), func() {
+		line, ok := readKeepAlive(hs.URL + "/api/swarm/events?session_id=abc")
+		Expect(ok).To(BeTrue())
+		Expect(line).To(Equal(": ping"))
+	})
+
+	It("emits `: ping` keep-alives on idle notification event streams", Label("slow"), func() {
+		line, ok := readKeepAlive(hs.URL + "/api/v1/notifications/events")
+		Expect(ok).To(BeTrue())
+		Expect(line).To(Equal(": ping"))
+	})
+})
