@@ -198,3 +198,142 @@ var _ = Describe("AccumulateStream user-cancel stamping", func() {
 			"an explicit upstream stop reason outranks the synthetic cancel sentinel")
 	})
 })
+
+// Covers the Wave-1 stop-button gap: a turn blocked on a tool call that
+// the user cancelled BEFORE any content streamed must still persist the
+// user_cancelled sentinel. flushContent early-returns on an empty
+// content buffer and synthesizePlaceholderAssistant refuses tool-bearing
+// turns, so without a dedicated cancel-path flush the sentinel never
+// reaches persistence and the session manager's failure-flip never
+// fires — the production incident shape (6h wedged bash tool, zero
+// content, force-stop, failure_reason null).
+var _ = Describe("AccumulateStream user-cancel stamping on empty-content turns", func() {
+	var appender *fakeAppender
+
+	BeforeEach(func() {
+		appender = &fakeAppender{}
+	})
+
+	drain := func(out <-chan provider.StreamChunk) {
+		timeout := time.After(2 * time.Second)
+		for {
+			select {
+			case _, ok := <-out:
+				if !ok {
+					return
+				}
+			case <-timeout:
+				Fail("accumulator channel did not close within 2s")
+			}
+		}
+	}
+
+	assistantRows := func() []session.Message {
+		var rows []session.Message
+		for _, m := range appender.messages {
+			if m.Role == "assistant" {
+				rows = append(rows, m)
+			}
+		}
+		return rows
+	}
+
+	It("persists the sentinel when a tool-bearing turn is cancelled with zero streamed content", func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		rawCh := make(chan provider.StreamChunk, 1)
+		rawCh <- provider.StreamChunk{
+			EventType: "tool_call",
+			ToolCall: &provider.ToolCall{
+				ID:   "call_wedged",
+				Name: "bash",
+				Arguments: map[string]interface{}{
+					"command": "sleep 300",
+				},
+			},
+		}
+
+		out := session.AccumulateStream(ctx, appender, "sess-tool-cancel", "agent-tool-cancel", rawCh)
+		Eventually(func() bool {
+			select {
+			case <-out:
+				return true
+			default:
+				return false
+			}
+		}, "2s").Should(BeTrue(),
+			"the tool_call chunk must be consumed and forwarded before the cancel lands")
+
+		cancel()
+		drain(out)
+
+		rows := assistantRows()
+		Expect(rows).ToNot(BeEmpty(),
+			"a cancelled tool-bearing turn with zero content must still persist an assistant row")
+		Expect(rows[len(rows)-1].StopReason).To(Equal(session.StopReasonUserCancelled),
+			"the wedged-tool cancel shape must stamp user_cancelled, not silence")
+		Expect(rows[len(rows)-1].Content).To(BeEmpty())
+	})
+
+	It("persists the sentinel when the post-cancel retry delivers a cancelled Done chunk", func() {
+		rawCh := make(chan provider.StreamChunk, 3)
+		rawCh <- provider.StreamChunk{
+			EventType: "tool_call",
+			ToolCall: &provider.ToolCall{
+				ID:   "call_wedged",
+				Name: "bash",
+				Arguments: map[string]interface{}{
+					"command": "sleep 300",
+				},
+			},
+		}
+		rawCh <- provider.StreamChunk{Error: context.Canceled, Done: true}
+		close(rawCh)
+
+		out := session.AccumulateStream(context.Background(), appender, "sess-retry-cancel", "agent-retry-cancel", rawCh)
+		drain(out)
+
+		rows := assistantRows()
+		Expect(rows).ToNot(BeEmpty(),
+			"a post-cancel retry Done chunk on a zero-content turn must persist an assistant row")
+		Expect(rows[len(rows)-1].StopReason).To(Equal(session.StopReasonUserCancelled),
+			"the Done-chunk cancel path must stamp user_cancelled when flushContent early-returned")
+	})
+
+	It("keeps a clean tool-bearing turn with no content free of sentinels", func() {
+		rawCh := make(chan provider.StreamChunk, 2)
+		rawCh <- provider.StreamChunk{
+			EventType: "tool_call",
+			ToolCall: &provider.ToolCall{
+				ID:   "call_ok",
+				Name: "bash",
+				Arguments: map[string]interface{}{
+					"command": "true",
+				},
+			},
+		}
+		rawCh <- provider.StreamChunk{Done: true}
+		close(rawCh)
+
+		out := session.AccumulateStream(context.Background(), appender, "sess-tool-clean", "agent-tool-clean", rawCh)
+		drain(out)
+
+		for _, m := range assistantRows() {
+			Expect(m.StopReason).To(BeEmpty(),
+				"a non-cancelled tool-bearing turn must not gain a cancel sentinel")
+		}
+	})
+
+	It("keeps the empty_turn placeholder for a non-cancelled empty turn", func() {
+		rawCh := make(chan provider.StreamChunk, 1)
+		rawCh <- provider.StreamChunk{Done: true}
+		close(rawCh)
+
+		out := session.AccumulateStream(context.Background(), appender, "sess-empty", "agent-empty", rawCh)
+		drain(out)
+
+		rows := assistantRows()
+		Expect(rows).To(HaveLen(1))
+		Expect(rows[0].StopReason).To(Equal(session.StopReasonEmptyTurn),
+			"non-cancelled empty turns keep the EmptyTurn placeholder semantics exactly")
+	})
+})

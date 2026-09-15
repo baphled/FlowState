@@ -382,7 +382,10 @@ type streamAccumState struct {
 	// inflight cancel fires both simultaneously). flushContent stamps
 	// StopReasonUserCancelled on the flushed partial content so the
 	// session manager's surfaced-failure flip records a distinguishable
-	// failure_reason instead of a wire-truncation misclassification.
+	// failure_reason instead of a wire-truncation misclassification;
+	// when the cancelled turn leaves the content buffer empty (a
+	// tool-bearing turn blocked on a wedged command), the dedicated
+	// flushUserCancelledAssistant path persists the sentinel instead.
 	turnUserCancelled bool
 	// contentFlushed records whether flushContent has already written
 	// the assistant message for this turn. Used by
@@ -598,6 +601,7 @@ func AccumulateStream(
 				}
 				flushThinking(appender, s)
 				flushContent(appender, s)
+				flushUserCancelledAssistant(appender, s)
 				synthesizePlaceholderAssistant(appender, s)
 				return
 			}
@@ -674,6 +678,7 @@ func applyChunk(appender MessageAppender, s *streamAccumState, chunk provider.St
 		}
 		flushThinking(appender, s)
 		flushContent(appender, s)
+		flushUserCancelledAssistant(appender, s)
 		synthesizePlaceholderAssistant(appender, s)
 	default:
 		if chunk.EventType != "" {
@@ -1137,6 +1142,66 @@ func flushContent(appender MessageAppender, s *streamAccumState) {
 	s.contentFlushed = true
 }
 
+// flushUserCancelledAssistant persists the user-cancel sentinel when a
+// cancelled turn leaves nothing for flushContent to write.
+//
+// A turn the user stopped can end with an empty content buffer — the
+// production shape is a tool-bearing turn blocked on a wedged bash
+// command that streams zero text before the stop fires. flushContent
+// early-returns on the empty buffer and synthesizePlaceholderAssistant
+// refuses tool-bearing turns, so without this dedicated cancel-path
+// flush no assistant message carrying StopReasonUserCancelled is ever
+// appended and the session manager's failure-flip never records
+// failure_reason "user_cancelled" (live reproducer: the six-hour wedged
+// tool force-stop where .meta.json stayed empty).
+//
+// The turn WAS real work interrupted by the user, not an empty turn:
+// the message records how the turn ended, so the sentinel is stamped
+// in every cancel-path case and the empty-turn placeholder paths are
+// unaffected for non-cancelled turns. Thinking blocks staged by
+// flushThinking ride along so a thinking-bearing cancelled turn keeps
+// its round-trip payload, mirroring the flushContent message shape.
+//
+// Expected:
+//   - appender is the message sink.
+//   - s holds the current accumulation state after flushThinking and
+//     flushContent have already run for the turn's exit.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Appends a minimal assistant message stamped
+//     StopReasonUserCancelled when s.turnUserCancelled is still set
+//     (flushContent consumed the sentinel otherwise).
+//   - Marks the turn's placeholder slot filled so the subsequent
+//     synthesizePlaceholderAssistant call is a no-op.
+func flushUserCancelledAssistant(appender MessageAppender, s *streamAccumState) {
+	if !s.turnUserCancelled {
+		return
+	}
+	msg := Message{
+		Role:         "assistant",
+		Content:      "",
+		AgentID:      s.agentID,
+		ModelName:    s.lastModelID,
+		ProviderName: s.lastProviderID,
+		DurationMs:   time.Since(s.startedAt).Milliseconds(),
+		StopReason:   StopReasonUserCancelled,
+	}
+	if len(s.thinkingBlocks) > 0 {
+		blocks := make([]provider.ThinkingBlock, len(s.thinkingBlocks))
+		copy(blocks, s.thinkingBlocks)
+		msg.ThinkingBlocks = blocks
+	}
+	appender.AppendMessage(s.sessionID, msg)
+	s.thinkingBlocks = nil
+	s.turnStopReason = ""
+	s.turnUserCancelled = false
+	s.turnPlaceholderEmitted = true
+	s.contentFlushed = true
+}
+
 // StopReasonThinkingOnly is the synthetic stop reason stamped on a
 // placeholder assistant Message when a turn produced reasoning without
 // an upstream `stop_reason` chunk to inherit. It exists because the Vue
@@ -1389,7 +1454,9 @@ const StopReasonTurnInterrupted = "turn_interrupted"
 // stamp distinguishes a deliberate stop from a wire-level truncation: the
 // session manager's surfaced-failure flip records failure_reason
 // "user_cancelled" on the session, and a healthy follow-up turn demotes
-// the session back to active and clears the reason.
+// the session back to active and clears the reason. Cancelled turns that
+// streamed no content (a tool-bearing turn blocked on a wedged command)
+// carry the stamp via the dedicated flushUserCancelledAssistant path.
 //
 // Wire-format-stable: the value is read by the session manager's status
 // flip and surfaces via the .meta.json sidecar and `make
