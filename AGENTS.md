@@ -341,8 +341,10 @@ Session `.meta.json` sidecars now carry an optional `failure_reason` field
 
 - **Field name:** `failure_reason` (JSON: `"failure_reason"`)
 - **Value:** The terminal stop reason that caused the failover — one of
-  `StopReasonStreamTruncated`, `StopReasonToolUseNoCalls`, or
-  `StopReasonAbandonedTool`.
+  `StopReasonStreamTruncated`, `StopReasonToolUseNoCalls`,
+  `StopReasonAbandonedTool`, `StopReasonToolLoopExceeded`, or
+  `StopReasonUserCancelled` (the sentinel stamped when the user stops an
+  in-flight turn; a healthy follow-up turn recovers the session).
 - **Truncation:** Capped at 256 characters.
 - **Cleared on recovery:** If the session is later demoted back to `active`
   by the recovery-demotion path, `failure_reason` is cleared.
