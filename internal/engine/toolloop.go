@@ -55,24 +55,6 @@ func (e *Engine) streamWithToolLoop(
 	const maxTodoContinuations = 20
 	const maxNoProgressContinuations = 3
 	const maxBackgroundContinuations = 20
-	// Persist local continuation counters to session-scoped maps on every
-	// exit so they survive across Stream() re-invocations. Without this the
-	// local variables reset on each streamWithToolLoop entry, defeating the
-	// no-progress and max-continuation guards when the provider times out
-	// mid-continuation and something re-triggers the stream externally.
-	defer func() {
-		e.mu.Lock()
-		if noProgressContinuations > e.sessionTodoNoProgress[sessionID] {
-			e.sessionTodoNoProgress[sessionID] = noProgressContinuations
-		}
-		if todoContinuationCount > e.sessionTodoContinuationCount[sessionID] {
-			e.sessionTodoContinuationCount[sessionID] = todoContinuationCount
-		}
-		if lastTodoContinuationSnapshot != nil {
-			e.sessionTodoLastSnapshot[sessionID] = append([]todo.Item(nil), lastTodoContinuationSnapshot...)
-		}
-		e.mu.Unlock()
-	}()
 
 	attempt := 0
 	// loopStart records the wall clock when the tool loop began. Compared

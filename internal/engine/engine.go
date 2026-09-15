@@ -249,21 +249,6 @@ type Engine struct {
 	// counter is 0, the completion is rejected. Protected by e.mu.
 	workCallsSinceLastTodoCompletion map[string]int
 
-	// sessionTodoNoProgress tracks consecutive no-progress continuation
-	// attempts per session, persisting across Stream() calls. This prevents
-	// session-spanning infinite loops when the provider times out during a
-	// todo continuation and something re-triggers the stream externally.
-	sessionTodoNoProgress map[string]int
-
-	// sessionTodoContinuationCount tracks total continuation injections per
-	// session, persisting across Stream() calls. Provides a hard upper bound
-	// even when streamWithToolLoop is re-entered from a new Stream() call.
-	sessionTodoContinuationCount map[string]int
-
-	// sessionTodoLastSnapshot stores the last seen todo snapshot per session
-	// so no-progress detection works across Stream() call boundaries.
-	sessionTodoLastSnapshot map[string][]todo.Item
-
 	// skillLoadCalled tracks per-session whether skill_load has been invoked.
 	// Used by the skills-first gate in executeToolCall to enforce that always-active
 	// skills are loaded before any other tool call.
@@ -1147,9 +1132,6 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		todoContinuationFired:            make(map[string]bool),
 		workToolCallsSinceContinuation:   make(map[string]int),
 		workCallsSinceLastTodoCompletion: make(map[string]int),
-		sessionTodoNoProgress:            make(map[string]int),
-		sessionTodoContinuationCount:     make(map[string]int),
-		sessionTodoLastSnapshot:          make(map[string][]todo.Item),
 		skillLoadCalled:                  make(map[string]bool),
 		deliveryToolCalled:               make(map[string]bool),
 		sessionManifests:                 make(map[string]*agent.Manifest),
