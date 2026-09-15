@@ -24,12 +24,14 @@ import (
 // backstop (if any) terminated the turn by capturing the engine's
 // "engine tool loop capped" log records.
 type toolLoopBudgetSteps struct {
-	cap         time.Duration
-	provider    *toolBudgetScriptedProvider
-	tools       []tool.Tool
-	capturer    *capTripCapturer
-	stopReasons []string
-	ran         bool
+	cap           time.Duration
+	maxIterations int
+	provider      *toolBudgetScriptedProvider
+	tools         []tool.Tool
+	capturer      *capTripCapturer
+	stopReasons   []string
+	ran           bool
+	bgCancel      context.CancelFunc
 }
 
 // toolBudgetTurn describes one scripted provider turn: assistant text and an
@@ -141,28 +143,33 @@ type budgetDelegationTool struct {
 func (t *budgetDelegationTool) Timeout() time.Duration { return 0 }
 
 // capTripCapturer is an slog handler that records the trip reason of every
-// "engine tool loop capped" warning the engine emits.
+// "engine tool loop capped" warning the engine emits, and counts how many
+// background-task continuation messages it injects.
 type capTripCapturer struct {
-	mu    sync.Mutex
-	trips []string
+	mu               sync.Mutex
+	trips            []string
+	bgContinuations  int
 }
 
 // Enabled reports all levels as capturable.
 func (c *capTripCapturer) Enabled(context.Context, slog.Level) bool { return true }
 
-// Handle records the trip attribute of tool-loop cap warnings.
+// Handle records the trip attribute of tool-loop cap warnings and counts
+// background-task continuation injections.
 func (c *capTripCapturer) Handle(_ context.Context, r slog.Record) error {
-	if r.Message != "engine tool loop capped" {
-		return nil
-	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	r.Attrs(func(attr slog.Attr) bool {
-		if attr.Key == "trip" {
-			c.trips = append(c.trips, attr.Value.String())
-		}
-		return true
-	})
+	switch r.Message {
+	case "engine tool loop capped":
+		r.Attrs(func(attr slog.Attr) bool {
+			if attr.Key == "trip" {
+				c.trips = append(c.trips, attr.Value.String())
+			}
+			return true
+		})
+	case "background tasks still active, continuing":
+		c.bgContinuations++
+	}
 	return nil
 }
 
@@ -184,6 +191,14 @@ func (c *capTripCapturer) hasTrip(reason string) bool {
 	return false
 }
 
+// backgroundContinuationCount reports how many background-task
+// continuation injections were captured.
+func (c *capTripCapturer) backgroundContinuationCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.bgContinuations
+}
+
 // observedStopReason reports whether any terminal chunk carried the reason.
 func (s *toolLoopBudgetSteps) observedStopReason(reason string) bool {
 	for _, got := range s.stopReasons {
@@ -201,15 +216,19 @@ func (s *toolLoopBudgetSteps) runTurn(sessionID, prompt string, watchdog time.Du
 		ID:   "tool-budget-agent",
 		Name: "Tool Budget Agent",
 		Capabilities: agent.Capabilities{
-			Tools: []string{"slowpoke", "delegate"},
+			Tools: []string{"slowpoke", "delegate", "spinner"},
 		},
+	}
+	maxIterations := s.maxIterations
+	if maxIterations == 0 {
+		maxIterations = 10000
 	}
 	eng := engine.New(engine.Config{
 		ChatProvider:         s.provider,
 		Manifest:             manifest,
 		Tools:                s.tools,
 		MaxToolLoopDuration:  s.cap,
-		MaxToolLoopIterations: 10000,
+		MaxToolLoopIterations: maxIterations,
 	})
 
 	previous := slog.Default()
@@ -254,17 +273,23 @@ func RegisterToolLoopBudgetSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the tool loop is capped with reason "total_tool_time_backstop"$`, s.toolLoopCappedWithReason)
 	ctx.Step(`^the delegation completes$`, s.delegationCompletes)
 	ctx.Step(`^the parent tool loop does not trip the tool-time backstop$`, s.parentLoopDoesNotTripToolTimeBackstop)
+	ctx.Step(`^a session whose background tasks never complete$`, s.sessionWhoseBackgroundTasksNeverComplete)
+	ctx.Step(`^the tool loop requests more than 20 background-task continuations$`, s.toolLoopRequestsMoreThan20BackgroundTaskContinuations)
+	ctx.Step(`^the turn terminates with StopReason "StopReasonToolLoopExceeded"$`, s.turnTerminatesWithToolLoopExceededStopReason)
+	ctx.Step(`^no further continuation is injected$`, s.noFurtherContinuationIsInjected)
 }
 
 // engineWithToolLoopDurationCap resets scenario state and sets the duration
 // cap every budget guard shares.
 func (s *toolLoopBudgetSteps) engineWithToolLoopDurationCap() error {
 	s.cap = 200 * time.Millisecond
+	s.maxIterations = 0
 	s.provider = &toolBudgetScriptedProvider{name: "tool-budget-provider"}
 	s.tools = nil
 	s.capturer = &capTripCapturer{}
 	s.stopReasons = nil
 	s.ran = false
+	s.bgCancel = nil
 	return nil
 }
 
@@ -329,6 +354,71 @@ func (s *toolLoopBudgetSteps) parentLoopDoesNotTripToolTimeBackstop() error {
 	}
 	if s.observedStopReason(session.StopReasonToolLoopExceeded) {
 		return fmt.Errorf("the delegated turn must complete naturally, not with tool_loop_exceeded")
+	}
+	return nil
+}
+
+// sessionWhoseBackgroundTasksNeverComplete wires a delegate tool whose
+// background manager holds one task that blocks until the scenario context
+// is cancelled, so activeBackgroundTaskCount stays above zero for the whole
+// turn.
+func (s *toolLoopBudgetSteps) sessionWhoseBackgroundTasksNeverComplete() error {
+	s.cap = 0
+	s.maxIterations = 3
+	s.provider = &toolBudgetScriptedProvider{name: "tool-budget-provider"}
+	s.capturer = &capTripCapturer{}
+	s.stopReasons = nil
+	s.ran = false
+
+	spinner := &budgetSleepTool{name: "spinner", delay: 0}
+	s.tools = []tool.Tool{spinner}
+	s.provider.turns = []toolBudgetTurn{
+		{content: "working", toolName: "spinner"},
+	}
+
+	bgMgr := engine.NewBackgroundTaskManager()
+	delegate := engine.NewDelegateToolWithBackground(nil, agent.Delegation{}, "tool-budget-agent", bgMgr, nil)
+	s.tools = append(s.tools, delegate)
+
+	const bgSessionID = "tool-budget-bg-session"
+	taskCtx, cancel := context.WithCancel(context.WithValue(context.Background(), session.IDKey{}, bgSessionID))
+	s.bgCancel = cancel
+	bgMgr.Launch(taskCtx, "stuck-bg-task", "tool-budget-agent", "never completes",
+		func(ctx context.Context) (string, error) {
+			<-ctx.Done()
+			return "", ctx.Err()
+		})
+	return nil
+}
+
+// toolLoopRequestsMoreThan20BackgroundTaskContinuations runs the turn whose
+// background tasks never settle, forcing the loop past the continuation
+// budget under a watchdog.
+func (s *toolLoopBudgetSteps) toolLoopRequestsMoreThan20BackgroundTaskContinuations() error {
+	return s.runTurn("tool-budget-bg-session", "Go", 15*time.Second)
+}
+
+// turnTerminatesWithToolLoopExceededStopReason asserts the terminal chunk
+// carried the tool-loop-exceeded stop reason.
+func (s *toolLoopBudgetSteps) turnTerminatesWithToolLoopExceededStopReason() error {
+	if !s.ran {
+		return fmt.Errorf("no turn was streamed")
+	}
+	if !s.observedStopReason(session.StopReasonToolLoopExceeded) {
+		return fmt.Errorf("expected a terminal tool_loop_exceeded stop reason")
+	}
+	return nil
+}
+
+// noFurtherContinuationIsInjected asserts exactly twenty background-task
+// continuations were injected before the turn terminated.
+func (s *toolLoopBudgetSteps) noFurtherContinuationIsInjected() error {
+	if s.bgCancel != nil {
+		defer s.bgCancel()
+	}
+	injected := s.capturer.backgroundContinuationCount()
+	if injected != 20 {
+		return fmt.Errorf("expected exactly 20 background-task continuations, got %d", injected)
 	}
 	return nil
 }

@@ -12,3 +12,9 @@ Feature: Tool-loop budgets count tool execution time
     And a delegation tool whose child engine runs for 500ms
     When the delegation completes
     Then the parent tool loop does not trip the tool-time backstop
+
+  Scenario: Background-task continuations are capped
+    Given a session whose background tasks never complete
+    When the tool loop requests more than 20 background-task continuations
+    Then the turn terminates with StopReason "StopReasonToolLoopExceeded"
+    And no further continuation is injected
