@@ -98,6 +98,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterQuestionSteps(ctx)
 	RegisterMCPServerLifecycleSteps(ctx)
 	RegisterGateAmendmentSteps(ctx)
+	RegisterGateFailureBlockingSteps(ctx)
 	RegisterEngineSteps(ctx)
 	RegisterBatchedPersistenceSteps(ctx)
 	RegisterToolLoopBudgetSteps(ctx)
