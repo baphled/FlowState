@@ -100,9 +100,11 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterGateAmendmentSteps(ctx)
 	RegisterEngineSteps(ctx)
 	RegisterBatchedPersistenceSteps(ctx)
+	RegisterToolLoopBudgetSteps(ctx)
 	registerOpenAICompatClassificationSteps(ctx)
 	registerTurnDeadlineSteps(ctx)
 	RegisterBashProcessKillSteps(ctx, &BashProcessKillSteps{})
 	RegisterFailureReasonSteps(ctx, &failureReasonSteps{})
+	RegisterStopButtonSteps(ctx, &stopButtonSteps{})
 	VoiceTalkContext(ctx)
 }
