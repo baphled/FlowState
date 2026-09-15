@@ -101,5 +101,6 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterEngineSteps(ctx)
 	RegisterBatchedPersistenceSteps(ctx)
 	registerOpenAICompatClassificationSteps(ctx)
+	registerTurnDeadlineSteps(ctx)
 	VoiceTalkContext(ctx)
 }

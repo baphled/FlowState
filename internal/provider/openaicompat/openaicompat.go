@@ -28,6 +28,26 @@ import (
 // mid-generation, producing malformed tool calls.
 const defaultMaxTokens = 8192
 
+// turnStreamTimeout is the total per-turn streaming wall-clock cap applied
+// inside RunStreamWithObserver (Sept 2026 delegation-stall fix). Defaults to
+// shared.DefaultTurnStreamTimeout (15 min); zero or negative disables the
+// cap. Package-level (not a parameter) so every openaicompat-routed provider
+// (openai, openzen, zai, ollamacloud, github-copilot) inherits it without
+// call-site changes. Overridable in tests via SetTurnStreamTimeout.
+var turnStreamTimeout = shared.DefaultTurnStreamTimeout
+
+// SetTurnStreamTimeout overrides the per-turn streaming deadline for tests
+// and operator tooling. A zero or negative value disables the cap.
+//
+// Expected:
+//   - d is the desired per-turn ceiling; <= 0 disables.
+//
+// Returns: none.
+// Side effects: mutates the package-level turnStreamTimeout.
+func SetTurnStreamTimeout(d time.Duration) {
+	turnStreamTimeout = d
+}
+
 // BuildMessages converts a slice of provider.Message to OpenAI-compatible message parameters.
 //
 // Expected:
@@ -460,6 +480,25 @@ func RunStreamWithObserver(
 	// omitzero contract.
 	params.StreamOptions.IncludeUsage = openaiAPI.Bool(true)
 
+	// Per-turn stream deadline (Sept 2026 delegation-stall fix). The
+	// stream-guard client only caps time-to-first-byte; once headers
+	// arrive the openai-go SDK applies no total-duration ceiling, so a
+	// trickle-forever upstream (live reproducer: session 32aab76c,
+	// glm-5.3/zai — one turn ran ~2h 34m) holds the turn open
+	// indefinitely. Bound the whole turn via context.WithTimeout and,
+	// on expiry, close the stream cleanly with an explicit retriable
+	// *provider.Error wrapping shared.ErrTurnDeadlineExceeded — never
+	// a silent hang. TurnStreamTimeout is the override seam (tests set
+	// it near-zero via SetTurnStreamTimeout); zero disables. The
+	// cancel is deferred inside the pump goroutine below — this
+	// function returns immediately after spawning it, so a
+	// function-scoped defer cancel() would cancel the deadline
+	// context at birth and kill every stream.
+	var turnCancel context.CancelFunc
+	if turnStreamTimeout > 0 {
+		ctx, turnCancel = context.WithTimeout(ctx, turnStreamTimeout)
+	}
+
 	// PR3 success-path lift: when an observer is registered, ask the
 	// SDK to populate rawResp on a successful handshake so we can hand
 	// the response headers to the quota adapter. Mirrors the Anthropic
@@ -474,6 +513,9 @@ func RunStreamWithObserver(
 
 	ch := make(chan provider.StreamChunk, 16)
 	go func() {
+		if turnCancel != nil {
+			defer turnCancel()
+		}
 		defer close(ch)
 		stream := client.Chat.Completions.NewStreaming(ctx, params, streamOpts...)
 		// observerNotified is closure-local so a single stream cannot
@@ -613,7 +655,7 @@ func RunStreamWithObserver(
 			}
 		}
 		if err := stream.Err(); err != nil {
-			shared.SendChunk(ctx, ch, provider.StreamChunk{Error: wrapStreamError(providerName, err), Done: true})
+			sendTerminalStreamError(ctx, ch, providerName, err)
 			return
 		}
 		flushAccumulatedToolCalls(ctx, ch, &acc, emitted)
@@ -748,6 +790,35 @@ func wrapStreamError(providerName string, err error) error {
 		Message:   err.Error(),
 		RawError:  err,
 	}
+}
+
+// sendTerminalStreamError wraps err and emits the terminal Error+Done chunk
+// that closes a stream. When the per-turn deadline (turnStreamTimeout) is the
+// cause — detected via context.DeadlineExceeded on the deadline-scoped ctx —
+// the error is a retriable *provider.Error of ErrorTypeNetworkError wrapping
+// shared.ErrTurnDeadlineExceeded so failover can advance and consumers can
+// errors.Is-detect the deadline kill. Any other error takes the legacy
+// wrapStreamError classification path.
+//
+// Expected:
+//   - ctx is the (possibly deadline-scoped) stream context.
+//   - ch is the downstream StreamChunk channel.
+//   - providerName identifies the provider for error tagging.
+//   - err is a non-nil terminal error from stream.Err().
+//
+// Returns: none.
+// Side effects: sends one terminal chunk on ch.
+func sendTerminalStreamError(ctx context.Context, ch chan<- provider.StreamChunk, providerName string, err error) {
+	if errors.Is(err, context.DeadlineExceeded) && ctx.Err() != nil {
+		err = &provider.Error{
+			ErrorType:   provider.ErrorTypeNetworkError,
+			Provider:    providerName,
+			Message:     fmt.Sprintf("%s: %s", shared.ErrTurnDeadlineExceeded.Error(), providerName),
+			IsRetriable: true,
+			RawError:    shared.ErrTurnDeadlineExceeded,
+		}
+	}
+	shared.SendChunk(ctx, ch, provider.StreamChunk{Error: wrapStreamError(providerName, err), Done: true})
 }
 
 // extractReasoningContent pulls a `reasoning_content` text fragment out of an

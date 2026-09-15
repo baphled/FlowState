@@ -1,6 +1,7 @@
 package shared
 
 import (
+	"errors"
 	"net/http"
 	"time"
 )
@@ -26,6 +27,32 @@ import (
 // internal/provider/*/stream_guard_test.go for the reproductions (black-hole
 // no-headers servers + the openaicompat HTTP/2 mechanism proof).
 const DefaultResponseHeaderTimeout = 60 * time.Second
+
+// DefaultTurnStreamTimeout bounds the TOTAL wall-clock duration of a
+// single provider streaming turn (handshake + body), complementing
+// DefaultResponseHeaderTimeout which only covers time-to-first-byte.
+// Without this, a provider that trickles chunks forever (or an SDK
+// retry loop inside one logical turn) can hold a turn open for hours —
+// live reproducer: session 32aab76c (glm-5.3/zai, Sept 2026) ran a
+// single assistant turn for 9,231,919 ms (~2h 34m) before terminating
+// with tool_use_no_calls. The engine idle watchdog (60s gap) cannot
+// catch a stream that keeps emitting chunks, and the TTFB guard
+// cannot catch anything after the first byte — only a total-turn
+// deadline caps both.
+//
+// Applied via context.WithTimeout inside openaicompat.RunStreamWithObserver
+// (and the openai/zai providers that route through it). On expiry the
+// stream closes cleanly with a *provider.Error of ErrorTypeNetworkError
+// (retriable) carrying ErrTurnDeadlineExceeded — never a silent hang.
+//
+// Zero/negative values in the TurnDeadline override disable the cap.
+const DefaultTurnStreamTimeout = 15 * time.Minute
+
+// ErrTurnDeadlineExceeded is the sentinel wrapped by the terminal
+// error chunk emitted when DefaultTurnStreamTimeout expires mid-turn.
+// Consumers can detect it with errors.Is to distinguish a deadline
+// kill from a transport failure.
+var ErrTurnDeadlineExceeded = errors.New("per-turn stream deadline exceeded")
 
 // StreamGuardHTTPClient returns an *http.Client whose transport is a clone of
 // http.DefaultTransport (preserving proxy resolution, keep-alive pooling and
