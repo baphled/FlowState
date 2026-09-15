@@ -51,8 +51,10 @@ func (e *Engine) streamWithToolLoop(
 	var todoContinuationCount int
 	var noProgressContinuations int
 	var lastTodoContinuationSnapshot []todo.Item
+	var backgroundContinuationCount int
 	const maxTodoContinuations = 20
 	const maxNoProgressContinuations = 3
+	const maxBackgroundContinuations = 20
 	// Persist local continuation counters to session-scoped maps on every
 	// exit so they survive across Stream() re-invocations. Without this the
 	// local variables reset on each streamWithToolLoop entry, defeating the
@@ -1184,6 +1186,18 @@ func (e *Engine) streamWithToolLoop(
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
 			} else if activeTasks := e.activeBackgroundTaskCount(sessionID); activeTasks > 0 {
+				if backgroundContinuationCount >= maxBackgroundContinuations {
+					slog.Warn("background continuation budget exhausted",
+						"session", sessionID,
+						"active_tasks", activeTasks,
+						"max_continuations", maxBackgroundContinuations,
+					)
+					if doneAfterTodoCheck("background continuation budget exhausted") {
+						continue
+					}
+					return
+				}
+				backgroundContinuationCount++
 				slog.Info("background tasks still active, continuing",
 					"session", sessionID,
 					"active_tasks", activeTasks,

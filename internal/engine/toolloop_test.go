@@ -150,3 +150,106 @@ var _ = Describe("Engine tool-loop total tool-time backstop", func() {
 		})
 	})
 })
+
+var _ = Describe("Engine background-task continuation budget", func() {
+	drain := func(chunks <-chan provider.StreamChunk) ([]provider.StreamChunk, bool) {
+		var received []provider.StreamChunk
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for c := range chunks {
+				received = append(received, c)
+			}
+		}()
+		select {
+		case <-done:
+			return received, true
+		case <-time.After(10 * time.Second):
+			return received, false
+		}
+	}
+
+	terminalStopReason := func(received []provider.StreamChunk) (string, bool) {
+		var reason string
+		var sawDone bool
+		for _, c := range received {
+			if c.Done {
+				reason = c.StopReason
+				sawDone = true
+			}
+		}
+		return reason, sawDone
+	}
+
+	Context("when background tasks never complete and the loop keeps requesting continuations", func() {
+		It("terminates the turn after twenty background-task continuations", func() {
+			manifest := agent.Manifest{
+				ID:   "bg-continuation-budget-agent",
+				Name: "BG Continuation Budget Agent",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"spinner", "delegate"},
+				},
+			}
+
+			spinner := &delayedExecutableMockTool{
+				name:       "spinner",
+				execResult: tool.Result{Output: "spun"},
+			}
+
+			registry := tool.NewRegistry()
+			registry.Register(spinner)
+			registry.SetPermission(spinner.Name(), tool.Allow)
+
+			prov := &repeatingToolProvider{
+				name: "bg-continuation-spin",
+				call: &provider.ToolCall{
+					ID:        "call_spinner",
+					Name:      "spinner",
+					Arguments: map[string]any{"x": 1},
+				},
+			}
+
+			const sessionID = "bg-continuation-budget-session"
+			bgMgr := engine.NewBackgroundTaskManager()
+			delegate := engine.NewDelegateToolWithBackground(
+				nil, agent.Delegation{}, "bg-continuation-budget-agent", bgMgr, nil)
+
+			taskCtx, cancel := context.WithCancel(
+				context.WithValue(context.Background(), session.IDKey{}, sessionID))
+			defer cancel()
+			bgMgr.Launch(taskCtx, "stuck-bg", "bg-continuation-budget-agent", "never completes",
+				func(ctx context.Context) (string, error) {
+					<-ctx.Done()
+					return "", ctx.Err()
+				})
+
+			eng := engine.New(engine.Config{
+				ChatProvider: prov,
+				Manifest:     manifest,
+				Tools:        []tool.Tool{spinner, delegate},
+				ToolRegistry: registry,
+			})
+			eng.SetMaxToolLoopIterationsForTest(2)
+			eng.SetMaxIdenticalToolCallsForTest(0)
+			eng.SetMaxSameToolPatternCallsForTest(0)
+			eng.SetMaxToolLoopDurationForTest(30 * time.Second)
+
+			streamCtx := context.WithValue(context.Background(), session.IDKey{}, sessionID)
+			chunks, err := eng.Stream(streamCtx, sessionID, "Go")
+			Expect(err).NotTo(HaveOccurred())
+
+			received, closed := drain(chunks)
+			Expect(closed).To(BeTrue(),
+				"the background continuation budget must terminate the turn instead of cycling forever")
+
+			reason, sawDone := terminalStopReason(received)
+			Expect(sawDone).To(BeTrue(), "expected a terminal Done chunk")
+			Expect(reason).To(Equal(session.StopReasonToolLoopExceeded),
+				"exhausting the background continuation budget must stamp tool_loop_exceeded")
+			Expect(prov.callCount()).To(BeNumerically(">=", 40),
+				"the budget must allow twenty continuations before tripping")
+			Expect(prov.callCount()).To(BeNumerically("<=", 60),
+				"the budget must stop the cycle far below unbounded spinning")
+		})
+	})
+})
