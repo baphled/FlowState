@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/baphled/flowstate/internal/session"
@@ -16,6 +17,12 @@ import (
 )
 
 const timeout = 30 * time.Second
+
+// pipeDrainGrace bounds how long the stdio pipes may keep being drained
+// after the command exits or its context fires. It stops a descendant that
+// escaped the process-group kill while still holding the pipe file
+// descriptors from blocking the tool indefinitely.
+const pipeDrainGrace = 5 * time.Second
 
 // Tool executes bash commands with a configurable timeout.
 type Tool struct {
@@ -109,7 +116,10 @@ func (t *Tool) IsStateModifying() bool { return true }
 //   - An error if the command argument is missing.
 //
 // Side effects:
-//   - Executes a bash subprocess with a 30-second timeout.
+//   - Executes a bash subprocess in its own process group with a 30-second
+//     timeout. On context cancellation the whole group is signalled with
+//     SIGKILL, and the stdio pipes are force-closed after pipeDrainGrace so
+//     a descendant holding them cannot block the return.
 func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
 	command, ok := input.Arguments["command"].(string)
 	if !ok || command == "" {
@@ -126,10 +136,21 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "bash", "-c", command)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	cmd.WaitDelay = pipeDrainGrace
 	out, err := cmd.CombinedOutput()
 	trimmed := strings.TrimSpace(string(out))
 	capped := capOutput(ctx, trimmed)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return tool.Result{
+				Output: capped,
+				Error:  fmt.Errorf("command failed: %w: %w", err, ctxErr),
+			}, nil
+		}
 		return tool.Result{
 			Output: capped,
 			Error:  fmt.Errorf("command failed: %w", err),
