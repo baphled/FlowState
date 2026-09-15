@@ -842,5 +842,52 @@ var _ = Describe("Dispatcher.DispatchSessioned — Turn integration", func() {
 			Expect(firstHandle.TurnID).NotTo(BeEmpty())
 			Eventually(broker.publishCount, "5s").Should(Equal(1))
 		})
+
+		It("releases the queued prompt for dispatch after the running turn's stream completes", func() {
+			probe := &turnProbeStreamer{
+				chunks:       []provider.StreamChunk{{Content: "slow-ack"}, {Done: true}},
+				emitInterval: 20 * time.Millisecond,
+			}
+			mgr := &turnSessionManager{
+				sess:     session.Session{ID: "sess-drain", AgentID: "default-assistant"},
+				streamer: probe,
+			}
+			turns := turn.NewRegistry()
+			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, turns)
+
+			first, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
+				SessionID:    "sess-drain",
+				AgentID:      "default-assistant",
+				Content:      "first turn",
+				ScanMentions: false,
+			}, nil)
+			Expect(err).NotTo(HaveOccurred())
+
+			second, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
+				SessionID:    "sess-drain",
+				AgentID:      "default-assistant",
+				Content:      "second turn",
+				ScanMentions: false,
+			}, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(second.Queued).To(BeTrue(),
+				"the second prompt must queue behind the running turn")
+
+			Eventually(func() turn.Status {
+				t, getErr := turns.Get(first.TurnID)
+				if getErr != nil {
+					return ""
+				}
+				return t.Status
+			}, "5s").Should(Equal(turn.StatusCompleted),
+				"turn 1 must complete so the queue release has a terminal turn to dispatch behind")
+
+			Eventually(func() int {
+				mgr.mu.Lock()
+				defer mgr.mu.Unlock()
+				return len(mgr.streamCtxs)
+			}, "5s").Should(Equal(2),
+				"the queued prompt must be dispatched once the running turn's stream pipeline closes — the stop-button flagship's queued-prompt-release leg")
+		})
 	})
 })

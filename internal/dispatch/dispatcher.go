@@ -1534,8 +1534,21 @@ func (d *Dispatcher) wrapWithSwarmLifecycle(
 // production case after Commit 2 — chunks drain to sink so the streamer
 // goroutine terminates cleanly.
 //
+// Either way, draining runs on its own goroutine and the dispatch
+// goroutine returns immediately — so the ONLY place that observes
+// stream-pipeline completion is the drain goroutine itself. It fires
+// drainQueue when the range ends: at that point the turn-lifecycle wrap
+// has already settled the turn terminal and the swarm wrap has already
+// released the session gate (LIFO defer order in each wrap), so a
+// queued prompt's DispatchSessioned finds a free session. Without this
+// completion hook the queue was only ever drained from the dispatch
+// goroutine's synchronous tail — which fires while the turn is still
+// Running — so a prompt queued behind a long (or cancelled) turn sat in
+// the queue forever.
+//
 // Side effects:
-//   - Spawns one goroutine that consumes src to completion.
+//   - Spawns one goroutine that consumes src to completion and then
+//     drains the session's prompt queue.
 //
 // Expected: parameters for fanOutSessionedChunks.
 // Returns: result of fanOutSessionedChunks.
@@ -1544,9 +1557,8 @@ func (d *Dispatcher) fanOutSessionedChunks(
 	src <-chan provider.StreamChunk,
 	consumer streaming.StreamConsumer,
 ) {
-	_ = sessionID // retained for symmetry / future use
 	if consumer != nil {
-		go d.driveConsumer(src, consumer)
+		go d.driveConsumer(sessionID, src, consumer)
 		return
 	}
 	// No consumer — drain to sink so the streamer goroutine terminates.
@@ -1555,23 +1567,29 @@ func (d *Dispatcher) fanOutSessionedChunks(
 	go func() {
 		for range src {
 		}
+		d.drainQueue(sessionID)
 	}()
 }
 
 // driveConsumer ranges over src and delivers each chunk through the
-// streaming.StreamConsumer interface. Pulled out for symmetry with the
-// broker+consumer tee path and to keep fanOutSessionedChunks readable.
+// streaming.StreamConsumer interface, then drains the session's prompt
+// queue so a prompt queued behind this turn dispatches once the
+// consumer has observed the stream's completion. Pulled out for
+// symmetry with the broker+consumer tee path and to keep
+// fanOutSessionedChunks readable.
 //
 // Side effects:
 //   - Reads src to completion.
 //   - Calls consumer.WriteChunk / WriteError / Done for each chunk.
+//   - Drains the session queue after the stream completes.
 //
 // Expected: parameters for driveConsumer.
 // Returns: result of driveConsumer.
-func (d *Dispatcher) driveConsumer(src <-chan provider.StreamChunk, consumer streaming.StreamConsumer) {
+func (d *Dispatcher) driveConsumer(sessionID string, src <-chan provider.StreamChunk, consumer streaming.StreamConsumer) {
 	for chunk := range src {
 		d.deliverChunkToConsumer(chunk, consumer)
 	}
+	d.drainQueue(sessionID)
 }
 
 // deliverChunkToConsumer routes a single chunk through the
