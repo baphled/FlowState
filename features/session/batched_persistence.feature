@@ -24,6 +24,13 @@ Feature: Batched session persistence
     Then the session sidecar contains 3 messages
 
   @persistence
+  Scenario: A tool-anomaly softened append still marks the sidecar dirty
+    Given a persisted session
+    When I append an assistant message with stop reason tool_use_no_calls
+    And I flush pending session persists
+    Then the session sidecar contains 1 messages
+
+  @persistence
   Scenario: Closing a session flushes pending appends immediately
     When I append 3 messages to a persisted session
     And I close the session

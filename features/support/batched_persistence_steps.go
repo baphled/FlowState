@@ -23,6 +23,8 @@ func RegisterBatchedPersistenceSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the session sidecar contains (\d+) messages$`, s.sidecarCount)
 	ctx.Step(`^I flush pending session persists$`, s.flushPending)
 	ctx.Step(`^I close the session$`, s.closeSession)
+	ctx.Step(`^a persisted session$`, s.setupPersistedSession)
+	ctx.Step(`^I append an assistant message with stop reason tool_use_no_calls$`, s.appendToolAnomaly)
 	ctx.Step(`^the session sidecar status is completed$`, s.sidecarCompleted)
 }
 
@@ -87,6 +89,41 @@ func (s *batchedPersistenceSteps) sidecarCount(n int) error {
 
 func (s *batchedPersistenceSteps) flushPending() error {
 	return s.manager.FlushPendingPersists()
+}
+
+func (s *batchedPersistenceSteps) appendToolAnomaly() error {
+	if err := s.ensureSession(); err != nil {
+		return err
+	}
+	s.manager.AppendMessage(s.id, session.Message{
+		Role:       "assistant",
+		Content:    "announced tool use but emitted no calls",
+		StopReason: session.StopReasonToolUseNoCalls,
+	})
+	return nil
+}
+
+func (s *batchedPersistenceSteps) setupPersistedSession() error {
+	return s.ensureSession()
+}
+
+func (s *batchedPersistenceSteps) ensureSession() error {
+	if s.manager != nil {
+		return nil
+	}
+	dir, err := os.MkdirTemp("", "bdd-batched-persist-*")
+	if err != nil {
+		return err
+	}
+	s.dir = dir
+	s.manager = session.NewManager(nil)
+	s.manager.SetSessionsDir(dir)
+	sess, err := s.manager.CreateSession("bdd-agent")
+	if err != nil {
+		return err
+	}
+	s.id = sess.ID
+	return nil
 }
 
 func (s *batchedPersistenceSteps) closeSession() error {

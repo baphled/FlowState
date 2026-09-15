@@ -1423,6 +1423,7 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 					mustPersist = true
 				}
 				sess.FailureReason = ""
+				m.markPersistDirtyLocked(sess)
 				m.mu.Unlock()
 				return
 			}
