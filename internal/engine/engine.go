@@ -2702,21 +2702,40 @@ func (e *Engine) SetSessionLookup(lookup SessionLookup) {
 
 // executeToolExecStage bridges a single tool call through the ToolExec lifecycle
 // stage. It wraps executeToolCall, running lifecycle hooks before and after the
-// actual tool execution.
+// actual tool execution, and measures the call's wall-clock time for the tool
+// loop's total-tool-time backstop.
 //
 // Slice 1: the stage handler delegates directly to executeToolCall, preserving
 // existing behaviour. When hooks are registered (future slices) they wrap this
 // call.
 //
-// Expected: parameters for executeToolExecStage.
-// Returns: result of executeToolExecStage.
-// Side effects: None.
+// Expected:
+//   - baseCtx is the tool-loop context carrying the stream output channel.
+//   - sessionID identifies the active session.
+//   - toolCall names a tool registered on the engine.
+//
+// Returns:
+//   - a toolCallExecResult whose nonDelegatedExec field carries the call's
+//     wall-clock execution time when the resolved tool runs under an
+//     engine-injected (or tool-declared positive) deadline, and zero when
+//     the tool is delegation-shaped (InheritsParentToolDeadline) because
+//     the child engine's own tool-loop caps already bound that execution.
+//
+// Side effects:
+//   - None beyond executeToolCall's.
 func (e *Engine) executeToolExecStage(
 	baseCtx context.Context,
 	sessionID string,
 	toolCall *provider.ToolCall,
-) (tool.Result, error) {
-	return e.executeToolCall(baseCtx, sessionID, toolCall)
+) toolCallExecResult {
+	started := time.Now()
+	tr, err := e.executeToolCall(baseCtx, sessionID, toolCall)
+	result := toolCallExecResult{toolCall: toolCall, toolResult: tr, err: err}
+	if InheritsParentToolDeadline(e.lookupTool(toolCall.Name)) {
+		return result
+	}
+	result.nonDelegatedExec = time.Since(started)
+	return result
 }
 
 // executeToolCall ...

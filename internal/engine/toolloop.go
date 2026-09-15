@@ -83,6 +83,7 @@ func (e *Engine) streamWithToolLoop(
 	// slow tools do not consume the duration budget meant to cap
 	// provider round-trips and retry logic.
 	var toolExecDuration time.Duration
+	var nonDelegatedToolExecDuration time.Duration
 	// Turn-local tool-loop guard state. Declared here (never on the Engine)
 	// so concurrent turns can never share it. iterations counts continuations
 	// (about-to-re-request passes); lastFingerprint / identicalRun track the
@@ -388,7 +389,7 @@ func (e *Engine) streamWithToolLoop(
 		sameToolPatternRun = 0
 		lastToolNames = ""
 		loopStart = time.Now()
-		toolExecDuration = 0
+		toolExecDuration, nonDelegatedToolExecDuration = 0, 0
 		e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 		return true
 	}
@@ -580,7 +581,7 @@ func (e *Engine) streamWithToolLoop(
 							sameToolPatternRun = 0
 							lastToolNames = ""
 							loopStart = time.Now()
-							toolExecDuration = 0
+							toolExecDuration, nonDelegatedToolExecDuration = 0, 0
 							e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 							continue
 						} else if stop {
@@ -643,7 +644,7 @@ func (e *Engine) streamWithToolLoop(
 				sameToolPatternRun = 0
 				lastToolNames = ""
 				loopStart = time.Now()
-				toolExecDuration = 0
+				toolExecDuration, nonDelegatedToolExecDuration = 0, 0
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
 			}
@@ -710,7 +711,7 @@ func (e *Engine) streamWithToolLoop(
 							sameToolPatternRun = 0
 							lastToolNames = ""
 							loopStart = time.Now()
-							toolExecDuration = 0
+							toolExecDuration, nonDelegatedToolExecDuration = 0, 0
 							e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 							continue
 						} else if stop {
@@ -772,7 +773,7 @@ func (e *Engine) streamWithToolLoop(
 				sameToolPatternRun = 0
 				lastToolNames = ""
 				loopStart = time.Now()
-				toolExecDuration = 0
+				toolExecDuration, nonDelegatedToolExecDuration = 0, 0
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
 			}
@@ -802,8 +803,9 @@ func (e *Engine) streamWithToolLoop(
 		}
 
 		toolExecStart := time.Now()
-		execResults := e.executeDeduplicatedToolCalls(ctx, sessionID, result.toolCalls, outChan)
+		execResults, nonDelegatedExec := e.executeDeduplicatedToolCalls(ctx, sessionID, result.toolCalls, outChan)
 		toolExecDuration += time.Since(toolExecStart)
+		nonDelegatedToolExecDuration += nonDelegatedExec
 
 		// When a tool execution returns a hard error (not a tool-level Result.Error)
 		// persist a synthetic tool_result so the session history has a complete
@@ -995,14 +997,17 @@ func (e *Engine) streamWithToolLoop(
 		repeatTripped := e.maxIdenticalToolCalls > 0 && identicalRun >= e.maxIdenticalToolCalls
 		backstopTripped := e.maxToolLoopIterations > 0 && iterations >= e.maxToolLoopIterations
 		durationTripped := e.maxToolLoopDuration > 0 && elapsed >= e.maxToolLoopDuration
+		totalToolTimeTripped := e.maxToolLoopDuration > 0 && nonDelegatedToolExecDuration >= e.maxToolLoopDuration
 		sameToolTripped := e.maxSameToolPatternCalls > 0 && sameToolPatternRun >= e.maxSameToolPatternCalls
 		rejectionTripped := consecutiveRejectedToolCalls >= maxRejectedToolCalls
-		if repeatTripped || backstopTripped || durationTripped || sameToolTripped || rejectionTripped {
+		if repeatTripped || backstopTripped || durationTripped || totalToolTimeTripped || sameToolTripped || rejectionTripped {
 			reason := "iteration_backstop"
 			if repeatTripped {
 				reason = "identical_call_repeat"
 			} else if durationTripped {
 				reason = "duration_backstop"
+			} else if totalToolTimeTripped {
+				reason = "total_tool_time_backstop"
 			} else if sameToolTripped {
 				reason = "same_tool_pattern"
 			} else if rejectionTripped {
@@ -1015,6 +1020,7 @@ func (e *Engine) streamWithToolLoop(
 				"identical_run", identicalRun,
 				"same_tool_run", sameToolPatternRun,
 				"elapsed", elapsed,
+				"non_delegated_tool_time", nonDelegatedToolExecDuration,
 				"max_iterations", e.maxToolLoopIterations,
 				"max_duration", e.maxToolLoopDuration,
 				"max_identical", e.maxIdenticalToolCalls,
@@ -1026,7 +1032,7 @@ func (e *Engine) streamWithToolLoop(
 					todosAllComplete = true
 				}
 			}
-			if !delegationGraceUsed && !durationTripped && (batchContainsDelegate(result.toolCalls) || (todosAllComplete && !e.hasActiveBackgroundTasks(sessionID))) {
+			if !delegationGraceUsed && !durationTripped && !totalToolTimeTripped && (batchContainsDelegate(result.toolCalls) || (todosAllComplete && !e.hasActiveBackgroundTasks(sessionID))) {
 				delegationGraceUsed = true
 				slog.Info("delegation grace round: model delegated work with no incomplete todos",
 					"session", sessionID,
@@ -1053,7 +1059,7 @@ func (e *Engine) streamWithToolLoop(
 				sameToolPatternRun = 0
 				lastToolNames = ""
 				loopStart = time.Now()
-				toolExecDuration = 0
+				toolExecDuration, nonDelegatedToolExecDuration = 0, 0
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
 			}
@@ -1098,7 +1104,7 @@ func (e *Engine) streamWithToolLoop(
 							sameToolPatternRun = 0
 							lastToolNames = ""
 							loopStart = time.Now()
-							toolExecDuration = 0
+							toolExecDuration, nonDelegatedToolExecDuration = 0, 0
 							e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 							continue
 						} else if stop {
@@ -1174,7 +1180,7 @@ func (e *Engine) streamWithToolLoop(
 				sameToolPatternRun = 0
 				lastToolNames = ""
 				loopStart = time.Now() // reset wall-clock budget for continuation
-				toolExecDuration = 0
+				toolExecDuration, nonDelegatedToolExecDuration = 0, 0
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
 			} else if activeTasks := e.activeBackgroundTaskCount(sessionID); activeTasks > 0 {
@@ -1204,10 +1210,10 @@ func (e *Engine) streamWithToolLoop(
 				sameToolPatternRun = 0
 				lastToolNames = ""
 				loopStart = time.Now()
-				toolExecDuration = 0
+				toolExecDuration, nonDelegatedToolExecDuration = 0, 0
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
-			} else if !finalResponseGraceUsed && !durationTripped && delegationGraceUsed &&
+			} else if !finalResponseGraceUsed && !durationTripped && !totalToolTimeTripped && delegationGraceUsed &&
 				!batchContainsDelegate(result.toolCalls) &&
 				strings.TrimSpace(result.responseContent) == "" {
 				finalResponseGraceUsed = true
@@ -1236,7 +1242,7 @@ func (e *Engine) streamWithToolLoop(
 				sameToolPatternRun = 0
 				lastToolNames = ""
 				loopStart = time.Now()
-				toolExecDuration = 0
+				toolExecDuration, nonDelegatedToolExecDuration = 0, 0
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
 			} else if !forcedSummaryUsed {
@@ -1632,11 +1638,15 @@ func deduplicateToolCalls(toolCalls []*provider.ToolCall) (unique []*provider.To
 	return unique, mapping
 }
 
-// toolCallExecResult holds the outcome of a single tool call execution.
+// toolCallExecResult holds the outcome of a single tool call execution. The
+// nonDelegatedExec field carries the call's wall-clock execution time unless
+// the resolved tool is delegation-shaped (see InheritsParentToolDeadline),
+// in which case it is zero.
 type toolCallExecResult struct {
-	toolCall   *provider.ToolCall
-	toolResult tool.Result
-	err        error
+	toolCall         *provider.ToolCall
+	toolResult       tool.Result
+	err              error
+	nonDelegatedExec time.Duration
 }
 
 // executeDeduplicatedToolCalls deduplicates identical tool calls within a
@@ -1647,11 +1657,12 @@ type toolCallExecResult struct {
 // glm-5.2 generating 9 identical todo_update calls).
 //
 // Expected: parameters for executeDeduplicatedToolCalls.
-// Returns: result of executeDeduplicatedToolCalls.
+// Returns: the per-call results plus the cumulative non-delegated execution
+// time of the unique executions, for the caller's total-tool-time backstop.
 // Side effects: None.
 func (e *Engine) executeDeduplicatedToolCalls(
 	ctx context.Context, sessionID string, toolCalls []*provider.ToolCall, outChan chan<- provider.StreamChunk,
-) []toolCallExecResult {
+) ([]toolCallExecResult, time.Duration) {
 	uniqCalls, dedupMapping := deduplicateToolCalls(toolCalls)
 	if len(uniqCalls) < len(toolCalls) {
 		slog.Warn("deduplicated identical tool calls before execution",
@@ -1660,9 +1671,9 @@ func (e *Engine) executeDeduplicatedToolCalls(
 			"unique", len(uniqCalls),
 		)
 	}
-	execResults := e.executeToolCallBatch(ctx, sessionID, uniqCalls, outChan)
+	execResults, nonDelegatedExec := e.executeToolCallBatch(ctx, sessionID, uniqCalls, outChan)
 	if len(uniqCalls) == len(toolCalls) {
-		return execResults
+		return execResults, nonDelegatedExec
 	}
 	fullResults := make([]toolCallExecResult, len(toolCalls))
 	for i, repIdx := range dedupMapping {
@@ -1672,7 +1683,7 @@ func (e *Engine) executeDeduplicatedToolCalls(
 			err:        execResults[repIdx].err,
 		}
 	}
-	return fullResults
+	return fullResults, nonDelegatedExec
 }
 
 // executeToolCallBatch runs all tool calls concurrently and returns results in
@@ -1680,38 +1691,36 @@ func (e *Engine) executeDeduplicatedToolCalls(
 // this path so the message-assembly code is uniform.
 //
 // Expected: parameters for executeToolCallBatch.
-// Returns: result of executeToolCallBatch.
+// Returns: the per-call results plus the cumulative non-delegated execution
+// time across the batch, for the caller's total-tool-time backstop.
 // Side effects: None.
 func (e *Engine) executeToolCallBatch(
 	ctx context.Context, sessionID string, toolCalls []*provider.ToolCall, outChan chan<- provider.StreamChunk,
-) []toolCallExecResult {
+) ([]toolCallExecResult, time.Duration) {
 	results := make([]toolCallExecResult, len(toolCalls))
-	if len(toolCalls) == 1 {
-		tc := toolCalls[0]
-		tr, err := e.executeToolExecStage(WithStreamOutput(ctx, outChan), sessionID, tc)
-		results[0] = toolCallExecResult{toolCall: tc, toolResult: tr, err: err}
-		return results
-	}
-
-	if batchHasStateModifier(e.tools, toolCalls) {
+	switch {
+	case len(toolCalls) == 1:
+		results[0] = e.executeToolExecStage(WithStreamOutput(ctx, outChan), sessionID, toolCalls[0])
+	case batchHasStateModifier(e.tools, toolCalls):
 		for i, tc := range toolCalls {
-			tr, err := e.executeToolExecStage(WithStreamOutput(ctx, outChan), sessionID, tc)
-			results[i] = toolCallExecResult{toolCall: tc, toolResult: tr, err: err}
+			results[i] = e.executeToolExecStage(WithStreamOutput(ctx, outChan), sessionID, tc)
 		}
-		return results
+	default:
+		var wg sync.WaitGroup
+		for i, tc := range toolCalls {
+			wg.Add(1)
+			go func(i int, tc *provider.ToolCall) {
+				defer wg.Done()
+				results[i] = e.executeToolExecStage(WithStreamOutput(ctx, outChan), sessionID, tc)
+			}(i, tc)
+		}
+		wg.Wait()
 	}
-
-	var wg sync.WaitGroup
-	for i, tc := range toolCalls {
-		wg.Add(1)
-		go func(i int, tc *provider.ToolCall) {
-			defer wg.Done()
-			tr, err := e.executeToolExecStage(WithStreamOutput(ctx, outChan), sessionID, tc)
-			results[i] = toolCallExecResult{toolCall: tc, toolResult: tr, err: err}
-		}(i, tc)
+	var nonDelegatedExec time.Duration
+	for i := range results {
+		nonDelegatedExec += results[i].nonDelegatedExec
 	}
-	wg.Wait()
-	return results
+	return results, nonDelegatedExec
 }
 
 // batchHasStateModifier reports whether any tool call in the batch targets a
@@ -2280,6 +2289,33 @@ func (e *Engine) forwardToolCallChunk(
 		sessionID, chunk.ToolCallID, chunk.ToolCall.Name, chunk.ToolCall.Arguments,
 	)
 	outChan <- chunk
+}
+
+// InheritsParentToolDeadline reports whether the tool opts out of every
+// engine-injected per-tool deadline by implementing tool.TimeoutOverrider
+// with a zero Timeout — the delegation shape (DelegateTool is the only
+// implementation). It mirrors the Timeout() == 0 branch of deriveToolCtx
+// and MUST stay in sync with it.
+//
+// The tool loop's total-tool-time backstop excludes execution time spent
+// in such tools: a Timeout() == 0 child runs its own tool loop with its
+// own duration, iteration, and repeat caps, so counting the child against
+// the parent's cap would double-cap legitimate long child runs.
+//
+// Expected:
+//   - t is the resolved Tool about to be executed; may be nil.
+//
+// Returns:
+//   - true only when t implements tool.TimeoutOverrider and declares no
+//     budget of its own.
+//
+// Side effects:
+//   - None; pure classification.
+func InheritsParentToolDeadline(t tool.Tool) bool {
+	if override, ok := t.(tool.TimeoutOverrider); ok {
+		return override.Timeout() <= 0
+	}
+	return false
 }
 
 // deriveToolCtx returns the context a single tool invocation runs under,
