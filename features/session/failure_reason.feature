@@ -15,6 +15,18 @@ Feature: Session failure reason capture with provider health CLI (S5)
     Then the session status is "failed"
     And the meta.json contains "failure_reason" set to "StopReasonStreamTruncated"
 
+  Scenario: User-cancelled turn stamps failure_reason user_cancelled
+    Given a session is in "active" status with an in-flight turn
+    When the user cancels the in-flight turn
+    Then the session status is "failed"
+    And the meta.json contains "failure_reason" set to "user_cancelled"
+
+  Scenario: A healthy follow-up turn recovers a user-cancelled session
+    Given a session has status "failed" and failure_reason "user_cancelled"
+    When a healthy assistant message arrives
+    Then the session status is demoted to "active"
+    And failure_reason is cleared
+
   Scenario: Recovery demotion clears failure_reason
     Given a session has status "failed" and failure_reason "StopReasonToolUseNoCalls"
     When a healthy assistant message arrives
