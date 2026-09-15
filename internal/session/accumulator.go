@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -372,6 +373,17 @@ type streamAccumState struct {
 	// fresh-turn signal so a Done in an earlier round of a multi-round
 	// stream does not suppress truncation detection on a later round.
 	turnSawDone bool
+	// turnUserCancelled records that the turn ended because the user
+	// stopped the response — either the engine's terminal chunk carried
+	// Error context.Canceled with no explicit stop reason (the chunk
+	// ingestion path below) or the accumulator's own ctx was cancelled
+	// with context.Canceled (the ctx-aware select path, which usually
+	// pre-empts the terminal chunk because the session manager's
+	// inflight cancel fires both simultaneously). flushContent stamps
+	// StopReasonUserCancelled on the flushed partial content so the
+	// session manager's surfaced-failure flip records a distinguishable
+	// failure_reason instead of a wire-truncation misclassification.
+	turnUserCancelled bool
 	// contentFlushed records whether flushContent has already written
 	// the assistant message for this turn. Used by
 	// synthesizePlaceholderAssistant to avoid creating a duplicate
@@ -581,6 +593,9 @@ func AccumulateStream(
 					return
 				}
 			case <-ctx.Done():
+				if errors.Is(ctx.Err(), context.Canceled) {
+					s.turnUserCancelled = true
+				}
 				flushThinking(appender, s)
 				flushContent(appender, s)
 				synthesizePlaceholderAssistant(appender, s)
@@ -654,6 +669,9 @@ func applyChunk(appender MessageAppender, s *streamAccumState, chunk provider.St
 		// stream_truncated on a cleanly-Done turn that merely lacked an
 		// upstream stop_reason chunk.
 		s.turnSawDone = true
+		if chunk.StopReason == "" && errors.Is(chunk.Error, context.Canceled) {
+			s.turnUserCancelled = true
+		}
 		flushThinking(appender, s)
 		flushContent(appender, s)
 		synthesizePlaceholderAssistant(appender, s)
@@ -949,6 +967,9 @@ func flushContent(appender MessageAppender, s *streamAccumState) {
 		copy(blocks, s.thinkingBlocks)
 		msg.ThinkingBlocks = blocks
 	}
+	if s.turnUserCancelled && msg.StopReason == "" {
+		msg.StopReason = StopReasonUserCancelled
+	}
 	// Fabricated-completion guard (May 2026). When a content-bearing
 	// turn matches the documented fabrication signature AND the turn
 	// produced no tool_call AND no delegation, stamp the synthetic
@@ -1106,6 +1127,7 @@ func flushContent(appender MessageAppender, s *streamAccumState) {
 	s.contentBuf.Reset()
 	s.thinkingBlocks = nil
 	s.turnStopReason = ""
+	s.turnUserCancelled = false
 	// Streaming Coherence Slice C — content-bearing turn does its own
 	// emit; mark the per-turn placeholder slot as filled so the
 	// subsequent synthesizer call (chunk.Done after flushContent) is a
@@ -1357,6 +1379,22 @@ func matchesFabricationSignature(content string) bool {
 // Wire-format-stable: the value is read by the Vue `MessageBubble`
 // render branch, not by any backend consumer.
 const StopReasonTurnInterrupted = "turn_interrupted"
+
+// StopReasonUserCancelled is the synthetic stop reason stamped on the
+// flushed assistant message when a turn ends because the user stopped the
+// response — the chat UI's Stop control or Esc-Esc gesture fires the
+// session manager's inflight cancel, the engine surfaces the stop as a
+// terminal chunk carrying Error context.Canceled with no explicit stop
+// reason, and the accumulator records the cancellation at ingestion. The
+// stamp distinguishes a deliberate stop from a wire-level truncation: the
+// session manager's surfaced-failure flip records failure_reason
+// "user_cancelled" on the session, and a healthy follow-up turn demotes
+// the session back to active and clears the reason.
+//
+// Wire-format-stable: the value is read by the session manager's status
+// flip and surfaces via the .meta.json sidecar and `make
+// session-overview`; it must not be renamed.
+const StopReasonUserCancelled = "user_cancelled"
 
 // StopReasonToolLoopExceeded is the synthetic stop reason stamped on the
 // terminal Done chunk when the engine's tool loop hits a cap — either the

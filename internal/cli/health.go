@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -58,7 +59,7 @@ func newHealthStatusCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			hm := failover.NewHealthManager()
 			if err := hm.LoadState(hm.PersistPath()); err != nil {
-				if os.IsNotExist(err) {
+				if errors.Is(err, os.ErrNotExist) {
 					fmt.Fprintln(cmd.OutOrStdout(), "No health state found (file does not exist yet)")
 					return nil
 				}

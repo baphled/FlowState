@@ -54,6 +54,12 @@ type Metadata struct {
 	// load is interpreted as "default" by permissionmode.FromContext.
 	// See Session.PermissionMode for the canonical vocabulary.
 	PermissionMode string `json:"permission_mode,omitempty"`
+	// FailureReason mirrors Session.FailureReason and surfaces in the
+	// .meta.json sidecar as "failure_reason". Omitted when empty so
+	// legacy sidecars stay byte-identical to their previous shape and a
+	// missing key on load reads as "no terminal failure recorded". See
+	// Session.FailureReason for the write-once contract.
+	FailureReason string `json:"failure_reason,omitempty"`
 	// ModelPinned mirrors Session.ModelPinned and surfaces in the
 	// .meta.json sidecar as "model_pinned". Omitted when false so legacy
 	// sidecars stay byte-identical; a missing key on load reads as unpinned.
@@ -95,6 +101,7 @@ func PersistSession(sessionsDir string, sess *Session) error {
 		EmbeddingModel:    sess.EmbeddingModel,
 		ChainID:           sess.ChainID,
 		PermissionMode:    sess.PermissionMode,
+		FailureReason:     sess.FailureReason,
 		ModelPinned:       sess.ModelPinned,
 		Messages:          sess.Messages,
 	}
@@ -223,6 +230,7 @@ func LoadSessionMetadata(sessionsDir, sessionID string) (*Session, error) {
 		EmbeddingModel:    meta.EmbeddingModel,
 		ChainID:           meta.ChainID,
 		PermissionMode:    meta.PermissionMode,
+		FailureReason:     meta.FailureReason,
 		ModelPinned:       meta.ModelPinned,
 		Messages:          meta.Messages,
 	}, nil
@@ -261,6 +269,7 @@ func loadMetaFile(path string) *Session {
 		EmbeddingModel:    meta.EmbeddingModel,
 		ChainID:           meta.ChainID,
 		PermissionMode:    meta.PermissionMode,
+		FailureReason:     meta.FailureReason,
 		ModelPinned:       meta.ModelPinned,
 		Messages:          meta.Messages,
 	}

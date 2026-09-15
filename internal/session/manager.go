@@ -1434,7 +1434,8 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 		if (msg.StopReason == StopReasonStreamTruncated ||
 			msg.StopReason == StopReasonToolUseNoCalls ||
 			msg.StopReason == StopReasonAbandonedTool ||
-			msg.StopReason == StopReasonToolLoopExceeded) &&
+			msg.StopReason == StopReasonToolLoopExceeded ||
+			msg.StopReason == StopReasonUserCancelled) &&
 			sess.Status != string(StatusFailed) &&
 			sess.Status != string(StatusAbandoned) {
 			sess.Status = string(StatusFailed)
@@ -1449,6 +1450,7 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 			msg.StopReason != StopReasonToolUseNoCalls &&
 			msg.StopReason != StopReasonAbandonedTool &&
 			msg.StopReason != StopReasonToolLoopExceeded &&
+			msg.StopReason != StopReasonUserCancelled &&
 			sess.Status == string(StatusFailed) {
 			// Failed-recovery demotion (Option A, June 2026). A healthy
 			// assistant message arrived on a session that was previously

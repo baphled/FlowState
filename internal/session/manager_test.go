@@ -1092,6 +1092,76 @@ var _ = Describe("Manager", func() {
 		})
 	})
 
+	// User-cancel status flip (stop-button reliability Slice 2, September
+	// 2026).
+	//
+	// When the accumulator stamps StopReasonUserCancelled on the flushed
+	// partial assistant message (the user pressed Stop / Esc-Esc, the
+	// engine surfaced the cancel as a terminal chunk carrying Error
+	// context.Canceled), the session manager must flip the session to
+	// StatusFailed with failure_reason "user_cancelled" so
+	// `make session-overview` distinguishes a deliberate stop from a
+	// wire-level truncation. Unlike the tool-anomaly sentinels there is
+	// no streak softening: the cancel signal is definitive, never a
+	// provider false positive. A healthy follow-up turn demotes the
+	// session back to active and clears the reason via the existing
+	// failed-recovery path.
+	Describe("appendSessionMessage flips status to failed on StopReasonUserCancelled", func() {
+		It("flips active -> failed with failure_reason user_cancelled on a single sentinel", func() {
+			tmpDir := GinkgoT().TempDir()
+			mgr.SetSessionsDir(tmpDir)
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:       "assistant",
+				Content:    "partial answer",
+				StopReason: session.StopReasonUserCancelled,
+			})
+
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusFailed)),
+				"a user-stopped turn must flip the session to failed — no streak softening applies")
+			Expect(loaded.FailureReason).To(Equal(session.StopReasonUserCancelled))
+
+			sidecar, err := session.LoadSessionMetadata(tmpDir, sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(sidecar).NotTo(BeNil())
+			Expect(sidecar.FailureReason).To(Equal(session.StopReasonUserCancelled),
+				"the .meta.json sidecar must round-trip failure_reason so it survives a restart")
+		})
+
+		It("demotes failed -> active and clears failure_reason on a healthy follow-up turn", func() {
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:       "assistant",
+				Content:    "partial answer",
+				StopReason: session.StopReasonUserCancelled,
+			})
+
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusFailed)))
+			Expect(loaded.FailureReason).To(Equal(session.StopReasonUserCancelled))
+
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:       "assistant",
+				Content:    "healthy follow-up answer",
+				StopReason: "end_turn",
+			})
+
+			loaded, err = mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusActive)),
+				"a healthy follow-up turn recovers a user-cancelled session — the existing demotion path applies")
+			Expect(loaded.FailureReason).To(BeEmpty(),
+				"demotion implies recovery — the failure reason must be cleared")
+		})
+	})
+
 	// Failed-recovery demotion (Option A, June 2026).
 	//
 	// When the engine's tool-loop continuation produces a healthy
