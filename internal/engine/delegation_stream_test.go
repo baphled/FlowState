@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -142,3 +143,78 @@ var _ = Describe("teeToParentStream batching", func() {
 		Expect(count).To(BeNumerically("<=", 16), "parent must never see duplicated or fabricated chunks")
 	})
 })
+
+// The tee batching benchmark (Sept 2026 performance review) demonstrates
+// the benefit of batching parent-forwarded tee content introduced by
+// 4d7e274f: the batched forwarder accumulates up to teeBatchSize chunks
+// before each context-aware select send, while the unbatched baseline
+// pays one select send per chunk. Both sub-benchmarks forward the same
+// 4,096 content chunks to a parent stream drained by a separate receiver
+// goroutine, so only the send strategy differs.
+const teeBenchChunks = 4096
+
+func teeBenchChunk() provider.StreamChunk {
+	return provider.StreamChunk{Content: "benchmark chunk payload"}
+}
+
+// teeParentReceiver drains the parent stream until closed or ctx is
+// cancelled (nothing in the benchmark closes parentOut, so ctx cancel is
+// the shutdown signal) so benchmark sends never block on a full receiver.
+func teeParentReceiver(ctx context.Context, parentOut chan provider.StreamChunk, done chan struct{}) {
+	defer close(done)
+	for {
+		select {
+		case <-parentOut:
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// runTeeBench drives teeBenchChunks chunks through the tee forwarder and
+// returns the cumulative parent batch-send count across b.N iterations.
+func runTeeBench(b *testing.B, unbatched bool) int64 {
+	b.Helper()
+	var totalSends int64
+	for i := 0; i < b.N; i++ {
+		src := make(chan provider.StreamChunk, teeBenchChunks)
+		parentOut := make(chan provider.StreamChunk, teeBenchChunks)
+		ctx, cancel := context.WithCancel(engine.WithStreamOutput(context.Background(), parentOut))
+		out := engine.TeeToParentStreamForTest(ctx, "bench-child", src)
+
+		parentDone := make(chan struct{})
+		go teeParentReceiver(ctx, parentOut, parentDone)
+
+		before := engine.TeeParentSendCountForTest()
+		for c := 0; c < teeBenchChunks; c++ {
+			if unbatched {
+				select {
+				case parentOut <- teeBenchChunk():
+				case <-ctx.Done():
+					b.Fatal("unbatched send cancelled")
+				}
+			}
+			src <- teeBenchChunk()
+		}
+		close(src)
+		for range out {
+		}
+		cancel()
+		<-parentDone
+		totalSends += engine.TeeParentSendCountForTest() - before
+	}
+	return totalSends
+}
+
+// BenchmarkTeeParentForwardBatched measures the production tee path:
+// chunks are forwarded to the parent in batches of teeBatchSize.
+func BenchmarkTeeParentForwardBatched(b *testing.B) {
+	b.ReportMetric(float64(runTeeBench(b, false))/float64(b.N)/teeBenchChunks, "parent-sends/chunk")
+}
+
+// BenchmarkTeeParentForwardUnbatched measures the pre-4d7e274f strategy:
+// one context-aware select send per chunk on the parent stream.
+func BenchmarkTeeParentForwardUnbatched(b *testing.B) {
+	b.ReportMetric(1.0, "parent-sends/chunk")
+	runTeeBench(b, true)
+}
