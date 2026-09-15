@@ -59,3 +59,12 @@ Feature: Bash Tool
     Given I am in directory "/home/user/projects"
     When the AI runs "pwd"
     Then the output should show "/home/user/projects"
+
+  @smoke
+  Scenario: Tool timeout kills the whole command process tree
+    Given bash tool permission is set to "allow"
+    When the AI runs a command that leaves a long-running descendant holding the pipes
+    And the tool's execution context is cancelled
+    Then the bash tool returns within 10 seconds
+    And no descendant of the command is still running
+    And the tool result reports the cancellation error

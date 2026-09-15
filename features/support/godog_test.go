@@ -102,5 +102,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterBatchedPersistenceSteps(ctx)
 	registerOpenAICompatClassificationSteps(ctx)
 	registerTurnDeadlineSteps(ctx)
+	RegisterBashProcessKillSteps(ctx, &BashProcessKillSteps{})
+	RegisterFailureReasonSteps(ctx, &failureReasonSteps{})
 	VoiceTalkContext(ctx)
 }
