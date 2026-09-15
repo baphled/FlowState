@@ -24,6 +24,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/openaicompat"
+	shared "github.com/baphled/flowstate/internal/provider/shared"
 )
 
 // GO: errors.As survives fmt.Errorf wrapping for all three SDKs.
@@ -2893,3 +2894,96 @@ func newAnthropicError(body string, statusCode int, requestID string) *anthropic
 	}
 	return &err
 }
+
+// turnStreamTrickleSSE serves an SSE stream that emits a content delta
+// every tick and never sends a finish reason or [DONE]. It exits when the
+// client disconnects (r.Context().Done()) so a deferred srv.Close() cannot
+// deadlock on a handler that outlives the stream.
+func turnStreamTrickleSSE(tick time.Duration) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		flusher.Flush()
+		for i := 0; ; i++ {
+			select {
+			case <-r.Context().Done():
+				return
+			default:
+			}
+			fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"tick %d\"}}]}\n\n", i)
+			flusher.Flush()
+			time.Sleep(tick)
+		}
+	}
+}
+
+// turnStreamHelloParams builds a minimal chat-completion request against a
+// trickle test server.
+func turnStreamHelloParams() openaiAPI.ChatCompletionNewParams {
+	var params openaiAPI.ChatCompletionNewParams
+	params.Messages = []openaiAPI.ChatCompletionMessageParamUnion{openaiAPI.UserMessage("hello")}
+	params.Model = "gpt-4o"
+	return params
+}
+
+// The per-turn stream deadline (Sept 2026 delegation-stall fix): a
+// trickle-forever upstream must be closed by turnStreamTimeout with a
+// retriable network error wrapping shared.ErrTurnDeadlineExceeded so
+// failover can advance, while a zero cap must never trip.
+var _ = Describe("turn stream deadline", func() {
+	AfterEach(func() {
+		openaicompat.SetTurnStreamTimeout(shared.DefaultTurnStreamTimeout)
+	})
+
+	It("closes a trickle-forever stream with the retriable turn deadline sentinel", func() {
+		openaicompat.SetTurnStreamTimeout(50 * time.Millisecond)
+
+		srv := httptest.NewServer(turnStreamTrickleSSE(10 * time.Millisecond))
+		defer srv.Close()
+		streamCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ch := openaicompat.RunStream(streamCtx, openaiAPI.NewClient(option.WithBaseURL(srv.URL+"/v1")), turnStreamHelloParams(), "openai")
+
+		var terminalErr error
+		gotDone := false
+		for chunk := range ch {
+			if chunk.Error != nil {
+				terminalErr = chunk.Error
+			}
+			if chunk.Done {
+				gotDone = true
+				break
+			}
+		}
+		Expect(gotDone).To(BeTrue(), "expected a terminal Done chunk from the deadline kill")
+		Expect(terminalErr).NotTo(BeNil(), "expected a terminal error chunk from the deadline kill")
+		Expect(errors.Is(terminalErr, shared.ErrTurnDeadlineExceeded)).To(BeTrue(),
+			"terminal error does not wrap the turn deadline sentinel: %v", terminalErr)
+		provErr, ok := terminalErr.(*provider.Error)
+		Expect(ok).To(BeTrue(), "terminal error is not a *provider.Error: %T", terminalErr)
+		Expect(provErr.ErrorType).To(Equal(provider.ErrorTypeNetworkError))
+		Expect(provErr.IsRetriable).To(BeTrue())
+	})
+
+	It("never trips when the deadline is disabled", func() {
+		openaicompat.SetTurnStreamTimeout(0)
+
+		srv := httptest.NewServer(turnStreamTrickleSSE(10 * time.Millisecond))
+		defer srv.Close()
+		streamCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ch := openaicompat.RunStream(streamCtx, openaiAPI.NewClient(option.WithBaseURL(srv.URL+"/v1")), turnStreamHelloParams(), "openai")
+
+		timeout := time.After(150 * time.Millisecond)
+		for {
+			select {
+			case chunk := <-ch:
+				Expect(chunk.Error).To(BeNil(), "unexpected terminal chunk with disabled deadline: %+v", chunk)
+				Expect(chunk.Done).To(BeFalse(), "unexpected terminal chunk with disabled deadline: %+v", chunk)
+			case <-timeout:
+				return
+			}
+		}
+	})
+})

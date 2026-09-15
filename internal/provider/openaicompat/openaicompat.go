@@ -575,7 +575,7 @@ func RunStreamWithObserver(
 					// literal "</think>" delimiter at 17:09:59 and
 					// 19:49:18 — closing-marker leaks on glm-4.6/zai.
 					if cleaned := stripStrayThinkTags(delta.Content); cleaned != "" {
-						shared.SendChunk(ctx, ch, provider.StreamChunk{Content: cleaned})
+						sendChunkQuiet(ctx, ch, provider.StreamChunk{Content: cleaned})
 					}
 				}
 				// Drop #1 — extract reasoning_content for OpenAI-compat
@@ -602,11 +602,11 @@ func RunStreamWithObserver(
 					// goes to hidden Thinking as before.
 					if delta.Content == "" && providerName == "zai" {
 						if txt := result.Thinking; txt != "" {
-							shared.SendChunk(ctx, ch, provider.StreamChunk{Content: txt})
+							sendChunkQuiet(ctx, ch, provider.StreamChunk{Content: txt})
 						}
 					} else {
 						if result.Thinking != "" {
-							shared.SendChunk(ctx, ch, provider.StreamChunk{Thinking: result.Thinking})
+							sendChunkQuiet(ctx, ch, provider.StreamChunk{Thinking: result.Thinking})
 						}
 					}
 					recoveredCalls = append(recoveredCalls, result.ToolCalls...)
@@ -614,7 +614,7 @@ func RunStreamWithObserver(
 			}
 			if tc, ok := acc.JustFinishedToolCall(); ok {
 				emitted[tc.Index] = true
-				shared.SendChunk(ctx, ch, provider.StreamChunk{
+				sendChunkQuiet(ctx, ch, provider.StreamChunk{
 					EventType:  "tool_call",
 					ToolCallID: tc.ID,
 					ToolCall: &provider.ToolCall{
@@ -642,7 +642,7 @@ func RunStreamWithObserver(
 				// (hop-counter, fabrication-completion guard,
 				// MessageBubble banner) provider-agnostic. Mirrors
 				// anthropic/streaming.go:handleMessageDelta:166-188.
-				shared.SendChunk(ctx, ch, provider.StreamChunk{
+				sendChunkQuiet(ctx, ch, provider.StreamChunk{
 					EventType:  "stop_reason",
 					StopReason: mapFinishReason(chunk.Choices[0].FinishReason),
 				})
@@ -792,12 +792,39 @@ func wrapStreamError(providerName string, err error) error {
 	}
 }
 
+// sendChunkQuiet sends chunk on ch, dropping it silently when ctx is done.
+// Unlike shared.SendChunk it never substitutes a terminal error chunk: the
+// in-loop pump sends must stay non-terminal so a mid-loop deadline kill
+// cannot pre-empt the authoritative turn-deadline sentinel from
+// sendTerminalStreamError with a raw ctx.Err() chunk.
+//
+// Expected:
+//   - ctx is the (possibly deadline-scoped) stream context.
+//   - ch is the downstream StreamChunk channel.
+//   - chunk is the StreamChunk to forward.
+//
+// Returns:
+//   - true if the chunk was sent, false if ctx was done (chunk dropped).
+//
+// Side effects: sends chunk on ch when ctx is live.
+func sendChunkQuiet(ctx context.Context, ch chan<- provider.StreamChunk, chunk provider.StreamChunk) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case ch <- chunk:
+		return true
+	}
+}
+
 // sendTerminalStreamError wraps err and emits the terminal Error+Done chunk
 // that closes a stream. When the per-turn deadline (turnStreamTimeout) is the
 // cause — detected via context.DeadlineExceeded on the deadline-scoped ctx —
-// the error is a retriable *provider.Error of ErrorTypeNetworkError wrapping
-// shared.ErrTurnDeadlineExceeded so failover can advance and consumers can
-// errors.Is-detect the deadline kill. Any other error takes the legacy
+// the sentinel *provider.Error is emitted DIRECTLY via a raw channel send:
+// wrapStreamError's ParseProviderError only classifies
+// *openaiAPI.Error/*url.Error so it would re-wrap a pre-built *provider.Error
+// as ErrorTypeUnknown/IsRetriable=false, and shared.SendChunk would
+// substitute the sentinel with a raw ctx.Err() chunk — either way failover
+// would not advance on the deadline kill. Any other error takes the legacy
 // wrapStreamError classification path.
 //
 // Expected:
@@ -810,13 +837,18 @@ func wrapStreamError(providerName string, err error) error {
 // Side effects: sends one terminal chunk on ch.
 func sendTerminalStreamError(ctx context.Context, ch chan<- provider.StreamChunk, providerName string, err error) {
 	if errors.Is(err, context.DeadlineExceeded) && ctx.Err() != nil {
-		err = &provider.Error{
+		sentinel := &provider.Error{
 			ErrorType:   provider.ErrorTypeNetworkError,
 			Provider:    providerName,
 			Message:     fmt.Sprintf("%s: %s", shared.ErrTurnDeadlineExceeded.Error(), providerName),
 			IsRetriable: true,
 			RawError:    shared.ErrTurnDeadlineExceeded,
 		}
+		select {
+		case ch <- provider.StreamChunk{Error: sentinel, Done: true}:
+		default:
+		}
+		return
 	}
 	shared.SendChunk(ctx, ch, provider.StreamChunk{Error: wrapStreamError(providerName, err), Done: true})
 }

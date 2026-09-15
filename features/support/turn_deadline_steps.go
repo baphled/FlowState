@@ -20,11 +20,11 @@ import (
 	"github.com/baphled/flowstate/internal/provider/shared"
 )
 
-// turnDeadlineSteps holds the streaming server and captured terminal chunk
-// for the per-turn stream deadline feature.
+// turnDeadlineSteps holds the streaming server, its stream cancel func and
+// the captured terminal chunk for the per-turn stream deadline feature.
 type turnDeadlineSteps struct {
 	srv        *httptest.Server
-	chunks     chan provider.StreamChunk
+	cancel     context.CancelFunc
 	lastError  error
 	lastDone   bool
 	sawErrorCh bool
@@ -38,9 +38,19 @@ func registerTurnDeadlineSteps(ctx *godog.ScenarioContext) {
 	s := &turnDeadlineSteps{}
 	ctx.BeforeScenario(func(*godog.Scenario) {
 		s.srv = nil
+		s.cancel = nil
 		s.lastError = nil
 		s.lastDone = false
 		s.sawErrorCh = false
+		openaicompat.SetTurnStreamTimeout(shared.DefaultTurnStreamTimeout)
+	})
+	ctx.AfterScenario(func(*godog.Scenario, error) {
+		if s.cancel != nil {
+			s.cancel()
+		}
+		if s.srv != nil {
+			s.srv.Close()
+		}
 		openaicompat.SetTurnStreamTimeout(shared.DefaultTurnStreamTimeout)
 	})
 	ctx.Step(`^the provider trickles chunks forever$`, s.trickleForever)
@@ -57,7 +67,10 @@ func registerTurnDeadlineSteps(ctx *godog.ScenarioContext) {
 
 // startStream spins up the current httptest server and consumes the stream
 // to completion (or until the consumer window ends), recording the terminal
-// chunk.
+// chunk. The stream runs on a cancellable context that is cancelled on
+// return — with the deadline disabled nothing else tears the pump down, and
+// an uncancelled pump would block forever in shared.SendChunk once the
+// channel buffer fills, wedging the AfterScenario server close.
 func (s *turnDeadlineSteps) startStream(readWindow time.Duration) {
 	var params openaiAPI.ChatCompletionNewParams
 	params.Messages = []openaiAPI.ChatCompletionMessageParamUnion{
@@ -65,7 +78,10 @@ func (s *turnDeadlineSteps) startStream(readWindow time.Duration) {
 	}
 	params.Model = "gpt-4o"
 	client := openaiAPI.NewClient(option.WithBaseURL(s.srv.URL + "/v1"))
-	ch := openaicompat.RunStream(context.Background(), client, params, "openai")
+	streamCtx, cancel := context.WithCancel(context.Background())
+	s.cancel = cancel
+	defer cancel()
+	ch := openaicompat.RunStream(streamCtx, client, params, "openai")
 
 	deadline := time.After(readWindow)
 	for {
@@ -89,14 +105,21 @@ func (s *turnDeadlineSteps) startStream(readWindow time.Duration) {
 }
 
 // trickleForever serves an SSE stream that emits a content delta every
-// 20ms and never sends a finish reason or [DONE].
+// 20ms and never sends a finish reason or [DONE]. It exits when the client
+// disconnects (r.Context().Done()) so the AfterScenario server close cannot
+// wedge on a handler that outlives the stream.
 func (s *turnDeadlineSteps) trickleForever() error {
-	s.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	s.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		flusher := w.(http.Flusher)
 		flusher.Flush()
 		for i := 0; ; i++ {
+			select {
+			case <-r.Context().Done():
+				return
+			default:
+			}
 			fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"tick %d\"}}]}\n\n", i)
 			flusher.Flush()
 			time.Sleep(20 * time.Millisecond)
