@@ -443,6 +443,82 @@ func parseWave(line string, task *Task) {
 	}
 }
 
+// PlanDocument holds the split and parsed artefacts of a plan document
+// so validators can share a single frontmatter parse per evaluation —
+// repeated yaml.Unmarshal calls dominated harness gate overhead.
+type PlanDocument struct {
+	// FrontmatterYAML is the raw YAML between the "---" delimiters.
+	FrontmatterYAML string
+	// Body is the markdown text after the closing delimiter.
+	Body string
+	// File carries the frontmatter fields unmarshalled once.
+	File File
+	// Err records a frontmatter unmarshal failure, if any.
+	Err error
+}
+
+// ParsePlanDocument splits planText at the "---" delimiters and
+// unmarshals the frontmatter once. Documents without complete
+// frontmatter yield the zero document with a nil Err; callers treat
+// missing structure through their usual error paths.
+//
+// Expected:
+//   - planText is a plan markdown document.
+//
+// Returns:
+//   - A PlanDocument sharing one frontmatter parse across validators.
+//
+// Side effects:
+//   - None.
+func ParsePlanDocument(planText string) PlanDocument {
+	parts := splitFrontmatter(planText)
+	if len(parts) < 3 {
+		return PlanDocument{}
+	}
+	doc := PlanDocument{FrontmatterYAML: parts[1], Body: parts[2]}
+	if err := yaml.Unmarshal([]byte(parts[1]), &doc.File); err != nil {
+		doc.Err = err
+	}
+	return doc
+}
+
+// splitFrontmatter splits a plan document into its YAML frontmatter
+// and markdown body. Documents without complete frontmatter yield
+// fewer than three parts, mirroring the strings.SplitN("---", 3)
+// convention used throughout plan parsing.
+//
+// Expected:
+//   - planText is a plan markdown document.
+//
+// Returns:
+//   - The SplitN parts around the "---" delimiters.
+//
+// Side effects:
+//   - None.
+func splitFrontmatter(planText string) []string {
+	return strings.SplitN(planText, "---", 3)
+}
+
+// TasksFromMarkdownBody extracts and normalises tasks from a plan
+// markdown body already split from its frontmatter, letting callers
+// that parsed the document once skip a second SplitN pass.
+//
+// Expected:
+//   - body is the markdown text after the frontmatter delimiters.
+//
+// Returns:
+//   - A slice of Task values parsed from the markdown body.
+//
+// Side effects:
+//   - None.
+func TasksFromMarkdownBody(body string) []Task {
+	tasks := parseTasksFromMarkdown(body)
+	for i := range tasks {
+		tasks[i].Dependencies = normalizeDependencies(tasks[i].Dependencies)
+	}
+	return tasks
+}
+
 // TasksFromPlanText extracts and normalises tasks from a plan's markdown body.
 //
 // Expected:
@@ -458,11 +534,7 @@ func TasksFromPlanText(planText string) []Task {
 	if len(parts) < 3 {
 		return []Task{}
 	}
-	tasks := parseTasksFromMarkdown(parts[2])
-	for i := range tasks {
-		tasks[i].Dependencies = normalizeDependencies(tasks[i].Dependencies)
-	}
-	return tasks
+	return TasksFromMarkdownBody(parts[2])
 }
 
 // ParseFile extracts and unmarshals YAML frontmatter from a plan text into a File struct.

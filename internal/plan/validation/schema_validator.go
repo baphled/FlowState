@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/baphled/flowstate/internal/plan"
-	"gopkg.in/yaml.v3"
 )
 
 // SchemaValidator validates plan documents for required structure and content.
@@ -24,45 +23,60 @@ type SchemaValidator struct{}
 // Side effects:
 //   - None.
 func (v *SchemaValidator) Validate(planText string) (*plan.ValidationResult, error) {
+	return v.ValidateDocument(plan.ParsePlanDocument(planText), strings.TrimSpace(planText) == "")
+}
+
+// ValidateDocument checks a pre-parsed plan document for required
+// structure and content, reusing the shared frontmatter parse.
+//
+// Expected:
+//   - doc is a PlanDocument produced by ParsePlanDocument.
+//   - empty reports whether the source text was blank.
+//
+// Returns:
+//   - A ValidationResult with score and errors.
+//   - An error if the plan is invalid.
+//
+// Side effects:
+//   - None.
+func (v *SchemaValidator) ValidateDocument(doc plan.PlanDocument, empty bool) (*plan.ValidationResult, error) {
 	result := &plan.ValidationResult{Score: 1.0}
-	if strings.TrimSpace(planText) == "" {
+	if empty {
 		result.Valid = false
 		result.Errors = append(result.Errors, "plan is empty")
 		result.Score = 0.0
 		return result, errors.New("plan is empty")
 	}
 
-	parts := strings.SplitN(planText, "---", 3)
-	if len(parts) < 3 {
+	if doc.FrontmatterYAML == "" && doc.Body == "" && doc.Err == nil {
 		result.Valid = false
 		result.Errors = append(result.Errors, "missing YAML frontmatter")
 		result.Score = 0.0
 		return result, errors.New("missing YAML frontmatter")
 	}
 
-	var fm plan.Frontmatter
-	if err := yaml.Unmarshal([]byte(parts[1]), &fm); err != nil {
+	if doc.Err != nil {
 		result.Valid = false
 		result.Errors = append(result.Errors, "invalid YAML frontmatter")
 		result.Score = 0.0
 		return result, errors.New("invalid YAML frontmatter")
 	}
 
-	if strings.TrimSpace(fm.ID) == "" {
+	if strings.TrimSpace(doc.File.ID) == "" {
 		result.Errors = append(result.Errors, "missing id in frontmatter")
 		result.Score -= 0.3
 	}
-	if strings.TrimSpace(fm.Title) == "" {
+	if strings.TrimSpace(doc.File.Title) == "" {
 		result.Errors = append(result.Errors, "missing title in frontmatter")
 		result.Score -= 0.3
 	}
 
-	if !hasTaskHeaders(parts[2]) {
+	if !hasTaskHeaders(doc.Body) {
 		result.Errors = append(result.Errors, "no tasks found")
 		result.Score -= 0.4
 	}
 
-	v.validateExpandedFields(parts[1], result)
+	v.appendExpandedWarnings(doc.File, result)
 
 	if result.Score < 0.0 {
 		result.Score = 0.0
@@ -77,12 +91,11 @@ func (v *SchemaValidator) Validate(planText string) (*plan.ValidationResult, err
 	return result, nil
 }
 
-// validateExpandedFields checks the expanded plan sections added in T1.
-// These fields are optional for backward compatibility but generate warnings
-// when producing plans for harness_enabled agents.
+// appendExpandedWarnings appends warnings for the optional expanded
+// plan sections missing from file.
 //
 // Expected:
-//   - yamlContent is the YAML frontmatter content.
+//   - file holds frontmatter fields parsed from the plan.
 //   - result is the ValidationResult to append warnings to.
 //
 // Returns:
@@ -90,12 +103,7 @@ func (v *SchemaValidator) Validate(planText string) (*plan.ValidationResult, err
 //
 // Side effects:
 //   - Appends warnings to result.Warnings for missing optional fields.
-func (v *SchemaValidator) validateExpandedFields(yamlContent string, result *plan.ValidationResult) {
-	var file plan.File
-	if err := yaml.Unmarshal([]byte(yamlContent), &file); err != nil {
-		return
-	}
-
+func (v *SchemaValidator) appendExpandedWarnings(file plan.File, result *plan.ValidationResult) {
 	if strings.TrimSpace(file.TLDR) == "" {
 		result.Warnings = append(result.Warnings, "plan missing TL;DR section")
 	}

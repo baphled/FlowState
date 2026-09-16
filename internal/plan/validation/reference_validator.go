@@ -13,6 +13,11 @@ import (
 // ReferenceValidator checks that all Go file references in plan text exist under the project root.
 type ReferenceValidator struct{}
 
+// refRegex matches backtick-wrapped Go file references in plan text.
+// Hoisted to package scope so each validation does not recompile the
+// pattern — regex compilation dominated gate-overhead allocations.
+var refRegex = regexp.MustCompile("`([^`]+\\.go[^`]*)`")
+
 // Validate scans planText for backtick-wrapped .go file paths and checks their existence under projectRoot.
 //
 // Expected:
@@ -27,7 +32,6 @@ type ReferenceValidator struct{}
 //   - Accesses the filesystem to check file existence.
 func (v *ReferenceValidator) Validate(planText string, projectRoot string) (*plan.ValidationResult, error) {
 	result := &plan.ValidationResult{Valid: true, Score: 1.0}
-	refRegex := regexp.MustCompile("`([^`]+\\.go[^`]*)`")
 	matches := refRegex.FindAllStringSubmatch(planText, -1)
 	if len(matches) == 0 {
 		return result, nil

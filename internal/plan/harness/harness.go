@@ -107,6 +107,7 @@ func WithMaxRetries(n int) Option {
 // schemaValidation validates plan documents for required structure and content.
 type schemaValidation interface {
 	Validate(planText string) (*plan.ValidationResult, error)
+	ValidateDocument(doc plan.PlanDocument, empty bool) (*plan.ValidationResult, error)
 }
 
 // assertionValidation performs semantic validation on a plan File.
@@ -636,12 +637,13 @@ func (h *Harness) handleValidPlan(
 // Side effects:
 //   - None.
 func (h *Harness) validatePlan(planText string) *plan.ValidationResult {
-	schemaResult, err := h.schemaValidator.Validate(planText)
+	doc := plan.ParsePlanDocument(planText)
+	schemaResult, err := h.schemaValidator.ValidateDocument(doc, strings.TrimSpace(planText) == "")
 	if err != nil {
 		return schemaResult
 	}
 
-	planFile := &plan.File{Tasks: plan.TasksFromPlanText(planText)}
+	planFile := &plan.File{Tasks: plan.TasksFromMarkdownBody(doc.Body)}
 	assertionResult, assertionErr := h.assertionValidator.Validate(planFile)
 	if assertionErr != nil && assertionResult != nil {
 		assertionResult.Warnings = append(assertionResult.Warnings, assertionErr.Error())
