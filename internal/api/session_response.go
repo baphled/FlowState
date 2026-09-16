@@ -13,6 +13,13 @@ import (
 // Vue frontend, and the body always includes messageCount so callers never
 // read undefined.
 //
+// FailureReason mirrors Session.FailureReason (the terminal stop reason
+// that flipped the session to failed). Surfaced so callers reading the
+// single-session DTO can explain a failed session without reading the
+// meta.json sidecar; parity with Summary.FailureReason on the list
+// endpoint. Omitted when empty so sessions that have not failed stay
+// byte-identical to their pre-field shape.
+//
 // IsStreaming signals whether the backend broker has an active Publish in
 // progress for this session. The Vue frontend uses this flag to reconnect
 // an EventSource on page load without relying solely on the local message
@@ -77,6 +84,7 @@ type SessionResponse struct {
 	// sessions that have never opted in. Slice 3 wires the read side
 	// here and the write side on POST /api/v1/sessions/{id}/permission-mode.
 	PermissionMode string    `json:"permissionMode,omitempty"`
+	FailureReason  string    `json:"failureReason,omitempty"`
 	CreatedAt      time.Time `json:"createdAt"`
 	UpdatedAt      time.Time `json:"updatedAt"`
 }
@@ -176,6 +184,7 @@ func NewSessionResponse(sess *session.Session, opts ...SessionResponseOption) *S
 		ChainID:           sess.ChainID,
 		ContextUsage:      o.contextUsage,
 		PermissionMode:    sess.PermissionMode,
+		FailureReason:     sess.FailureReason,
 		CreatedAt:         sess.CreatedAt,
 		UpdatedAt:         sess.UpdatedAt,
 	}

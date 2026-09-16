@@ -179,3 +179,39 @@ var _ = Describe("NewSessionResponse chainId projection", func() {
 			"root sessions must stay byte-identical to their pre-field shape")
 	})
 })
+
+var _ = Describe("NewSessionResponse failureReason projection", func() {
+	It("projects FailureReason into the failureReason JSON key for a failed session", func() {
+		sess := &session.Session{
+			ID:            "sess-failed",
+			AgentID:       "agent-a",
+			Status:        string(session.StatusFailed),
+			FailureReason: session.StopReasonUserCancelled,
+		}
+
+		resp := api.NewSessionResponse(sess)
+		Expect(resp).NotTo(BeNil())
+		Expect(resp.FailureReason).To(Equal(session.StopReasonUserCancelled))
+
+		raw, err := json.Marshal(resp)
+		Expect(err).NotTo(HaveOccurred())
+
+		var out map[string]interface{}
+		Expect(json.Unmarshal(raw, &out)).To(Succeed())
+		Expect(out).To(HaveKeyWithValue("failureReason", session.StopReasonUserCancelled))
+		Expect(out).NotTo(HaveKey("failure_reason"),
+			"snake_case is the persistence shape; wire is camelCase")
+	})
+
+	It("omits failureReason for an active session so payloads stay byte-identical", func() {
+		sess := &session.Session{ID: "sess-active", AgentID: "agent-a"}
+
+		raw, err := json.Marshal(api.NewSessionResponse(sess))
+		Expect(err).NotTo(HaveOccurred())
+
+		var out map[string]interface{}
+		Expect(json.Unmarshal(raw, &out)).To(Succeed())
+		Expect(out).NotTo(HaveKey("failureReason"),
+			"active sessions must stay byte-identical to their pre-field shape")
+	})
+})

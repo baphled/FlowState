@@ -1562,6 +1562,42 @@ var _ = Describe("GET /api/v1/sessions JSON contract", func() {
 				"session list must expose isStreaming: true while the Turn registry has a Running entry for the session")
 		})
 	})
+
+	Context("failureReason field in session list", func() {
+		It("emits failureReason for a failed session", func() {
+			restored := &session.Session{
+				ID:            "sess-failed-list",
+				AgentID:       "agent-x",
+				Status:        string(session.StatusFailed),
+				FailureReason: session.StopReasonUserCancelled,
+				CreatedAt:     time.Now().Add(-time.Minute),
+			}
+			mgr.RestoreSessions([]*session.Session{restored})
+
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", http.NoBody)
+			srv.Handler().ServeHTTP(recorder, req)
+
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			var rows []map[string]interface{}
+			Expect(json.Unmarshal(recorder.Body.Bytes(), &rows)).To(Succeed())
+			Expect(rows).To(HaveLen(1))
+			Expect(rows[0]).To(HaveKeyWithValue("failureReason", session.StopReasonUserCancelled),
+				"frontend needs failureReason on the summary to explain why a session failed")
+		})
+
+		It("omits failureReason for an active session", func() {
+			_, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", http.NoBody)
+			srv.Handler().ServeHTTP(recorder, req)
+
+			var rows []map[string]interface{}
+			Expect(json.Unmarshal(recorder.Body.Bytes(), &rows)).To(Succeed())
+			Expect(rows).To(HaveLen(1))
+			Expect(rows[0]).NotTo(HaveKey("failureReason"))
+		})
+	})
 })
 
 var _ = Describe("GET /api/v1/sessions/{id}/messages JSON contract", func() {
