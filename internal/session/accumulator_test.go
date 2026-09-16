@@ -2,6 +2,7 @@ package session_test
 
 import (
 	"context"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -135,7 +136,7 @@ var _ = Describe("AccumulateStream", func() {
 		}
 		Expect(toolResults).To(HaveLen(1))
 		Expect(toolResults[0].ToolName).To(Equal("bash"))
-		Expect(toolResults[0].ToolInput).To(Equal("ls -la"))
+		Expect(toolResults[0].ToolInput).To(Equal(`{"command":"ls -la"}`))
 		Expect(toolResults[0].Content).To(Equal("file1.go"))
 	})
 
@@ -198,11 +199,11 @@ var _ = Describe("AccumulateStream", func() {
 					toolCalls = append(toolCalls, m)
 				}
 			}
-			Expect(toolCalls).To(HaveLen(1))
-			Expect(toolCalls[0].Content).To(Equal("bash"))
-			Expect(toolCalls[0].ToolName).To(Equal("bash"))
-			Expect(toolCalls[0].ToolInput).To(Equal("ls -la"))
-		})
+		Expect(toolCalls).To(HaveLen(1))
+		Expect(toolCalls[0].Content).To(Equal("bash"))
+		Expect(toolCalls[0].ToolName).To(Equal("bash"))
+		Expect(toolCalls[0].ToolInput).To(Equal(`{"command":"ls -la"}`))
+	})
 
 		It("populates ToolInput for tools outside the hand-coded allowlist via the tiered fallback", func() {
 			// Regression: tool_call messages for delegate / search_nodes /
@@ -238,17 +239,16 @@ var _ = Describe("AccumulateStream", func() {
 					toolCalls = append(toolCalls, m)
 				}
 			}
-			Expect(toolCalls).To(HaveLen(2))
-			Expect(toolCalls[0].ToolName).To(Equal("search_nodes"))
-			Expect(toolCalls[0].ToolInput).To(Equal("FlowState recall"))
-			Expect(toolCalls[1].ToolName).To(Equal("delegate"))
-			// Delegate must persist both the routing target and the brief —
-			// the previous "subagent_type only" rendering silently dropped
-			// every parent's delegation intent. See Bug Fixes/Delegation
-			// Brief Persistence (May 2026).
-			Expect(toolCalls[1].ToolInput).To(ContainSubstring("senior-engineer"))
-			Expect(toolCalls[1].ToolInput).To(ContainSubstring("implement the fallback"))
-		})
+		Expect(toolCalls).To(HaveLen(2))
+		Expect(toolCalls[0].ToolName).To(Equal("search_nodes"))
+		Expect(toolCalls[0].ToolInput).To(Equal(`{"limit":10,"query":"FlowState recall"}`))
+		Expect(toolCalls[1].ToolName).To(Equal("delegate"))
+		// Delegate must persist both the routing target and the brief —
+		// the previous "subagent_type only" rendering silently dropped
+		// every parent's delegation intent. See Bug Fixes/Delegation
+		// Brief Persistence (May 2026).
+		Expect(toolCalls[1].ToolInput).To(Equal(`{"message":"implement the fallback","subagent_type":"senior-engineer"}`))
+	})
 
 		It("redacts sensitive arg values before persisting them as ToolInput", func() {
 			rawCh := make(chan provider.StreamChunk, 2)
@@ -272,10 +272,10 @@ var _ = Describe("AccumulateStream", func() {
 					toolCalls = append(toolCalls, m)
 				}
 			}
-			Expect(toolCalls).To(HaveLen(1))
-			Expect(toolCalls[0].ToolInput).NotTo(ContainSubstring("sk-real-key"))
-			Expect(toolCalls[0].ToolInput).To(ContainSubstring("[REDACTED]"))
-		})
+		Expect(toolCalls).To(HaveLen(1))
+		Expect(toolCalls[0].ToolInput).To(Equal(`{"api_key":"[REDACTED]"}`))
+		Expect(toolCalls[0].ToolInput).NotTo(ContainSubstring("sk-real-key"))
+	})
 
 		It("stores tool_call message before the tool_result message", func() {
 			rawCh := make(chan provider.StreamChunk, 3)
@@ -310,6 +310,139 @@ var _ = Describe("AccumulateStream", func() {
 				}
 			}
 			Expect(toolCallIdx).To(BeNumerically("<", toolResultIdx))
+		})
+	})
+
+	Context("when the whole tool input contract applies", func() {
+		It("persists every argument key for a multi-argument bash call", func() {
+			rawCh := make(chan provider.StreamChunk, 2)
+			rawCh <- provider.StreamChunk{
+				ToolCall: &provider.ToolCall{
+					Name: "bash",
+					Arguments: map[string]any{
+						"workdir": "/repo",
+						"command": "git status",
+						"timeout": 120,
+					},
+				},
+			}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var toolCalls []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "tool_call" {
+					toolCalls = append(toolCalls, m)
+				}
+			}
+			Expect(toolCalls).To(HaveLen(1))
+			Expect(toolCalls[0].ToolInput).To(Equal(`{"command":"git status","timeout":120,"workdir":"/repo"}`))
+		})
+
+		It("keeps an over-80-character command untruncated", func() {
+			longCommand := strings.Repeat("echo ", 20) + "end"
+			rawCh := make(chan provider.StreamChunk, 2)
+			rawCh <- provider.StreamChunk{
+				ToolCall: &provider.ToolCall{
+					Name:      "bash",
+					Arguments: map[string]any{"command": longCommand},
+				},
+			}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var toolCalls []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "tool_call" {
+					toolCalls = append(toolCalls, m)
+				}
+			}
+			Expect(toolCalls).To(HaveLen(1))
+			Expect(toolCalls[0].ToolInput).To(Equal(`{"command":"` + longCommand + `"}`))
+			Expect(len(toolCalls[0].ToolInput)).To(BeNumerically(">", 80))
+		})
+
+		It("marshals nested object and array arguments verbatim", func() {
+			rawCh := make(chan provider.StreamChunk, 2)
+			rawCh <- provider.StreamChunk{
+				ToolCall: &provider.ToolCall{
+					Name: "grep",
+					Arguments: map[string]any{
+						"pattern": "func",
+						"options": map[string]any{"ignore_case": true, "max_results": 5},
+						"paths":   []any{"a.go", "b.go"},
+					},
+				},
+			}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var toolCalls []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "tool_call" {
+					toolCalls = append(toolCalls, m)
+				}
+			}
+			Expect(toolCalls).To(HaveLen(1))
+			Expect(toolCalls[0].ToolInput).To(Equal(`{"options":{"ignore_case":true,"max_results":5},"paths":["a.go","b.go"],"pattern":"func"}`))
+		})
+
+		It("persists an empty ToolInput for nil and empty arguments", func() {
+			rawCh := make(chan provider.StreamChunk, 3)
+			rawCh <- provider.StreamChunk{ToolCall: &provider.ToolCall{Name: "bash"}}
+			rawCh <- provider.StreamChunk{ToolCall: &provider.ToolCall{Name: "read", Arguments: map[string]any{}}}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var toolCalls []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "tool_call" {
+					toolCalls = append(toolCalls, m)
+				}
+			}
+			Expect(toolCalls).To(HaveLen(2))
+			Expect(toolCalls[0].ToolInput).To(BeEmpty())
+			Expect(toolCalls[1].ToolInput).To(BeEmpty())
+		})
+
+		It("mirrors the whole JSON ToolInput onto the persisted tool_result message", func() {
+			rawCh := make(chan provider.StreamChunk, 3)
+			rawCh <- provider.StreamChunk{
+				ToolCall: &provider.ToolCall{
+					Name: "bash",
+					Arguments: map[string]any{
+						"command": "git log --oneline",
+						"timeout": 30,
+					},
+				},
+			}
+			rawCh <- provider.StreamChunk{ToolResult: &provider.ToolResultInfo{Content: "abc123 head"}}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var toolResults []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "tool_result" {
+					toolResults = append(toolResults, m)
+				}
+			}
+			Expect(toolResults).To(HaveLen(1))
+			Expect(toolResults[0].ToolInput).To(Equal(`{"command":"git log --oneline","timeout":30}`))
 		})
 	})
 

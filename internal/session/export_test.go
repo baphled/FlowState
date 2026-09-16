@@ -1,5 +1,7 @@
 package session
 
+import "time"
+
 // ExtractPrimaryArgForTest exposes the shared tool display logic for external test assertions.
 func ExtractPrimaryArgForTest(name string, args map[string]any) string {
 	return toolArgValue(name, args)
@@ -21,3 +23,17 @@ func (m *Manager) AppendSessionMessageForTest(sessionID string, msg Message) {
 // MetaFileSuffixForTest exposes the persistence sidecar suffix so benchmarks
 // can assert the baseline sidecar exists before measuring.
 const MetaFileSuffixForTest = metaFileSuffix
+
+// SetPersistDebounceForTest is the RED-phase skeleton for the persist
+// debounce flusher change: no debounce flusher exists yet, so the requested
+// interval is not honoured and the hook reports success. The behavioural
+// specs in persistence_debounce_test.go stay red until the flusher lands.
+func (m *Manager) SetPersistDebounceForTest(interval time.Duration) error {
+	return nil
+}
+
+// Stop is the RED-phase skeleton for the persist debounce flusher change:
+// the manager has no flusher goroutine to stop yet, so shutdown is a no-op.
+func (m *Manager) Stop() error {
+	return nil
+}

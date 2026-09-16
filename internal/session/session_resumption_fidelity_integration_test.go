@@ -103,7 +103,7 @@ var _ = Describe("Session resumption fidelity", Label("integration"), func() {
 		}
 		Expect(toolMsg).NotTo(BeNil())
 		Expect(toolMsg.ToolName).To(Equal("bash"))
-		Expect(toolMsg.ToolInput).To(Equal("echo hello"))
+		Expect(toolMsg.ToolInput).To(Equal(`{"command":"echo hello"}`))
 	})
 
 	It("AgentID on messages from different agents preserved correctly", func() {

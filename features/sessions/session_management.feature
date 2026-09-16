@@ -79,6 +79,30 @@ Feature: Session Management
     When I load the session
     Then the loaded session should contain the tool call message
 
+  @tool-input
+  Scenario: Whole tool input is persisted for tool calls
+    Given the engine executes a tool with multiple arguments
+    When the stream is processed
+    Then the persisted tool call input should contain every argument as JSON
+
+  @tool-input
+  Scenario: Sensitive tool arguments are redacted in the persisted input
+    Given the engine executes a tool with sensitive arguments
+    When the stream is processed
+    Then the persisted tool call input should redact the sensitive value
+
+  @tool-input
+  Scenario: Persisted whole tool input is restored as structured tool calls on replay
+    Given a session was saved with whole JSON tool input
+    When the session history is replayed to the provider
+    Then the tool call arguments should be restored as structured tool calls
+
+  @tool-input
+  Scenario: Legacy sessions with display-string tool input replay as descriptive text
+    Given a session was saved with legacy display-string tool input
+    When the session history is replayed to the provider
+    Then the tool input should replay as descriptive text in brackets
+
   @tool-output
   Scenario: Tool output is visible when loading a session
     Given a session was saved with tool result messages

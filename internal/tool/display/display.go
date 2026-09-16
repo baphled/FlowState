@@ -285,6 +285,26 @@ func Summary(name string, args map[string]any) string {
 	return fmt.Sprintf("%s: %s", name, value)
 }
 
+// WholeArgsJSON renders the complete tool-call argument map as deterministic
+// compact JSON, redacting sensitive values, for capture into Message.ToolInput.
+//
+// Unlike the display summaries, the rendered payload keeps every argument
+// (including empty-string values), never truncates, and sorts keys so the
+// same argument map always persists to the same bytes.
+//
+// Expected:
+//   - args is the tool call argument map (may be nil).
+//
+// Returns:
+//   - The sorted-key compact JSON object for all arguments, or an empty
+//     string when args is nil or empty.
+//
+// Side effects:
+//   - None.
+func WholeArgsJSON(args map[string]any) string {
+	return ""
+}
+
 // truncate caps s at truncateLen characters, appending "..." when truncation
 // occurs. Returns s unchanged when within the limit.
 //

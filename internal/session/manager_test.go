@@ -3808,37 +3808,41 @@ var _ = Describe("Manager", func() {
 				Expect(toolMsg.Content).To(Equal("found 42 results"))
 			})
 
-			It("canonicalises tool_call to assistant with descriptive content", func() {
-				restored := &session.Session{
-					ID:      "sess-tool-call",
-					AgentID: "planner",
-					Messages: []session.Message{
-						{ID: "m1", Role: "user", Content: "Search for X.", AgentID: "planner"},
-						{
-							ID:        "m2",
-							Role:      "tool_call",
-							Content:   "search",
-							ToolName:  "search",
-							ToolInput: `{"q":"X"}`,
-							AgentID:   "planner",
-						},
+		It("reconstructs tool_call with JSON ToolInput as structured assistant tool calls", func() {
+			restored := &session.Session{
+				ID:      "sess-tool-call",
+				AgentID: "planner",
+				Messages: []session.Message{
+					{ID: "m1", Role: "user", Content: "Search for X.", AgentID: "planner"},
+					{
+						ID:        "m2",
+						Role:      "tool_call",
+						Content:   "search",
+						ToolName:  "search",
+						ToolInput: `{"q":"X"}`,
+						AgentID:   "planner",
 					},
-				}
-				seedManager.RestoreSessions([]*session.Session{restored})
+				},
+			}
+			seedManager.RestoreSessions([]*session.Session{restored})
 
-				seederMock.addChunk(provider.StreamChunk{Done: true})
-				_, err := seedManager.SendMessage(ctx, "sess-tool-call", "Continue.")
-				Expect(err).NotTo(HaveOccurred())
+			seederMock.addChunk(provider.StreamChunk{Done: true})
+			_, err := seedManager.SendMessage(ctx, "sess-tool-call", "Continue.")
+			Expect(err).NotTo(HaveOccurred())
 
-				Expect(seederMock.seededMessages).To(HaveLen(2))
-				Expect(seederMock.seededMessages[0].Role).To(Equal("user"))
+			Expect(seederMock.seededMessages).To(HaveLen(2))
+			Expect(seederMock.seededMessages[0].Role).To(Equal("user"))
 
-				callMsg := seederMock.seededMessages[1]
-				Expect(callMsg.Role).To(Equal("assistant"),
-					"tool_call must canonicalise to Role:'assistant'")
-				Expect(callMsg.Content).To(Equal("[search with input: {\"q\":\"X\"}]"),
-					"tool_call content must wrap the tool name and input in brackets")
-			})
+			callMsg := seederMock.seededMessages[1]
+			Expect(callMsg.Role).To(Equal("assistant"),
+				"tool_call must canonicalise to Role:'assistant'")
+			Expect(callMsg.ToolCalls).To(HaveLen(1),
+				"JSON ToolInput must be restored as structured provider.Message.ToolCalls")
+			Expect(callMsg.ToolCalls[0].Name).To(Equal("search"))
+			Expect(callMsg.ToolCalls[0].Arguments).To(Equal(map[string]any{"q": "X"}))
+			Expect(callMsg.Content).To(BeEmpty(),
+				"structured replay carries the arguments on ToolCalls, not as descriptive text")
+		})
 
 			It("canonicalises tool_call to assistant even when ToolInput is empty", func() {
 				restored := &session.Session{
@@ -3953,11 +3957,75 @@ var _ = Describe("Manager", func() {
 				delMsg := seederMock.seededMessages[1]
 				Expect(delMsg.Role).To(Equal("assistant"),
 					"delegation_started must canonicalise to Role:'assistant'")
-				Expect(delMsg.Content).To(Equal("→ Delegated to researcher (in progress, model: claude-sonnet-4)"),
-					"delegation_started content must round-trip verbatim")
-			})
+			Expect(delMsg.Content).To(Equal("→ Delegated to researcher (in progress, model: claude-sonnet-4)"),
+				"delegation_started content must round-trip verbatim")
 		})
 	})
+
+	Context("tool input replay fidelity", func() {
+		It("replays a legacy display-string ToolInput as descriptive text in brackets", func() {
+			restored := &session.Session{
+				ID:      "sess-tool-call-legacy",
+				AgentID: "planner",
+				Messages: []session.Message{
+					{ID: "m1", Role: "user", Content: "Run ls.", AgentID: "planner"},
+					{
+						ID:        "m2",
+						Role:      "tool_call",
+						Content:   "bash",
+						ToolName:  "bash",
+						ToolInput: "ls -la",
+						AgentID:   "planner",
+					},
+				},
+			}
+			seedManager.RestoreSessions([]*session.Session{restored})
+
+			seederMock.addChunk(provider.StreamChunk{Done: true})
+			_, err := seedManager.SendMessage(ctx, "sess-tool-call-legacy", "Continue.")
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(seederMock.seededMessages).To(HaveLen(2))
+			callMsg := seederMock.seededMessages[1]
+			Expect(callMsg.Role).To(Equal("assistant"),
+				"legacy tool_call must still canonicalise to Role:'assistant'")
+			Expect(callMsg.Content).To(Equal("[bash with input: ls -la]"),
+				"a non-JSON ToolInput must fall back to the legacy bracketed descriptive wrap")
+			Expect(callMsg.ToolCalls).To(BeEmpty(),
+				"a display-string ToolInput must not be reconstructed as structured tool calls")
+		})
+
+		It("falls back to the legacy wrap for an empty-object ToolInput", func() {
+			restored := &session.Session{
+				ID:      "sess-tool-call-empty-object",
+				AgentID: "planner",
+				Messages: []session.Message{
+					{ID: "m1", Role: "user", Content: "Run it.", AgentID: "planner"},
+					{
+						ID:        "m2",
+						Role:      "tool_call",
+						Content:   "bash",
+						ToolName:  "bash",
+						ToolInput: "{}",
+						AgentID:   "planner",
+					},
+				},
+			}
+			seedManager.RestoreSessions([]*session.Session{restored})
+
+			seederMock.addChunk(provider.StreamChunk{Done: true})
+			_, err := seedManager.SendMessage(ctx, "sess-tool-call-empty-object", "Continue.")
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(seederMock.seededMessages).To(HaveLen(2))
+			callMsg := seederMock.seededMessages[1]
+			Expect(callMsg.Role).To(Equal("assistant"))
+			Expect(callMsg.Content).To(Equal("[bash with input: {}]"),
+				"an empty JSON object carries no arguments and must use the legacy wrap")
+			Expect(callMsg.ToolCalls).To(BeEmpty())
+		})
+	})
+})
 
 	Describe("CancelInflight", func() {
 		var (
