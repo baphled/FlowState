@@ -103,6 +103,19 @@ func (v *SchemaValidator) ValidateDocument(doc plan.PlanDocument, empty bool) (*
 //
 // Side effects:
 //   - Appends warnings to result.Warnings for missing optional fields.
+
+// appendExpandedWarnings appends warnings for the optional expanded
+// plan sections missing from file.
+//
+// Expected:
+//   - file holds frontmatter fields parsed from the plan.
+//   - result is the ValidationResult to append warnings to.
+//
+// Returns:
+//   - (nothing; modifies result in place)
+//
+// Side effects:
+//   - Appends warnings to result.Warnings for missing optional fields.
 func (v *SchemaValidator) appendExpandedWarnings(file plan.File, result *plan.ValidationResult) {
 	if strings.TrimSpace(file.TLDR) == "" {
 		result.Warnings = append(result.Warnings, "plan missing TL;DR section")
