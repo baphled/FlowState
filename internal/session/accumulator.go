@@ -753,7 +753,7 @@ func applyToolCall(appender MessageAppender, s *streamAccumState, tc *provider.T
 	s.turnHadToolCall = true
 	flushThinking(appender, s)
 	flushContent(appender, s)
-	input := toolArgValue(tc.Name, tc.Arguments)
+	input := tooldisplay.WholeArgsJSON(tc.Arguments)
 	appender.AppendMessage(s.sessionID, Message{
 		Role:      "tool_call",
 		Content:   tc.Name,
