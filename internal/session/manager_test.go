@@ -1723,6 +1723,47 @@ var _ = Describe("Manager", func() {
 				Expect(decoded["parentId"]).To(Equal(parent.ID))
 			})
 		})
+
+		Context("failure reason surfacing", func() {
+			It("surfaces FailureReason in the summary and emits a camelCase failureReason JSON key", func() {
+				restored := &session.Session{
+					ID:            "failed-1",
+					AgentID:       "agent-failed",
+					Status:        string(session.StatusFailed),
+					FailureReason: session.StopReasonUserCancelled,
+					CreatedAt:     time.Now().Add(-time.Hour),
+				}
+				mgr.RestoreSessions([]*session.Session{restored})
+
+				summaries := mgr.ListSessions()
+				Expect(summaries).To(HaveLen(1))
+				Expect(summaries[0].FailureReason).To(Equal(session.StopReasonUserCancelled),
+					"the session list must explain why a session failed")
+
+				data, err := json.Marshal(summaries[0])
+				Expect(err).NotTo(HaveOccurred())
+				var decoded map[string]interface{}
+				Expect(json.Unmarshal(data, &decoded)).To(Succeed())
+				Expect(decoded).To(HaveKeyWithValue("failureReason", session.StopReasonUserCancelled),
+					"frontend SessionSummary expects a camelCase failureReason field")
+			})
+
+			It("omits failureReason from the JSON summary for sessions that have not failed", func() {
+				_, err := mgr.CreateSession("agent-healthy")
+				Expect(err).NotTo(HaveOccurred())
+
+				summaries := mgr.ListSessions()
+				Expect(summaries).To(HaveLen(1))
+				Expect(summaries[0].FailureReason).To(BeEmpty())
+
+				data, err := json.Marshal(summaries[0])
+				Expect(err).NotTo(HaveOccurred())
+				var decoded map[string]interface{}
+				Expect(json.Unmarshal(data, &decoded)).To(Succeed())
+				Expect(decoded).NotTo(HaveKey("failureReason"),
+					"healthy sessions must stay byte-identical to their pre-field shape")
+			})
+		})
 	})
 
 	Describe("SendMessage", func() {

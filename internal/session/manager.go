@@ -217,6 +217,10 @@ type Session struct {
 // stable hierarchy. The JSON tag is camelCase to match the existing
 // frontend `SessionSummary` contract.
 //
+// FailureReason mirrors Session.FailureReason so the session list can
+// explain why a session flipped to failed. Omitted when empty so sessions
+// that have not failed stay byte-identical to their pre-field shape.
+//
 // IsStreaming is populated by the API layer (not by the manager) when the
 // session broker reports an active Publish for this session. The field
 // defaults to false; callers that have broker context set it after listing.
@@ -257,6 +261,7 @@ type Summary struct {
 	// persisted before the field existed stay byte-identical to their
 	// pre-field summary shape.
 	PermissionMode string `json:"permissionMode,omitempty"`
+	FailureReason  string `json:"failureReason,omitempty"`
 	MessageCount   int    `json:"messageCount"`
 }
 
@@ -284,12 +289,26 @@ type Manager struct {
 	// state is newer than the on-disk .meta.json sidecar; the batched
 	// append path increments it instead of writing synchronously.
 	// Read and written under m.mu.
-	persistDirty  map[string]int
-	streamer      streaming.Streamer
-	notifications map[string][]streaming.CompletionNotificationEvent
-	notifMu       sync.Mutex
-	recorder      Recorder
-	sessionsDir   string
+	persistDirty map[string]int
+	streamer     streaming.Streamer
+	// persistDebounce bounds how long a dirty session may stay
+	// unwritten when it stays under PersistMutationLimit. Defaults to
+	// PersistDebounceInterval; overridable for tests. Read and
+	// written under m.mu.
+	persistDebounce time.Duration
+	// persistStop cancels the debounce sweeper goroutine; persistDone
+	// closes when the sweeper has exited so Stop can await it.
+	persistStop chan struct{}
+	persistDone chan struct{}
+	// persistSweepStarted guards one-sweeper-per-manager semantics so
+	// repeated SetSessionsDir or SetPersistDebounceForTest calls
+	// cannot leak goroutines. Read under m.mu.
+	persistSweepStarted bool
+	persistStopOnce     sync.Once
+	notifications       map[string][]streaming.CompletionNotificationEvent
+	notifMu             sync.Mutex
+	recorder            Recorder
+	sessionsDir         string
 	// orphanGrace is the age threshold the boot-time orphan sweep
 	// applies inside RestoreSessions. Zero means use DefaultOrphanGrace.
 	// Negative means "disable the sweep" — exposed so tests and
@@ -613,10 +632,96 @@ func (m *Manager) markPersistDirtyLocked(sess *Session) {
 	}
 	m.persistDirty[sess.ID]++
 	if m.persistDirty[sess.ID] < PersistMutationLimit {
+		m.ensurePersistSweeperLocked()
 		return
 	}
 	m.persistLocked(sess)
 	delete(m.persistDirty, sess.ID)
+}
+
+// ensurePersistSweeperLocked starts the background debounce flusher
+// exactly once per manager. The sweeper periodically calls
+// FlushPendingPersists so a session sitting under PersistMutationLimit
+// mutations cannot stay unwritten longer than the debounce window —
+// closing the crash-durability gap the mutation counter alone leaves
+// open. The caller MUST hold m.mu.
+//
+// Expected:
+//   - Persistence is configured (non-empty sessionsDir).
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - On first call, launches the sweeper goroutine and records its
+//     stop/done channels.
+func (m *Manager) ensurePersistSweeperLocked() {
+	if m.persistSweepStarted {
+		return
+	}
+	m.persistSweepStarted = true
+	m.persistStop = make(chan struct{})
+	m.persistDone = make(chan struct{})
+	debounce := m.persistDebounce
+	if debounce <= 0 {
+		debounce = PersistDebounceInterval
+	}
+	go m.persistSweepLoop(debounce)
+}
+
+// persistSweepLoop is the debounce flusher body. It exits when
+// persistStop closes, after which no further automatic flushes fire.
+//
+// Expected:
+//   - debounce is a positive tick interval.
+//
+// Returns:
+//   - Nothing (goroutine body).
+//
+// Side effects:
+//   - Calls FlushPendingPersists once per tick while dirty sessions
+//     may exist.
+func (m *Manager) persistSweepLoop(debounce time.Duration) {
+	defer close(m.persistDone)
+	ticker := time.NewTicker(debounce)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			_ = m.FlushPendingPersists()
+		case <-m.persistStop:
+			return
+		}
+	}
+}
+
+// Stop terminates the background debounce flusher after a final flush
+// of any dirty sessions. Intended for shutdown paths (App.Shutdown
+// calls FlushPendingPersists today; wire Stop there to also reap the
+// sweeper goroutine). Safe to call multiple times; the manager remains
+// usable afterwards but no further automatic flushes will fire.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - The final FlushPendingPersists error, if any.
+//
+// Side effects:
+//   - Closes the sweeper stop channel and waits for its exit.
+func (m *Manager) Stop() error {
+	m.persistStopOnce.Do(func() {
+		m.mu.Lock()
+		stop := m.persistStop
+		done := m.persistDone
+		m.persistSweepStarted = true
+		m.mu.Unlock()
+		if stop != nil {
+			close(stop)
+			<-done
+		}
+	})
+	return m.FlushPendingPersists()
 }
 
 // FlushPendingPersists writes the sidecar of every session with
@@ -1090,6 +1195,7 @@ func (m *Manager) ListSessions() []*Summary {
 			CreatedAt:         sess.CreatedAt,
 			UpdatedAt:         updatedAt,
 			PermissionMode:    sess.PermissionMode,
+			FailureReason:     sess.FailureReason,
 			MessageCount:      len(sess.Messages),
 		})
 	}
