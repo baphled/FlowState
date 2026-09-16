@@ -248,6 +248,13 @@ func (e *Engine) AppendToolResultsBatchToMessagesForTest(
 	return e.appendToolResultsBatchToMessages(messages, toolCalls, results)
 }
 
+// DelegateTimeoutForTest exposes the configured fallback child deadline
+// so engine-package specs can assert the same budget directly.
+// Test-only alias of DelegateTimeout.
+func (d *DelegateTool) DelegateTimeoutForTest() time.Duration {
+	return d.DelegateTimeout()
+}
+
 // CheckSpawnLimitsForTest exposes checkSpawnLimits so the depth-
 // resolution test can assert the manifest-aware ceiling without
 // driving Execute end-to-end.

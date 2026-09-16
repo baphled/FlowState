@@ -238,6 +238,15 @@ type DelegateTool struct {
 	// large pre-existing NewDelegateTool / NewDelegateToolWithBackground
 	// callsite footprint per D7.
 	turnRegistry childTurnRegistry
+
+	// fallbackChildTimeout is the wall-clock deadline applied to child
+	// execution when no swarm HarnessConfig.MemberTimeout governs the
+	// delegation. Wired from AppConfig.ParsedToolLoopDuration via
+	// WithDelegateTimeout so standalone delegations (Timeout()==0
+	// inheriting the parent context) still run under a bounded budget
+	// instead of unbounded execution. Zero preserves the historical
+	// no-deadline contract for unwired callers.
+	fallbackChildTimeout time.Duration
 }
 
 // childTurnRegistry is the narrow seam DelegateTool consumes for child

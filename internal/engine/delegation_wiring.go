@@ -220,6 +220,42 @@ func (d *DelegateTool) WithOwnerEngine(eng *Engine) *DelegateTool {
 	return d
 }
 
+// WithDelegateTimeout installs the fallback wall-clock deadline applied
+// to child execution when no swarm HarnessConfig.MemberTimeout governs
+// the delegation. Production wiring (App.configureDelegateTool) passes
+// AppConfig.ParsedToolLoopDuration so a Timeout()==0 delegate tool —
+// which otherwise inherits the parent context unbounded — runs its
+// child engine under a bounded budget.
+//
+// Expected:
+//   - timeout may be zero, which preserves the historical no-deadline
+//     contract for callers that have not wired a budget.
+//
+// Returns:
+//   - The receiver for method chaining.
+//
+// Side effects:
+//   - Replaces the previously stored fallback timeout.
+func (d *DelegateTool) WithDelegateTimeout(timeout time.Duration) *DelegateTool {
+	d.fallbackChildTimeout = timeout
+	return d
+}
+
+// DelegateTimeout returns the configured fallback child deadline so
+// wiring callers can read back the budget installed via
+// WithDelegateTimeout (threaded from AppConfig.ParsedToolLoopDuration).
+//
+// Returns:
+//   - The fallback child deadline; zero when none wired.
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for DelegateTimeout.
+func (d *DelegateTool) DelegateTimeout() time.Duration {
+	return d.fallbackChildTimeout
+}
+
 // GateRunner returns the currently installed swarm gate dispatcher (or
 // nil when none has been wired). Exposed so the App-level wiring tests
 // can pin "production wiring installs a non-nil runner" without having

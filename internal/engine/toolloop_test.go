@@ -9,6 +9,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool"
@@ -349,5 +350,147 @@ var _ = Describe("Engine todo continuation budget", func() {
 			Expect(prov.callCount()).To(BeNumerically("<=", 60),
 				"the turn-local guards must stop the cycle far below unbounded spinning")
 		})
+	})
+})
+
+// drainChunks collects every chunk from the channel and reports whether
+// the channel closed. Bounded by the passed duration so a stuck stream
+// fails the spec rather than hanging the suite.
+func drainCooldownChunks(chunks <-chan provider.StreamChunk, within time.Duration) ([]provider.StreamChunk, bool) {
+	var received []provider.StreamChunk
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for c := range chunks {
+			received = append(received, c)
+		}
+	}()
+	select {
+	case <-done:
+		return received, true
+	case <-time.After(within):
+		return received, false
+	}
+}
+
+func hasCooldownEventType(chunks []provider.StreamChunk, eventType string) bool {
+	for _, c := range chunks {
+		if c.EventType == eventType {
+			return true
+		}
+	}
+	return false
+}
+
+var _ = Describe("tool-loop cooldown retry hardening", func() {
+	var (
+		manifest  agent.Manifest
+		todoStore *todo.MemoryStore
+	)
+
+	BeforeEach(func() {
+		manifest = agent.Manifest{
+			ID:   "cooldown-agent",
+			Name: "Cooldown Agent",
+		}
+		todoStore = todo.NewMemoryStore()
+	})
+
+	It("does not reset guard counters after a cooldown retry", func() {
+		health := failover.NewHealthManager()
+		failoverMgr := failover.NewManager(provider.NewRegistry(), health, time.Second)
+		failoverMgr.SetBasePreferences([]provider.ModelPreference{{Provider: "rl-provider", Model: "rl-model"}})
+		prov := &overflowScriptedProvider{
+			name: "rl-prov",
+			script: []overflowProviderTurn{
+				{content: "Working..."},
+				{content: "Still working..."},
+			},
+			onCall: func(call int) {
+				if call == 4 {
+					health.MarkRateLimited("rl-provider", "rl-model", time.Now().Add(300*time.Millisecond))
+				}
+				if call > 4 {
+					health.MarkRateLimited("rl-provider", "rl-model", time.Now().Add(time.Hour))
+				}
+			},
+		}
+
+		todoStore.Set("cooldown-session", []todo.Item{
+			{Content: "write the report", Status: "pending", Priority: "high"},
+		})
+
+		eng := engine.New(engine.Config{
+			ChatProvider:    prov,
+			Manifest:        manifest,
+			Tools:           []tool.Tool{},
+			FailoverManager: failoverMgr,
+		})
+		eng.SetTodoStoreForTest(todoStore)
+		eng.SetMaxToolLoopDurationForTest(30 * time.Second)
+
+		ctx := context.WithValue(context.Background(), session.IDKey{}, "cooldown-session")
+		chunks, err := eng.Stream(ctx, "cooldown-session", "Go")
+		Expect(err).NotTo(HaveOccurred())
+
+		received, closed := drainCooldownChunks(chunks, 10*time.Second)
+		Expect(closed).To(BeTrue(), "channel must close once the no-progress guard holds across the cooldown retry")
+		Expect(prov.callCount()).To(BeNumerically("<=", 6), "engine must stop after the cooldown retry instead of resetting no-progress forever")
+		Expect(hasCooldownEventType(received, "provider_retry_scheduled")).To(BeTrue())
+	})
+
+	It("stops the loop when the cumulative cooldown wait budget is exhausted", func() {
+		health := failover.NewHealthManager()
+		failoverMgr := failover.NewManager(provider.NewRegistry(), health, time.Second)
+		failoverMgr.SetBasePreferences([]provider.ModelPreference{{Provider: "budget-provider", Model: "budget-model"}})
+		prov := &overflowScriptedProvider{
+			name: "budget-prov",
+			script: []overflowProviderTurn{
+				{content: "Working..."},
+				{content: "Still working..."},
+			},
+			onCall: func(call int) {
+				if call == 4 {
+					health.MarkRateLimited("budget-provider", "budget-model", time.Now().Add(4*time.Minute))
+				}
+			},
+		}
+
+		todoStore.Set("budget-session", []todo.Item{
+			{Content: "write the report", Status: "pending", Priority: "high"},
+		})
+
+		eng := engine.New(engine.Config{
+			ChatProvider:    prov,
+			Manifest:        manifest,
+			Tools:           []tool.Tool{},
+			FailoverManager: failoverMgr,
+		})
+		eng.SetTodoStoreForTest(todoStore)
+		// A 1s max loop duration makes the cumulative budget 2s; the
+		// 4-minute wait exceeds it on the FIRST cooldown, so the loop
+		// must break without sleeping at all.
+		eng.SetMaxToolLoopDurationForTest(1 * time.Second)
+
+		ctx := context.WithValue(context.Background(), session.IDKey{}, "budget-session")
+		start := time.Now()
+		chunks, err := eng.Stream(ctx, "budget-session", "Go")
+		Expect(err).NotTo(HaveOccurred())
+
+		received, closed := drainCooldownChunks(chunks, 5*time.Second)
+		Expect(closed).To(BeTrue())
+		Expect(time.Since(start)).To(BeNumerically("<", 30*time.Second))
+		Expect(hasCooldownEventType(received, "provider_retry_budget_exhausted")).To(BeTrue(),
+			"cumulative cooldown budget exhaustion must break the loop")
+	})
+})
+
+var _ = Describe("delegate tool fallback child deadline", func() {
+	It("applies the fallback timeout when no swarm member timeout governs", func() {
+		dt := engine.NewDelegateTool(nil, agent.Delegation{}, "lead")
+		Expect(dt.DelegateTimeoutForTest()).To(BeZero())
+
+		dt.WithDelegateTimeout(5 * time.Minute)
+		Expect(dt.DelegateTimeoutForTest()).To(Equal(5 * time.Minute))
 	})
 })

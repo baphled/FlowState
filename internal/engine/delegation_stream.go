@@ -196,8 +196,12 @@ func (s *childAttemptState) bind(baseCtx context.Context, d *DelegateTool, targe
 			_ = d.turnRegistry.Append(id, msg)
 		})
 	}
-	if memberTimeout := d.activeMemberTimeout(); memberTimeout > 0 {
-		delegateCtx, s.childCancel = context.WithTimeout(delegateCtx, memberTimeout)
+	childTimeout := d.activeMemberTimeout()
+	if childTimeout <= 0 {
+		childTimeout = d.fallbackChildTimeout
+	}
+	if childTimeout > 0 {
+		delegateCtx, s.childCancel = context.WithTimeout(delegateCtx, childTimeout)
 	} else {
 		s.childCancel = func() {}
 	}

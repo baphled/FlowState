@@ -95,6 +95,11 @@ func (e *Engine) streamWithToolLoop(
 	const maxDeliveryRetries = 3
 	var deliveryRetries int
 	const maxProviderRetryWait = 5 * time.Minute
+	cumulativeCooldownWait := time.Duration(0)
+	maxCumulativeCooldownWait := 2 * e.maxToolLoopDuration
+	if maxCumulativeCooldownWait <= 0 {
+		maxCumulativeCooldownWait = 10 * time.Minute
+	}
 	todoContinuationCount = 0
 	noProgressContinuations = 0
 	lastTodoContinuationSnapshot = []todo.Item(nil)
@@ -191,10 +196,27 @@ func (e *Engine) streamWithToolLoop(
 			}
 			return false, true
 		}
-		slog.Info("todo continuation paused: all providers rate-limited, scheduling retry",
+		if cumulativeCooldownWait+wait > maxCumulativeCooldownWait {
+			slog.Warn("todo continuation stopped: cumulative cooldown wait budget exhausted",
+				"session", sessionID,
+				"provider", e.lastProviderCtx(ctx),
+				"model", e.lastModelCtx(ctx),
+				"wait", wait,
+				"cumulative", cumulativeCooldownWait,
+				"budget", maxCumulativeCooldownWait,
+			)
+			outChan <- provider.StreamChunk{
+				Content:   "All providers rate-limited and cumulative cooldown wait budget exhausted. Please retry later.",
+				EventType: "provider_retry_budget_exhausted",
+			}
+			return false, true
+		}
+		slog.Info("cooldown wait before provider retry",
 			"session", sessionID,
-			"retry_at", retryAt,
+			"provider", e.lastProviderCtx(ctx),
+			"model", e.lastModelCtx(ctx),
 			"wait", wait,
+			"cumulative", cumulativeCooldownWait+wait,
 		)
 		outChan <- provider.StreamChunk{
 			Content:   fmt.Sprintf("All providers unavailable. Retrying in %s (at %s).", wait.Round(time.Second), retryAt.Format("15:04:05")),
@@ -204,6 +226,7 @@ func (e *Engine) streamWithToolLoop(
 		defer timer.Stop()
 		select {
 		case <-timer.C:
+			cumulativeCooldownWait += wait
 			return true, false
 		case <-ctx.Done():
 			return false, true
@@ -545,7 +568,6 @@ func (e *Engine) streamWithToolLoop(
 				if noProgressContinuations >= maxNoProgressContinuations {
 					if retryAt, ok := e.SoonestProviderRetry(); ok {
 						if retry, stop := waitForProviderRetry(retryAt); retry {
-							noProgressContinuations = 0
 							var streamErr error
 							providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
 							if streamErr != nil {
@@ -559,12 +581,10 @@ func (e *Engine) streamWithToolLoop(
 								return
 							}
 							attempt++
-							iterations = 0
 							identicalRun = 0
 							lastFingerprint = ""
 							sameToolPatternRun = 0
 							lastToolNames = ""
-							loopStart = time.Now()
 							toolExecDuration, nonDelegatedToolExecDuration = 0, 0
 							e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 							continue
@@ -675,7 +695,6 @@ func (e *Engine) streamWithToolLoop(
 				if noProgressContinuations >= maxNoProgressContinuations {
 					if retryAt, ok := e.SoonestProviderRetry(); ok {
 						if retry, stop := waitForProviderRetry(retryAt); retry {
-							noProgressContinuations = 0
 							var streamErr error
 							providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
 							if streamErr != nil {
@@ -689,12 +708,10 @@ func (e *Engine) streamWithToolLoop(
 								return
 							}
 							attempt++
-							iterations = 0
 							identicalRun = 0
 							lastFingerprint = ""
 							sameToolPatternRun = 0
 							lastToolNames = ""
-							loopStart = time.Now()
 							toolExecDuration, nonDelegatedToolExecDuration = 0, 0
 							e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 							continue
@@ -1068,7 +1085,6 @@ func (e *Engine) streamWithToolLoop(
 				if noProgressContinuations >= maxNoProgressContinuations {
 					if retryAt, ok := e.SoonestProviderRetry(); ok {
 						if retry, stop := waitForProviderRetry(retryAt); retry {
-							noProgressContinuations = 0
 							var streamErr error
 							providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
 							if streamErr != nil {
@@ -1082,12 +1098,10 @@ func (e *Engine) streamWithToolLoop(
 								return
 							}
 							attempt++
-							iterations = 0
 							identicalRun = 0
 							lastFingerprint = ""
 							sameToolPatternRun = 0
 							lastToolNames = ""
-							loopStart = time.Now()
 							toolExecDuration, nonDelegatedToolExecDuration = 0, 0
 							e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 							continue

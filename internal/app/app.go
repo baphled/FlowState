@@ -2227,6 +2227,9 @@ func (a *App) configureDelegateTool(dt *engine.DelegateTool, eng *engine.Engine)
 		dt.WithSessionsDir(a.SessionsDir())
 		dt.WithToolCapability(a.Config.ToolCapableModels, a.Config.ToolIncapableModels)
 		dt.WithTeeChildContent(a.Config.Delegation.TeeChildContent)
+		if loopDuration := a.Config.ParsedToolLoopDuration(); loopDuration > 0 {
+			dt.WithDelegateTimeout(loopDuration)
+		}
 	}
 
 	if a.SwarmRegistry != nil {

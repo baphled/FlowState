@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -298,6 +299,42 @@ var _ = Describe("wireDelegateToolIfEnabled", func() {
 			explorerEngine := engines["explorer-pref"]
 			Expect(explorerEngine.LastModel()).To(Equal("claude-sonnet-4"))
 			Expect(explorerEngine.LastProvider()).To(Equal("anthropic"))
+		})
+
+		It("threads the tool-loop duration as the delegate fallback deadline", func() {
+			timeoutApp := &App{
+				Registry: agent.NewRegistry(),
+				Config: &config.AppConfig{
+					ToolLoopDuration: "12m",
+				},
+				defaultProvider: &mockProvider{name: "anthropic"},
+			}
+			timeoutProviderReg := provider.NewRegistry()
+			timeoutProviderReg.Register(&mockProvider{name: "anthropic"})
+			timeoutApp.providerRegistry = timeoutProviderReg
+
+			timeoutCoordManifest := agent.Manifest{
+				ID:   "coordinator",
+				Name: "Coordinator",
+				Delegation: agent.Delegation{
+					CanDelegate: true,
+				},
+			}
+			timeoutApp.Registry.Register(&timeoutCoordManifest)
+			timeoutApp.Registry.Register(&agent.Manifest{ID: "explorer-timeout", Name: "Explorer"})
+
+			timeoutEngine := engine.New(engine.Config{
+				Manifest:      timeoutCoordManifest,
+				AgentRegistry: timeoutApp.Registry,
+				Registry:      timeoutProviderReg,
+				Tools:         []tool.Tool{&mockTool{name: "test"}},
+			})
+
+			timeoutApp.wireDelegateToolIfEnabled(timeoutEngine, timeoutCoordManifest)
+
+			delegateTool, found := timeoutEngine.GetDelegateTool()
+			Expect(found).To(BeTrue())
+			Expect(delegateTool.DelegateTimeout()).To(Equal(12 * time.Minute))
 		})
 
 		It("wires the agent registry for name-based resolution", func() {
