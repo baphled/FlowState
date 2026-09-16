@@ -199,11 +199,11 @@ var _ = Describe("AccumulateStream", func() {
 					toolCalls = append(toolCalls, m)
 				}
 			}
-		Expect(toolCalls).To(HaveLen(1))
-		Expect(toolCalls[0].Content).To(Equal("bash"))
-		Expect(toolCalls[0].ToolName).To(Equal("bash"))
-		Expect(toolCalls[0].ToolInput).To(Equal(`{"command":"ls -la"}`))
-	})
+			Expect(toolCalls).To(HaveLen(1))
+			Expect(toolCalls[0].Content).To(Equal("bash"))
+			Expect(toolCalls[0].ToolName).To(Equal("bash"))
+			Expect(toolCalls[0].ToolInput).To(Equal(`{"command":"ls -la"}`))
+		})
 
 		It("populates ToolInput for tools outside the hand-coded allowlist via the tiered fallback", func() {
 			// Regression: tool_call messages for delegate / search_nodes /
@@ -239,16 +239,16 @@ var _ = Describe("AccumulateStream", func() {
 					toolCalls = append(toolCalls, m)
 				}
 			}
-		Expect(toolCalls).To(HaveLen(2))
-		Expect(toolCalls[0].ToolName).To(Equal("search_nodes"))
-		Expect(toolCalls[0].ToolInput).To(Equal(`{"limit":10,"query":"FlowState recall"}`))
-		Expect(toolCalls[1].ToolName).To(Equal("delegate"))
-		// Delegate must persist both the routing target and the brief —
-		// the previous "subagent_type only" rendering silently dropped
-		// every parent's delegation intent. See Bug Fixes/Delegation
-		// Brief Persistence (May 2026).
-		Expect(toolCalls[1].ToolInput).To(Equal(`{"message":"implement the fallback","subagent_type":"senior-engineer"}`))
-	})
+			Expect(toolCalls).To(HaveLen(2))
+			Expect(toolCalls[0].ToolName).To(Equal("search_nodes"))
+			Expect(toolCalls[0].ToolInput).To(Equal(`{"limit":10,"query":"FlowState recall"}`))
+			Expect(toolCalls[1].ToolName).To(Equal("delegate"))
+			// Delegate must persist both the routing target and the brief —
+			// the previous "subagent_type only" rendering silently dropped
+			// every parent's delegation intent. See Bug Fixes/Delegation
+			// Brief Persistence (May 2026).
+			Expect(toolCalls[1].ToolInput).To(Equal(`{"message":"implement the fallback","subagent_type":"senior-engineer"}`))
+		})
 
 		It("redacts sensitive arg values before persisting them as ToolInput", func() {
 			rawCh := make(chan provider.StreamChunk, 2)
@@ -272,10 +272,10 @@ var _ = Describe("AccumulateStream", func() {
 					toolCalls = append(toolCalls, m)
 				}
 			}
-		Expect(toolCalls).To(HaveLen(1))
-		Expect(toolCalls[0].ToolInput).To(Equal(`{"api_key":"[REDACTED]"}`))
-		Expect(toolCalls[0].ToolInput).NotTo(ContainSubstring("sk-real-key"))
-	})
+			Expect(toolCalls).To(HaveLen(1))
+			Expect(toolCalls[0].ToolInput).To(Equal(`{"api_key":"[REDACTED]"}`))
+			Expect(toolCalls[0].ToolInput).NotTo(ContainSubstring("sk-real-key"))
+		})
 
 		It("stores tool_call message before the tool_result message", func() {
 			rawCh := make(chan provider.StreamChunk, 3)
