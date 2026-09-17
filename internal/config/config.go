@@ -146,6 +146,13 @@ type AppConfig struct {
 	// background delegations are the typical reason to raise this.
 	// Format: a Go duration string ("15m", "600s").
 	ToolLoopDuration string `json:"tool_loop_duration,omitempty" yaml:"tool_loop_duration,omitempty"`
+	// ToolLoopWatchdog overrides the no-progress window after which the
+	// engine's turn watchdog cancels a stuck tool loop (a loop that has
+	// gone longer than this without opening a provider stream, completing
+	// a tool batch, or starting a new iteration). Empty means inherit the
+	// compiled-in default (10m). There is no disable path in v1.
+	// Format: a Go duration string ("10m", "600s").
+	ToolLoopWatchdog string `json:"tool_loop_watchdog,omitempty" yaml:"tool_loop_watchdog,omitempty"`
 	// ToolLoopIterations overrides the absolute ceiling on tool-loop
 	// continuations for a single turn (the iteration backstop that
 	// terminates a turn regardless of wall-clock duration). Zero means
@@ -325,6 +332,25 @@ func (c *AppConfig) ParsedToolLoopDuration() time.Duration {
 		return 0
 	}
 	return parseDurationField(c.ToolLoopDuration, "tool_loop_duration")
+}
+
+// ParsedToolLoopWatchdog returns the parsed value of ToolLoopWatchdog
+// (see ParsedStreamTimeout for semantics, including nil-receiver
+// behaviour). Zero inherits the engine's compiled-in default; there is
+// no disable path in v1.
+//
+// Returns:
+//   - The parsed ToolLoopWatchdog duration, or 0 when unset/invalid/nil receiver.
+//
+// Side effects:
+//   - Logs a WARN once when the configured value fails to parse.
+//
+// Expected: parameters for ParsedToolLoopWatchdog.
+func (c *AppConfig) ParsedToolLoopWatchdog() time.Duration {
+	if c == nil {
+		return 0
+	}
+	return parseDurationField(c.ToolLoopWatchdog, "tool_loop_watchdog")
 }
 
 // ParsedToolLoopIterations returns the configured max tool-loop iteration

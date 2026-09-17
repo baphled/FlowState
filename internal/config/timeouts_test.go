@@ -32,16 +32,25 @@ var _ = Describe("AppConfig timeout helpers", func() {
 		Expect(cfg.ParsedBackgroundOutputTimeout()).To(Equal(5 * time.Minute))
 	})
 
+	It("ParsedToolLoopWatchdog parses a valid duration string", func() {
+		cfg := &config.AppConfig{ToolLoopWatchdog: "10m"}
+		Expect(cfg.ParsedToolLoopWatchdog()).To(Equal(10 * time.Minute))
+	})
+
 	It("returns zero when the field is empty", func() {
 		cfg := &config.AppConfig{}
 		Expect(cfg.ParsedStreamTimeout()).To(BeZero())
 		Expect(cfg.ParsedToolTimeout()).To(BeZero())
 		Expect(cfg.ParsedBackgroundOutputTimeout()).To(BeZero())
+		Expect(cfg.ParsedToolLoopWatchdog()).To(BeZero())
 	})
 
 	It("returns zero (and does not panic) for an invalid duration string", func() {
 		cfg := &config.AppConfig{StreamTimeout: "not-a-duration"}
 		Expect(cfg.ParsedStreamTimeout()).To(BeZero())
+
+		watchdog := &config.AppConfig{ToolLoopWatchdog: "not-a-duration"}
+		Expect(watchdog.ParsedToolLoopWatchdog()).To(BeZero())
 	})
 
 	It("returns zero on a nil receiver", func() {
@@ -49,5 +58,6 @@ var _ = Describe("AppConfig timeout helpers", func() {
 		Expect(cfg.ParsedStreamTimeout()).To(BeZero())
 		Expect(cfg.ParsedToolTimeout()).To(BeZero())
 		Expect(cfg.ParsedBackgroundOutputTimeout()).To(BeZero())
+		Expect(cfg.ParsedToolLoopWatchdog()).To(BeZero())
 	})
 })
