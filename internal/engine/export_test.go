@@ -239,6 +239,16 @@ func (e *Engine) RecordSessionOutputTokensForTest(sessionID string, tokens int64
 	e.recordSessionOutputTokens(sessionID, tokens)
 }
 
+// RecordSessionInputTokensForTest exposes the provider-reported
+// input-token hook for the Phase 5b feedback-aware compaction gate
+// (Sep 2026). Production callsite is processStreamChunks every time
+// chunk.Usage.InputTokens surfaces; specs use this helper to prime the
+// per-session tracker so the next buildContextWindow's soft trigger
+// weighs the recorded figure without standing up a full streaming turn.
+func (e *Engine) RecordSessionInputTokensForTest(sessionID string, tokens int64) {
+	e.recordSessionInputTokens(sessionID, tokens)
+}
+
 // AppendToolResultsBatchToMessagesForTest exposes appendToolResultsBatchToMessages
 // for the context-anchoring spec. The fix injects a system-role re-anchor
 // reminder after non-trivial tool-result batches so the model does not drift

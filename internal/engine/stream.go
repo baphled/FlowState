@@ -423,6 +423,63 @@ func (e *Engine) sessionOutputTokensSnapshot(sessionID string) int64 {
 	return e.sessionOutputTokens[sessionID]
 }
 
+// recordSessionInputTokens stores the latest provider-reported
+// cumulative input_tokens for a session so the auto-compaction gate
+// can weigh the authoritative figure for what the provider actually
+// received on the most recent turn (Phase 5b, Sep 2026). The value is
+// a per-turn snapshot (each UsageDelta carries the turn's cumulative
+// figure, not an increment), so the store overwrites on every write.
+// Concurrent writes are serialised by sessionInputTokensMu, mirroring
+// recordSessionOutputTokens.
+//
+// Called from processStreamChunks each time a chunk's provider.UsageDelta
+// carries InputTokens > 0.
+//
+// Expected:
+//   - sessionID is the in-flight session.
+//   - tokens is the cumulative input_tokens from the most recent
+//     UsageDelta. Zero is tolerated (the chunk did not carry usage
+//     data — processStreamChunks gates on >0 before calling this so
+//     the call is a no-op in that case anyway).
+//
+// Side effects:
+//   - Writes to e.sessionInputTokens under e.sessionInputTokensMu.
+func (e *Engine) recordSessionInputTokens(sessionID string, tokens int64) {
+	if sessionID == "" {
+		return
+	}
+	e.sessionInputTokensMu.Lock()
+	defer e.sessionInputTokensMu.Unlock()
+	if e.sessionInputTokens == nil {
+		e.sessionInputTokens = make(map[string]int64)
+	}
+	e.sessionInputTokens[sessionID] = tokens
+}
+
+// sessionInputTokensSnapshot returns the most-recently-recorded
+// provider-reported cumulative input_tokens for a session. Zero for
+// sessions with no recorded UsageDelta — the signal the auto-compaction
+// gate uses to fall back to the estimate-only ratio. Read-only fast
+// path under sessionInputTokensMu.RLock, mirroring
+// sessionOutputTokensSnapshot.
+//
+// Returns:
+//   - The cumulative input_tokens; zero when the session has no
+//     recorded UsageDelta.
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for sessionInputTokensSnapshot.
+func (e *Engine) sessionInputTokensSnapshot(sessionID string) int64 {
+	if sessionID == "" {
+		return 0
+	}
+	e.sessionInputTokensMu.RLock()
+	defer e.sessionInputTokensMu.RUnlock()
+	return e.sessionInputTokens[sessionID]
+}
+
 // makePostTurnUsageEmitter returns a postTurnUsageEmitter closure
 // captured against the in-flight request, or nil when the engine cannot
 // compute a meaningful figure for the request (no counter, no limit).

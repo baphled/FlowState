@@ -94,7 +94,7 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 		return ""
 	}
 
-	recent, recentTokens, fullWindowTokens, fire := e.autoCompactionCandidates(ctx, manifest, tokenBudget, threshold, forceFire)
+	recent, recentTokens, fullWindowTokens, fire := e.autoCompactionCandidates(ctx, sessionID, manifest, tokenBudget, threshold, forceFire)
 	if !fire {
 		// Below threshold — clear the cross-session pointer as
 		// before. Same per-session-memo retention rationale applies.
@@ -1008,8 +1008,21 @@ func (e *Engine) autoCompactionThreshold(manifest *agent.Manifest, tokenBudget i
 // is the "have content to summarise" check; the ratio threshold is
 // skipped.
 //
+// Phase 5b (Sep 2026) made the ratio numerator feedback-aware. When
+// the session has a provider-reported cumulative input_tokens figure
+// from its most recent turn (recordSessionInputTokens), the effective
+// numerator is max(estimate, reported); otherwise the estimate is
+// used unchanged. The provider-reported figure is ground truth for
+// what was actually sent, but the estimate remains necessary when the
+// window changed since the last report (e.g. after a compaction), so
+// max keeps the gate monotonic: the feedback path can only ever fire
+// the trigger earlier than today's estimate-only behaviour, never
+// later. The denominator (tokenBudget) is untouched.
+//
 // Expected:
 //   - manifest carries ContextManagement to pick the sliding window size.
+//   - sessionID keys the provider-reported input-token lookup; the
+//     empty string and unrecorded sessions yield no reported figure.
 //   - tokenBudget is the model context limit.
 //   - threshold is the ratio above which compaction fires.
 //   - forceFire is true when an external signal (Slice 6a's gate-
@@ -1018,18 +1031,20 @@ func (e *Engine) autoCompactionThreshold(manifest *agent.Manifest, tokenBudget i
 // Returns:
 //   - recent: the recent-message slice counted against the budget.
 //   - recentTokens: sum of token counts for those messages.
-//   - fullWindowTokens: token count across e.store.AllMessages() (the
-//     scope the chip and the proactive gate use). Returned regardless
-//     of fire so the Stage-1 prune pass in maybeAutoCompact can
-//     re-check the ratio after truncating tool outputs without
-//     re-iterating the store. Zero when forceFire short-circuits the
-//     full-window count.
+//   - fullWindowTokens: the effective numerator — the full-window
+//     estimate, raised to the provider-reported input-token figure
+//     when that figure is larger. Token count across
+//     e.store.AllMessages() (the scope the chip and the proactive
+//     gate use). Returned regardless of fire so the Stage-1 prune
+//     pass in maybeAutoCompact can re-check the ratio after
+//     truncating tool outputs without re-iterating the store. Zero
+//     when forceFire short-circuits the full-window count.
 //   - fire: true when (ratio > threshold OR forceFire) and there is
 //     content to summarise; false when compaction should be skipped.
 //
 // Side effects:
 //   - None.
-func (e *Engine) autoCompactionCandidates(ctx context.Context, manifest *agent.Manifest, tokenBudget int, threshold float64, forceFire bool) ([]provider.Message, int, int, bool) {
+func (e *Engine) autoCompactionCandidates(ctx context.Context, sessionID string, manifest *agent.Manifest, tokenBudget int, threshold float64, forceFire bool) ([]provider.Message, int, int, bool) {
 	slidingWindowSize := manifest.ContextManagement.SlidingWindowSize
 	if slidingWindowSize <= 0 {
 		slidingWindowSize = 50
@@ -1071,6 +1086,9 @@ func (e *Engine) autoCompactionCandidates(ctx context.Context, manifest *agent.M
 		Tools:    e.assembleToolSchemasLocked(ctx),
 	}
 	fullWindowTokens := e.estimateRequestTokens(syntheticAll)
+	if reported := e.sessionInputTokensSnapshot(sessionID); reported > int64(fullWindowTokens) {
+		fullWindowTokens = int(reported)
+	}
 	ratio := float64(fullWindowTokens) / float64(tokenBudget)
 	if ratio <= threshold {
 		return nil, 0, fullWindowTokens, false

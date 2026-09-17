@@ -483,6 +483,19 @@ type Engine struct {
 	sessionOutputTokens   map[string]int64
 	sessionOutputTokensMu sync.RWMutex
 
+	// sessionInputTokens tracks the provider-reported cumulative
+	// input_tokens per session from the most recent UsageDelta
+	// (Anthropic message_start, openaicompat trailing-chunk usage).
+	// The auto-compaction gate reads this so the soft trigger can
+	// weigh the authoritative figure for what the provider actually
+	// received on the last turn against the engine's own estimate
+	// (Phase 5b, Sep 2026). Keyed by sessionID so concurrent streams
+	// stay isolated. Zero for sessions without a recorded UsageDelta,
+	// in which case the gate falls back to the estimate unchanged.
+	// Access serialised by sessionInputTokensMu.
+	sessionInputTokens   map[string]int64
+	sessionInputTokensMu sync.RWMutex
+
 	// quotaTracker is the optional provider-quota Tracker. When
 	// non-nil:
 	//   - processStreamChunks calls RecordSpend at the same site as
@@ -1140,6 +1153,7 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		knownSkillsFunc:                  cfg.KnownSkillsFunc,
 		lastUsagePayload:                 make(map[string]string),
 		sessionOutputTokens:              make(map[string]int64),
+		sessionInputTokens:               make(map[string]int64),
 		quotaTracker:                     cfg.QuotaTracker,
 		quotaAccountHashes:               cfg.QuotaAccountHashes,
 		quotaCaps:                        cfg.QuotaCaps,

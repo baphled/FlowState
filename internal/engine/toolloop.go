@@ -2307,6 +2307,10 @@ func (e *Engine) processStreamChunks(
 				e.recordSessionOutputTokens(sessionID, chunk.Usage.OutputTokens)
 			}
 
+			if chunk.Usage != nil && chunk.Usage.InputTokens > 0 {
+				e.recordSessionInputTokens(sessionID, chunk.Usage.InputTokens)
+			}
+
 			// Quota Plan PR4 — spend accumulator. Mirror the gate
 			// above: any chunk carrying Usage feeds the Tracker via
 			// recordQuotaSpend (no-op when the tracker is unwired).
