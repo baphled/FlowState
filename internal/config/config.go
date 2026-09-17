@@ -22,13 +22,26 @@ import (
 type Config = AppConfig
 
 // DelegationConfig controls the delegation engine's content-streaming
-// behaviour. TeeChildContent gates whether delegate chain-of-thought is
-// mirrored into the parent's user-visible stream via teeToParentStream.
-// Defaults to false — the child session plus tool_result is the canonical
-// surface for delegate output, matching the consensus pattern across
-// Claude Code, OpenCode, and other harnesses.
+// behaviour and coordination-write enforcement.
+//
+// TeeChildContent gates whether delegate chain-of-thought is mirrored
+// into the parent's user-visible stream via teeToParentStream. It
+// defaults to false — the child session plus tool_result is the
+// canonical surface for delegate output, matching the consensus
+// pattern across Claude Code, OpenCode, and other harnesses.
+//
+// RequireCoordinationWrites gates the fail-closed post-completion
+// judgement for synchronous delegates. It defaults to true: a delegate
+// child that completes having written zero coordination_store keys
+// under its chain returns an error tool result to the parent model
+// instead of an empty success, so the parent can no longer mistake
+// announced-but-never-performed work for a deliverable. Operators
+// running a deliberately coordination-free delegate can release it
+// from the contract via `delegation.require_coordination_writes:
+// false` in config.yaml.
 type DelegationConfig struct {
-	TeeChildContent bool `json:"tee_child_content" yaml:"tee_child_content"`
+	TeeChildContent           bool `json:"tee_child_content" yaml:"tee_child_content"`
+	RequireCoordinationWrites bool `json:"require_coordination_writes" yaml:"require_coordination_writes"`
 }
 
 // AppConfig holds the complete application configuration.
@@ -1550,14 +1563,19 @@ func DefaultConfig() *AppConfig {
 	}
 }
 
-// DefaultDelegationConfig returns the default delegation configuration with TeeChildContent disabled; the child session plus
-// tool_result is the canonical surface unless callers explicitly opt in.
+// DefaultDelegationConfig returns the default delegation configuration:
+// TeeChildContent disabled (the child session plus tool_result is the
+// canonical surface unless callers explicitly opt in) and
+// RequireCoordinationWrites enabled (synchronous delegates that complete
+// without any coordination_store writes fail closed instead of surfacing
+// an empty success).
 //
 // Returns: result of DefaultDelegationConfig.
 // Side effects: None.
 func DefaultDelegationConfig() DelegationConfig {
 	return DelegationConfig{
-		TeeChildContent: false,
+		TeeChildContent:           false,
+		RequireCoordinationWrites: true,
 	}
 }
 

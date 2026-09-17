@@ -137,6 +137,51 @@ var _ = Describe("Config", func() {
 			Expect(cfg.Delegation.TeeChildContent).To(BeFalse())
 			Expect(config.DefaultDelegationConfig().TeeChildContent).To(BeFalse())
 		})
+
+		It("requires coordination writes by default", func() {
+			cfg := config.DefaultConfig()
+
+			Expect(cfg.Delegation.RequireCoordinationWrites).To(BeTrue())
+			Expect(config.DefaultDelegationConfig().RequireCoordinationWrites).To(BeTrue())
+		})
+	})
+
+	Describe("LoadConfigFromPath delegation require_coordination_writes", func() {
+		Context("when the key is explicitly false", func() {
+			It("honours the operator override", func() {
+				configContent := `
+delegation:
+  require_coordination_writes: false
+`
+				configPath := filepath.Join(tempDir, "config.yaml")
+				err := os.WriteFile(configPath, []byte(configContent), 0o600)
+				Expect(err).NotTo(HaveOccurred())
+
+				cfg, err := config.LoadConfigFromPath(configPath)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(cfg.Delegation.RequireCoordinationWrites).To(BeFalse())
+			})
+		})
+
+		Context("when a partial delegation block omits the key", func() {
+			It("keeps the fail-closed default", func() {
+				configContent := `
+delegation:
+  tee_child_content: true
+`
+				configPath := filepath.Join(tempDir, "config.yaml")
+				err := os.WriteFile(configPath, []byte(configContent), 0o600)
+				Expect(err).NotTo(HaveOccurred())
+
+				cfg, err := config.LoadConfigFromPath(configPath)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(cfg.Delegation.TeeChildContent).To(BeTrue())
+				Expect(cfg.Delegation.RequireCoordinationWrites).To(BeTrue(),
+					"an operator who never mentions require_coordination_writes must keep the fail-closed contract")
+			})
+		})
 	})
 
 	Describe("LoadConfig", func() {
