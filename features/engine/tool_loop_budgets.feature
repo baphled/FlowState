@@ -9,7 +9,7 @@ Feature: Tool-loop budgets count tool execution time
 
   Scenario: Delegated execution time is exempt from the parent tool-time cap
     Given an engine with a tool loop duration cap of 200ms
-    And a delegation tool whose child engine runs for 500ms
+    And a delegation tool whose child engine runs for 300ms
     When the delegation completes
     Then the parent tool loop does not trip the tool-time backstop
 

@@ -268,7 +268,7 @@ func RegisterToolLoopBudgetSteps(ctx *godog.ScenarioContext) {
 	s := &toolLoopBudgetSteps{}
 	ctx.Step(`^an engine with a tool loop duration cap of 200ms$`, s.engineWithToolLoopDurationCap)
 	ctx.Step(`^a tool that sleeps 50ms per call and never finishes the task$`, s.toolSleepsPerCallNeverFinishing)
-	ctx.Step(`^a delegation tool whose child engine runs for 500ms$`, s.delegationToolRunningChildEngine)
+	ctx.Step(`^a delegation tool whose child engine runs for (\d+)ms$`, s.delegationToolRunningChildEngine)
 	ctx.Step(`^the cumulative tool execution time exceeds the cap$`, s.cumulativeToolExecutionTimeExceedsCap)
 	ctx.Step(`^the tool loop is capped with reason "total_tool_time_backstop"$`, s.toolLoopCappedWithReason)
 	ctx.Step(`^the delegation completes$`, s.delegationCompletes)
@@ -304,11 +304,9 @@ func (s *toolLoopBudgetSteps) toolSleepsPerCallNeverFinishing() error {
 	return nil
 }
 
-// delegationToolRunningChildEngine registers a TimeoutOverrider-zero tool
-// whose execution models a child engine run, then scripts one delegation
-// followed by a clean completion.
-func (s *toolLoopBudgetSteps) delegationToolRunningChildEngine() error {
-	delegate := &budgetDelegationTool{budgetSleepTool{name: "delegate", delay: 500 * time.Millisecond}}
+// delegationToolRunningChildEngine registers a TimeoutOverrider-zero tool modelling a child engine run for the scripted duration.
+func (s *toolLoopBudgetSteps) delegationToolRunningChildEngine(durationMs int) error {
+	delegate := &budgetDelegationTool{budgetSleepTool{name: "delegate", delay: time.Duration(durationMs) * time.Millisecond}}
 	s.tools = []tool.Tool{delegate}
 	s.provider.turns = []toolBudgetTurn{
 		{toolName: "delegate"},
