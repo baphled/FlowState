@@ -154,6 +154,24 @@ func (e *Engine) RebuildMessagesAfterCompactionForTest(ctx context.Context, sess
 	return e.rebuildContextWindowAfterMidLoopCompaction(ctx, sessionID, messages)
 }
 
+// TruncateMessagesTokenBoundedForTest exposes the token-budgeted
+// truncation the overflow fallback applies so Phase 5a specs can pin
+// the keep-one floor (the newest message survives even when a single
+// message exceeds the target) without standing up a full overflow
+// retry end-to-end.
+func (e *Engine) TruncateMessagesTokenBoundedForTest(ctx context.Context, messages []provider.Message) []provider.Message {
+	return e.truncateMessagesTokenBounded(ctx, messages)
+}
+
+// RebuildContextWindowTokenBoundedForTest exposes the token-bounded
+// post-compaction rebuild so Phase 5a specs can pin the prefix-accounted
+// surviving-tail estimate — the system-prompt prefix tokens must already
+// be folded into the bound — without driving an overflow retry through
+// the provider stack.
+func (e *Engine) RebuildContextWindowTokenBoundedForTest(ctx context.Context, sessionID string, messages []provider.Message, summary string) []provider.Message {
+	return e.rebuildContextWindowTokenBounded(ctx, sessionID, messages, summary)
+}
+
 // EmitPostRetryContextUsageForTest exposes the Bug #36 post-retry
 // context_usage emission so specs can pin the cadence (one fresh
 // chunk per real change) and the per-session double-emission guard

@@ -241,6 +241,25 @@ func (m *mockResolver) ResolveContextLength(providerName, model string) int {
 	return 0
 }
 
+// capturedRequestEstimate approximates the input-token figure the
+// proactive overflow gate computes for req using the ApproximateCounter
+// heuristic (message contents plus per-tool schema overhead). The
+// output-reserve specs use it to pin the Phase 5a contract: a request
+// the engine actually dispatches must fit the usable budget even after
+// the overflow fallback recovers the turn.
+func capturedRequestEstimate(req *provider.ChatRequest) int {
+	counter := ctxstore.NewApproximateCounter()
+	const perToolOverhead = 32
+	total := 0
+	for _, m := range req.Messages {
+		total += counter.Count(m.Content)
+	}
+	for _, t := range req.Tools {
+		total += counter.Count(t.Name) + counter.Count(t.Description) + perToolOverhead
+	}
+	return total
+}
+
 var _ = Describe("Engine", func() {
 	var (
 		chatProvider      *mockProvider
@@ -1255,8 +1274,15 @@ var _ = Describe("Engine", func() {
 					for range chunks {
 					}
 
-					Expect(chatProvider.capturedRequest).To(BeNil(),
-						"input fits raw limit (5_000) but exceeds limit-reserve (904) — must refuse")
+					// Phase 5a — the overflow fallback may recover the turn
+					// by truncating in-memory, so the pinned invariant is
+					// "never dispatch an over-budget request": either the
+					// provider sees nothing, or every dispatched window
+					// fits the usable (limit-reserve) budget.
+					if chatProvider.capturedRequest != nil {
+						Expect(capturedRequestEstimate(chatProvider.capturedRequest)).To(BeNumerically("<=", 904),
+							"input fits raw limit (5_000) but exceeds limit-reserve (904) — a recovered dispatch must fit usable")
+					}
 				})
 
 				It("preserves backward-compat under the new boundary (limit-reserve)", func() {
@@ -1310,8 +1336,12 @@ var _ = Describe("Engine", func() {
 					for range chunks {
 					}
 
-					Expect(chatProvider.capturedRequest).To(BeNil(),
-						"fallback path must apply the same reserve — input fits raw 5_000 but exceeds usable 904")
+					// Phase 5a — same never-dispatch-over-budget contract via
+					// the resolver fallback path.
+					if chatProvider.capturedRequest != nil {
+						Expect(capturedRequestEstimate(chatProvider.capturedRequest)).To(BeNumerically("<=", 904),
+							"fallback path must apply the same reserve — a recovered dispatch must fit usable 904")
+					}
 				})
 
 				It("clamps a small caller-supplied MaxTokens up to the 1024 floor", func() {
@@ -1351,8 +1381,12 @@ var _ = Describe("Engine", func() {
 					for range chunks {
 					}
 
-					Expect(chatProvider.capturedRequest).To(BeNil(),
-						"small MaxTokens must clamp to the 1024 floor — large input must still refuse")
+					// Phase 5a — the 1024-floor reserve still bounds every
+					// dispatched request; recovery may only shrink to fit.
+					if chatProvider.capturedRequest != nil {
+						Expect(capturedRequestEstimate(chatProvider.capturedRequest)).To(BeNumerically("<=", 3_976),
+							"small MaxTokens must clamp to the 1024 floor — a recovered dispatch must fit usable 3_976")
+					}
 				})
 
 				It("uses the 4096 default reserve when MaxTokens is zero", func() {
@@ -1434,9 +1468,14 @@ var _ = Describe("Engine", func() {
 					for range chunks {
 					}
 
-					Expect(chatProvider.capturedRequest).To(BeNil(),
-						"OutputLimit=8192 → usable=1_808; ~3_000-token input must refuse "+
-							"(would have passed under the old hardcoded 4096 default)")
+					// Phase 5a — the registry-sourced reserve still bounds
+					// every dispatched request; recovery may only shrink
+					// to fit (would have passed wholesale under the old
+					// hardcoded 4096 default).
+					if chatProvider.capturedRequest != nil {
+						Expect(capturedRequestEstimate(chatProvider.capturedRequest)).To(BeNumerically("<=", 1_808),
+							"OutputLimit=8192 → usable=1_808; a recovered ~3_000-token dispatch must fit usable")
+					}
 				})
 
 				It("falls back to defaultOutputReserve when the registry returns zero", func() {
@@ -1469,9 +1508,12 @@ var _ = Describe("Engine", func() {
 					for range chunks {
 					}
 
-					Expect(chatProvider.capturedRequest).To(BeNil(),
-						"OutputLimit=0 → fall back to default 4096 reserve; "+
-							"~1_500-token input must still refuse against usable=904")
+					// Phase 5a — the default-reserve fallback still bounds
+					// every dispatched request.
+					if chatProvider.capturedRequest != nil {
+						Expect(capturedRequestEstimate(chatProvider.capturedRequest)).To(BeNumerically("<=", 904),
+							"OutputLimit=0 → default 4096 reserve; a recovered dispatch must fit usable 904")
+					}
 				})
 
 				It("honours MaxTokens when stamped, ignoring registry OutputLimit", func() {
@@ -1666,13 +1708,20 @@ var _ = Describe("Engine", func() {
 						received = append(received, chunk)
 					}
 
-					// Provider must have been invoked exactly ONCE —
-					// the first turn ran but the retry was refused by
-					// the gate before reaching streamSequenceProvider's
-					// second sequence.
-					Expect(seqProv.callIndex).To(Equal(1),
-						"provider.Stream must be invoked exactly once; "+
-							"a callIndex of 2 means the gate let the over-budget retry through")
+					// Phase 5a — the token-budgeted overflow fallback may
+					// now recover the turn, so the provider can legitimately
+					// see a second dispatch. The pinned invariant is that
+					// the recovery never blind-sends: every dispatched
+					// request fits the usable budget. A callIndex above 2
+					// would mean the retry loop span.
+					Expect(seqProv.callIndex).To(BeNumerically("<=", 2),
+						"provider.Stream must be invoked at most twice; a callIndex of 3 means the retry loop spun")
+					if seqProv.callIndex == 2 {
+						retryReq := seqProv.capturedRequests[1]
+						Expect(capturedRequestEstimate(&retryReq)).To(BeNumerically("<=", 904),
+							"the recovered retry-with-tool-result must fit usable=904 — "+
+								"the overflow fallback may only dispatch a budgeted window")
+					}
 
 					// The tool was actually executed — the spec is
 					// pinning the post-tool-result gate, not a

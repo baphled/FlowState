@@ -235,7 +235,7 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 	delete(e.sessionRehydrated, sessionID)
 	e.buildStateMu.Unlock()
 
-	summaryText := "[auto-compacted summary]: " + string(summaryJSON)
+	summaryText := autoCompactedSummaryPrefix + string(summaryJSON)
 	// Determine the trigger discriminant. forceTrigger wins when the
 	// force-fire path drove the decision — that's the cause attribution
 	// the operator wants. Empty force-trigger means the ratio tier was
@@ -245,33 +245,6 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 		ratioOrForceTrigger(forceTrigger),
 		prunedToolOutputs, true)
 	return summaryText
-}
-
-// NaiveTruncateMessages keeps the system prompt and the most recent keep messages,
-// replacing the dropped middle with a single placeholder message.
-//
-// Expected: parameters for NaiveTruncateMessages.
-// Returns: result of NaiveTruncateMessages.
-// Side effects: None.
-func (e *Engine) NaiveTruncateMessages(messages []provider.Message, keep int) []provider.Message {
-	if len(messages) == 0 || len(messages) <= keep+1 {
-		return messages
-	}
-	if keep < 0 {
-		keep = 0
-	}
-	start := len(messages) - keep
-	if start < 1 {
-		start = 1
-	}
-	truncated := make([]provider.Message, 0, keep+2)
-	truncated = append(truncated, messages[0])
-	truncated = append(truncated, provider.Message{
-		Role:    "assistant",
-		Content: "[... earlier messages truncated — summariser unavailable ...]",
-	})
-	truncated = append(truncated, messages[start:]...)
-	return truncated
 }
 
 // maybeAutoCompactExplicit is the explicit-messages variant of
@@ -424,7 +397,7 @@ func (e *Engine) maybeAutoCompactExplicit(ctx context.Context, sessionID string,
 	delete(e.sessionRehydrated, sessionID)
 	e.buildStateMu.Unlock()
 
-	summaryText := "[auto-compacted summary]: " + string(summaryJSON)
+	summaryText := autoCompactedSummaryPrefix + string(summaryJSON)
 	e.publishContextCompactedEvent(sessionID, manifest.ID, recentTokens, summaryText, latency,
 		ratioOrForceTrigger(forceTrigger),
 		prunedToolOutputs, true)
@@ -495,7 +468,7 @@ func (e *Engine) reuseMemoisedSummary(sessionID string, currentHash [32]byte, re
 	e.buildStateMu.Lock()
 	e.lastCompactionSummary = cached.summary
 	e.buildStateMu.Unlock()
-	return "[auto-compacted summary]: " + string(summaryJSON), true
+	return autoCompactedSummaryPrefix + string(summaryJSON), true
 }
 
 // getPriorCompactionSummary retrieves the most recent successful compaction
@@ -1331,7 +1304,11 @@ func (e *Engine) shouldCompactExplicitForGate(manifest *agent.Manifest, userMess
 // recent history).
 //
 // rebuildContextWindowAfterMidLoopCompaction re-assembles the session
-// window after a mid-tool-loop compaction fires via buildContextWindow.
+// window after a mid-tool-loop compaction fires via buildContextWindow,
+// then applies the same token bound the main token-bounded rebuild uses
+// (usable*4/5 with a keep-one floor) so the reassembled window cannot
+// overshoot the model's usable budget even when the store still carries
+// the full pre-compaction transcript.
 //
 // The implementation routes through buildContextWindow with an empty
 // user message so the same assembly path that handles user turns
@@ -1345,9 +1322,9 @@ func (e *Engine) shouldCompactExplicitForGate(manifest *agent.Manifest, userMess
 //     re-assembled.
 //
 // Returns:
-//   - The rebuilt message slice. Returns nil when the engine cannot
-//     reassemble (no store, no windowBuilder); the caller should fall
-//     back to its pre-fix slice rather than send nothing.
+//   - The rebuilt, token-bounded message slice. Returns nil when the
+//     engine cannot reassemble (no store, no windowBuilder); the caller
+//     should fall back to its pre-fix slice rather than send nothing.
 //
 // Side effects:
 //   - Same as buildContextWindow (publishes context-window events,
@@ -1359,7 +1336,11 @@ func (e *Engine) rebuildContextWindowAfterMidLoopCompaction(ctx context.Context,
 	}
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == "user" {
-			return e.buildContextWindow(ctx, sessionID, messages[i].Content)
+			rebuilt := e.buildContextWindow(ctx, sessionID, messages[i].Content)
+			if rebuilt == nil {
+				return nil
+			}
+			return e.truncateMessagesTokenBounded(ctx, rebuilt)
 		}
 	}
 	return nil
@@ -1392,17 +1373,18 @@ func (e *Engine) lastCompactionSummaryText() string {
 	if err != nil {
 		return ""
 	}
-	return "[auto-compacted summary]: " + string(b)
+	return autoCompactedSummaryPrefix + string(b)
 }
 
 // rebuildContextWindowTokenBounded rebuilds the mid-tool-loop message
 // slice after a compaction has fired: system prompt + todo context +
 // compaction summary + a token-bounded hot tail. The tail is the newest
-// run of live messages whose estimated token cost (plus the fixed
-// prefix) fits the usable context budget (limit - output reserve, as the
-// proactive overflow gate computes it). Oldest tail messages are dropped
-// until the estimate fits; at least one tail message is always kept so
-// the provider still sees the newest tool exchange.
+// run of live messages whose estimated token cost — plus the fixed
+// prefix (system prompt, todo context) and the summary — fits the usable
+// context budget (limit - output reserve, as the proactive overflow gate
+// computes it). Oldest tail messages are dropped until the estimate
+// fits; at least one tail message is never dropped so the provider
+// still sees the newest tool exchange.
 //
 // This mirrors maybeCompactForRetry's rebuild shape (toolloop.go) but
 // adds the token bound the retry path lacks because its 50-message
@@ -1410,6 +1392,11 @@ func (e *Engine) lastCompactionSummaryText() string {
 // diagnosis behind P3: compaction fired but the rebuild reassembled the
 // full swollen store (~3648 est vs ~2776 usable) so the retry re-hit
 // the gate.
+//
+// The prefix tokens are folded into the surviving-tail estimate so the
+// final prefixed window does not overshoot the target once the system
+// prompt and todo context are prepended — the tail pays for the prefix,
+// not the other way round.
 //
 // Expected:
 //   - ctx carries the provider/model resolution keys and system-prompt
@@ -1447,6 +1434,17 @@ func (e *Engine) rebuildContextWindowTokenBounded(ctx context.Context, sessionID
 	}
 	target := usable * 4 / 5
 
+	prefix := []provider.Message{{Role: "system", Content: e.BuildSystemPromptCtx(ctx)}}
+	prefix = e.appendTodoContext(prefix, sessionID)
+	prefixTokens := 0
+	for _, m := range prefix {
+		prefixTokens += e.tokenCounter.Count(m.Content)
+	}
+	summaryTokens := 0
+	if summary != "" {
+		summaryTokens = int(e.tokenCounter.Count(summary))
+	}
+
 	estimatedMessages := func(msgs []provider.Message) int {
 		estimated := e.estimateRequestTokens(&provider.ChatRequest{
 			Provider: prov,
@@ -1454,9 +1452,7 @@ func (e *Engine) rebuildContextWindowTokenBounded(ctx context.Context, sessionID
 			Messages: msgs,
 			Tools:    req.Tools,
 		})
-		if summary != "" {
-			estimated += int(e.tokenCounter.Count(summary))
-		}
+		estimated += prefixTokens + summaryTokens
 		return estimated
 	}
 
@@ -1467,18 +1463,129 @@ func (e *Engine) rebuildContextWindowTokenBounded(ctx context.Context, sessionID
 		messages = messages[1:]
 	}
 
-	if estimatedMessages(messages) > target {
-		messages = truncateMessagesInMemory(messages, int(target))
+	tailBudget := target - prefixTokens - summaryTokens
+	if estimatedMessages(messages) > target && tailBudget > 0 {
+		messages = truncateMessagesInMemory(messages, tailBudget)
 	}
 
-	rebuilt := make([]provider.Message, 0, len(messages)+4)
-	rebuilt = append(rebuilt, provider.Message{Role: "system", Content: e.BuildSystemPromptCtx(ctx)})
-	rebuilt = e.appendTodoContext(rebuilt, sessionID)
+	rebuilt := make([]provider.Message, 0, len(messages)+len(prefix)+1)
+	rebuilt = append(rebuilt, prefix...)
 	if summary != "" {
 		rebuilt = append(rebuilt, provider.Message{Role: "assistant", Content: summary})
 	}
 	rebuilt = append(rebuilt, messages...)
 	return rebuilt
+}
+
+// autoCompactedSummaryPrefix is the canonical marker stamped on every
+// auto-compaction summary text (maybeAutoCompact and
+// lastCompactionSummaryText). leadingFixedMessages keys off it to keep
+// a summary message fixed during token-bounded truncation.
+const autoCompactedSummaryPrefix = "[auto-compacted summary]: "
+
+// truncateMessagesTokenBounded shrinks an assembled window to the same
+// token target rebuildContextWindowTokenBounded applies: drop the oldest
+// non-fixed messages until the estimated request (fixed messages plus
+// tail plus tool schemas) sits at or under usable*4/5, with a keep-one
+// floor that never drops the newest message. When the bound cannot be
+// computed (no token counter, unresolvable model limit) the input is
+// preserved verbatim so callers degrade to today's behaviour instead of
+// losing messages.
+//
+// Expected:
+//   - ctx carries the provider/model resolution keys used for the
+//     budget and tool-schema estimate.
+//   - messages is the window slice about to be (re)sent; never empty.
+//
+// Returns:
+//   - The bounded slice. The fixed prefix (leading system messages and
+//     the auto-compacted summary directly behind them) is never
+//     dropped; the newest message is never dropped.
+//
+// Side effects:
+//   - None beyond reading engine state (token counter, resolver).
+func (e *Engine) truncateMessagesTokenBounded(ctx context.Context, messages []provider.Message) []provider.Message {
+	if e == nil || e.tokenCounter == nil || len(messages) == 0 {
+		return messages
+	}
+	prov := e.lastProviderCtx(ctx)
+	model := e.lastModelCtx(ctx)
+	limit := e.ResolveContextLength(prov, model)
+	if limit <= 0 {
+		return messages
+	}
+	tools := e.buildToolSchemasCtx(ctx)
+	toolsTokens := e.estimateRequestTokens(&provider.ChatRequest{
+		Provider: prov,
+		Model:    model,
+		Tools:    tools,
+	})
+	usable := limit - e.outputReserveFor(&provider.ChatRequest{
+		Provider: prov,
+		Model:    model,
+		Messages: messages,
+		Tools:    tools,
+	})
+	if usable < 1 {
+		usable = 1
+	}
+	target := usable * 4 / 5
+
+	fixed := leadingFixedMessages(messages)
+	fixedTokens := e.estimateRequestTokens(&provider.ChatRequest{
+		Provider: prov,
+		Model:    model,
+		Messages: fixed,
+	})
+	estimatedTail := func(msgs []provider.Message) int {
+		return fixedTokens + toolsTokens + e.estimateRequestTokens(&provider.ChatRequest{
+			Provider: prov,
+			Model:    model,
+			Messages: msgs,
+		})
+	}
+
+	tail := messages[len(fixed):]
+	for len(tail) > 1 {
+		if estimatedTail(tail) <= target {
+			break
+		}
+		tail = tail[1:]
+	}
+
+	tailBudget := target - fixedTokens - toolsTokens
+	if estimatedTail(tail) > target && tailBudget > 0 {
+		tail = truncateMessagesInMemory(tail, tailBudget)
+	}
+
+	bounded := make([]provider.Message, 0, len(fixed)+len(tail))
+	bounded = append(bounded, fixed...)
+	bounded = append(bounded, tail...)
+	return bounded
+}
+
+// leadingFixedMessages returns the leading run of messages the
+// token-bounded truncation paths must never drop: the assembled
+// system-prompt / todo prefix (consecutive system-role messages) and an
+// auto-compacted summary message directly behind it.
+//
+// Expected:
+//   - messages is the window slice under truncation; never empty.
+//
+// Returns:
+//   - The fixed prefix slice, sharing the input's backing array.
+//
+// Side effects:
+//   - None.
+func leadingFixedMessages(messages []provider.Message) []provider.Message {
+	fixed := 0
+	for fixed < len(messages) && messages[fixed].Role == "system" {
+		fixed++
+	}
+	if fixed < len(messages) && strings.HasPrefix(messages[fixed].Content, autoCompactedSummaryPrefix) {
+		fixed++
+	}
+	return messages[:fixed]
 }
 
 // messageTruncationMarker is the deterministic suffix appended to

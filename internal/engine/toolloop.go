@@ -654,11 +654,11 @@ func (e *Engine) streamWithToolLoop(
 							"error", retryErr,
 						)
 					} else {
-						slog.Warn("context overflow: compaction did not fire, applying naive truncation",
+						slog.Warn("context overflow: compaction did not fire, applying token-budgeted truncation",
 							"session", sessionID,
 							"messages_before", len(messages),
 						)
-						messages = e.NaiveTruncateMessages(messages, 50)
+						messages = e.truncateMessagesTokenBounded(ctx, messages)
 						slog.Info("context overflow: truncated messages",
 							"session", sessionID,
 							"messages_after", len(messages),
