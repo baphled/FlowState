@@ -215,9 +215,12 @@ func RegisterTurnWatchdogSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^an engine with a turn watchdog of (\d+)(ms|s)$`, s.engineWithTurnWatchdog)
 	ctx.Step(`^a provider that completes one tool round then never opens the next stream$`, s.providerCompletesOneRoundThenStalls)
 	ctx.Step(`^a tool that sleeps (\d+)ms per call without ever finishing the task$`, s.toolSleepsPerCallWithoutFinishing)
+	ctx.Step(`^a tool that sleeps (\d+)ms once and then completes the task$`, s.toolSleepsOnceThenCompletes)
 	ctx.Step(`^the tool batch completes and the loop stalls$`, s.toolBatchCompletesAndLoopStalls)
 	ctx.Step(`^the cumulative tool execution time exceeds a (\d+)ms cap$`, s.cumulativeToolExecutionTimeExceedsCapMs)
+	ctx.Step(`^the turn runs$`, s.theTurnRuns)
 	ctx.Step(`^the turn ends with StopReason "([^"]+)"$`, s.turnEndsWithStopReason)
+	ctx.Step(`^the turn completes naturally$`, s.turnCompletesNaturally)
 	ctx.Step(`^the tool loop trips the cap with reason "([^"]+)"$`, s.toolLoopTripsCapWithReason)
 	ctx.Step(`^the log (contains|does not contain) "([^"]+)"$`, s.logContainment)
 }
@@ -252,6 +255,26 @@ func (s *turnWatchdogSteps) toolSleepsPerCallWithoutFinishing(delayMs int) error
 		{content: "working", toolName: "slowpoke"},
 	}
 	return nil
+}
+
+// toolSleepsOnceThenCompletes registers a sleeping tool the provider
+// calls exactly once before answering with a final text turn, so the
+// scenario exercises one long tool execution inside an otherwise
+// healthy turn.
+func (s *turnWatchdogSteps) toolSleepsOnceThenCompletes(delayMs int) error {
+	sleepy := &watchdogSleepTool{name: "sleepy", delay: time.Duration(delayMs) * time.Millisecond}
+	s.tools = []tool.Tool{sleepy}
+	s.provider.turns = []watchdogTurn{
+		{toolName: "sleepy"},
+		{content: "All done."},
+	}
+	return nil
+}
+
+// theTurnRuns streams the assembled turn under a guard that leaves a
+// future watchdog ample room to fire first.
+func (s *turnWatchdogSteps) theTurnRuns() error {
+	return s.runTurn("turn-watchdog-session", "Go", 8*time.Second)
 }
 
 // toolBatchCompletesAndLoopStalls runs the stalling turn under a guard
@@ -289,6 +312,27 @@ func (s *turnWatchdogSteps) turnEndsWithStopReason(reason string) error {
 		}
 	}
 	return fmt.Errorf("expected terminal stop reason %s, got %v", reason, observed)
+}
+
+// turnCompletesNaturally asserts the streamed turn terminated on its
+// own terms: it ran inside the guard and no terminal chunk carried the
+// tool-loop-exceeded sentinel.
+func (s *turnWatchdogSteps) turnCompletesNaturally() error {
+	if s.stalled {
+		return fmt.Errorf("turn stalled without terminating")
+	}
+	if !s.ran {
+		return fmt.Errorf("no turn was streamed")
+	}
+	s.mu.Lock()
+	observed := append([]string(nil), s.stopReasons...)
+	s.mu.Unlock()
+	for _, got := range observed {
+		if got == session.StopReasonToolLoopExceeded {
+			return fmt.Errorf("expected a natural completion, saw terminal stop reason %v", observed)
+		}
+	}
+	return nil
 }
 
 // toolLoopTripsCapWithReason asserts the tool-loop cap warning carried
@@ -333,7 +377,7 @@ func (s *turnWatchdogSteps) runTurn(sessionID, prompt string, guard time.Duratio
 		ID:   "turn-watchdog-agent",
 		Name: "Turn Watchdog Agent",
 		Capabilities: agent.Capabilities{
-			Tools: []string{"quick", "slowpoke"},
+			Tools: []string{"quick", "slowpoke", "sleepy"},
 		},
 	}
 	eng := engine.New(engine.Config{

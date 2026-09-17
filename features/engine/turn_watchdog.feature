@@ -14,3 +14,10 @@ Feature: Turn watchdog cancels stuck tool loops
     When the cumulative tool execution time exceeds a 200ms cap
     Then the tool loop trips the cap with reason "total_tool_time_backstop"
     And the log does not contain "engine turn watchdog fired"
+
+  Scenario: A single long-running tool does not trip the watchdog
+    Given an engine with a turn watchdog of 200ms
+    And a tool that sleeps 600ms once and then completes the task
+    When the turn runs
+    Then the turn completes naturally
+    And the log does not contain "engine turn watchdog fired"
