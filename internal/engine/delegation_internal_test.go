@@ -236,3 +236,46 @@ var _ = Describe("closeSessionIfManaged deliverable check", func() {
 		Expect(sess.Status).To(Equal("completed"))
 	})
 })
+
+var _ = Describe("closeSessionIfManaged coordination-write signal", func() {
+	var (
+		buf        *bytes.Buffer
+		origLogger *slog.Logger
+	)
+
+	BeforeEach(func() {
+		buf = &bytes.Buffer{}
+		origLogger = slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	})
+
+	AfterEach(func() {
+		slog.SetDefault(origLogger)
+	})
+
+	It("reports the missing-writes signal when a delegated session wrote zero coordination_store keys", func() {
+		mgr := session.NewManager(nil)
+		mgr.RegisterSession("parent-1", "orchestrator")
+		child, err := mgr.CreateWithParentAndChain("parent-1", "health-researcher", "chain-abc")
+		Expect(err).NotTo(HaveOccurred())
+
+		d := &DelegateTool{sessionManager: mgr, coordinationStore: coordination.NewMemoryStore()}
+		Expect(d.closeSessionIfManaged(child.ID)).To(BeTrue(),
+			"the zero-keys judgement that drives the warning must also feed the fail-closed contract")
+		Expect(buf.String()).To(ContainSubstring("without writing any coordination_store keys"))
+	})
+
+	It("reports no missing-writes signal when the chain prefix carries keys", func() {
+		mgr := session.NewManager(nil)
+		mgr.RegisterSession("parent-1", "orchestrator")
+		child, err := mgr.CreateWithParentAndChain("parent-1", "health-researcher", "chain-abc")
+		Expect(err).NotTo(HaveOccurred())
+
+		store := coordination.NewMemoryStore()
+		Expect(store.Set("chain-abc/result", []byte("findings"))).To(Succeed())
+
+		d := &DelegateTool{sessionManager: mgr, coordinationStore: store}
+		Expect(d.closeSessionIfManaged(child.ID)).To(BeFalse())
+		Expect(buf.String()).NotTo(ContainSubstring("coordination_store"))
+	})
+})

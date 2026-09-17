@@ -140,6 +140,17 @@ type DelegateTool struct {
 	// AppConfig.Delegation.
 	teeChildContent bool
 
+	// requireCoordinationWrites gates the fail-closed post-completion
+	// judgement for synchronous delegates: when true, a child whose
+	// session sealed having written zero coordination_store keys under
+	// its chain returns an error-flagged tool result to the parent model
+	// instead of an empty success. Production wiring sets it from
+	// AppConfig.Delegation.RequireCoordinationWrites (default true) via
+	// WithRequireCoordinationWrites; the zero-value false keeps the
+	// historical warn-only behaviour for legacy test constructors that
+	// never wire the option.
+	requireCoordinationWrites bool
+
 	// ownerEngine is the engine this DelegateTool is installed on —
 	// the LEAD's engine in a swarm dispatch. activeSwarmContext reads
 	// the swarm context from here directly because the lead is by

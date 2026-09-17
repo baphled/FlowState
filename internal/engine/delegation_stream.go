@@ -968,9 +968,12 @@ func (d *DelegateTool) executeSync(
 	// backstops the rare case where the flushed assistant message lacked a
 	// ModelName but LastModel/LastProvider know the resolved pair.
 	d.recordChildModelAttribution(delegateSessionID, providerName, modelName)
-	d.closeSessionIfManaged(delegateSessionID)
+	missingCoordinationWrites := d.closeSessionIfManaged(delegateSessionID)
 
 	chainID := baseInfo.ChainID
+	if d.requireCoordinationWrites && missingCoordinationWrites {
+		return coordinationWriteViolationResult(delegateSessionID, chainID, target.message, modelName, providerName), nil
+	}
 	responseText := result.response
 	if chainID != "" {
 		responseText += fmt.Sprintf("\n\n---\n[coordination_chain] %s\nThe delegated agent may have written structured findings to the coordination store. Use the coordination_store tool to read key \"%s\" or scan for keys with prefix \"%s/\" before proceeding.", chainID, chainID, chainID)
@@ -985,6 +988,46 @@ func (d *DelegateTool) executeSync(
 			"chainId":   chainID,
 		},
 	}, nil
+}
+
+// coordinationWriteViolationResult builds the fail-closed parent-facing tool
+// result for a synchronous delegate that completed without writing any keys
+// to the coordination_store under its chain. The judgement reuses the exact
+// key-read that drove the post-completion warning, so the two can never
+// disagree and no second timing window is opened. The result is an ordinary
+// error-flagged tool result: the parent model sees the violation and can
+// react (re-delegate, compensate, or surface the failure) while the turn
+// itself stays healthy — it is never promoted to a turn failure or a
+// session failure_reason.
+//
+// Expected:
+//   - sessionID identifies the sealed child session.
+//   - chainID is the delegation chain the judgement inspected.
+//   - message is the original delegation message (kept as the result Title).
+//   - modelName and providerName identify the child run for metadata parity
+//     with the success result.
+//
+// Returns:
+//   - A tool.Result flagged IsError whose Error wraps
+//     ErrDelegateMissingCoordinationWrites and whose Output names both the
+//     violation and the delegation.require_coordination_writes escape hatch.
+//
+// Side effects:
+//   - None.
+func coordinationWriteViolationResult(sessionID, chainID, message, modelName, providerName string) tool.Result {
+	violation := fmt.Errorf("%w (session %s, chain %s)", ErrDelegateMissingCoordinationWrites, sessionID, chainID)
+	return tool.Result{
+		Output:  formatDelegationOutput(violation.Error()),
+		Title:   message,
+		Error:   violation,
+		IsError: true,
+		Metadata: map[string]interface{}{
+			"sessionId": sessionID,
+			"model":     modelName,
+			"provider":  providerName,
+			"chainId":   chainID,
+		},
+	}
 }
 
 // runStreamThroughRunner dispatches the target's Stream + collect
@@ -1406,11 +1449,12 @@ func (d *DelegateTool) waitForBackgroundProviderRetry(ctx context.Context, retry
 // then runs a deliverable check that warns when a delegated session completes without having
 // written any keys to the coordination_store.
 //
-// The deliverable check is purely observational: it logs a slog.Warn when a session carrying both
-// a non-empty ParentID and ChainID (the signature of a delegated session with coordination
-// expectations) leaves zero keys under its chain prefix in the coordination_store. This surfaces
-// the synthesis-hang failure mode where an agent announces work it never performed — the session
-// is still sealed as "completed", but the operator and downstream coordinator now have a signal.
+// The deliverable check is observational for the session lifecycle: it logs a slog.Warn when a
+// session carrying both a non-empty ParentID and ChainID (the signature of a delegated session
+// with coordination expectations) leaves zero keys under its chain prefix in the
+// coordination_store. This surfaces the synthesis-hang failure mode where an agent announces
+// work it never performed — the session is still sealed as "completed", but the operator and
+// downstream coordinator now have a signal.
 //
 // Expected:
 //   - sessionID identifies the session to close.
@@ -1421,21 +1465,26 @@ func (d *DelegateTool) waitForBackgroundProviderRetry(ctx context.Context, retry
 //   - Emits a slog.Warn when a delegated session wrote zero coordination_store keys or when the
 //     store check itself fails. The close ALWAYS proceeds regardless of the check outcome.
 //
-// Returns: result of closeSessionIfManaged.
-func (d *DelegateTool) closeSessionIfManaged(sessionID string) {
+// Returns:
+//   - True when the deliverable check's key-read judged the session as having left zero
+//     coordination_store keys under its chain prefix — the same single read that drove the
+//     warning, so no new timing window is opened. The synchronous delegation path feeds this
+//     into the RequireCoordinationWrites fail-closed contract; failure and background paths
+//     ignore it.
+func (d *DelegateTool) closeSessionIfManaged(sessionID string) bool {
 	if d.sessionManager == nil {
-		return
+		return false
 	}
 	if err := d.sessionManager.CloseSession(sessionID); err != nil && !errors.Is(err, session.ErrSessionNotFound) {
 		_ = err
 	}
-	d.warnIfDelegatedSessionLeftNoCoordinationKeys(sessionID)
+	return d.warnIfDelegatedSessionLeftNoCoordinationKeys(sessionID)
 }
 
 // warnIfDelegatedSessionLeftNoCoordinationKeys logs a warning when a delegated session (one with
 // both a ParentID and a ChainID) completed without writing any keys to the coordination_store under
-// its chain prefix. The check is observational only — it never blocks the session close and always
-// runs after CloseSession so the seal is never delayed.
+// its chain prefix. The check is observational only for the session lifecycle — it never blocks the
+// session close and runs after CloseSession so the seal is never delayed.
 //
 // Expected:
 //   - sessionID identifies the just-closed session to inspect.
@@ -1443,22 +1492,26 @@ func (d *DelegateTool) closeSessionIfManaged(sessionID string) {
 // Side effects:
 //   - Emits slog.Warn entries; mutates no session or store state.
 //
-// Returns: result of warnIfDelegatedSessionLeftNoCoordinationKeys.
-func (d *DelegateTool) warnIfDelegatedSessionLeftNoCoordinationKeys(sessionID string) {
+// Returns:
+//   - True exactly when the chain-prefix key listing came back empty (the zero-coordination-writes
+//     judgement that also drives the warning). False for every other outcome: a healthy session,
+//     an announced-key miss (which the gate and expected-key paths upstream already own), a
+//     fallback envelope, a store failure, or a non-delegated session.
+func (d *DelegateTool) warnIfDelegatedSessionLeftNoCoordinationKeys(sessionID string) bool {
 	if d.coordinationStore == nil {
-		return
+		return false
 	}
 	sess, err := d.sessionManager.GetSession(sessionID)
 	if err != nil {
-		return
+		return false
 	}
 	if sess.ParentID == "" || sess.ChainID == "" {
-		return
+		return false
 	}
 	expectedKey, hasExpectedKey := d.expectedCoordinationStoreKeyFromSession(sess)
 	if hasExpectedKey {
 		if d.hasSubstantiveCoordinationValue(expectedKey) {
-			return
+			return false
 		}
 		if fallback, fallbackKey, ok := d.engineDeliveryFailureFallback(sess.AgentID, sess.ChainID, sessionID); ok {
 			slog.Warn("delegated session completed with engine-persisted delivery failure fallback",
@@ -1470,7 +1523,7 @@ func (d *DelegateTool) warnIfDelegatedSessionLeftNoCoordinationKeys(sessionID st
 				"fallback_key", fallbackKey,
 				"failure_summary", fallback.FailureSummary,
 			)
-			return
+			return false
 		}
 		slog.Warn("delegated session completed without writing its required coordination_store key — the agent may have announced work it never performed",
 			"session", sessionID,
@@ -1479,7 +1532,7 @@ func (d *DelegateTool) warnIfDelegatedSessionLeftNoCoordinationKeys(sessionID st
 			"parent_id", sess.ParentID,
 			"expected_key", expectedKey,
 		)
-		return
+		return false
 	}
 	keys, listErr := d.coordinationStore.List(sess.ChainID + "/")
 	if listErr != nil {
@@ -1490,7 +1543,7 @@ func (d *DelegateTool) warnIfDelegatedSessionLeftNoCoordinationKeys(sessionID st
 			"parent_id", sess.ParentID,
 			"error", listErr,
 		)
-		return
+		return false
 	}
 	if len(keys) == 0 {
 		slog.Warn("delegated session completed without writing any coordination_store keys — the agent may have announced work it never performed",
@@ -1499,7 +1552,9 @@ func (d *DelegateTool) warnIfDelegatedSessionLeftNoCoordinationKeys(sessionID st
 			"chain_id", sess.ChainID,
 			"parent_id", sess.ParentID,
 		)
+		return true
 	}
+	return false
 }
 
 // hasSubstantiveCoordinationValue ...

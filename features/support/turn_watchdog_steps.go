@@ -222,7 +222,7 @@ func RegisterTurnWatchdogSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the turn ends with StopReason "([^"]+)"$`, s.turnEndsWithStopReason)
 	ctx.Step(`^the turn completes naturally$`, s.turnCompletesNaturally)
 	ctx.Step(`^the tool loop trips the cap with reason "([^"]+)"$`, s.toolLoopTripsCapWithReason)
-	ctx.Step(`^the log (contains|does not contain) "([^"]+)"$`, s.logContainment)
+	ctx.Step(`^the engine log (contains|does not contain) "([^"]+)"$`, s.logContainment)
 }
 
 // engineWithTurnWatchdog records the watchdog window the engine must be

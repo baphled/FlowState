@@ -15,6 +15,16 @@ import (
 // never reported as a normal success.
 var ErrEmptyDelegateResponse = errors.New("delegate response empty or non-substantive after retries")
 
+// ErrDelegateMissingCoordinationWrites reports a synchronous delegate that
+// completed its stream yet left zero keys under its chain prefix in the
+// coordination_store — the announced-but-never-performed signature. It is
+// surfaced to the parent model as an error-flagged tool result the model
+// can react to; it is never promoted to a turn failure or a session
+// failure_reason. Operators running a deliberately coordination-free
+// delegate can release it from the contract via
+// delegation.require_coordination_writes: false.
+var ErrDelegateMissingCoordinationWrites = errors.New("delegate completed without writing any coordination_store keys — the child may have announced work it never performed; disable via delegation.require_coordination_writes: false if this delegate is intentionally coordination-free")
+
 // CollectPolicy sets the completion-integrity behaviour for child-stream
 // collection during a delegation.
 //

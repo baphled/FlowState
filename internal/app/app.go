@@ -2235,6 +2235,7 @@ func (a *App) configureDelegateTool(dt *engine.DelegateTool, eng *engine.Engine)
 		dt.WithSessionsDir(a.SessionsDir())
 		dt.WithToolCapability(a.Config.ToolCapableModels, a.Config.ToolIncapableModels)
 		dt.WithTeeChildContent(a.Config.Delegation.TeeChildContent)
+		dt.WithRequireCoordinationWrites(a.Config.Delegation.RequireCoordinationWrites)
 		if loopDuration := a.Config.ParsedToolLoopDuration(); loopDuration > 0 {
 			dt.WithDelegateTimeout(loopDuration)
 		}

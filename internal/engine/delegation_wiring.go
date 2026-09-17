@@ -199,6 +199,29 @@ func (d *DelegateTool) WithTeeChildContent(enabled bool) *DelegateTool {
 	return d
 }
 
+// WithRequireCoordinationWrites controls whether a synchronous delegate
+// that completes without writing any coordination_store keys fails closed
+// with an error-flagged tool result to the parent model. When true, the
+// empty success that historically accompanied the warn-only deliverable
+// check is replaced by a tool result naming the violation and the
+// delegation.require_coordination_writes escape hatch; the child session
+// is still sealed, the turn itself stays healthy, and the historical
+// warning keeps firing. When false (the zero value on legacy
+// constructors), the warn-only behaviour is preserved.
+//
+// Expected:
+//   - enabled is the value from AppConfig.Delegation.RequireCoordinationWrites.
+//
+// Returns:
+//   - The receiver for method chaining.
+//
+// Side effects:
+//   - Replaces the previously stored value.
+func (d *DelegateTool) WithRequireCoordinationWrites(enabled bool) *DelegateTool {
+	d.requireCoordinationWrites = enabled
+	return d
+}
+
 // WithOwnerEngine pins the engine this DelegateTool is installed on.
 // activeSwarmContext consults this reference first when looking up
 // the active swarm.Context — necessary because the lead's id is

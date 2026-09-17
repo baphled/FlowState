@@ -260,7 +260,8 @@ func (s *DelegationCoordinationSteps) collectResult() error {
 		"coordinator",
 		nil,
 		store,
-	).WithSessionManager(mgr)
+	).WithSessionManager(mgr).
+		WithRequireCoordinationWrites(s.enforcement)
 
 	ctx := context.WithValue(context.Background(), session.IDKey{}, "coordination-parent")
 	result, err := delegateTool.Execute(ctx, tool.Input{
