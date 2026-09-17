@@ -467,7 +467,8 @@ var _ = Describe("tool-loop cooldown retry hardening", func() {
 			FailoverManager: failoverMgr,
 		})
 		eng.SetTodoStoreForTest(todoStore)
-		// A 1s max loop duration makes the cumulative budget 2s; the
+		// A 1s max loop duration makes the cumulative cooldown budget 1s
+		// (1x the cap, aligned with the duration backstop); the
 		// 4-minute wait exceeds it on the FIRST cooldown, so the loop
 		// must break without sleeping at all.
 		eng.SetMaxToolLoopDurationForTest(1 * time.Second)

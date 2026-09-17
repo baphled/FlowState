@@ -454,7 +454,7 @@ func (e *Engine) streamWithToolLoop(
 	var deliveryRetries int
 	const maxProviderRetryWait = 5 * time.Minute
 	cumulativeCooldownWait := time.Duration(0)
-	maxCumulativeCooldownWait := 2 * e.maxToolLoopDuration
+	maxCumulativeCooldownWait := e.maxToolLoopDuration
 	if maxCumulativeCooldownWait <= 0 {
 		maxCumulativeCooldownWait = 10 * time.Minute
 	}
