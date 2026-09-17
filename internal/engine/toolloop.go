@@ -35,6 +35,16 @@ import (
 // terminal ErrCompactionInsufficient error.
 const maxOverflowRetries = 2
 
+// toolLoopWallClockMultiplier scales the duration cap into an absolute
+// wall-clock bound on a single tool-loop budget window. The elapsed
+// backstop subtracts tool execution time (so slow legitimate tools do
+// not consume the provider round-trip budget), which also excludes
+// delegated child runs from ever tripping it; the wall-clock backstop
+// multiplies the cap by this factor and counts everything, bounding
+// delegated turns at twice the configured duration regardless of the
+// exclusions.
+const toolLoopWallClockMultiplier = 2
+
 // contextReductionDelta is the minimum meaningful token-estimate drop a
 // compacted window must achieve over the pre-compaction slice before the
 // retry path accepts it. A compaction that reduces less than this is
@@ -1435,10 +1445,13 @@ func (e *Engine) streamWithToolLoop(
 			}
 		}
 
-		elapsed := time.Since(loopStart) - toolExecDuration
+		wallElapsed := time.Since(loopStart)
+		elapsed := wallElapsed - toolExecDuration
 		repeatTripped := e.maxIdenticalToolCalls > 0 && identicalRun >= e.maxIdenticalToolCalls
 		backstopTripped := e.maxToolLoopIterations > 0 && iterations >= e.maxToolLoopIterations
 		durationTripped := e.maxToolLoopDuration > 0 && elapsed >= e.maxToolLoopDuration
+		wallTripped := e.maxToolLoopDuration > 0 && wallElapsed >= toolLoopWallClockMultiplier*e.maxToolLoopDuration
+		durationTripped = durationTripped || wallTripped
 		totalToolTimeTripped := e.maxToolLoopDuration > 0 && nonDelegatedToolExecDuration >= e.maxToolLoopDuration
 		sameToolTripped := e.maxSameToolPatternCalls > 0 && sameToolPatternRun >= e.maxSameToolPatternCalls
 		rejectionTripped := consecutiveRejectedToolCalls >= maxRejectedToolCalls
@@ -1472,6 +1485,7 @@ func (e *Engine) streamWithToolLoop(
 				"identical_run", identicalRun,
 				"same_tool_run", sameToolPatternRun,
 				"elapsed", elapsed,
+				"wall_elapsed", wallElapsed,
 				"non_delegated_tool_time", nonDelegatedToolExecDuration,
 				"max_iterations", e.maxToolLoopIterations,
 				"max_duration", e.maxToolLoopDuration,
