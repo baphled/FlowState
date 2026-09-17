@@ -156,8 +156,13 @@ func turnWatchdogFromContext(ctx context.Context) *turnWatchdog {
 // streamWithToolLoop — each loop iteration start, every provider
 // stream open (inside retryStreamForToolResultWithTools, covering all
 // retryStreamForToolResult* call sites), and every tool batch
-// completion. When no mark lands within the window the watchdog fires:
-// it logs an "engine turn watchdog fired" warning, cancels the turn's
+// completion. The stall clock pauses while a tool batch is executing:
+// an in-flight stamp freezes accumulation so a single tool (notably a
+// delegated child) running longer than the window does not
+// false-positive, and the batch-completion mark re-arms the clock.
+// Provider stream waits and post-tool engine code are never paused.
+// When the measured stall reaches the window the watchdog fires: it
+// logs an "engine turn watchdog fired" warning, cancels the turn's
 // derived context, and the unwind paths terminate the stream with the
 // existing StopReasonToolLoopExceeded sentinel. The terminal claim
 // guard guarantees exactly one sentinel Done chunk per turn.
@@ -168,11 +173,12 @@ func turnWatchdogFromContext(ctx context.Context) *turnWatchdog {
 // compaction, a provider that never opens the next stream) makes no
 // boundary progress and previously wedged indefinitely.
 type turnWatchdog struct {
-	window       time.Duration
-	lastProgress atomic.Int64
-	iterations   atomic.Int64
-	fired        atomic.Bool
-	terminalSent atomic.Bool
+	window            time.Duration
+	lastProgress      atomic.Int64
+	toolExecStartedAt atomic.Int64
+	iterations        atomic.Int64
+	fired             atomic.Bool
+	terminalSent      atomic.Bool
 }
 
 // newTurnWatchdog returns a watchdog armed for the given window and
@@ -209,6 +215,67 @@ func (w *turnWatchdog) markProgress() {
 		return
 	}
 	w.lastProgress.Store(time.Now().UnixNano())
+}
+
+// markToolExecStart stamps the moment the current tool batch began
+// executing so stallSince can freeze accumulation for the in-flight
+// span, mirroring the duration backstop's toolExecDuration exclusion.
+//
+// Expected:
+//   - called immediately before the batch's tool executions begin.
+//
+// Side effects:
+//   - Overwrites the in-flight tool-execution timestamp.
+func (w *turnWatchdog) markToolExecStart() {
+	if w == nil || w.window <= 0 {
+		return
+	}
+	w.toolExecStartedAt.Store(time.Now().UnixNano())
+}
+
+// markToolBatchComplete clears the in-flight stamp and records the
+// batch completion as progress, re-arming the no-progress clock for
+// the post-tool engine code.
+//
+// Expected:
+//   - called immediately after the batch's tool executions return.
+//
+// Side effects:
+//   - Clears the in-flight tool-execution timestamp and overwrites the
+//     last-progress timestamp.
+func (w *turnWatchdog) markToolBatchComplete() {
+	if w == nil {
+		return
+	}
+	w.toolExecStartedAt.Store(0)
+	w.markProgress()
+}
+
+// stallSince returns the no-progress time measured at now, excluding
+// any span where a tool batch is executing: while the in-flight stamp
+// is set the measured stall freezes at the value it had when the batch
+// started.
+//
+// Expected:
+//   - now is the evaluation instant supplied by the watch loop.
+//
+// Returns:
+//   - The effective stall duration, never negative.
+//
+// Side effects:
+//   - None.
+func (w *turnWatchdog) stallSince(now time.Time) time.Duration {
+	last := time.Unix(0, w.lastProgress.Load())
+	stall := now.Sub(last)
+	startedNanos := w.toolExecStartedAt.Load()
+	if startedNanos == 0 {
+		return stall
+	}
+	started := time.Unix(0, startedNanos)
+	if started.After(last) {
+		return started.Sub(last)
+	}
+	return 0
 }
 
 // recordIterations mirrors the loop's iteration counter for the fired
@@ -291,9 +358,8 @@ func (w *turnWatchdog) watch(sessionID string, cancel context.CancelFunc, done <
 		case <-done:
 			return
 		case <-ticker.C:
-			last := time.Unix(0, w.lastProgress.Load())
-			age := time.Since(last)
-			if age < w.window {
+			stall := w.stallSince(time.Now())
+			if stall < w.window {
 				continue
 			}
 			select {
@@ -304,7 +370,7 @@ func (w *turnWatchdog) watch(sessionID string, cancel context.CancelFunc, done <
 			w.fired.Store(true)
 			slog.Warn("engine turn watchdog fired",
 				"session", sessionID,
-				"last_progress_age", age,
+				"last_progress_age", stall,
 				"iterations", w.iterations.Load(),
 			)
 			cancel()
@@ -1246,10 +1312,11 @@ func (e *Engine) streamWithToolLoop(
 		}
 
 		toolExecStart := time.Now()
+		watchdog.markToolExecStart()
 		execResults, nonDelegatedExec := e.executeDeduplicatedToolCalls(ctx, sessionID, result.toolCalls, outChan)
 		toolExecDuration += time.Since(toolExecStart)
 		nonDelegatedToolExecDuration += nonDelegatedExec
-		watchdog.markProgress()
+		watchdog.markToolBatchComplete()
 
 		// When a tool execution returns a hard error (not a tool-level Result.Error)
 		// persist a synthetic tool_result so the session history has a complete
