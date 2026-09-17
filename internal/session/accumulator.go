@@ -1464,12 +1464,28 @@ const StopReasonTurnInterrupted = "turn_interrupted"
 const StopReasonUserCancelled = "user_cancelled"
 
 // StopReasonToolLoopExceeded is the synthetic stop reason stamped on the
-// terminal Done chunk when the engine's tool loop hits a cap — either the
-// repeat-call detector (the same tool name + canonicalised arguments
-// recurring across consecutive continuations) or the absolute iteration
-// backstop. It bounds the unbounded re-request hang where a provider
+// terminal Done chunk when the engine's tool loop hits a cap. Every
+// backstop that bounds a turn funnels into this single sentinel:
+//
+//   - identical-call repeat — the same tool batch (name plus
+//     canonicalised arguments) recurring across consecutive
+//     continuations;
+//   - iteration backstop — the absolute continuation ceiling;
+//   - duration backstop — the cumulative wall-clock ceiling over
+//     provider round-trips, with tool execution time excluded;
+//   - total tool time — the cumulative ceiling over non-delegated tool
+//     execution alone;
+//   - wall-clock backstop — the absolute bound at twice the duration
+//     cap, counting tool and delegated child time the elapsed backstop
+//     excludes;
+//   - turn watchdog — the no-progress window after which a turn parked
+//     mid-iteration (stalled stream open, cooldown wait, blocked output
+//     send, mid-loop compaction) is cancelled.
+//
+// Together these bound the unbounded re-request hang where a provider
 // re-emits the same (often tool-not-found) call every continuation,
-// spinning the loop forever (15,404 iterations observed before the cap).
+// spinning the loop forever (15,404 iterations observed before the
+// first cap shipped).
 //
 // Wire-format-stable and non-empty: the value is read by the Vue
 // `MessageBubble` soft-error render branch, which keys on
