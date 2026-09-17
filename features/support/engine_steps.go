@@ -51,6 +51,10 @@ type engineSteps struct {
 	// refusedLocally records that the engine surfaced a local
 	// context-window error to the stream consumer.
 	refusedLocally bool
+	// compactionInsufficient records that the engine surfaced the
+	// distinct terminal compaction-insufficient error after a
+	// post-compaction retry still overflowed.
+	compactionInsufficient bool
 }
 
 // engineStepTokenCounter is a deterministic TokenCounter whose Count is
@@ -221,6 +225,8 @@ func RegisterEngineSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the todo tool is enabled$`, s.todoToolEnabled)
 	ctx.Step(`^the provider will return a context-window-exceeded error on the first call$`, s.providerOverflowFirstCall)
 	ctx.Step(`^the provider will return a context-window-exceeded error on every call$`, s.providerOverflowEveryCall)
+	ctx.Step(`^the provider overflows and the retry stream also overflows in-stream$`, s.providerOverflowThenInStreamOverflow)
+	ctx.Step(`^the provider recovers cleanly after an overflow retry$`, s.providerOverflowThenCleanContinuation)
 	ctx.Step(`^a compactor is configured that can reduce the context$`, s.compactorConfigured)
 	ctx.Step(`^the session has a pending todo item "([^"]*)"$`, s.sessionHasPendingTodo)
 	ctx.Step(`^the provider ends the first turn cleanly without completing its work$`, s.providerEndsCleanly)
@@ -247,6 +253,7 @@ func RegisterEngineSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the engine attempts the continuation retry$`, s.engineAttemptsContinuationRetry)
 	ctx.Step(`^the provider does not receive the over-budget request$`, s.providerDoesNotReceiveOverBudgetRequest)
 	ctx.Step(`^a local context-window error is surfaced$`, s.localContextWindowErrorSurfaced)
+	ctx.Step(`^a compaction-insufficient error is surfaced$`, s.compactionInsufficientSurfaced)
 	ctx.Step(`^the final response indicates completion$`, s.finalResponseIndicatesCompletion)
 }
 
@@ -272,6 +279,7 @@ func (s *engineSteps) reset() {
 	s.tokenCounter = nil
 	s.compressionConfig = nil
 	s.refusedLocally = false
+	s.compactionInsufficient = false
 }
 
 // todoToolEnabled accepts the todo-tool Background step for the
@@ -297,6 +305,30 @@ func (s *engineSteps) providerOverflowFirstCall() error {
 // providerOverflowEveryCall scripts the provider to overflow on every call.
 func (s *engineSteps) providerOverflowEveryCall() error {
 	s.provider.script = []engineTurn{{contextOverflow: true}}
+	return nil
+}
+
+// providerOverflowThenInStreamOverflow scripts a first overflow followed
+// by an in-stream overflow on the retry itself, pinning that the taint
+// must persist even though the retry stream opened cleanly.
+func (s *engineSteps) providerOverflowThenInStreamOverflow() error {
+	s.provider.script = []engineTurn{
+		{contextOverflow: true},
+		{contextOverflow: true},
+	}
+	return nil
+}
+
+// providerOverflowThenCleanContinuation scripts an initial overflow, a
+// clean post-compaction retry turn, and a clean continuation answer so
+// the taint must clear after the first fully-completed non-overflow
+// result, letting the todo-continuation loop fire.
+func (s *engineSteps) providerOverflowThenCleanContinuation() error {
+	s.provider.script = []engineTurn{
+		{contextOverflow: true},
+		{content: "Working on it."},
+		{content: "Recovered after compaction."},
+	}
 	return nil
 }
 
@@ -383,6 +415,19 @@ func (s *engineSteps) providerDoesNotReceiveOverBudgetRequest() error {
 // context-window error to the stream consumer.
 func (s *engineSteps) localContextWindowErrorSurfaced() error {
 	return s.providerDoesNotReceiveOverBudgetRequest()
+}
+
+// compactionInsufficientSurfaced asserts the engine surfaced the
+// distinct terminal compaction-insufficient error after a
+// post-compaction retry still overflowed.
+func (s *engineSteps) compactionInsufficientSurfaced() error {
+	s.mu.Lock()
+	surfaced := s.compactionInsufficient
+	s.mu.Unlock()
+	if !surfaced {
+		return fmt.Errorf("expected a compaction-insufficient terminal error to be surfaced")
+	}
+	return nil
 }
 
 // sessionHasPendingTodo seeds the todo store with one pending item.
@@ -472,6 +517,11 @@ func (s *engineSteps) runTurn() error {
 			if errors.As(chunk.Error, &pErr) && pErr.ErrorType == provider.ErrorTypeContextWindowExceeded {
 				s.mu.Lock()
 				s.refusedLocally = true
+				s.mu.Unlock()
+			}
+			if chunk.Error.Error() == "compaction insufficient: context still exceeds the window after compaction" {
+				s.mu.Lock()
+				s.compactionInsufficient = true
 				s.mu.Unlock()
 			}
 		}

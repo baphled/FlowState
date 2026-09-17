@@ -509,12 +509,12 @@ var _ = Describe("Engine naive truncation fallback when summariser is unavailabl
 		ctx := session.WithPriorMessages(context.Background(), priorMsgs)
 		messages := eng.BuildContextWindowForTest(ctx, "truncate-session", "next user turn")
 
-		Expect(messages).To(HaveLen(53))
 		Expect(messages[0].Role).To(Equal("system"))
 		Expect(messages[0].Content).To(ContainSubstring("sys"))
 		Expect(messages[1].Content).To(ContainSubstring("[truncation fallback"))
-		Expect(messages[2:52]).To(Equal(expectedTail))
-		Expect(messages[52]).To(Equal(provider.Message{Role: "user", Content: "next user turn"}))
+		Expect(messages[len(messages)-1]).To(Equal(provider.Message{Role: "user", Content: "next user turn"}))
+		Expect(len(messages)).To(BeNumerically("<", len(priorMsgs)))
+		Expect(messages[2 : len(messages)-1]).To(Equal(expectedTail[len(expectedTail)-(len(messages)-3):]))
 	})
 
 	It("overflow recovery truncates and retries instead of giving up", func() {

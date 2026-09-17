@@ -3519,22 +3519,23 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 		var messages []provider.Message
 
 		if compactedSummary != "" {
-			// Build window with compacted summary + hot tail (sliding
-			// window of the most recent prior messages).
-			slidingWindowSize := manifestCopy.ContextManagement.SlidingWindowSize
-			if slidingWindowSize <= 0 {
-				slidingWindowSize = 50
+			rebuilt := e.rebuildContextWindowTokenBounded(ctx, sessionID, priorMsgs, compactedSummary)
+			if rebuilt == nil {
+				slidingWindowSize := manifestCopy.ContextManagement.SlidingWindowSize
+				if slidingWindowSize <= 0 {
+					slidingWindowSize = 50
+				}
+				hotTail := priorMsgs
+				if len(hotTail) > slidingWindowSize {
+					hotTail = hotTail[len(hotTail)-slidingWindowSize:]
+				}
+				rebuilt = make([]provider.Message, 0, len(hotTail)+4)
+				rebuilt = append(rebuilt, provider.Message{Role: "system", Content: systemPrompt})
+				rebuilt = e.appendTodoContext(rebuilt, sessionID)
+				rebuilt = append(rebuilt, provider.Message{Role: "assistant", Content: compactedSummary})
+				rebuilt = append(rebuilt, hotTail...)
 			}
-			hotTail := priorMsgs
-			if len(hotTail) > slidingWindowSize {
-				hotTail = hotTail[len(hotTail)-slidingWindowSize:]
-			}
-			messages = make([]provider.Message, 0, len(hotTail)+4)
-			messages = append(messages, provider.Message{Role: "system", Content: systemPrompt})
-			messages = e.appendTodoContext(messages, sessionID)
-			messages = append(messages, provider.Message{Role: "assistant", Content: compactedSummary})
-			messages = append(messages, hotTail...)
-			messages = append(messages, provider.Message{Role: "user", Content: userMessage})
+			messages = append(rebuilt, provider.Message{Role: "user", Content: userMessage})
 		} else {
 			// No compaction triggered — use raw prior messages.
 			messages = make([]provider.Message, 0, len(priorMsgs)+3)

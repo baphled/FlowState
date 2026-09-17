@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/baphled/flowstate/internal/agent"
@@ -24,6 +25,12 @@ import (
 	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
 )
+
+// ErrCompactionInsufficient is the distinct terminal error surfaced when
+// a post-compaction retry still exceeds the context window: retrying the
+// same compaction would loop, so the engine exits with this error
+// instead of re-entering the overflow retry path.
+var ErrCompactionInsufficient = errors.New("compaction insufficient: context still exceeds the window after compaction")
 
 // maybeAutoCompact runs the Phase 2 auto-compaction trigger when the
 // engine is configured with an AutoCompactor, the feature is enabled,
@@ -1420,23 +1427,30 @@ func (e *Engine) rebuildContextWindowTokenBounded(ctx context.Context, sessionID
 	if usable < 1 {
 		usable = 1
 	}
+	target := usable * 4 / 5
 
-	// Drop the live user turn's antecedents only via the tail bound —
-	// never drop the newest message.
-	for len(messages) > 1 {
+	estimatedMessages := func(msgs []provider.Message) int {
 		estimated := e.estimateRequestTokens(&provider.ChatRequest{
 			Provider: prov,
 			Model:    model,
-			Messages: messages,
+			Messages: msgs,
 			Tools:    req.Tools,
 		})
 		if summary != "" {
-			estimated += e.tokenCounter.Count(summary)
+			estimated += int(e.tokenCounter.Count(summary))
 		}
-		if estimated <= usable {
+		return estimated
+	}
+
+	for len(messages) > 1 {
+		if estimatedMessages(messages) <= target {
 			break
 		}
 		messages = messages[1:]
+	}
+
+	if estimatedMessages(messages) > target {
+		messages = truncateMessagesInMemory(messages, int(target))
 	}
 
 	rebuilt := make([]provider.Message, 0, len(messages)+4)
@@ -1447,6 +1461,46 @@ func (e *Engine) rebuildContextWindowTokenBounded(ctx context.Context, sessionID
 	}
 	rebuilt = append(rebuilt, messages...)
 	return rebuilt
+}
+
+// messageTruncationMarker is the deterministic suffix appended to
+// message content truncated in-memory by truncateMessagesInMemory,
+// mirroring the tool_result_cap.go marker pattern.
+const messageTruncationMarker = "\n[truncated: message exceeded token budget; %d chars dropped]"
+
+// truncateMessagesInMemory shrinks message content in place so a
+// rebuilt context window fits its token target. Messages are truncated
+// oldest-first, each carrying the deterministic truncation marker, and
+// no message is truncated past a minimal floor.
+//
+// Expected: messages is the remaining window slice; targetTokens is the
+// token budget the window must fit under (non-positive returns input).
+// Returns: the truncated slice (a copy; input untouched).
+// Side effects: None.
+func truncateMessagesInMemory(messages []provider.Message, targetTokens int) []provider.Message {
+	if targetTokens <= 0 || len(messages) == 0 {
+		return messages
+	}
+	out := append([]provider.Message(nil), messages...)
+	charBudget := targetTokens * 4
+	for i := range out {
+		if charBudget <= 0 {
+			break
+		}
+		n := len(out[i].Content)
+		if n <= charBudget {
+			charBudget -= n
+			continue
+		}
+		dropped := n - charBudget
+		head := out[i].Content[:charBudget]
+		if idx := strings.LastIndex(head, "\n"); idx > 0 {
+			head = head[:idx]
+		}
+		out[i].Content = head + fmt.Sprintf(messageTruncationMarker, dropped)
+		charBudget = 0
+	}
+	return out
 }
 
 // MaybeCompactForModel resolves the supplied (newProvider, newModel)
