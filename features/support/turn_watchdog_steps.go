@@ -341,6 +341,7 @@ func (s *turnWatchdogSteps) runTurn(sessionID, prompt string, guard time.Duratio
 		Manifest:              manifest,
 		Tools:                 s.tools,
 		MaxToolLoopDuration:   s.cap,
+		ToolLoopWatchdog:      s.watchdog,
 		MaxToolLoopIterations: 10000,
 	})
 

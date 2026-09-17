@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/baphled/flowstate/internal/plugin/events"
@@ -101,6 +102,207 @@ func (e *Engine) contextEstimateOverBudget(ctx context.Context, messages []provi
 	return e.estimateRequestTokens(req) > limit
 }
 
+// turnWatchdogKeyType identifies the context key carrying the active
+// turn watchdog so provider-stream open sites can mark progress without
+// widening every retry helper's signature.
+type turnWatchdogKeyType struct{}
+
+var turnWatchdogKey turnWatchdogKeyType
+
+// withTurnWatchdog returns a child context carrying the given turn
+// watchdog.
+//
+// Expected:
+//   - ctx is a valid context to extend.
+//   - w is the turn-local watchdog for the stream being run.
+//
+// Returns:
+//   - A child context containing the watchdog.
+//
+// Side effects:
+//   - Stores the watchdog in the returned context for later retrieval.
+func withTurnWatchdog(ctx context.Context, w *turnWatchdog) context.Context {
+	return context.WithValue(ctx, turnWatchdogKey, w)
+}
+
+// turnWatchdogFromContext extracts the turn watchdog from the context,
+// returning nil when absent. All methods are nil-receiver safe.
+//
+// Expected:
+//   - ctx may carry a turn watchdog stored by withTurnWatchdog.
+//
+// Returns:
+//   - The watchdog, or nil when the context carries none.
+//
+// Side effects:
+//   - None.
+func turnWatchdogFromContext(ctx context.Context) *turnWatchdog {
+	w, _ := ctx.Value(turnWatchdogKey).(*turnWatchdog)
+	return w
+}
+
+// turnWatchdog bounds how long a tool-loop turn may run without
+// observable progress. Progress is marked at three points in
+// streamWithToolLoop — each loop iteration start, every provider
+// stream open (inside retryStreamForToolResultWithTools, covering all
+// retryStreamForToolResult* call sites), and every tool batch
+// completion. When no mark lands within the window the watchdog fires:
+// it logs an "engine turn watchdog fired" warning, cancels the turn's
+// derived context, and the unwind paths terminate the stream with the
+// existing StopReasonToolLoopExceeded sentinel. The terminal claim
+// guard guarantees exactly one sentinel Done chunk per turn.
+//
+// The watchdog exists because the iteration, duration, and total
+// tool-time backstops only evaluate at iteration boundaries; a turn
+// parked mid-iteration (cooldown wait, blocked output send, mid-loop
+// compaction, a provider that never opens the next stream) makes no
+// boundary progress and previously wedged indefinitely.
+type turnWatchdog struct {
+	window       time.Duration
+	lastProgress atomic.Int64
+	iterations   atomic.Int64
+	fired        atomic.Bool
+	terminalSent atomic.Bool
+}
+
+// newTurnWatchdog returns a watchdog armed for the given window and
+// seeded with the current time. A non-positive window yields a watchdog
+// whose watch loop exits immediately (defence for future disable
+// semantics; the v1 resolver supplies a positive window in practice).
+//
+// Expected:
+//   - window is the no-progress budget the watchdog enforces.
+//
+// Returns:
+//   - A seeded *turnWatchdog.
+//
+// Side effects:
+//   - None beyond allocating the watchdog.
+func newTurnWatchdog(window time.Duration) *turnWatchdog {
+	w := &turnWatchdog{window: window}
+	if window > 0 {
+		w.lastProgress.Store(time.Now().UnixNano())
+	}
+	return w
+}
+
+// markProgress records that the turn made observable progress, re-arming
+// the no-progress window. Nil-receiver and disarmed no-op.
+//
+// Expected:
+//   - the receiver may be nil or carry a non-positive window.
+//
+// Side effects:
+//   - Overwrites the last-progress timestamp.
+func (w *turnWatchdog) markProgress() {
+	if w == nil || w.window <= 0 {
+		return
+	}
+	w.lastProgress.Store(time.Now().UnixNano())
+}
+
+// recordIterations mirrors the loop's iteration counter for the fired
+// warning's observability attr.
+//
+// Expected:
+//   - n is the loop's current continuation count.
+//
+// Side effects:
+//   - Overwrites the mirrored iteration counter.
+func (w *turnWatchdog) recordIterations(n int) {
+	if w == nil {
+		return
+	}
+	w.iterations.Store(int64(n))
+}
+
+// hasFired reports whether the watchdog has fired for this turn.
+//
+// Expected:
+//   - the receiver may be nil.
+//
+// Returns:
+//   - true once the no-progress window expired and the watchdog fired.
+//
+// Side effects:
+//   - None.
+func (w *turnWatchdog) hasFired() bool {
+	return w != nil && w.fired.Load()
+}
+
+// claimTerminal reports whether the caller is responsible for emitting
+// the watchdog's terminal Done chunk; exactly one caller wins per turn.
+//
+// Expected:
+//   - the receiver may be nil.
+//
+// Returns:
+//   - true for the single caller that must emit the sentinel chunk.
+//
+// Side effects:
+//   - Flips the terminal-sent flag on the winning caller.
+func (w *turnWatchdog) claimTerminal() bool {
+	if w == nil {
+		return false
+	}
+	return w.terminalSent.CompareAndSwap(false, true)
+}
+
+// watch runs the watchdog loop until done closes, acknowledging
+// shutdown on the ack channel. On fire it warns, marks the turn as
+// fired, and cancels the turn context. The second done-check narrows
+// the race between a turn completing naturally and the window expiring.
+//
+// Expected:
+//   - sessionID identifies the turn being watched, for logging.
+//   - cancel cancels the turn's derived context.
+//   - done closes when the turn completes.
+//   - ack receives the goroutine's shutdown acknowledgement.
+//
+// Side effects:
+//   - Emits one WARN log and invokes cancel when the window expires.
+//   - Closes ack on every exit path.
+func (w *turnWatchdog) watch(sessionID string, cancel context.CancelFunc, done <-chan struct{}, ack chan<- struct{}) {
+	defer close(ack)
+	if w.window <= 0 {
+		return
+	}
+	interval := w.window / 4
+	if interval < 10*time.Millisecond {
+		interval = 10 * time.Millisecond
+	}
+	if interval > 500*time.Millisecond {
+		interval = 500 * time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			last := time.Unix(0, w.lastProgress.Load())
+			age := time.Since(last)
+			if age < w.window {
+				continue
+			}
+			select {
+			case <-done:
+				return
+			default:
+			}
+			w.fired.Store(true)
+			slog.Warn("engine turn watchdog fired",
+				"session", sessionID,
+				"last_progress_age", age,
+				"iterations", w.iterations.Load(),
+			)
+			cancel()
+			return
+		}
+	}
+}
+
 // streamWithToolLoop processes streaming chunks, handles tool calls, and loops until completion.
 //
 // Expected:
@@ -121,6 +323,26 @@ func (e *Engine) streamWithToolLoop(
 	postTurnUsage postTurnUsageEmitter,
 ) {
 	defer e.evictCompletedBackgroundTasks()
+	ctx, loopCancel := context.WithCancel(ctx)
+	defer loopCancel()
+	watchdog := newTurnWatchdog(e.toolLoopWatchdog)
+	ctx = withTurnWatchdog(ctx, watchdog)
+	watchdogDone := make(chan struct{})
+	watchdogAck := make(chan struct{})
+	go watchdog.watch(sessionID, loopCancel, watchdogDone, watchdogAck)
+	defer func() {
+		close(watchdogDone)
+		<-watchdogAck
+		if watchdog.hasFired() && watchdog.claimTerminal() {
+			e.warnDeliveryToolBypassCtx(ctx, sessionID)
+			outChan <- provider.StreamChunk{
+				Done:       true,
+				StopReason: session.StopReasonToolLoopExceeded,
+				ModelID:    e.lastModelCtx(ctx),
+				ProviderID: e.lastProviderCtx(ctx),
+			}
+		}
+	}()
 	var todoContinuationCount int
 	var noProgressContinuations int
 	var lastTodoContinuationSnapshot []todo.Item
@@ -497,6 +719,7 @@ func (e *Engine) streamWithToolLoop(
 		return false
 	}
 	for {
+		watchdog.markProgress()
 		result := e.processStreamChunks(ctx, sessionID, providerChunks, outChan, postTurnUsage)
 		responseContent = result.responseContent
 		thinkingContent = result.thinkingContent
@@ -965,6 +1188,7 @@ func (e *Engine) streamWithToolLoop(
 		execResults, nonDelegatedExec := e.executeDeduplicatedToolCalls(ctx, sessionID, result.toolCalls, outChan)
 		toolExecDuration += time.Since(toolExecStart)
 		nonDelegatedToolExecDuration += nonDelegatedExec
+		watchdog.markProgress()
 
 		// When a tool execution returns a hard error (not a tool-level Result.Error)
 		// persist a synthetic tool_result so the session history has a complete
@@ -1129,6 +1353,7 @@ func (e *Engine) streamWithToolLoop(
 		//      dodges the iteration backstop.
 		// Zero/negative on any field disables its respective check.
 		iterations++
+		watchdog.recordIterations(iterations)
 		fingerprint := fingerprintToolBatch(result.toolCalls)
 		if e.maxIdenticalToolCalls > 0 {
 			if fingerprint != "" && fingerprint == lastFingerprint {
@@ -1468,6 +1693,16 @@ func (e *Engine) streamWithToolLoop(
 		var streamErr error
 		providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
 		if streamErr != nil {
+			if watchdog.hasFired() && watchdog.claimTerminal() {
+				e.warnDeliveryToolBypassCtx(ctx, sessionID)
+				outChan <- provider.StreamChunk{
+					Done:       true,
+					StopReason: session.StopReasonToolLoopExceeded,
+					ModelID:    e.lastModelCtx(ctx),
+					ProviderID: e.lastProviderCtx(ctx),
+				}
+				return
+			}
 			if e.requiresDeliveryToolCtx(ctx) && !e.deliveryToolCompleted(sessionID) {
 				e.warnDeliveryToolBypassCtx(ctx, sessionID)
 			}
@@ -1999,6 +2234,7 @@ func (e *Engine) evictCompletedBackgroundTasks() {
 func (e *Engine) retryStreamForToolResultWithTools(
 	ctx context.Context, sessionID string, messages []provider.Message, attempt int, tools []provider.Tool,
 ) (<-chan provider.StreamChunk, error) {
+	turnWatchdogFromContext(ctx).markProgress()
 	e.bus.Publish(events.EventProviderRequestRetry, events.NewProviderRequestRetryEvent(events.ProviderRequestRetryEventData{
 		SessionID:    sessionID,
 		AgentID:      e.activeAgentID(ctx),
@@ -2205,6 +2441,15 @@ func (e *Engine) processStreamChunks(
 			}
 			if e.onStreamCancel != nil {
 				e.onStreamCancel(sessionID)
+			}
+			if w := turnWatchdogFromContext(ctx); w.hasFired() && w.claimTerminal() {
+				outChan <- provider.StreamChunk{
+					Done:       true,
+					StopReason: session.StopReasonToolLoopExceeded,
+					ModelID:    e.LastModel(),
+					ProviderID: e.LastProvider(),
+				}
+				return streamChunkResult{responseContent: responseContent.String(), thinkingContent: thinkingContent.String(), done: true}
 			}
 			outChan <- provider.StreamChunk{Error: ctx.Err(), Done: true, ModelID: e.LastModel(), ProviderID: e.LastProvider()}
 			return streamChunkResult{responseContent: responseContent.String(), thinkingContent: thinkingContent.String(), done: true}

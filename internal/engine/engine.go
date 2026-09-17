@@ -436,6 +436,15 @@ type Engine struct {
 	// time budget backstop.
 	maxToolLoopDuration time.Duration
 
+	// toolLoopWatchdog is the no-progress window for the turn watchdog
+	// in streamWithToolLoop: a turn whose loop goes longer than this
+	// without starting a new iteration, opening a provider stream, or
+	// completing a tool batch is cancelled and stamped with
+	// StopReasonToolLoopExceeded. Defaults to engineMaxToolLoopWatchdog
+	// via Engine.New; overridable via config.yaml tool_loop_watchdog.
+	// There is no disable path in v1.
+	toolLoopWatchdog time.Duration
+
 	// microCompactor is the RLM Phase A Layer 1 compactor. It applies the
 	// hot/cold tool-result split to the in-flight provider message slice
 	// produced by buildContextWindow. Nil disables Phase A regardless of
@@ -678,6 +687,14 @@ type Config struct {
 	// longer than this, the turn terminates regardless of iteration
 	// count. Zero falls back to the compiled-in default (30m).
 	MaxToolLoopDuration time.Duration
+
+	// ToolLoopWatchdog overrides the no-progress window for the turn
+	// watchdog: a tool-loop turn that goes longer than this without
+	// starting a new iteration, opening a provider stream, or completing
+	// a tool batch is cancelled and terminated with
+	// StopReasonToolLoopExceeded. Zero falls back to the compiled-in
+	// default (10m). There is no disable path in v1.
+	ToolLoopWatchdog time.Duration
 
 	// MaxToolLoopIterations overrides the absolute ceiling on tool-loop
 	// continuations for a single turn. When the loop reaches this many
@@ -1063,6 +1080,25 @@ func resolveMaxToolLoopDuration(cfg Config) time.Duration {
 	return engineMaxToolLoopDuration
 }
 
+// resolveMaxToolLoopWatchdog returns the configured turn-watchdog
+// window or the compiled-in constant when zero or negative.
+//
+// Expected:
+//   - cfg is a valid Config struct.
+//
+// Returns:
+//   - The configured ToolLoopWatchdog, or engineMaxToolLoopWatchdog when
+//     zero/negative (there is no disable path in v1).
+//
+// Side effects:
+//   - None.
+func resolveMaxToolLoopWatchdog(cfg Config) time.Duration {
+	if cfg.ToolLoopWatchdog > 0 {
+		return cfg.ToolLoopWatchdog
+	}
+	return engineMaxToolLoopWatchdog
+}
+
 // resolveMaxToolLoopIterations returns the configured max tool-loop
 // iteration ceiling or the compiled-in constant when zero.
 //
@@ -1169,6 +1205,7 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		streamIdleTimeout:                engineStreamIdleTimeout,
 		maxToolLoopIterations:            resolveMaxToolLoopIterations(cfg),
 		maxToolLoopDuration:              resolveMaxToolLoopDuration(cfg),
+		toolLoopWatchdog:                 resolveMaxToolLoopWatchdog(cfg),
 		maxIdenticalToolCalls:            engineMaxIdenticalToolCalls,
 		maxSameToolPatternCalls:          engineMaxSameToolPatternCalls,
 		lifecycle:                        lifecycle.DefaultTurnLifecycle(),
@@ -1224,6 +1261,19 @@ const engineMaxToolLoopIterations = 50
 // config.yaml tool_loop_duration; zero/negative disables the time
 // budget backstop.
 const engineMaxToolLoopDuration = 1800 * time.Second
+
+// engineMaxToolLoopWatchdog is the default no-progress window for the
+// turn watchdog in streamWithToolLoop. When a turn's tool loop goes
+// longer than this without observable progress — a new loop iteration,
+// a provider stream open, or a tool batch completion — the watchdog
+// cancels the turn context and the unwind path terminates the stream
+// with StopReasonToolLoopExceeded. This bounds the wedged-turn class
+// the iteration and duration backstops cannot see because they only
+// evaluate at iteration boundaries: cooldown parks, blocked output
+// sends, and mid-loop compaction stalls inside a single iteration.
+// Overridable via config.yaml tool_loop_watchdog; there is no disable
+// path in v1.
+const engineMaxToolLoopWatchdog = 10 * time.Minute
 
 // engineMaxIdenticalToolCalls is the primary trip threshold: when the SAME
 // tool batch fingerprint (tool name + canonicalised arguments) recurs this

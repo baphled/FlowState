@@ -828,6 +828,10 @@ type engineParams struct {
 	// a single turn's tool-loop continuations. Zero inherits the
 	// engine's compiled-in default (30m).
 	toolLoopDuration time.Duration
+	// toolLoopWatchdog overrides the no-progress window for the engine
+	// turn watchdog. Zero inherits the engine's compiled-in default
+	// (10m); there is no disable path in v1.
+	toolLoopWatchdog time.Duration
 	// toolLoopIterations overrides the absolute iteration ceiling for
 	// a single turn's tool-loop continuations. Zero inherits the
 	// engine's compiled-in default (200).
@@ -1166,6 +1170,7 @@ func buildEngineParams(in engineAssemblyParams) engineParams {
 		toolTimeout:             in.setup.cfg.ParsedToolTimeout(),
 		backgroundOutputTimeout: in.setup.cfg.ParsedBackgroundOutputTimeout(),
 		toolLoopDuration:        in.setup.cfg.ParsedToolLoopDuration(),
+		toolLoopWatchdog:        in.setup.cfg.ParsedToolLoopWatchdog(),
 		toolLoopIterations:      in.setup.cfg.ParsedToolLoopIterations(),
 		systemPromptBudget:      in.setup.cfg.ResolvedSystemPromptBudget(),
 		todoStrictMode:          in.setup.cfg.Features.TodoStrictMode,
@@ -1684,6 +1689,7 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 		StreamTimeout:             params.streamTimeout,
 		ToolTimeout:               params.toolTimeout,
 		MaxToolLoopDuration:       params.toolLoopDuration,
+		ToolLoopWatchdog:          params.toolLoopWatchdog,
 		MaxToolLoopIterations:     params.toolLoopIterations,
 		SystemPromptBudget:        params.systemPromptBudget,
 		TodoStrictMode:            params.todoStrictMode,
@@ -2602,6 +2608,7 @@ func (a *App) createDelegateEngine(
 		StreamTimeout:             a.Config.ParsedStreamTimeout(),
 		ToolTimeout:               a.Config.ParsedToolTimeout(),
 		MaxToolLoopDuration:       a.Config.ParsedToolLoopDuration(),
+		ToolLoopWatchdog:          a.Config.ParsedToolLoopWatchdog(),
 		MaxToolLoopIterations:     a.Config.ParsedToolLoopIterations(),
 		SystemPromptBudget:        a.Config.ResolvedSystemPromptBudget(),
 		TodoStrictMode:            a.Config.TodoStrictModeEnabled(),
