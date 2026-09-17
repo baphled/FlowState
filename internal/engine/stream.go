@@ -649,11 +649,17 @@ func (e *Engine) streamFromProvider(ctx context.Context, req *provider.ChatReque
 	if session.SkipContextWindowOverflowCheckFromContext(ctx) {
 		slog.Info("engine stream request skipping proactive overflow gate after compaction",
 			"provider", req.Provider, "model", req.Model, "messages", len(req.Messages))
-		handler := e.baseStreamHandler()
-		if e.hookChain != nil {
-			handler = e.hookChain.Execute(handler)
-		}
-		return handler(ctx, req)
+		// Direct dispatch, bypassing the failover hook chain. The skip
+		// flag is only stamped on the single post-compaction retry, and
+		// that retry is pinned to the intended provider with a rebuilt
+		// token-bounded window. Sending it through failover is actively
+		// harmful: a genuine upstream context-window error on the first
+		// chunk is classified PERMANENT (isUserCorrectableError) and the
+		// hook fails the whole call with "all providers failed",
+		// converting the engine's bounded-retry recovery loop into a
+		// single attempt. Direct dispatch lets streamWithToolLoop's
+		// max_overflow_retries budget own the retry decision.
+		return e.baseStreamHandler()(ctx, req)
 	}
 	if pErr := e.checkContextWindowOverflow(req); pErr != nil {
 		slog.Warn("engine refused over-budget request",

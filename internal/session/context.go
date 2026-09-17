@@ -187,6 +187,18 @@ func ToolsAllowlistOverrideFromContext(ctx context.Context) []string {
 // WithSkipContextWindowOverflowCheck returns a derived context that skips the
 // proactive overflow refusal gate for the next retry only.
 //
+// The flag is stamped exclusively on the single retry that immediately
+// follows a mid-tool-loop compaction (see streamWithToolLoop's
+// contextOverflow branch and maybeCompactForRetry): the rebuilt window
+// is token-bounded against the same fallback-derived estimate the gate
+// uses, but the real provider's limit can differ from that estimate.
+// Skipping the gate on exactly one retry lets the provider render the
+// final verdict while streamWithToolLoop's max_overflow_retries budget
+// retains ownership of the bounded-retry decision. Consumers MUST NOT
+// treat this as a durable session property: the value intentionally
+// persists on the derived context, so callers should build it from a
+// short-lived retry context rather than the session root.
+//
 // Expected: parameters for WithSkipContextWindowOverflowCheck.
 // Returns: result of WithSkipContextWindowOverflowCheck.
 // Side effects: None.

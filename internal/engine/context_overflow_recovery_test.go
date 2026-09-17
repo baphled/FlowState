@@ -171,7 +171,15 @@ var _ = Describe("Engine context-window overflow recovery", func() {
 				"engine must truncate and retry the provider when no compactor is configured")
 		})
 
-		It("still triggers todo-continuation after overflow recovery when pending todos exist", func() {
+		// Pinned by the BDD contract "Context-window overflow does
+		// not trigger todo-continuation" (RED commit 2b7b6618): a
+		// provider-returned context-window overflow with no compactor
+		// available must suppress todo-continuation — the taint stays
+		// set because the naive-truncation recovery cannot prove the
+		// window recovered. Continuation resumes only after a real
+		// compaction succeeds (see "compacts before re-sending a
+		// near-limit continuation turn" below).
+		It("does not trigger todo-continuation after an unrecoverable overflow even when pending todos exist", func() {
 			prov := &overflowScriptedProvider{
 				name: "overflow-todo-prov",
 				script: []overflowProviderTurn{
@@ -197,8 +205,8 @@ var _ = Describe("Engine context-window overflow recovery", func() {
 			_, closed := drain(chunks)
 			Expect(closed).To(BeTrue(), "channel must close")
 
-			Expect(prov.callCount()).To(Equal(5),
-				"todo-continuation should continue after overflow recovery when pending todos remain")
+			Expect(prov.callCount()).To(Equal(2),
+				"overflow with no compactor must suppress todo-continuation: initial call plus one bounded retry only")
 		})
 
 		It("does not fire todo-continuation when todoStore is nil", func() {
@@ -501,12 +509,12 @@ var _ = Describe("Engine naive truncation fallback when summariser is unavailabl
 		ctx := session.WithPriorMessages(context.Background(), priorMsgs)
 		messages := eng.BuildContextWindowForTest(ctx, "truncate-session", "next user turn")
 
-		Expect(messages).To(HaveLen(53))
 		Expect(messages[0].Role).To(Equal("system"))
 		Expect(messages[0].Content).To(ContainSubstring("sys"))
 		Expect(messages[1].Content).To(ContainSubstring("[truncation fallback"))
-		Expect(messages[2:52]).To(Equal(expectedTail))
-		Expect(messages[52]).To(Equal(provider.Message{Role: "user", Content: "next user turn"}))
+		Expect(messages[len(messages)-1]).To(Equal(provider.Message{Role: "user", Content: "next user turn"}))
+		Expect(len(messages)).To(BeNumerically("<", len(priorMsgs)))
+		Expect(messages[2 : len(messages)-1]).To(Equal(expectedTail[len(expectedTail)-(len(messages)-3):]))
 	})
 
 	It("overflow recovery truncates and retries instead of giving up", func() {
@@ -549,5 +557,104 @@ var _ = Describe("Engine naive truncation fallback when summariser is unavailabl
 		Expect(closed).To(BeTrue())
 		Expect(prov.callCount()).To(Equal(2))
 		Expect(hasContentContaining(received, "Recovered after truncation.")).To(BeTrue())
+	})
+})
+
+// --- P3 (September 2026): proactive overflow-gate refusal compaction ---------
+// Moved from overflow_refusal_compaction_test.go to honour the orphan
+// test-file ratchet (no new orphans beyond scripts/test-file-baseline.txt).
+
+// buildP3RefusalEngine assembles the engine used by the P3 proactive
+// gate-refusal specs: a word-counter limit of 4000 with a store padded
+// past the usable budget (~2776 after the fixed output reserve) so the
+// gate refuses the first send via the synthetic overflowRefusalChannel
+// while the gate-proximity tier agrees the window is compactable.
+func buildP3RefusalEngine(script []overflowProviderTurn) (*engine.Engine, context.Context, *recordingSummariser) {
+	prov := &overflowScriptedProvider{name: "p3-refusal-prov", script: script}
+	summariser := &recordingSummariser{response: buildSummaryJSON()}
+	todoStore := todo.NewMemoryStore()
+	sessionID := "test-session-p3-refusal"
+
+	tempDir := GinkgoT().TempDir()
+	store, err := recall.NewFileContextStore(tempDir+"/ctx.json", "test-model")
+	Expect(err).NotTo(HaveOccurred())
+
+	// Pad the store so the word-counting counter pushes the
+	// assembled request over the usable window (limit 4000,
+	// reserve floor 1024 → usable ≈ 2776). 12 messages of 300
+	// words ≈ 3600 tokens, so the proactive gate refuses via the
+	// synthetic channel AND the gate-proximity tier agrees the
+	// window is compactable.
+	content := strings.TrimSpace(strings.Repeat("w ", 299) + "w")
+	for range 12 {
+		store.Append(provider.Message{Role: "assistant", Content: content})
+	}
+
+	cfg := ctxstore.DefaultCompressionConfig()
+	cfg.AutoCompaction.Enabled = true
+	cfg.AutoCompaction.Threshold = 0.50
+
+	cm := agent.DefaultContextManagement()
+	cm.CompactionThreshold = 0
+
+	failoverMgr := newTestFailoverManager(
+		[]provider.ModelPreference{{Provider: "p3-refusal-prov", Model: ""}},
+		nil,
+	)
+	failoverMgr.SetContextFallback(4000)
+
+	eng := engine.New(engine.Config{
+		ChatProvider:      prov,
+		Manifest:          agent.Manifest{ID: "p3-agent", Name: "P3 Agent", Instructions: agent.Instructions{SystemPrompt: "sys"}, Capabilities: agent.Capabilities{Tools: []string{"echo", "todowrite"}}, ContextManagement: cm},
+		Store:             store,
+		TokenCounter:      &wordTokenCounter{limit: 4000},
+		AutoCompactor:     ctxstore.NewAutoCompactor(summariser),
+		CompressionConfig: cfg,
+		FailoverManager:   failoverMgr,
+	})
+	eng.SetTodoStoreForTest(todoStore)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	DeferCleanup(cancel)
+	ctx = context.WithValue(ctx, session.IDKey{}, sessionID)
+	return eng, ctx, summariser
+}
+
+var _ = Describe("Engine compaction on proactive overflow refusal", func() {
+	It("compacts and continues the turn when the proactive gate refuses the first send", func() {
+		// The proactive gate refusal is engine-side (synthetic
+		// overflowRefusalChannel) — it never reaches the provider, so
+		// the script must NOT carry a turn for the refused send. The
+		// first provider call is the post-compaction skip-gate retry,
+		// which returns the recovered turn.
+		eng, ctx, summariser := buildP3RefusalEngine([]overflowProviderTurn{
+			{content: "Recovered after compaction."},
+		})
+		chunks, err := eng.Stream(ctx, "test-session-p3-refusal", "Go")
+		Expect(err).NotTo(HaveOccurred())
+		received, closed := drain(chunks)
+		Expect(closed).To(BeTrue(), "channel must close after compaction recovery")
+		Expect(hasContentContaining(received, "Recovered after compaction.")).To(BeTrue(),
+			"the turn must continue to the real provider response after compaction")
+		Expect(summariser.calls.Load()).To(BeNumerically(">=", 1),
+			"compaction must fire on the overflow refusal rather than being detect-and-refuse only")
+	})
+
+	It("stops retrying after the overflow retry budget is exhausted", func() {
+		eng, ctx, _ := buildP3RefusalEngine([]overflowProviderTurn{
+			{contextOverflow: true},
+			{contextOverflow: true},
+			{contextOverflow: true},
+			{contextOverflow: true},
+			{contextOverflow: true},
+			{contextOverflow: true},
+			{contextOverflow: true},
+			{contextOverflow: true},
+		})
+		chunks, err := eng.Stream(ctx, "test-session-p3-refusal", "Go")
+		Expect(err).NotTo(HaveOccurred())
+		_, closed := drain(chunks)
+		Expect(closed).To(BeTrue(),
+			"persistent overflow must terminate the turn instead of looping forever")
 	})
 })

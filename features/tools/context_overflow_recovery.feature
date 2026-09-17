@@ -50,3 +50,32 @@ Feature: Context-window overflow recovery
     When the engine attempts the continuation retry
     Then the provider does not receive the over-budget request
     And a local context-window error is surfaced
+
+  @wip
+  Scenario: Retry stream opens but overflows in-stream — taint persists, no todo-continuation
+    Given the provider overflows and the retry stream also overflows in-stream
+    And a compactor is configured that can reduce the context
+    And the session has a pending todo item "deploy the release"
+    When the engine streams a turn
+    Then the output channel closes without panicking
+    And the todo-continuation is not attempted
+
+  @wip
+  Scenario: Post-compaction retry still overflows — distinct terminal error, no compaction loop
+    Given the provider will return a context-window-exceeded error on every call
+    And a compactor is configured that can reduce the context
+    And the session has a pending todo item "deploy the release"
+    When the engine streams a turn
+    Then the output channel closes without panicking
+    And a compaction-insufficient error is surfaced
+    And the todo-continuation is not attempted
+    And the engine attempts at most two provider calls
+
+  @wip
+  Scenario: Overflow taint clears only after a later completed non-overflow turn
+    Given the provider recovers cleanly after an overflow retry
+    And a compactor is configured that can reduce the context
+    And the session has a pending todo item "write the report"
+    When the engine streams a turn
+    Then the todo-continuation is attempted
+    And the final response indicates completion

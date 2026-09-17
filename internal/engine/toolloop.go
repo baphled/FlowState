@@ -28,6 +28,79 @@ import (
 	"github.com/baphled/flowstate/internal/tool/todo"
 )
 
+// maxOverflowRetries bounds context-window overflow recovery to two
+// retries so a turn makes at most three provider calls (the initial
+// request plus two post-compaction retries) before surfacing the
+// terminal ErrCompactionInsufficient error.
+const maxOverflowRetries = 2
+
+// contextReductionDelta is the minimum meaningful token-estimate drop a
+// compacted window must achieve over the pre-compaction slice before the
+// retry path accepts it. A compaction that reduces less than this is
+// treated as no reduction and short-circuits to the terminal error.
+const contextReductionDelta = 64
+
+// contextEstimateDropped reports whether the rebuilt window's estimated
+// token load fell by at least contextReductionDelta tokens versus the
+// original slice, so a compaction that produces no meaningful reduction
+// short-circuits instead of re-entering the overflow retry loop.
+//
+// Expected:
+//   - before and after are message slices from the same turn.
+//
+// Returns:
+//   - true when the estimate dropped by at least the meaningful delta.
+//
+// Side effects: None.
+func (e *Engine) contextEstimateDropped(before, after []provider.Message) bool {
+	if e == nil || e.tokenCounter == nil {
+		return len(after) < len(before)
+	}
+	count := func(msgs []provider.Message) int {
+		tokens := 0
+		for i := range msgs {
+			tokens += int(e.tokenCounter.Count(msgs[i].Content))
+		}
+		return tokens
+	}
+	return count(before)-count(after) >= contextReductionDelta
+}
+
+// contextEstimateOverBudget reports whether the supplied message slice
+// is already over the raw context limit for the active provider/model,
+// so the meaningful-reduction check only fires on genuinely
+// overflowing windows. The raw limit (not the reserve-adjusted usable
+// budget) is deliberate: the gate's usable estimate is conservative and
+// the post-compaction retry skips that gate so the real provider has
+// the final say — only a window over the raw limit is unrecoverable.
+//
+// Expected:
+//   - ctx carries the provider/model resolution keys.
+//   - messages is the live tool-loop slice.
+//
+// Returns:
+//   - true when the estimated request tokens exceed the raw limit.
+//
+// Side effects: None.
+func (e *Engine) contextEstimateOverBudget(ctx context.Context, messages []provider.Message) bool {
+	if e == nil || e.tokenCounter == nil || len(messages) == 0 {
+		return false
+	}
+	prov := e.lastProviderCtx(ctx)
+	model := e.lastModelCtx(ctx)
+	limit := e.ResolveContextLength(prov, model)
+	if limit <= 0 {
+		return false
+	}
+	req := &provider.ChatRequest{
+		Provider: prov,
+		Model:    model,
+		Messages: messages,
+		Tools:    e.buildToolSchemasCtx(ctx),
+	}
+	return e.estimateRequestTokens(req) > limit
+}
+
 // streamWithToolLoop processes streaming chunks, handles tool calls, and loops until completion.
 //
 // Expected:
@@ -89,8 +162,10 @@ func (e *Engine) streamWithToolLoop(
 	sameToolPatternRun := 0
 	lastToolNames := ""
 	const maxToolUseNoCallsRetries = 3
-	const maxOverflowRetries = 3
 	var toolUseNoCallsAttempts int
+	sawContextOverflow := false
+	pendingOverflowRecovery := false
+	pendingSkipOverflow := false
 	overflowRetries := 0
 	const maxDeliveryRetries = 3
 	var deliveryRetries int
@@ -110,6 +185,7 @@ func (e *Engine) streamWithToolLoop(
 	delegationGraceUsed := false
 	finalResponseGraceUsed := false
 	forcedSummaryUsed := false
+	skillsGuardRejectionLoop := false
 	updateTodoContinuationProgress := func(current []todo.Item) {
 		if !workedSinceContinuation && slices.Equal(lastTodoContinuationSnapshot, current) {
 			noProgressContinuations++
@@ -127,7 +203,7 @@ func (e *Engine) streamWithToolLoop(
 		maxTodoContinuations int,
 		logReason string,
 	) (bool, provider.Message) {
-		if e.todoStore == nil {
+		if e.todoStore == nil || sawContextOverflow {
 			return false, provider.Message{}
 		}
 
@@ -238,12 +314,12 @@ func (e *Engine) streamWithToolLoop(
 		deliveryRetryContinue
 		deliveryRetryStop
 	)
-	retryCtx := ctx
 	// maybeCompactForRetry compacts the session if the context is large before retrying.
 	// This prevents timeout-based failures when retrying with large contexts.
-	maybeCompactForRetry := func(reason string) {
+	maybeCompactForRetry := func(reason string) bool {
+		pendingSkipOverflow = false
 		if e == nil || e.store == nil || e.tokenCounter == nil {
-			return
+			return false
 		}
 		retryReq := provider.ChatRequest{
 			Provider: e.lastProviderCtx(ctx),
@@ -258,34 +334,32 @@ func (e *Engine) streamWithToolLoop(
 			retryReq.Model = modelOverride
 		}
 		if pErr := e.checkContextWindowOverflow(&retryReq); pErr == nil {
-			return
+			return false
 		}
 		manifestCopy := e.Manifest()
 		tokenBudget := e.ResolveContextLength(retryReq.Provider, retryReq.Model)
 		if tokenBudget <= 0 {
-			return
+			return false
 		}
 		slog.Info(reason+": context large, force-compacting before retry",
 			"session", sessionID, "message_count", len(messages))
 		if summary := e.maybeAutoCompactExplicit(ctx, sessionID, &manifestCopy, tokenBudget, "manual", messages); summary != "" {
 			slog.Info(reason+": compaction succeeded, rebuilding context window",
 				"session", sessionID, "summary_length", len(summary))
-			retryCtx = session.WithSkipContextWindowOverflowCheck(retryCtx)
-			slidingWindowSize := manifestCopy.ContextManagement.SlidingWindowSize
-			if slidingWindowSize <= 0 {
-				slidingWindowSize = 50
+			if rebuilt := e.rebuildContextWindowTokenBounded(ctx, sessionID, messages, summary); rebuilt != nil {
+				messages = rebuilt
 			}
-			hotTail := messages
-			if len(hotTail) > slidingWindowSize {
-				hotTail = hotTail[len(hotTail)-slidingWindowSize:]
-			}
-			rebuilt := make([]provider.Message, 0, len(hotTail)+4)
-			rebuilt = append(rebuilt, provider.Message{Role: "system", Content: e.BuildSystemPromptCtx(ctx)})
-			rebuilt = e.appendTodoContext(rebuilt, sessionID)
-			rebuilt = append(rebuilt, provider.Message{Role: "assistant", Content: summary})
-			rebuilt = append(rebuilt, hotTail...)
-			messages = rebuilt
+			pendingSkipOverflow = true
+			return true
 		}
+		return false
+	}
+	skipCtx := func(base context.Context) context.Context {
+		if pendingSkipOverflow {
+			pendingSkipOverflow = false
+			return session.WithSkipContextWindowOverflowCheck(base)
+		}
+		return base
 	}
 
 	maybeRetryDelivery := func(onStop func()) deliveryRetryAction {
@@ -311,14 +385,16 @@ func (e *Engine) streamWithToolLoop(
 			Content: "Your previous response narrated an intent to call a tool but did not actually call it. You MUST call one of the delivery tools now to persist your results. Do not respond with prose — call the tool.",
 		})
 		var streamErr error
+		deliveryCtx := ctx
 		if deliveryTools := e.deliveryToolsForCtx(ctx); len(deliveryTools) > 0 {
-			retryCtx = session.WithToolsAllowlistOverride(retryCtx, deliveryTools)
+			deliveryCtx = session.WithToolsAllowlistOverride(ctx, deliveryTools)
 		}
 		maybeCompactForRetry("delivery retry")
-		providerChunks, streamErr = e.retryStreamForToolResult(retryCtx, sessionID, messages, attempt)
+		deliveryCtx = skipCtx(deliveryCtx)
+		providerChunks, streamErr = e.retryStreamForToolResult(deliveryCtx, sessionID, messages, attempt)
 		if streamErr != nil {
 			slog.Error("delivery tool retry stream failed", "session", sessionID, "error", streamErr)
-			e.persistDeliveryFailureFallback(retryCtx, sessionID, messages, streamErr)
+			e.persistDeliveryFailureFallback(deliveryCtx, sessionID, messages, streamErr)
 
 			if retryAt, ok := e.SoonestProviderRetry(); ok {
 				slog.Info("delivery retry: providers rate-limited, waiting for cooldown",
@@ -340,11 +416,11 @@ func (e *Engine) streamWithToolLoop(
 					slog.Warn("delivery tool not called, retrying after provider cooldown",
 						"session", sessionID, "attempt", deliveryRetries)
 					maybeCompactForRetry("delivery retry")
-					providerChunks, streamErr = e.retryStreamForToolResult(retryCtx, sessionID, messages, attempt+1)
+					providerChunks, streamErr = e.retryStreamForToolResult(skipCtx(deliveryCtx), sessionID, messages, attempt+1)
 					if streamErr != nil {
 						slog.Error("delivery tool retry stream failed after provider cooldown",
 							"session", sessionID, "error", streamErr)
-						e.persistDeliveryFailureFallback(retryCtx, sessionID, messages, streamErr)
+						e.persistDeliveryFailureFallback(deliveryCtx, sessionID, messages, streamErr)
 						onStop()
 						return deliveryRetryStop
 					}
@@ -380,7 +456,7 @@ func (e *Engine) streamWithToolLoop(
 		messages = append(messages, contMsg)
 		maybeCompactForRetry("todo continuation retry")
 		var streamErr error
-		providerChunks, streamErr = e.retryStreamForToolResult(retryCtx, sessionID, messages, attempt)
+		providerChunks, streamErr = e.retryStreamForToolResult(skipCtx(ctx), sessionID, messages, attempt)
 		if streamErr != nil {
 			slog.Error("todo continuation stream failed after completion guard",
 				"session", sessionID,
@@ -425,6 +501,10 @@ func (e *Engine) streamWithToolLoop(
 		responseContent = result.responseContent
 		thinkingContent = result.thinkingContent
 		if result.done {
+			if pendingOverflowRecovery && !result.contextOverflow {
+				sawContextOverflow = false
+				pendingOverflowRecovery = false
+			}
 			// tool_use_no_calls: provider announced stop_reason="tool_use"
 			// but emitted zero tool_call blocks. This is a provider-side
 			// fault (observed on Z.AI glm-5.1 and similar providers).
@@ -474,6 +554,18 @@ func (e *Engine) streamWithToolLoop(
 				continue
 			}
 			if result.contextOverflow {
+				sawContextOverflow = true
+				if pendingOverflowRecovery {
+					slog.Error("post-compaction retry still over context window, surfacing terminal compaction-insufficient error",
+						"session", sessionID,
+						"overflow_retries", overflowRetries,
+					)
+					outChan <- provider.StreamChunk{
+						Done:  true,
+						Error: fmt.Errorf("%w", ErrCompactionInsufficient),
+					}
+					return
+				}
 				if overflowRetries < maxOverflowRetries {
 					overflowRetries++
 					slog.Warn("context window overflow detected, attempting compaction and retry",
@@ -481,14 +573,78 @@ func (e *Engine) streamWithToolLoop(
 						"overflow_retry", overflowRetries,
 						"max_overflow_retries", maxOverflowRetries,
 					)
-					compacted := e.emitMidToolLoopRefresh(ctx, sessionID, outChan, messages)
-					if compacted {
-						if rebuilt := e.rebuildContextWindowAfterMidLoopCompaction(ctx, sessionID, messages); rebuilt != nil {
+					forceManifest := e.Manifest()
+					forceBudget := e.ModelContextLimit()
+					compacted := ""
+					if forceBudget > 0 {
+						compacted = e.maybeAutoCompactExplicit(ctx, sessionID, &forceManifest, forceBudget, "tool_result_wave", messages)
+					}
+					// Part 3: accept the compacted window only when it
+					// meaningfully reduces the estimated token load —
+					// a compaction that produces no reduction will not
+					// clear the gate, so short-circuit to the terminal
+					// error instead of re-entering the loop.
+					summary := ""
+					if compacted != "" {
+						summary = e.lastCompactionSummaryText()
+						if rebuilt := e.rebuildContextWindowTokenBounded(ctx, sessionID, messages, summary); rebuilt != nil {
+							stillOver := e.contextEstimateOverBudget(ctx, rebuilt)
+							if stillOver && !e.contextEstimateDropped(messages, rebuilt) {
+								slog.Warn("compaction produced no meaningful token reduction, surfacing terminal compaction-insufficient error",
+									"session", sessionID,
+									"messages", len(messages),
+								)
+								outChan <- provider.StreamChunk{
+									Done:  true,
+									Error: fmt.Errorf("%w", ErrCompactionInsufficient),
+								}
+								return
+							}
 							messages = rebuilt
 						}
+					}
+					compactedViaRefresh := compacted != "" || e.emitMidToolLoopRefresh(ctx, sessionID, outChan, messages)
+					if compactedViaRefresh {
+						// rebuildContextWindow reassembles from the
+						// persisted store, which still carries every
+						// message (nothing is cold when the 50-message
+						// sliding window retains the whole transcript),
+						// so the estimate stays ~est > usable and the
+						// retry would re-hit the gate. Mirror
+						// maybeCompactForRetry instead: system +
+						// todo + summary + token-bounded hot tail that
+						// provably fits the usable budget.
+						// Force-compaction happened (or the gate tier
+						// agreed), but the rebuilt window can still
+						// sit above the gate's usable budget — the
+						// cold prefix is replaced by the summary but
+						// the hot tail plus summary may remain over
+						// the refusal boundary. Mirror
+						// maybeCompactForRetry's proven pattern:
+						// skip the proactive overflow gate on this
+						// one retry so the real provider (whose
+						// limit differs from the fallback-derived
+						// estimate) gets the final say.
+						retryCtx := session.WithSkipContextWindowOverflowCheck(ctx)
 						var retryErr error
-						providerChunks, retryErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
+						providerChunks, retryErr = e.retryStreamForToolResult(retryCtx, sessionID, messages, attempt)
 						if retryErr == nil {
+							// Compaction succeeded and the retry
+							// stream opened cleanly — the overflow
+							// is recovered, not terminal. Clear the
+							// taint so a clean post-compaction turn
+							// with pending todos can still drive the
+							// todo-continuation loop (Ginkgo:
+							// "compacts before re-sending a near-limit
+							// continuation turn"). The taint stays
+							// set when compaction could NOT fire
+							// (naive-truncation fallback below),
+							// which is what the BDD contract
+							// "Context-window overflow does not
+							// trigger todo-continuation" pins: an
+							// unrecoverable overflow must not spin
+							// the continuation loop.
+							pendingOverflowRecovery = true
 							attempt++
 							e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 							continue
@@ -525,9 +681,7 @@ func (e *Engine) streamWithToolLoop(
 						"overflow_retries", overflowRetries,
 					)
 				}
-				if completeAfterTodoCheck("context overflow retries exhausted") {
-					continue
-				}
+				e.completeResponse(ctx, sessionID, responseContent, thinkingContent)
 				return
 			}
 			if result.responseContent == "" && len(result.toolCalls) == 0 {
@@ -545,6 +699,10 @@ func (e *Engine) streamWithToolLoop(
 				if completeAfterTodoCheck("empty response with no tool calls") {
 					continue
 				}
+				return
+			}
+			if sawContextOverflow {
+				e.completeResponse(ctx, sessionID, responseContent, thinkingContent)
 				return
 			}
 			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore {
@@ -630,7 +788,7 @@ func (e *Engine) streamWithToolLoop(
 					e.mu.Unlock()
 				}
 				var streamErr error
-				providerChunks, streamErr = e.retryStreamForToolResult(retryCtx, sessionID, messages, attempt)
+				providerChunks, streamErr = e.retryStreamForToolResult(skipCtx(ctx), sessionID, messages, attempt)
 				if streamErr != nil {
 					slog.Error("todo continuation stream failed",
 						"session", sessionID,
@@ -756,7 +914,7 @@ func (e *Engine) streamWithToolLoop(
 					e.mu.Unlock()
 				}
 				var streamErr error
-				providerChunks, streamErr = e.retryStreamForToolResult(retryCtx, sessionID, messages, attempt)
+				providerChunks, streamErr = e.retryStreamForToolResult(skipCtx(ctx), sessionID, messages, attempt)
 				if streamErr != nil {
 					slog.Error("todo continuation stream failed after truncation",
 						"session", sessionID,
@@ -904,7 +1062,8 @@ func (e *Engine) streamWithToolLoop(
 			toolResults[i] = er.toolResult
 			if !er.toolResult.IsError && er.toolResult.Error == nil {
 				batchAllRejected = false
-			} else if !strings.Contains(er.toolResult.Output, "not available to agent") {
+			} else if !strings.Contains(er.toolResult.Output, "not available to agent") &&
+				!strings.Contains(er.toolResult.Output, "must load your always-active skills via") {
 				batchAllRejected = false
 			}
 		}
@@ -912,6 +1071,12 @@ func (e *Engine) streamWithToolLoop(
 			consecutiveRejectedToolCalls++
 		} else {
 			consecutiveRejectedToolCalls = 0
+		}
+		if batchGuardOutput(execResults) != "" &&
+			strings.Contains(batchGuardOutput(execResults),
+				"must load your always-active skills via") &&
+			consecutiveRejectedToolCalls >= maxRejectedToolCalls {
+			skillsGuardRejectionLoop = true
 		}
 		messages = e.appendToolResultsBatchToMessages(messages, result.toolCalls, toolResults)
 
@@ -1001,6 +1166,16 @@ func (e *Engine) streamWithToolLoop(
 		totalToolTimeTripped := e.maxToolLoopDuration > 0 && nonDelegatedToolExecDuration >= e.maxToolLoopDuration
 		sameToolTripped := e.maxSameToolPatternCalls > 0 && sameToolPatternRun >= e.maxSameToolPatternCalls
 		rejectionTripped := consecutiveRejectedToolCalls >= maxRejectedToolCalls
+		if skillsGuardRejectionLoop {
+			e.warnDeliveryToolBypassCtx(ctx, sessionID)
+			outChan <- provider.StreamChunk{
+				Done:       true,
+				StopReason: session.StopReasonToolLoopExceeded,
+				ModelID:    e.lastModelCtx(ctx),
+				ProviderID: e.lastProviderCtx(ctx),
+			}
+			return
+		}
 		if repeatTripped || backstopTripped || durationTripped || totalToolTimeTripped || sameToolTripped || rejectionTripped {
 			reason := "iteration_backstop"
 			if repeatTripped {
@@ -1696,14 +1871,30 @@ func (e *Engine) executeDeduplicatedToolCalls(
 	return fullResults, nonDelegatedExec
 }
 
-// executeToolCallBatch runs all tool calls concurrently and returns results in
-// the same order as the input slice. A single-element batch still goes through
-// this path so the message-assembly code is uniform.
+// batchGuardOutput concatenates the tool-result outputs of a batch so
+// callers can classify which guard produced a rejection without
+// inspecting individual entries.
 //
-// Expected: parameters for executeToolCallBatch.
-// Returns: the per-call results plus the cumulative non-delegated execution
-// time across the batch, for the caller's total-tool-time backstop.
+// Expected: execResults is the batch whose outputs are being classified.
+// Returns: the concatenation of every tool-result output in the batch.
 // Side effects: None.
+func batchGuardOutput(execResults []toolCallExecResult) string {
+	var sb strings.Builder
+	for _, er := range execResults {
+		sb.WriteString(er.toolResult.Output)
+	}
+	return sb.String()
+}
+
+// executeToolCallBatch runs a batch of tool calls, sequentially when any
+// target modifies shared state and in parallel otherwise.
+//
+// Expected: ctx carries the stream output channel, sessionID identifies
+// the session, toolCalls is the batch to execute, outChan receives
+// streaming chunks.
+// Returns: one toolCallExecResult per call, in input order.
+// Side effects: executes each tool call, which may have its own side
+// effects, and emits tool lifecycle chunks to outChan.
 func (e *Engine) executeToolCallBatch(
 	ctx context.Context, sessionID string, toolCalls []*provider.ToolCall, outChan chan<- provider.StreamChunk,
 ) ([]toolCallExecResult, time.Duration) {
@@ -1912,7 +2103,7 @@ type streamChunkResult struct {
 	thinkingContent string
 	stopReason      string // upstream provider stop reason from the terminal Done chunk
 	done            bool
-	contextOverflow bool // true when the terminal Done chunk carried ErrorTypeContextWindowExceeded
+	contextOverflow bool // true when any chunk carried ErrorTypeContextWindowExceeded
 }
 
 // turnOpenMarker is the thinking payload surfaced on the synthetic flush
@@ -1959,6 +2150,7 @@ func (e *Engine) processStreamChunks(
 	// precede the first tool_use surfaced to the consumer.
 	var sawTextOrThinking bool
 	var toolCalls []*provider.ToolCall
+	var overflowDetected bool
 
 	emitPostTurn := func() {
 		if postTurnUsage != nil {
@@ -2095,6 +2287,7 @@ func (e *Engine) processStreamChunks(
 					responseContent: responseContent.String(),
 					thinkingContent: thinkingContent.String(),
 					done:            len(toolCalls) == 0,
+					contextOverflow: overflowDetected,
 				}
 			}
 
@@ -2180,6 +2373,13 @@ func (e *Engine) processStreamChunks(
 				sawTextOrThinking = true
 			}
 
+			if chunk.Error != nil {
+				var pErr *provider.Error
+				if errors.As(chunk.Error, &pErr) &&
+					pErr.ErrorType == provider.ErrorTypeContextWindowExceeded {
+					overflowDetected = true
+				}
+			}
 			if chunk.Done {
 				// Do NOT forward the Done chunk when tool calls are pending.
 				// Emitting Done while the tool loop is still running would
@@ -2200,20 +2400,12 @@ func (e *Engine) processStreamChunks(
 				// return on Done, so this MUST land first.
 				emitPostTurn()
 				outChan <- chunk
-				var overflow bool
-				if chunk.Error != nil {
-					var pErr *provider.Error
-					if errors.As(chunk.Error, &pErr) &&
-						pErr.ErrorType == provider.ErrorTypeContextWindowExceeded {
-						overflow = true
-					}
-				}
 				return streamChunkResult{
 					responseContent: responseContent.String(),
 					thinkingContent: thinkingContent.String(),
 					stopReason:      chunk.StopReason,
 					done:            true,
-					contextOverflow: overflow,
+					contextOverflow: overflowDetected,
 				}
 			}
 			outChan <- chunk
@@ -2750,6 +2942,7 @@ func (e *Engine) markSkillLoadCalled(sessionID string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.skillLoadCalled[sessionID] = true
+	delete(e.skillGuardRejections, sessionID)
 }
 
 // requiresDeliveryTool reports whether the active manifest declares any

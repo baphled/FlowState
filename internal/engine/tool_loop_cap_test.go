@@ -13,6 +13,7 @@ import (
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
+	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/tool"
 	"github.com/baphled/flowstate/internal/tool/todo"
 )
@@ -838,6 +839,70 @@ var _ = Describe("Engine tool-loop cap", func() {
 				"the rejected-tool-call detector must trip within 3 consecutive rejections")
 			Expect(bashTool.execCalled).To(BeFalse(),
 				"bash must never execute when the runtime gate rejects it")
+		})
+	})
+
+	Context("when the model repeatedly calls tools rejected by the skills-first guard", func() {
+		It("stops after 3 consecutive batches rejected with the skill_load directive", func() {
+			prov := &repeatingToolProvider{
+				name: "skills-guard-loop",
+				call: &provider.ToolCall{
+					ID:        "call_bash",
+					Name:      "bash",
+					Arguments: map[string]any{"command": "ls"},
+				},
+			}
+
+			bashTool := &executableMockTool{
+				name:        "bash",
+				description: "Bash tool",
+				execResult:  tool.Result{Output: "ok"},
+			}
+
+			skillsManifest := agent.Manifest{
+				ID:   "skills-gate-agent",
+				Name: "SkillsGate",
+				Capabilities: agent.Capabilities{
+					Tools:              []string{"bash", "skill_load"},
+					AlwaysActiveSkills: []string{"discipline"},
+				},
+			}
+
+			eng := engine.New(engine.Config{
+				ChatProvider: prov,
+				Manifest:     skillsManifest,
+				Tools:        []tool.Tool{bashTool},
+				KnownSkillsFunc: func() []string {
+					return []string{"discipline"}
+				},
+				SkillsResolver: func(m agent.Manifest) []skill.Skill {
+					return nil
+				},
+			})
+			eng.SetMaxIdenticalToolCallsForTest(0)
+			eng.SetMaxToolLoopIterationsForTest(0)
+			eng.SetMaxToolLoopDurationForTest(0)
+			eng.SetMaxSameToolPatternCallsForTest(0)
+
+			chunks, err := eng.Stream(context.Background(), "skills-gate-agent", "Do something")
+			Expect(err).NotTo(HaveOccurred())
+
+			received, closed := drain(chunks)
+			Expect(closed).To(BeTrue(), "the turn must terminate and close the channel")
+
+			var terminal *provider.StreamChunk
+			for i := range received {
+				if received[i].Done {
+					terminal = &received[i]
+				}
+			}
+			Expect(terminal).NotTo(BeNil(), "expected a terminal Done chunk")
+			Expect(terminal.StopReason).To(Equal(session.StopReasonToolLoopExceeded),
+				"a skills-guard rejection loop must stamp tool_loop_exceeded")
+			Expect(prov.callCount()).To(BeNumerically("<=", 4),
+				"the skills-guard rejection must trip consecutive_tool_rejection within 3 rejections")
+			Expect(bashTool.execCalled).To(BeFalse(),
+				"bash must never execute while the skills-first guard rejects it")
 		})
 	})
 })

@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/baphled/flowstate/internal/agent"
@@ -24,6 +25,12 @@ import (
 	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
 )
+
+// ErrCompactionInsufficient is the distinct terminal error surfaced when
+// a post-compaction retry still exceeds the context window: retrying the
+// same compaction would loop, so the engine exits with this error
+// instead of re-entering the overflow retry path.
+var ErrCompactionInsufficient = errors.New("compaction insufficient: context still exceeds the window after compaction")
 
 // maybeAutoCompact runs the Phase 2 auto-compaction trigger when the
 // engine is configured with an AutoCompactor, the feature is enabled,
@@ -1338,6 +1345,162 @@ func (e *Engine) rebuildContextWindowAfterMidLoopCompaction(ctx context.Context,
 		}
 	}
 	return nil
+}
+
+// lastCompactionSummaryText returns the most recent compaction summary
+// text (the "[auto-compacted summary]: <json>" string) or "" when no
+// compaction has fired (or the last one failed). Thread-safe read of the
+// maybeAutoCompactExplicit / maybeAutoCompact write side.
+//
+// Expected:
+//   - Receiver may be nil; nil returns "".
+//
+// Returns:
+//   - The "[auto-compacted summary]: <json>" string, or "" when no
+//     summary is recorded or marshalling fails.
+//
+// Side effects:
+//   - Acquires buildStateMu for the duration of the read.
+func (e *Engine) lastCompactionSummaryText() string {
+	if e == nil {
+		return ""
+	}
+	e.buildStateMu.Lock()
+	defer e.buildStateMu.Unlock()
+	if e.lastCompactionSummary == nil {
+		return ""
+	}
+	b, err := json.Marshal(*e.lastCompactionSummary)
+	if err != nil {
+		return ""
+	}
+	return "[auto-compacted summary]: " + string(b)
+}
+
+// rebuildContextWindowTokenBounded rebuilds the mid-tool-loop message
+// slice after a compaction has fired: system prompt + todo context +
+// compaction summary + a token-bounded hot tail. The tail is the newest
+// run of live messages whose estimated token cost (plus the fixed
+// prefix) fits the usable context budget (limit - output reserve, as the
+// proactive overflow gate computes it). Oldest tail messages are dropped
+// until the estimate fits; at least one tail message is always kept so
+// the provider still sees the newest tool exchange.
+//
+// This mirrors maybeCompactForRetry's rebuild shape (toolloop.go) but
+// adds the token bound the retry path lacks because its 50-message
+// sliding window retains everything when the transcript is short — the
+// diagnosis behind P3: compaction fired but the rebuild reassembled the
+// full swollen store (~3648 est vs ~2776 usable) so the retry re-hit
+// the gate.
+//
+// Expected:
+//   - ctx carries the provider/model resolution keys and system-prompt
+//     build context.
+//   - sessionID identifies the session for todo-context assembly.
+//   - messages is the live tool-loop slice; never empty.
+//   - summary may be "" (no compaction summary available).
+//
+// Returns:
+//   - The rebuilt slice, or nil when a usable budget cannot be resolved
+//     or the inputs are degenerate — callers fall back to their prior
+//     message slice.
+//
+// Side effects:
+//   - None beyond reading engine state (token counter, resolver).
+func (e *Engine) rebuildContextWindowTokenBounded(ctx context.Context, sessionID string, messages []provider.Message, summary string) []provider.Message {
+	if e == nil || e.tokenCounter == nil || len(messages) == 0 {
+		return nil
+	}
+	prov := e.lastProviderCtx(ctx)
+	model := e.lastModelCtx(ctx)
+	limit := e.ResolveContextLength(prov, model)
+	if limit <= 0 {
+		return nil
+	}
+	req := provider.ChatRequest{
+		Provider: prov,
+		Model:    model,
+		Messages: messages,
+		Tools:    e.buildToolSchemasCtx(ctx),
+	}
+	usable := limit - e.outputReserveFor(&req)
+	if usable < 1 {
+		usable = 1
+	}
+	target := usable * 4 / 5
+
+	estimatedMessages := func(msgs []provider.Message) int {
+		estimated := e.estimateRequestTokens(&provider.ChatRequest{
+			Provider: prov,
+			Model:    model,
+			Messages: msgs,
+			Tools:    req.Tools,
+		})
+		if summary != "" {
+			estimated += int(e.tokenCounter.Count(summary))
+		}
+		return estimated
+	}
+
+	for len(messages) > 1 {
+		if estimatedMessages(messages) <= target {
+			break
+		}
+		messages = messages[1:]
+	}
+
+	if estimatedMessages(messages) > target {
+		messages = truncateMessagesInMemory(messages, int(target))
+	}
+
+	rebuilt := make([]provider.Message, 0, len(messages)+4)
+	rebuilt = append(rebuilt, provider.Message{Role: "system", Content: e.BuildSystemPromptCtx(ctx)})
+	rebuilt = e.appendTodoContext(rebuilt, sessionID)
+	if summary != "" {
+		rebuilt = append(rebuilt, provider.Message{Role: "assistant", Content: summary})
+	}
+	rebuilt = append(rebuilt, messages...)
+	return rebuilt
+}
+
+// messageTruncationMarker is the deterministic suffix appended to
+// message content truncated in-memory by truncateMessagesInMemory,
+// mirroring the tool_result_cap.go marker pattern.
+const messageTruncationMarker = "\n[truncated: message exceeded token budget; %d chars dropped]"
+
+// truncateMessagesInMemory shrinks message content in place so a
+// rebuilt context window fits its token target. Messages are truncated
+// oldest-first, each carrying the deterministic truncation marker, and
+// no message is truncated past a minimal floor.
+//
+// Expected: messages is the remaining window slice; targetTokens is the
+// token budget the window must fit under (non-positive returns input).
+// Returns: the truncated slice (a copy; input untouched).
+// Side effects: None.
+func truncateMessagesInMemory(messages []provider.Message, targetTokens int) []provider.Message {
+	if targetTokens <= 0 || len(messages) == 0 {
+		return messages
+	}
+	out := append([]provider.Message(nil), messages...)
+	charBudget := targetTokens * 4
+	for i := range out {
+		if charBudget <= 0 {
+			break
+		}
+		n := len(out[i].Content)
+		if n <= charBudget {
+			charBudget -= n
+			continue
+		}
+		dropped := n - charBudget
+		head := out[i].Content[:charBudget]
+		if idx := strings.LastIndex(head, "\n"); idx > 0 {
+			head = head[:idx]
+		}
+		out[i].Content = head + fmt.Sprintf(messageTruncationMarker, dropped)
+		charBudget = 0
+	}
+	return out
 }
 
 // MaybeCompactForModel resolves the supplied (newProvider, newModel)

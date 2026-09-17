@@ -388,8 +388,12 @@ func NewWithOptions(cfg *config.AppConfig, opts NewOptions) (*App, error) {
 	agentRegistry := setupAgentRegistry(cfg)
 	swarmRegistry := setupSwarmRegistry(resolveSwarmDir(cfg), agentRegistry)
 	setupSwarmSchemas(cfg)
-	for _, err := range RegisterDiscoveredGates(context.Background(), cfg) {
-		slog.Warn("ext gate registration failed", "err", err)
+	if gateErrs := RegisterDiscoveredGates(context.Background(), cfg); len(gateErrs) > 0 {
+		// Boot stays non-fatal, but a partial registration must be
+		// actionable: the summary names every offending gate dir so
+		// an operator can find the bad manifest from the log alone
+		// instead of hitting "ext gate ... is not registered" later.
+		slog.Error("ext gate registration failed", "failures", SummariseGateRegistrationFailures(gateErrs))
 	}
 	if err := swarm.ValidateRegistryGateKinds(swarmRegistry); err != nil {
 		slog.Error("swarm registry references unregistered gate kinds", "err", err)

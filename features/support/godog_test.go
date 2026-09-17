@@ -99,6 +99,8 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterMCPServerLifecycleSteps(ctx)
 	RegisterGateAmendmentSteps(ctx)
 	RegisterGateFailureBlockingSteps(ctx)
+	RegisterDiscoveryResilienceSteps(ctx)
+	RegisterParallelGateRetrySteps(ctx)
 	RegisterEngineSteps(ctx)
 	RegisterBatchedPersistenceSteps(ctx)
 	RegisterToolLoopBudgetSteps(ctx)
@@ -107,5 +109,6 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterBashProcessKillSteps(ctx, &BashProcessKillSteps{})
 	RegisterFailureReasonSteps(ctx, &failureReasonSteps{})
 	RegisterStopButtonSteps(ctx, &stopButtonSteps{})
+	RegisterDelegationIntegritySteps(ctx)
 	VoiceTalkContext(ctx)
 }

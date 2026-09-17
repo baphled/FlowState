@@ -43,12 +43,6 @@ import (
 const errToolNotAvailableFmt = "Error: '%s' not available to agent '%s'. Available tools: [%s]. " +
 	"Delegate to a specialist whose toolset includes '%s' if the work requires it."
 
-// errSkillsMustLoadFirst is the error payload for the skills-first gate:
-// agents whose manifest pins active-by-default skills must call skill_load
-// before any other tool call.
-const errSkillsMustLoadFirst = "You must load your active skills via `skill_load(name=...)` " +
-	"before making any other tool call. Invoke `skill_load` for each of your active skills first."
-
 // errTodoNoWorkDone is the error payload rejecting a todo-completion call
 // when no work tool was invoked since the previous completion.
 const errTodoNoWorkDone = "You cannot complete this todo item without doing any work since the last one. " +
@@ -253,6 +247,12 @@ type Engine struct {
 	// Used by the skills-first gate in executeToolCall to enforce that always-active
 	// skills are loaded before any other tool call.
 	skillLoadCalled map[string]bool
+
+	// skillGuardRejections tracks per-session consecutive skills-first
+	// guard rejections. After SkillGuardCircuitBreakerThreshold
+	// consecutive rejections the guard trips its circuit breaker and
+	// auto-satisfies the gate instead of rejecting a further call.
+	skillGuardRejections map[string]int
 
 	// deliveryToolCalled tracks per-session whether any manifest-declared
 	// delivery tool has been successfully invoked. Used by the delivery
@@ -1133,6 +1133,7 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		workToolCallsSinceContinuation:   make(map[string]int),
 		workCallsSinceLastTodoCompletion: make(map[string]int),
 		skillLoadCalled:                  make(map[string]bool),
+		skillGuardRejections:             make(map[string]int),
 		deliveryToolCalled:               make(map[string]bool),
 		sessionManifests:                 make(map[string]*agent.Manifest),
 		sessionComplexity:                make(map[string]TaskComplexity),
@@ -2873,11 +2874,25 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 		// never both.
 		if toolCall.Name != "skill_load" && e.skillsLoadRequired() {
 			if !e.skillLoadCompleted(sessionID) {
-				return tool.Result{
-					Output:  errSkillsMustLoadFirst,
-					IsError: true,
-					Error:   fmt.Errorf("skills must be loaded before other tool calls"),
-				}, nil
+				// P1 (July 2026) — deterministic injection first: when
+				// always-active skill content is resolvable the guard
+				// bakes it into the session and proceeds with the
+				// original call, so the happy path never rejects.
+				if e.autoInjectAlwaysActiveSkills(sessionID) {
+					slog.Info("skills-first gate auto-injected always-active skills", "session", sessionID)
+				} else if e.skillGuardRejectionCount(sessionID) >= SkillGuardCircuitBreakerThreshold {
+					// Circuit breaker: three consecutive rejections without
+					// compliance mean the guard is wedging the session.
+					// Auto-satisfy the gate and let the call through.
+					e.tripSkillGuardCircuitBreaker(sessionID)
+				} else {
+					e.recordSkillGuardRejection(sessionID)
+					return tool.Result{
+						Output:  "You must load your always-active skills via `skill_load(name=...)` before making any other tool call. Call `skill_load` for each of your always-active skills first.",
+						IsError: true,
+						Error:   fmt.Errorf("skills must be loaded before other tool calls"),
+					}, nil
+				}
 			}
 		}
 		slog.Info("engine tool call", "tool", toolCall.Name)
@@ -3288,7 +3303,7 @@ func (e *Engine) storeToolResult(toolCall *provider.ToolCall, result tool.Result
 	// "failed: ..." real failures.
 	e.store.Append(provider.Message{
 		Role:    "tool",
-		Content: content,
+		Content: capPersistedToolResult(content),
 		IsError: result.Error != nil,
 		ToolCalls: []provider.ToolCall{
 			{ID: toolCall.ID, Name: toolCall.Name},
@@ -3516,22 +3531,23 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 		var messages []provider.Message
 
 		if compactedSummary != "" {
-			// Build window with compacted summary + hot tail (sliding
-			// window of the most recent prior messages).
-			slidingWindowSize := manifestCopy.ContextManagement.SlidingWindowSize
-			if slidingWindowSize <= 0 {
-				slidingWindowSize = 50
+			rebuilt := e.rebuildContextWindowTokenBounded(ctx, sessionID, priorMsgs, compactedSummary)
+			if rebuilt == nil {
+				slidingWindowSize := manifestCopy.ContextManagement.SlidingWindowSize
+				if slidingWindowSize <= 0 {
+					slidingWindowSize = 50
+				}
+				hotTail := priorMsgs
+				if len(hotTail) > slidingWindowSize {
+					hotTail = hotTail[len(hotTail)-slidingWindowSize:]
+				}
+				rebuilt = make([]provider.Message, 0, len(hotTail)+4)
+				rebuilt = append(rebuilt, provider.Message{Role: "system", Content: systemPrompt})
+				rebuilt = e.appendTodoContext(rebuilt, sessionID)
+				rebuilt = append(rebuilt, provider.Message{Role: "assistant", Content: compactedSummary})
+				rebuilt = append(rebuilt, hotTail...)
 			}
-			hotTail := priorMsgs
-			if len(hotTail) > slidingWindowSize {
-				hotTail = hotTail[len(hotTail)-slidingWindowSize:]
-			}
-			messages = make([]provider.Message, 0, len(hotTail)+4)
-			messages = append(messages, provider.Message{Role: "system", Content: systemPrompt})
-			messages = e.appendTodoContext(messages, sessionID)
-			messages = append(messages, provider.Message{Role: "assistant", Content: compactedSummary})
-			messages = append(messages, hotTail...)
-			messages = append(messages, provider.Message{Role: "user", Content: userMessage})
+			messages = append(rebuilt, provider.Message{Role: "user", Content: userMessage})
 		} else {
 			// No compaction triggered — use raw prior messages.
 			messages = make([]provider.Message, 0, len(priorMsgs)+3)
@@ -4484,7 +4500,26 @@ func (e *Engine) LastContextResult() ctxstore.BuildResult {
 //
 // Expected: parameters for ModelContextLimit.
 func (e *Engine) ModelContextLimit() int {
+	// Budget from the provider/model that the NEXT stream will actually
+	// target, not blindly from the first configured preference:
+	//
+	//  1. an explicit user override (SetModelPreference) wins;
+	//  2. otherwise the failover winner (LastProvider/LastModel) — after
+	//     a failover (e.g. anthropic 200K → zai 128K) the head preference
+	//     is stale and the gate must budget from the provider that
+	//     actually carries the conversation;
+	//  3. otherwise the first configured preference.
 	if e.failoverManager != nil {
+		if pref, ok := e.failoverManager.Override(); ok {
+			if limit := e.failoverManager.ResolveContextLength(pref.Provider, pref.Model); limit > 0 {
+				return limit
+			}
+		}
+		if p, m := e.failoverManager.LastProvider(), e.failoverManager.LastModel(); p != "" && m != "" {
+			if limit := e.failoverManager.ResolveContextLength(p, m); limit > 0 {
+				return limit
+			}
+		}
 		prefs := e.failoverManager.Preferences()
 		if len(prefs) > 0 {
 			return e.failoverManager.ResolveContextLength(prefs[0].Provider, prefs[0].Model)

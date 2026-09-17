@@ -278,6 +278,24 @@ func (m *Manager) ClearOverride() {
 	m.override = nil
 }
 
+// Override returns the current user override, if one is set.
+//
+// Expected: none.
+// Returns:
+//   - The override ModelPreference and true when set; the zero value
+//     and false otherwise.
+//
+// Side effects:
+//   - None.
+func (m *Manager) Override() (provider.ModelPreference, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.override == nil {
+		return provider.ModelPreference{}, false
+	}
+	return *m.override, true
+}
+
 // Preferences returns the effective preferences: override (if set) prepended to base preferences.
 //
 // Returns:

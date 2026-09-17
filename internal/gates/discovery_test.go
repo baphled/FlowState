@@ -68,9 +68,30 @@ exec: ./gate.sh`,
 
 		got, err := gates.Discover(root)
 
-		Expect(err).ToNot(HaveOccurred())
+		Expect(err).To(MatchError(ContainSubstring(`gate "broken"`)),
+			"the skipped manifest must surface as a partial error naming its directory")
 		Expect(got).To(HaveLen(1))
 		Expect(got[0].Name).To(Equal("healthy"))
+	})
+
+	It("still returns valid manifests when a sibling manifest is malformed", func() {
+		root := newGatesDir(map[string]string{
+			"broken": `name: ""
+exec: ./gate.sh`,
+			"good": `name: good
+exec: ./gate.sh`,
+		})
+
+		got, err := gates.Discover(root)
+
+		Expect(err).To(MatchError(ContainSubstring(`gate "broken"`)),
+			"the skipped manifest must be named so operators can locate it")
+		names := []string{}
+		for _, m := range got {
+			names = append(names, m.Name)
+		}
+		Expect(names).To(ConsistOf("good"),
+			"a malformed sibling must not unregister valid gates")
 	})
 })
 
