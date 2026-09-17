@@ -1,11 +1,15 @@
 package app
 
 import (
+	"os"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/agent"
+	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/coordination"
+	"github.com/baphled/flowstate/internal/learning"
 	"github.com/baphled/flowstate/internal/plan"
 	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
@@ -351,5 +355,43 @@ var _ = Describe("createDelegateEngine failover hook wiring", func() {
 					"a length of 5 means failoverMgr was not wired into hookChainConfig "+
 					"and 429 errors during delegation will fail hard instead of failing over")
 		})
+	})
+})
+
+// Recall collection resolution at the tool-registration seam.
+//
+// The memory tools (mcp_memory_search_nodes / mcp_memory_open_nodes)
+// read their Qdrant collection through buildMemoryClient. These specs
+// pin that this site and the broker/distiller wiring resolve the same
+// effective collection via resolveRecallCollection: an unset collection
+// converges on the canonical default, and a whitespace-padded override
+// is trimmed identically to the broker's resolution.
+var _ = Describe("recall collection resolution", func() {
+	BeforeEach(func() {
+		_ = os.Unsetenv(config.QdrantURLEnv)
+	})
+
+	AfterEach(func() {
+		_ = os.Unsetenv(config.QdrantURLEnv)
+	})
+
+	It("registers the memory client against the canonical recall collection when the config leaves it unset", func() {
+		cfg := &config.AppConfig{}
+		cfg.Qdrant.URL = "http://yaml-qdrant:6333"
+		client := buildMemoryClient(cfg, nil)
+		Expect(client).NotTo(BeNil())
+		vectorClient, ok := client.(*learning.VectorStoreMemoryClient)
+		Expect(ok).To(BeTrue())
+		Expect(vectorClient.Collection).To(Equal(canonicalRecallCollection))
+	})
+
+	It("trims a whitespace-padded collection override the same way the broker resolver does", func() {
+		cfg := &config.AppConfig{}
+		cfg.Qdrant.URL = "http://yaml-qdrant:6333"
+		cfg.Qdrant.Collection = "  padded-recall  "
+		client := buildMemoryClient(cfg, nil)
+		vectorClient, ok := client.(*learning.VectorStoreMemoryClient)
+		Expect(ok).To(BeTrue())
+		Expect(vectorClient.Collection).To(Equal("padded-recall"))
 	})
 })

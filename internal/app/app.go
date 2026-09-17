@@ -810,7 +810,6 @@ type engineParams struct {
 	dispatcher           *external.Dispatcher
 	skillDir             string
 	recallBroker         recall.Broker
-	sessionStartAdapter  *SessionStartLearningAdapter
 	// compression carries the three-layer compression dependencies that
 	// must flow into the Engine for L1/L2/L3 to activate. Zero values on
 	// any field disable the corresponding layer. See buildCompressionComponents.
@@ -1142,7 +1141,6 @@ func buildEngineParams(in engineAssemblyParams) engineParams {
 	return engineParams{
 		defaultProvider:         in.traced.provider,
 		ollamaProvider:          in.setup.ollamaProvider,
-		sessionStartAdapter:     NewSessionStartLearningAdapter(in.broker, 5),
 		providerRegistry:        in.setup.providerRegistry,
 		agentRegistry:           in.setup.agentRegistry,
 		defaultManifest:         in.setup.defaultManifest,
@@ -4972,7 +4970,6 @@ func createDataStores(cfg *config.AppConfig, ollamaProvider embedRequester) (*ct
 		return nil, nil, fmt.Errorf("creating session store: %w", err)
 	}
 
-	// Create Mem0LearningStore with Qdrant if configured, otherwise fall back to JSONFileStore
 	var learningStore learning.Store
 	if qdrantEnabled(cfg) {
 		qdrantClient := qdrantrecall.NewClient(qdrantURL(cfg), cfg.Qdrant.APIKey, nil)
@@ -4984,7 +4981,7 @@ func createDataStores(cfg *config.AppConfig, ollamaProvider embedRequester) (*ct
 			qdrantrecall.IsCollectionNotFound,
 			defaultQdrantDistance,
 		)
-		learningStore = learning.NewMem0LearningStore(ensuring, embedder, cfg.Qdrant.Collection)
+		learningStore = learning.NewMem0LearningStore(ensuring, embedder, resolveRecallCollection(cfg))
 	}
 
 	return sessionStore, learningStore, nil
@@ -5028,21 +5025,21 @@ func qdrantURL(cfg *config.AppConfig) string {
 }
 
 // buildMemoryClient constructs a VectorStoreMemoryClient backed by Qdrant
-// when cfg.Qdrant.URL is set. Returns nil when Qdrant is not configured;
-// callers treat nil as "memory tools disabled".
+// when the effective Qdrant URL resolves (config file or QDRANT_URL env
+// var, via qdrantEnabled). Returns nil when Qdrant is not configured;
+// callers treat nil as "memory tools disabled". The collection name is
+// resolved through resolveRecallCollection so the memory tools and the
+// recall broker read the same effective collection.
 //
 // Expected: parameters for buildMemoryClient.
 // Returns: result of buildMemoryClient.
 // Side effects: None.
 func buildMemoryClient(cfg *config.AppConfig, ollamaProvider embedRequester) learning.MemoryClient {
-	if cfg == nil || cfg.Qdrant.URL == "" {
+	if cfg == nil || !qdrantEnabled(cfg) {
 		return nil
 	}
-	col := cfg.Qdrant.Collection
-	if col == "" {
-		col = "flowstate-recall"
-	}
-	client := qdrantrecall.NewClient(cfg.Qdrant.URL, cfg.Qdrant.APIKey, nil)
+	col := resolveRecallCollection(cfg)
+	client := qdrantrecall.NewClient(qdrantURL(cfg), cfg.Qdrant.APIKey, nil)
 	embedder := newRecallEmbedder(ollamaProvider, cfg.ResolvedEmbeddingModel())
 	adapter := &qdrantClientAdapter{client: client}
 	ensuring := learning.NewEnsuringVectorStore(
@@ -5054,9 +5051,10 @@ func buildMemoryClient(cfg *config.AppConfig, ollamaProvider embedRequester) lea
 	return learning.NewVectorStoreMemoryClient(ensuring, embedder, col)
 }
 
-// buildVaultQueryHandler constructs a vaultindex.QueryHandler backed by Qdrant
-// when cfg.Qdrant.URL is set. Returns nil when Qdrant is not configured;
-// callers treat nil as "vault RAG tool disabled".
+// buildVaultQueryHandler constructs a vaultindex.QueryHandler backed by
+// Qdrant when the effective Qdrant URL resolves (config file or
+// QDRANT_URL env var, via qdrantEnabled). Returns nil when Qdrant is
+// not configured; callers treat nil as "vault RAG tool disabled".
 //
 // The collection-name fallback uses toolset.DefaultVaultCollection so the
 // two callers (this handler and toolset.AppendVaultIndexTools) stay in
@@ -5071,14 +5069,14 @@ func buildMemoryClient(cfg *config.AppConfig, ollamaProvider embedRequester) lea
 // Returns: result of buildVaultQueryHandler.
 // Side effects: None.
 func buildVaultQueryHandler(cfg *config.AppConfig, ollamaProvider embedRequester) toolsvault.Handler {
-	if cfg == nil || cfg.Qdrant.URL == "" {
+	if cfg == nil || !qdrantEnabled(cfg) {
 		return nil
 	}
 	collection := cfg.VaultCollection
 	if collection == "" {
 		collection = toolset.DefaultVaultCollection
 	}
-	client := qdrantrecall.NewClient(cfg.Qdrant.URL, cfg.Qdrant.APIKey, nil)
+	client := qdrantrecall.NewClient(qdrantURL(cfg), cfg.Qdrant.APIKey, nil)
 	embedder := newRecallEmbedder(ollamaProvider, cfg.ResolvedEmbeddingModel())
 	return vaultindex.NewQueryHandler(embedder, client, collection)
 }

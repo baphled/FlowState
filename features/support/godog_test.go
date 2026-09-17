@@ -91,6 +91,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterCompactionUsageFeedbackSteps(ctx)
 	RegisterTokenBudgetedWindowSteps(ctx)
 	RegisterRecallLearningSteps(ctx)
+	RegisterRecallToolsEffectiveConfigSteps(ctx)
 	RegisterAdultingMemorySteps(ctx)
 	RegisterFSPollutionSteps(ctx)
 	RegisterAdultingDeadlineSteps(ctx)
