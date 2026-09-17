@@ -303,6 +303,57 @@ func (w *turnWatchdog) watch(sessionID string, cancel context.CancelFunc, done <
 	}
 }
 
+// emitStreamChunk sends chunk to the turn's output channel, abandoning
+// the send when the turn context is cancelled so a consumer that has
+// stopped reading cannot wedge the loop goroutine on a full buffer.
+//
+// Expected:
+//   - ctx is the turn context whose cancellation ends the stream.
+//   - outChan is the turn's output channel.
+//   - chunk is the non-terminal chunk to forward.
+//
+// Returns:
+//   - true when the chunk was delivered; false when the turn context
+//     was cancelled first.
+//
+// Side effects:
+//   - Sends chunk to outChan unless the context cancellation wins.
+func emitStreamChunk(ctx context.Context, outChan chan<- provider.StreamChunk, chunk provider.StreamChunk) bool {
+	select {
+	case outChan <- chunk:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// emitTerminalStreamChunk sends the turn's terminal Done chunk with
+// terminal-chunk-first discipline: when the guarded send loses to a
+// cancelled turn context the chunk is still delivered via a send that
+// does not race the same cancellation, so consumers observe a terminal
+// chunk before the channel closes instead of hanging on a wedged turn.
+//
+// Expected:
+//   - ctx is the turn context whose cancellation ends the stream.
+//   - outChan is the turn's output channel.
+//   - chunk is the terminal (Done) chunk every consumer requires.
+//
+// Side effects:
+//   - Sends chunk to outChan; warns and drops it only when the buffer
+//     is full and no receiver remains.
+func emitTerminalStreamChunk(ctx context.Context, outChan chan<- provider.StreamChunk, chunk provider.StreamChunk) {
+	select {
+	case outChan <- chunk:
+		return
+	case <-ctx.Done():
+	}
+	select {
+	case outChan <- chunk:
+	default:
+		slog.Warn("engine terminal chunk dropped: output channel unavailable after turn cancellation")
+	}
+}
+
 // streamWithToolLoop processes streaming chunks, handles tool calls, and loops until completion.
 //
 // Expected:
@@ -335,12 +386,12 @@ func (e *Engine) streamWithToolLoop(
 		<-watchdogAck
 		if watchdog.hasFired() && watchdog.claimTerminal() {
 			e.warnDeliveryToolBypassCtx(ctx, sessionID)
-			outChan <- provider.StreamChunk{
+			emitTerminalStreamChunk(ctx, outChan, provider.StreamChunk{
 				Done:       true,
 				StopReason: session.StopReasonToolLoopExceeded,
 				ModelID:    e.lastModelCtx(ctx),
 				ProviderID: e.lastProviderCtx(ctx),
-			}
+			})
 		}
 	}()
 	var todoContinuationCount int
@@ -488,10 +539,10 @@ func (e *Engine) streamWithToolLoop(
 				"retry_at", retryAt,
 				"wait", wait,
 			)
-			outChan <- provider.StreamChunk{
+			emitStreamChunk(ctx, outChan, provider.StreamChunk{
 				Content:   fmt.Sprintf("All providers unavailable until %s. Please retry later.", retryAt.Format(time.RFC1123)),
 				EventType: "provider_retry_too_far",
-			}
+			})
 			return false, true
 		}
 		if cumulativeCooldownWait+wait > maxCumulativeCooldownWait {
@@ -503,10 +554,10 @@ func (e *Engine) streamWithToolLoop(
 				"cumulative", cumulativeCooldownWait,
 				"budget", maxCumulativeCooldownWait,
 			)
-			outChan <- provider.StreamChunk{
+			emitStreamChunk(ctx, outChan, provider.StreamChunk{
 				Content:   "All providers rate-limited and cumulative cooldown wait budget exhausted. Please retry later.",
 				EventType: "provider_retry_budget_exhausted",
-			}
+			})
 			return false, true
 		}
 		slog.Info("cooldown wait before provider retry",
@@ -516,10 +567,10 @@ func (e *Engine) streamWithToolLoop(
 			"wait", wait,
 			"cumulative", cumulativeCooldownWait+wait,
 		)
-		outChan <- provider.StreamChunk{
+		emitStreamChunk(ctx, outChan, provider.StreamChunk{
 			Content:   fmt.Sprintf("All providers unavailable. Retrying in %s (at %s).", wait.Round(time.Second), retryAt.Format("15:04:05")),
 			EventType: "provider_retry_scheduled",
-		}
+		})
 		timer := time.NewTimer(wait)
 		defer timer.Stop()
 		select {
@@ -710,12 +761,12 @@ func (e *Engine) streamWithToolLoop(
 			return true
 		}
 		e.warnDeliveryToolBypassCtx(ctx, sessionID)
-		outChan <- provider.StreamChunk{
+		emitTerminalStreamChunk(ctx, outChan, provider.StreamChunk{
 			Done:       true,
 			StopReason: session.StopReasonToolLoopExceeded,
 			ModelID:    e.lastModelCtx(ctx),
 			ProviderID: e.lastProviderCtx(ctx),
-		}
+		})
 		return false
 	}
 	for {
@@ -783,10 +834,10 @@ func (e *Engine) streamWithToolLoop(
 						"session", sessionID,
 						"overflow_retries", overflowRetries,
 					)
-					outChan <- provider.StreamChunk{
+					emitTerminalStreamChunk(ctx, outChan, provider.StreamChunk{
 						Done:  true,
 						Error: fmt.Errorf("%w", ErrCompactionInsufficient),
-					}
+					})
 					return
 				}
 				if overflowRetries < maxOverflowRetries {
@@ -817,10 +868,10 @@ func (e *Engine) streamWithToolLoop(
 									"session", sessionID,
 									"messages", len(messages),
 								)
-								outChan <- provider.StreamChunk{
+								emitTerminalStreamChunk(ctx, outChan, provider.StreamChunk{
 									Done:  true,
 									Error: fmt.Errorf("%w", ErrCompactionInsufficient),
-								}
+								})
 								return
 							}
 							messages = rebuilt
@@ -1198,7 +1249,7 @@ func (e *Engine) streamWithToolLoop(
 			if er.err != nil {
 				synthetic := tool.Result{Output: "Error: " + er.err.Error()}
 				e.storeToolResult(er.toolCall, synthetic)
-				outChan <- provider.StreamChunk{
+				emitStreamChunk(ctx, outChan, provider.StreamChunk{
 					EventType:  "tool_result",
 					ToolCallID: er.toolCall.ID,
 					InternalToolCallID: e.toolCallCorrelator.InternalID(
@@ -1208,11 +1259,11 @@ func (e *Engine) streamWithToolLoop(
 						Content: synthetic.Output,
 						IsError: true,
 					},
-				}
+				})
 				if e.requiresDeliveryToolCtx(ctx) && !e.deliveryToolCompleted(sessionID) {
 					e.warnDeliveryToolBypassCtx(ctx, sessionID)
 				}
-				outChan <- provider.StreamChunk{Error: er.err, Done: true}
+				emitTerminalStreamChunk(ctx, outChan, provider.StreamChunk{Error: er.err, Done: true})
 				return
 			}
 		}
@@ -1267,7 +1318,7 @@ func (e *Engine) streamWithToolLoop(
 			resultContent = UnwrapTaskResult(resultContent)
 			// P14: re-resolve the internal id so the tool_result chunk carries
 			// the same InternalToolCallID as the originating tool_call.
-			outChan <- provider.StreamChunk{
+			emitStreamChunk(ctx, outChan, provider.StreamChunk{
 				EventType:  "tool_result",
 				ToolCallID: er.toolCall.ID,
 				InternalToolCallID: e.toolCallCorrelator.InternalID(
@@ -1277,7 +1328,7 @@ func (e *Engine) streamWithToolLoop(
 					Content: resultContent,
 					IsError: isError,
 				},
-			}
+			})
 		}
 
 		toolResults := make([]tool.Result, len(execResults))
@@ -1393,12 +1444,12 @@ func (e *Engine) streamWithToolLoop(
 		rejectionTripped := consecutiveRejectedToolCalls >= maxRejectedToolCalls
 		if skillsGuardRejectionLoop {
 			e.warnDeliveryToolBypassCtx(ctx, sessionID)
-			outChan <- provider.StreamChunk{
+			emitTerminalStreamChunk(ctx, outChan, provider.StreamChunk{
 				Done:       true,
 				StopReason: session.StopReasonToolLoopExceeded,
 				ModelID:    e.lastModelCtx(ctx),
 				ProviderID: e.lastProviderCtx(ctx),
-			}
+			})
 			return
 		}
 		if repeatTripped || backstopTripped || durationTripped || totalToolTimeTripped || sameToolTripped || rejectionTripped {
@@ -1680,12 +1731,12 @@ func (e *Engine) streamWithToolLoop(
 				continue
 			} else {
 				e.warnDeliveryToolBypassCtx(ctx, sessionID)
-				outChan <- provider.StreamChunk{
+				emitTerminalStreamChunk(ctx, outChan, provider.StreamChunk{
 					Done:       true,
 					StopReason: session.StopReasonToolLoopExceeded,
 					ModelID:    e.lastModelCtx(ctx),
 					ProviderID: e.lastProviderCtx(ctx),
-				}
+				})
 				return
 			}
 		}
@@ -1695,18 +1746,18 @@ func (e *Engine) streamWithToolLoop(
 		if streamErr != nil {
 			if watchdog.hasFired() && watchdog.claimTerminal() {
 				e.warnDeliveryToolBypassCtx(ctx, sessionID)
-				outChan <- provider.StreamChunk{
+				emitTerminalStreamChunk(ctx, outChan, provider.StreamChunk{
 					Done:       true,
 					StopReason: session.StopReasonToolLoopExceeded,
 					ModelID:    e.lastModelCtx(ctx),
 					ProviderID: e.lastProviderCtx(ctx),
-				}
+				})
 				return
 			}
 			if e.requiresDeliveryToolCtx(ctx) && !e.deliveryToolCompleted(sessionID) {
 				e.warnDeliveryToolBypassCtx(ctx, sessionID)
 			}
-			outChan <- provider.StreamChunk{Error: streamErr, Done: true}
+			emitTerminalStreamChunk(ctx, outChan, provider.StreamChunk{Error: streamErr, Done: true})
 			return
 		}
 
@@ -2443,15 +2494,15 @@ func (e *Engine) processStreamChunks(
 				e.onStreamCancel(sessionID)
 			}
 			if w := turnWatchdogFromContext(ctx); w.hasFired() && w.claimTerminal() {
-				outChan <- provider.StreamChunk{
+				emitTerminalStreamChunk(ctx, outChan, provider.StreamChunk{
 					Done:       true,
 					StopReason: session.StopReasonToolLoopExceeded,
 					ModelID:    e.LastModel(),
 					ProviderID: e.LastProvider(),
-				}
+				})
 				return streamChunkResult{responseContent: responseContent.String(), thinkingContent: thinkingContent.String(), done: true}
 			}
-			outChan <- provider.StreamChunk{Error: ctx.Err(), Done: true, ModelID: e.LastModel(), ProviderID: e.LastProvider()}
+			emitTerminalStreamChunk(ctx, outChan, provider.StreamChunk{Error: ctx.Err(), Done: true, ModelID: e.LastModel(), ProviderID: e.LastProvider()})
 			return streamChunkResult{responseContent: responseContent.String(), thinkingContent: thinkingContent.String(), done: true}
 		case <-idleC:
 			// Idle-stream watchdog fired. Emit a synthetic Done so
@@ -2463,12 +2514,12 @@ func (e *Engine) processStreamChunks(
 			// chunk so the context_usage chip ticks up; the SSE consumer
 			// returns on first Done.
 			emitPostTurn()
-			outChan <- provider.StreamChunk{
+			emitTerminalStreamChunk(ctx, outChan, provider.StreamChunk{
 				Done:       true,
 				StopReason: session.StopReasonEmptyTurn,
 				ModelID:    e.LastModel(),
 				ProviderID: e.LastProvider(),
-			}
+			})
 			return streamChunkResult{
 				responseContent: responseContent.String(),
 				thinkingContent: thinkingContent.String(),
@@ -2520,12 +2571,12 @@ func (e *Engine) processStreamChunks(
 				//     successfully (Bug C1, May 2026 bughunt).
 				if len(toolCalls) == 0 {
 					emitPostTurn()
-					outChan <- provider.StreamChunk{
+					emitTerminalStreamChunk(ctx, outChan, provider.StreamChunk{
 						Done:       true,
 						StopReason: session.StopReasonEmptyTurn,
 						ModelID:    e.LastModel(),
 						ProviderID: e.LastProvider(),
-					}
+					})
 				}
 				return streamChunkResult{
 					toolCalls:       toolCalls,
@@ -2576,7 +2627,7 @@ func (e *Engine) processStreamChunks(
 			// is strictly more permissive for them without behavioural change.
 			if chunk.ToolCall != nil {
 				e.publishToolReasoningEvent(ctx, sessionID, chunk.ToolCall.Name, responseContent.String())
-				e.forwardToolCallChunk(sessionID, chunk, &thinkingContent, sawTextOrThinking, outChan)
+				e.forwardToolCallChunk(ctx, sessionID, chunk, &thinkingContent, sawTextOrThinking, outChan)
 				sawTextOrThinking = true // the tool_call chunk acts as the turn-open marker
 				toolCalls = append(toolCalls, chunk.ToolCall)
 				continue // keep reading — there may be more tool calls in this turn
@@ -2613,7 +2664,7 @@ func (e *Engine) processStreamChunks(
 			// internal/session/accumulator.go:216-218; this mirrors the
 			// guard so in-flight responseContent stays clean.
 			if chunk.EventType != "" {
-				outChan <- chunk
+				emitStreamChunk(ctx, outChan, chunk)
 				continue
 			}
 			thinkingContent.WriteString(chunk.Thinking)
@@ -2648,7 +2699,7 @@ func (e *Engine) processStreamChunks(
 				// the just-extended message history. SSE consumers
 				// return on Done, so this MUST land first.
 				emitPostTurn()
-				outChan <- chunk
+				emitTerminalStreamChunk(ctx, outChan, chunk)
 				return streamChunkResult{
 					responseContent: responseContent.String(),
 					thinkingContent: thinkingContent.String(),
@@ -2657,7 +2708,7 @@ func (e *Engine) processStreamChunks(
 					contextOverflow: overflowDetected,
 				}
 			}
-			outChan <- chunk
+			emitStreamChunk(ctx, outChan, chunk)
 		}
 	}
 }
@@ -2699,6 +2750,7 @@ func (e *Engine) publishToolReasoningEvent(ctx context.Context, sessionID, toolN
 // main loop's cognitive complexity within the project's gocognit budget.
 //
 // Expected:
+//   - ctx is the turn context guarding the output sends.
 //   - chunk.ToolCall is non-nil (caller must have already dispatched by
 //     chunk shape).
 //   - sawTextOrThinking reports whether any Content or Thinking chunk has
@@ -2709,10 +2761,12 @@ func (e *Engine) publishToolReasoningEvent(ctx context.Context, sessionID, toolN
 //     the tool_use when sawTextOrThinking is false, and appends the same
 //     marker to thinkingContent so the completeResponse path sees the
 //     flushed payload.
-//   - Forwards chunk (with InternalToolCallID stamped) to outChan.
+//   - Forwards chunk (with InternalToolCallID stamped) to outChan unless
+//     the turn context is cancelled first.
 //
 // Returns: result of forwardToolCallChunk.
 func (e *Engine) forwardToolCallChunk(
+	ctx context.Context,
 	sessionID string, chunk provider.StreamChunk, thinkingContent *strings.Builder,
 	sawTextOrThinking bool, outChan chan<- provider.StreamChunk,
 ) {
@@ -2726,11 +2780,11 @@ func (e *Engine) forwardToolCallChunk(
 	// consumer a flushable artefact to anchor their partial-response
 	// commit against.
 	if !sawTextOrThinking {
-		outChan <- provider.StreamChunk{
+		emitStreamChunk(ctx, outChan, provider.StreamChunk{
 			Thinking:   turnOpenMarker,
 			ModelID:    e.LastModel(),
 			ProviderID: e.LastProvider(),
-		}
+		})
 		thinkingContent.WriteString(turnOpenMarker)
 	}
 	// P14: stamp the FlowState-internal id so downstream consumers can
@@ -2739,7 +2793,7 @@ func (e *Engine) forwardToolCallChunk(
 	chunk.InternalToolCallID = e.toolCallCorrelator.InternalID(
 		sessionID, chunk.ToolCallID, chunk.ToolCall.Name, chunk.ToolCall.Arguments,
 	)
-	outChan <- chunk
+	emitStreamChunk(ctx, outChan, chunk)
 }
 
 // InheritsParentToolDeadline reports whether the tool opts out of every
