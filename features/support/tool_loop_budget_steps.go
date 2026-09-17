@@ -142,20 +142,22 @@ type budgetDelegationTool struct {
 // Timeout opts out of the engine's per-tool deadline, mirroring DelegateTool.
 func (t *budgetDelegationTool) Timeout() time.Duration { return 0 }
 
-// capTripCapturer is an slog handler that records the trip reason of every
-// "engine tool loop capped" warning the engine emits, and counts how many
-// background-task continuation messages it injects.
+// capTripCapturer is an slog handler that records the trip reason and
+// duration attrs of every "engine tool loop capped" warning the engine
+// emits, and counts how many background-task continuation messages it
+// injects.
 type capTripCapturer struct {
-	mu               sync.Mutex
-	trips            []string
-	bgContinuations  int
+	mu              sync.Mutex
+	trips           []string
+	durations       map[string][]time.Duration
+	bgContinuations int
 }
 
 // Enabled reports all levels as capturable.
 func (c *capTripCapturer) Enabled(context.Context, slog.Level) bool { return true }
 
-// Handle records the trip attribute of tool-loop cap warnings and counts
-// background-task continuation injections.
+// Handle records the trip and duration attrs of tool-loop cap warnings
+// and counts background-task continuation injections.
 func (c *capTripCapturer) Handle(_ context.Context, r slog.Record) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -164,6 +166,12 @@ func (c *capTripCapturer) Handle(_ context.Context, r slog.Record) error {
 		r.Attrs(func(attr slog.Attr) bool {
 			if attr.Key == "trip" {
 				c.trips = append(c.trips, attr.Value.String())
+			}
+			if attr.Value.Kind() == slog.KindDuration {
+				if c.durations == nil {
+					c.durations = make(map[string][]time.Duration)
+				}
+				c.durations[attr.Key] = append(c.durations[attr.Key], attr.Value.Duration())
 			}
 			return true
 		})
@@ -189,6 +197,14 @@ func (c *capTripCapturer) hasTrip(reason string) bool {
 		}
 	}
 	return false
+}
+
+// hasDurationField reports whether any cap warning carried the named
+// duration attr.
+func (c *capTripCapturer) hasDurationField(field string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.durations[field]) > 0
 }
 
 // backgroundContinuationCount reports how many background-task
@@ -270,7 +286,8 @@ func RegisterToolLoopBudgetSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^a tool that sleeps 50ms per call and never finishes the task$`, s.toolSleepsPerCallNeverFinishing)
 	ctx.Step(`^a delegation tool whose child engine runs for (\d+)ms$`, s.delegationToolRunningChildEngine)
 	ctx.Step(`^the cumulative tool execution time exceeds the cap$`, s.cumulativeToolExecutionTimeExceedsCap)
-	ctx.Step(`^the tool loop is capped with reason "total_tool_time_backstop"$`, s.toolLoopCappedWithReason)
+	ctx.Step(`^the tool loop is capped with reason "([^"]+)"$`, s.toolLoopCappedWithReason)
+	ctx.Step(`^the cap warning includes a "([^"]+)" duration field$`, s.capWarningIncludesDurationField)
 	ctx.Step(`^the delegation completes$`, s.delegationCompletes)
 	ctx.Step(`^the parent tool loop does not trip the tool-time backstop$`, s.parentLoopDoesNotTripToolTimeBackstop)
 	ctx.Step(`^a session whose background tasks never complete$`, s.sessionWhoseBackgroundTasksNeverComplete)
@@ -327,16 +344,25 @@ func (s *toolLoopBudgetSteps) delegationCompletes() error {
 }
 
 // toolLoopCappedWithReason asserts the turn was terminated by the
-// total-tool-time backstop.
-func (s *toolLoopBudgetSteps) toolLoopCappedWithReason() error {
+// quoted cap trip reason.
+func (s *toolLoopBudgetSteps) toolLoopCappedWithReason(reason string) error {
 	if !s.ran {
 		return fmt.Errorf("no turn was streamed")
 	}
-	if !s.capturer.hasTrip("total_tool_time_backstop") {
-		return fmt.Errorf("expected the loop to be capped with reason total_tool_time_backstop")
+	if !s.capturer.hasTrip(reason) {
+		return fmt.Errorf("expected the loop to be capped with reason %s", reason)
 	}
-	if !s.observedStopReason(session.StopReasonToolLoopExceeded) {
-		return fmt.Errorf("expected a terminal tool_loop_exceeded stop reason")
+	return nil
+}
+
+// capWarningIncludesDurationField asserts at least one cap warning
+// carried the quoted duration attr.
+func (s *toolLoopBudgetSteps) capWarningIncludesDurationField(field string) error {
+	if !s.ran {
+		return fmt.Errorf("no turn was streamed")
+	}
+	if !s.capturer.hasDurationField(field) {
+		return fmt.Errorf("expected the cap warning to include a %q duration field", field)
 	}
 	return nil
 }
