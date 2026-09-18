@@ -240,10 +240,30 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 		return nil, err
 	}
 
-	providerChunks, err := e.streamFromProvider(streamCtx, &req)
+	turnWatchdog := newTurnWatchdog(e.toolLoopWatchdog)
+	streamCtx = withTurnWatchdog(streamCtx, turnWatchdog)
+	initialCtx, initialCancel := context.WithCancel(streamCtx)
+	initialWatchDone := make(chan struct{})
+	initialWatchAck := make(chan struct{})
+	go turnWatchdog.watch(sessionID, initialCancel, initialWatchDone, initialWatchAck)
+	providerChunks, err := e.streamFromProvider(initialCtx, &req)
 	e.publishProviderRequestEventCtx(streamCtx, sessionID, req)
+	close(initialWatchDone)
+	<-initialWatchAck
 	if err != nil {
+		initialCancel()
 		e.publishProviderErrorEventCtx(streamCtx, sessionID, "stream_init", &req, err)
+		if turnWatchdog.hasFired() && turnWatchdog.claimTerminal() {
+			outChan := make(chan provider.StreamChunk, streamBufferSize)
+			emitTerminalStreamChunk(initialCtx, outChan, provider.StreamChunk{
+				Done:       true,
+				StopReason: session.StopReasonToolLoopExceeded,
+				ModelID:    e.LastModel(),
+				ProviderID: e.LastProvider(),
+			})
+			close(outChan)
+			return outChan, nil
+		}
 		return nil, err
 	}
 
@@ -265,6 +285,7 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 	go func() {
 		defer close(outChan)
 		defer hbCancel()
+		defer initialCancel()
 		// Emit context_usage first so the chip pivots before any
 		// content/tool/error chunk lands. Forwarded only when the
 		// gate has enough information to compute it (token counter

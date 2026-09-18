@@ -409,7 +409,10 @@ func (w *turnWatchdog) watch(sessionID string, cancel context.CancelFunc, done <
 				return
 			default:
 			}
-			w.fired.Store(true)
+			if !w.fired.CompareAndSwap(false, true) {
+				cancel()
+				return
+			}
 			slog.Warn("engine turn watchdog fired",
 				"session", sessionID,
 				"last_progress_age", stall,
@@ -492,10 +495,13 @@ func (e *Engine) streamWithToolLoop(
 	postTurnUsage postTurnUsageEmitter,
 ) {
 	defer e.evictCompletedBackgroundTasks()
+	watchdog := turnWatchdogFromContext(ctx)
+	if watchdog == nil {
+		watchdog = newTurnWatchdog(e.toolLoopWatchdog)
+		ctx = withTurnWatchdog(ctx, watchdog)
+	}
 	ctx, loopCancel := context.WithCancel(ctx)
 	defer loopCancel()
-	watchdog := newTurnWatchdog(e.toolLoopWatchdog)
-	ctx = withTurnWatchdog(ctx, watchdog)
 	watchdogDone := make(chan struct{})
 	watchdogAck := make(chan struct{})
 	go watchdog.watch(sessionID, loopCancel, watchdogDone, watchdogAck)
