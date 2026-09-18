@@ -249,6 +249,7 @@ func RegisterTurnWatchdogSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^an engine with a turn watchdog of (\d+)(ms|s)$`, s.engineWithTurnWatchdog)
 	ctx.Step(`^a provider that completes one tool round then never opens the next stream$`, s.providerCompletesOneRoundThenStalls)
 	ctx.Step(`^a provider that streams a chunk every (\d+)ms for (\d+)ms and then completes$`, s.providerStreamsChunksThenCompletes)
+	ctx.Step(`^a provider that accepts the initial request but never responds$`, s.providerAcceptsButNeverResponds)
 	ctx.Step(`^a tool that sleeps (\d+)ms per call without ever finishing the task$`, s.toolSleepsPerCallWithoutFinishing)
 	ctx.Step(`^a tool that sleeps (\d+)ms once and then completes the task$`, s.toolSleepsOnceThenCompletes)
 	ctx.Step(`^the tool batch completes and the loop stalls$`, s.toolBatchCompletesAndLoopStalls)
@@ -291,6 +292,15 @@ func (s *turnWatchdogSteps) providerStreamsChunksThenCompletes(intervalMs, total
 		interval: time.Duration(intervalMs) * time.Millisecond,
 		total:    time.Duration(totalMs) * time.Millisecond,
 	}
+	return nil
+}
+
+// providerAcceptsButNeverResponds makes the provider park on its very
+// first Stream call, modelling a provider that accepts the connection
+// but never delivers response headers for the initial request.
+func (s *turnWatchdogSteps) providerAcceptsButNeverResponds() error {
+	s.tools = nil
+	s.provider.blockFrom = 0
 	return nil
 }
 
@@ -443,9 +453,32 @@ func (s *turnWatchdogSteps) runTurn(sessionID, prompt string, guard time.Duratio
 
 	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), session.IDKey{}, sessionID))
 	defer cancel()
-	chunks, err := eng.Stream(ctx, sessionID, prompt)
-	if err != nil {
-		return err
+
+	type streamOutcome struct {
+		chunks <-chan provider.StreamChunk
+		err    error
+	}
+	streamed := make(chan streamOutcome, 1)
+	go func() {
+		chunks, err := eng.Stream(ctx, sessionID, prompt)
+		streamed <- streamOutcome{chunks: chunks, err: err}
+	}()
+
+	var chunks <-chan provider.StreamChunk
+	select {
+	case outcome := <-streamed:
+		if outcome.err != nil {
+			return outcome.err
+		}
+		chunks = outcome.chunks
+	case <-time.After(guard):
+		cancel()
+		s.stalled = true
+		select {
+		case <-streamed:
+		case <-time.After(2 * time.Second):
+		}
+		return nil
 	}
 
 	drained := make(chan struct{})

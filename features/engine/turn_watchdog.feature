@@ -28,3 +28,10 @@ Feature: Turn watchdog cancels stuck tool loops
     When the turn runs
     Then the turn completes naturally
     And the engine log does not contain "engine turn watchdog fired"
+
+  Scenario: A provider that never opens the initial stream trips the watchdog
+    Given an engine with a turn watchdog of 100ms
+    And a provider that accepts the initial request but never responds
+    When the turn runs
+    Then the turn ends with StopReason "StopReasonToolLoopExceeded"
+    And the engine log contains "engine turn watchdog fired"
