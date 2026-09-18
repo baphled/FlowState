@@ -43,16 +43,27 @@ type watchdogTurn struct {
 	toolName string
 }
 
+// watchdogDripScript describes a provider that keeps the stream alive
+// by emitting a content chunk at a fixed interval for a total duration
+// before completing the turn, modelling a long generation.
+type watchdogDripScript struct {
+	interval time.Duration
+	total    time.Duration
+}
+
 // watchdogScriptedProvider replays a script of tool-carrying turns and
 // records how many times the engine called it. Once the call index
 // reaches blockFrom, Stream parks on the context and never opens the
-// next stream, modelling a provider that stalls between rounds.
-// Tool-call arguments vary by call index so the identical-batch
-// fingerprint detector never fires.
+// next stream, modelling a provider that stalls between rounds. A drip
+// script overrides the turn replay: Stream emits chunks at the fixed
+// interval for the total duration and then completes. Tool-call
+// arguments vary by call index so the identical-batch fingerprint
+// detector never fires.
 type watchdogScriptedProvider struct {
 	name      string
 	turns     []watchdogTurn
 	blockFrom int
+	drip      *watchdogDripScript
 
 	mu    sync.Mutex
 	calls int
@@ -61,7 +72,7 @@ type watchdogScriptedProvider struct {
 // Name identifies the provider to the engine.
 func (p *watchdogScriptedProvider) Name() string { return p.name }
 
-// Stream emits the scripted turn, varying tool-call arguments per call, or parks forever once the stall index is reached.
+// Stream emits the scripted turn, varying tool-call arguments per call, parks forever once the stall index is reached, or drips chunks per the drip script.
 func (p *watchdogScriptedProvider) Stream(ctx context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	p.mu.Lock()
 	idx := p.calls
@@ -71,6 +82,29 @@ func (p *watchdogScriptedProvider) Stream(ctx context.Context, _ provider.ChatRe
 	if idx >= p.blockFrom {
 		<-ctx.Done()
 		return nil, ctx.Err()
+	}
+
+	if p.drip != nil {
+		ch := make(chan provider.StreamChunk, 1)
+		go func() {
+			defer close(ch)
+			total := time.NewTimer(p.drip.total)
+			defer total.Stop()
+			tick := time.NewTicker(p.drip.interval)
+			defer tick.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-total.C:
+					ch <- provider.StreamChunk{Content: "All done.", Done: true}
+					return
+				case <-tick.C:
+					ch <- provider.StreamChunk{Content: "tick"}
+				}
+			}
+		}()
+		return ch, nil
 	}
 
 	turn := watchdogTurn{content: "All done."}
@@ -214,6 +248,7 @@ func RegisterTurnWatchdogSteps(ctx *godog.ScenarioContext) {
 	})
 	ctx.Step(`^an engine with a turn watchdog of (\d+)(ms|s)$`, s.engineWithTurnWatchdog)
 	ctx.Step(`^a provider that completes one tool round then never opens the next stream$`, s.providerCompletesOneRoundThenStalls)
+	ctx.Step(`^a provider that streams a chunk every (\d+)ms for (\d+)ms and then completes$`, s.providerStreamsChunksThenCompletes)
 	ctx.Step(`^a tool that sleeps (\d+)ms per call without ever finishing the task$`, s.toolSleepsPerCallWithoutFinishing)
 	ctx.Step(`^a tool that sleeps (\d+)ms once and then completes the task$`, s.toolSleepsOnceThenCompletes)
 	ctx.Step(`^the tool batch completes and the loop stalls$`, s.toolBatchCompletesAndLoopStalls)
@@ -243,6 +278,19 @@ func (s *turnWatchdogSteps) providerCompletesOneRoundThenStalls() error {
 	s.tools = []tool.Tool{quick}
 	s.provider.turns = []watchdogTurn{{toolName: "quick"}}
 	s.provider.blockFrom = 1
+	return nil
+}
+
+// providerStreamsChunksThenCompletes scripts a tool-free turn whose
+// single stream drips a content chunk at the quoted interval for the
+// quoted total duration before completing, modelling a generation that
+// outlives the watchdog window while making constant progress.
+func (s *turnWatchdogSteps) providerStreamsChunksThenCompletes(intervalMs, totalMs int) error {
+	s.tools = nil
+	s.provider.drip = &watchdogDripScript{
+		interval: time.Duration(intervalMs) * time.Millisecond,
+		total:    time.Duration(totalMs) * time.Millisecond,
+	}
 	return nil
 }
 

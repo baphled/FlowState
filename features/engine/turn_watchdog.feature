@@ -21,3 +21,10 @@ Feature: Turn watchdog cancels stuck tool loops
     When the turn runs
     Then the turn completes naturally
     And the engine log does not contain "engine turn watchdog fired"
+
+  Scenario: A flowing stream longer than the watchdog window completes naturally
+    Given an engine with a turn watchdog of 200ms
+    And a provider that streams a chunk every 40ms for 600ms and then completes
+    When the turn runs
+    Then the turn completes naturally
+    And the engine log does not contain "engine turn watchdog fired"
