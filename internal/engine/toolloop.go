@@ -112,6 +112,15 @@ func (e *Engine) contextEstimateOverBudget(ctx context.Context, messages []provi
 	return e.estimateRequestTokens(req) > limit
 }
 
+// watchdogChunkMarkInterval bounds how often flowing stream chunks may
+// stamp the turn watchdog's progress mark. Real streams emit content
+// deltas every few to few-hundred milliseconds; stamping the atomic on
+// every chunk would be pure waste, while stamping at most once per
+// interval keeps the marked-progress granularity far below any
+// realistic window. The effective throttle shrinks to window/4 for
+// small windows so test-scale streams still mark inside the window.
+const watchdogChunkMarkInterval = time.Second
+
 // turnWatchdogKeyType identifies the context key carrying the active
 // turn watchdog so provider-stream open sites can mark progress without
 // widening every retry helper's signature.
@@ -152,20 +161,21 @@ func turnWatchdogFromContext(ctx context.Context) *turnWatchdog {
 }
 
 // turnWatchdog bounds how long a tool-loop turn may run without
-// observable progress. Progress is marked at three points in
-// streamWithToolLoop — each loop iteration start, every provider
-// stream open (inside retryStreamForToolResultWithTools, covering all
-// retryStreamForToolResult* call sites), and every tool batch
-// completion. The stall clock pauses while a tool batch is executing:
-// an in-flight stamp freezes accumulation so a single tool (notably a
-// delegated child) running longer than the window does not
-// false-positive, and the batch-completion mark re-arms the clock.
-// Provider stream waits and post-tool engine code are never paused.
-// When the measured stall reaches the window the watchdog fires: it
-// logs an "engine turn watchdog fired" warning, cancels the turn's
-// derived context, and the unwind paths terminate the stream with the
-// existing StopReasonToolLoopExceeded sentinel. The terminal claim
-// guard guarantees exactly one sentinel Done chunk per turn.
+// observable progress. Progress is marked at loop iteration starts,
+// every provider stream open (inside retryStreamForToolResultWithTools,
+// covering all retryStreamForToolResult* call sites), every tool batch
+// completion, and — throttled to watchdogChunkMarkInterval — every
+// chunk a provider stream delivers. The stall clock pauses while a
+// tool batch is executing: an in-flight stamp freezes accumulation so
+// a single tool (notably a delegated child) running longer than the
+// window does not false-positive, and the batch-completion mark
+// re-arms the clock. Provider stream waits and post-tool engine code
+// are never paused. When the measured stall reaches the window the
+// watchdog fires: it logs an "engine turn watchdog fired" warning,
+// cancels the turn's derived context, and the unwind paths terminate
+// the stream with the existing StopReasonToolLoopExceeded sentinel.
+// The terminal claim guard guarantees exactly one sentinel Done chunk
+// per turn.
 //
 // The watchdog exists because the iteration, duration, and total
 // tool-time backstops only evaluate at iteration boundaries; a turn
@@ -215,6 +225,38 @@ func (w *turnWatchdog) markProgress() {
 		return
 	}
 	w.lastProgress.Store(time.Now().UnixNano())
+}
+
+// markChunkProgress stamps the throttled chunk-arrival progress mark:
+// at most once per watchdogChunkMarkInterval (shrunk to window/4 for
+// small windows), via a compare-and-swap that only ever advances the
+// timestamp. A healthy stream with inter-chunk gaps g therefore sees
+// marks at most (throttle + g) apart, comfortably inside the window,
+// while the atomic write stays off the per-chunk hot path.
+//
+// Expected:
+//   - called from the chunk-consumption path with the receiver armed.
+//
+// Side effects:
+//   - Advances the last-progress timestamp when the throttle elapsed.
+func (w *turnWatchdog) markChunkProgress() {
+	if w == nil || w.window <= 0 {
+		return
+	}
+	throttle := watchdogChunkMarkInterval
+	if floor := w.window / 4; floor < throttle {
+		throttle = floor
+	}
+	now := time.Now().UnixNano()
+	for {
+		last := w.lastProgress.Load()
+		if now-last < int64(throttle) {
+			return
+		}
+		if w.lastProgress.CompareAndSwap(last, now) {
+			return
+		}
+	}
 }
 
 // markToolExecStart stamps the moment the current tool batch began
@@ -2563,6 +2605,8 @@ func (e *Engine) processStreamChunks(
 		idleC = idleTimer.C
 		defer idleTimer.Stop()
 	}
+	chunkWatchdog := turnWatchdogFromContext(ctx)
+	sawFirstChunk := false
 
 	for {
 		select {
@@ -2625,6 +2669,12 @@ func (e *Engine) processStreamChunks(
 					}
 				}
 				idleTimer.Reset(e.streamIdleTimeout)
+			}
+			if sawFirstChunk {
+				chunkWatchdog.markChunkProgress()
+			} else if ok {
+				sawFirstChunk = true
+				chunkWatchdog.markProgress()
 			}
 			if !ok {
 				// Channel close handling splits on pending tool calls:
