@@ -9,10 +9,13 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/coordination"
+	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/learning"
 	"github.com/baphled/flowstate/internal/plan"
 	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/provider/ollama"
+	"github.com/baphled/flowstate/internal/recall"
 )
 
 // buildPersistedPlanFile is the parser-aware constructor that
@@ -393,5 +396,84 @@ var _ = Describe("recall collection resolution", func() {
 		vectorClient, ok := client.(*learning.VectorStoreMemoryClient)
 		Expect(ok).To(BeTrue())
 		Expect(vectorClient.Collection).To(Equal("padded-recall"))
+	})
+})
+
+// Delegate recall dependency propagation.
+//
+// The daemon incident (Sep 2026): the boot broker logs "recall broker
+// wired" while every delegate engine construction logs "recall tools
+// not registered: missing dependencies store=false
+// embedding_provider=false" — the app-owned delegate builder omits the
+// recall dependencies from engine.Config even though the app holds the
+// same instances the primary engine and the broker share. These specs
+// pin that a wired Qdrant config propagates THOSE instances into the
+// delegate engine (pointer identity, no new clients per engine) and
+// that an unwired config leaves the gate closed exactly as before.
+var _ = Describe("delegate recall dependency propagation", func() {
+	var (
+		primaryStore *recall.FileContextStore
+		ollamaProv   *ollama.Provider
+		manifest     = agent.Manifest{ID: "delegate-recall-probe", Name: "Delegate Recall Probe"}
+	)
+
+	BeforeEach(func() {
+		_ = os.Unsetenv(config.QdrantURLEnv)
+		primaryStore = recall.NewEmptyContextStore("nomic-embed-text")
+		var err error
+		ollamaProv, err = ollama.New("http://localhost:11434")
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		_ = os.Unsetenv(config.QdrantURLEnv)
+	})
+
+	It("threads the primary engine's recall store into the delegate engine when qdrant is wired", func() {
+		cfg := &config.AppConfig{}
+		cfg.Qdrant.URL = "http://yaml-qdrant:6333"
+		app := buildAppWithPlugins(nil)
+		app.Config = cfg
+		app.ollamaProvider = ollamaProv
+		app.Engine = engine.New(engine.Config{Store: primaryStore})
+
+		eng, _ := app.createDelegateEngine(manifest, coordination.NewMemoryStore(), nil)
+
+		Expect(eng.ContextStore()).To(BeIdenticalTo(primaryStore),
+			"the delegate must carry the SAME FileContextStore the primary engine and "+
+				"the boot broker share — constructing a fresh store per engine would fork "+
+				"session context and leak connections")
+	})
+
+	It("propagates the app's ollama provider as the delegate embedding provider", func() {
+		cfg := &config.AppConfig{}
+		cfg.Qdrant.URL = "http://yaml-qdrant:6333"
+		app := buildAppWithPlugins(nil)
+		app.Config = cfg
+		app.ollamaProvider = ollamaProv
+		app.Engine = engine.New(engine.Config{Store: primaryStore})
+
+		deps := app.delegateRecallDependencies()
+
+		Expect(deps.store).To(BeIdenticalTo(primaryStore))
+		Expect(deps.embedder).To(BeIdenticalTo(provider.Provider(ollamaProv)),
+			"the delegate embedding provider must be the app-wide ollama instance the "+
+				"boot broker's embedder wraps — never a per-engine embedder")
+	})
+
+	It("keeps delegate recall dependencies nil when qdrant is not configured", func() {
+		app := buildAppWithPlugins(nil)
+		app.Config = &config.AppConfig{}
+		app.ollamaProvider = ollamaProv
+		app.Engine = engine.New(engine.Config{Store: primaryStore})
+
+		deps := app.delegateRecallDependencies()
+
+		Expect(deps.store).To(BeNil())
+		Expect(deps.embedder).To(BeNil(),
+			"with the gate closed the delegate Config must stay lean so engine.New "+
+				"keeps today's closed-gate behaviour byte-for-byte")
+		eng, _ := app.createDelegateEngine(manifest, coordination.NewMemoryStore(), nil)
+		Expect(eng.ContextStore()).To(BeNil())
 	})
 })

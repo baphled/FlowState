@@ -1855,6 +1855,43 @@ func (a *App) BuildDelegateEnginesForTest(excludeID string) map[string]*engine.E
 	return engines
 }
 
+// delegateRecallDependencies resolves the recall dependencies a
+// delegate engine's Config should carry. When the boot broker wired
+// Qdrant (the same qdrantEnabled predicate every Qdrant-dependent init
+// site funnels through), the primary engine's FileContextStore and the
+// app-wide Ollama provider are returned so the delegate's engine.New
+// opens the same recall gate the primary engine opened — using the
+// very instances the broker and the primary share, never fresh
+// per-engine clients. When Qdrant is not configured both values are
+// nil so the effective-config gate stays closed exactly as before.
+//
+// Expected:
+//   - the App carries its constructed primary engine and config.
+//
+// Returns:
+//   - The shared recall store and embedding provider when Qdrant is
+//     wired; nil, nil otherwise.
+//
+// Side effects:
+//   - None.
+func (a *App) delegateRecallDependencies() delegateRecallDeps {
+	if a.Config == nil || !qdrantEnabled(a.Config) || a.Engine == nil {
+		return delegateRecallDeps{}
+	}
+	store := a.Engine.ContextStore()
+	if store == nil || a.ollamaProvider == nil {
+		return delegateRecallDeps{}
+	}
+	return delegateRecallDeps{store: store, embedder: toEmbeddingProvider(a.ollamaProvider)}
+}
+
+// delegateRecallDeps bundles the recall dependencies threaded into a
+// delegate engine's Config.
+type delegateRecallDeps struct {
+	store    *recall.FileContextStore
+	embedder provider.Provider
+}
+
 // buildComplexityResolver constructs a CategoryResolver for chat-model
 // routing in buildDelegateMaps. It attaches the default provider's model
 // lister (so abstract descriptors resolve to real model IDs) and the
@@ -2608,6 +2645,7 @@ func (a *App) createDelegateEngine(
 	}
 
 	delegateCompression := a.buildDelegateCompression(manifest)
+	recallDeps := a.delegateRecallDependencies()
 
 	// Slice 2 wiring: avoid stamping a typed-nil interface on the
 	// engine.Config field. Go interface semantics treat a nil
@@ -2622,12 +2660,14 @@ func (a *App) createDelegateEngine(
 
 	eng := engine.New(engine.Config{
 		ChatProvider:              a.defaultProvider,
+		EmbeddingProvider:         recallDeps.embedder,
 		Registry:                  a.providerRegistry,
 		AgentRegistry:             a.Registry,
 		Manifest:                  manifest,
 		Skills:                    delegateLoadedSkills,
 		Tools:                     a.buildToolsForManifestWithStore(manifest, store),
 		HookChain:                 hookChain,
+		Store:                     recallDeps.store,
 		ChainStore:                chainStore,
 		TokenCounter:              a.delegateTokenCounter(),
 		EventBus:                  bus,

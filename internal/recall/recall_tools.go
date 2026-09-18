@@ -13,16 +13,21 @@ import (
 //
 // The function expects cfg to be a pointer to an engine.Config value. It reads the
 // configuration via reflection so the recall package does not import engine directly.
+// Tools whose names already exist in cfg.Tools are not appended a second time, so an
+// engine whose tool slice already carries recall tools (the delegate construction
+// path) does not advertise duplicate names to the provider.
 //
 // Expected:
 //   - cfg points to a struct with Tools, Store, EmbeddingProvider, TokenCounter, and Manifest fields.
 //
 // Returns:
-//   - The recall tools that were added to cfg.Tools.
+//   - The recall tools present on cfg.Tools after the call (newly appended or
+//     already present).
 //   - Nil when cfg is invalid or the recall dependencies are unavailable.
 //
 // Side effects:
-//   - Appends recall tools to the cfg.Tools slice when the required dependencies are present.
+//   - Appends the recall tools missing from cfg.Tools when the required
+//     dependencies are present.
 func RegisterRecallTools(cfg any) []tool.Tool {
 	configValue := reflect.ValueOf(cfg)
 	if !configValue.IsValid() || configValue.Kind() != reflect.Pointer || configValue.IsNil() {
@@ -53,14 +58,48 @@ func RegisterRecallTools(cfg any) []tool.Tool {
 	}
 
 	factory := NewToolFactory(store, embedder, tokenCounter, model, bus)
-	recallTools := factory.Tools()
+	return appendMissingRecallTools(toolsField, factory.Tools())
+}
+
+// appendMissingRecallTools merges the recall tools into the reflected
+// Tools slice, skipping names already present so an engine whose tool
+// slice already carries recall tools (the delegate construction path)
+// does not advertise duplicate names to the provider.
+//
+// Expected:
+//   - toolsField is a settable slice of tool.Tool values.
+//   - recallTools are the factory-built recall tools to merge.
+//
+// Returns:
+//   - The recall tools present on the slice after the merge (newly
+//     appended or already present).
+//
+// Side effects:
+//   - Replaces the Tools slice contents when any tool is appended.
+func appendMissingRecallTools(toolsField reflect.Value, recallTools []tool.Tool) []tool.Tool {
 	currentTools := make([]tool.Tool, 0, toolsField.Len()+len(recallTools))
+	existingNames := make(map[string]bool, toolsField.Len())
 	for i := range toolsField.Len() {
 		if existing, ok := toolsField.Index(i).Interface().(tool.Tool); ok {
 			currentTools = append(currentTools, existing)
+			existingNames[existing.Name()] = true
 		}
 	}
-	currentTools = append(currentTools, recallTools...)
+
+	registered := make([]tool.Tool, 0, len(recallTools))
+	appended := false
+	for _, recallTool := range recallTools {
+		registered = append(registered, recallTool)
+		if existingNames[recallTool.Name()] {
+			continue
+		}
+		currentTools = append(currentTools, recallTool)
+		appended = true
+	}
+
+	if !appended {
+		return registered
+	}
 
 	updatedTools := reflect.MakeSlice(toolsField.Type(), 0, len(currentTools))
 	for _, registeredTool := range currentTools {
@@ -68,7 +107,7 @@ func RegisterRecallTools(cfg any) []tool.Tool {
 	}
 	toolsField.Set(updatedTools)
 
-	return recallTools
+	return registered
 }
 
 // loadRecallStore extracts a FileContextStore from a reflected field.

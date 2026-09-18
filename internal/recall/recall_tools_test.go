@@ -97,3 +97,38 @@ var _ = Describe("RegisterRecallTools nil handling", func() {
 		Expect(recall.RegisterRecallTools(cfg)).To(BeNil())
 	})
 })
+
+var _ = Describe("RegisterRecallTools duplicate handling", func() {
+	It("does not append a second copy of a recall tool already present in the config", func() {
+		cfg := &engine.Config{}
+		cfg.Store = recall.NewEmptyContextStore("m")
+		cfg.EmbeddingProvider = stubProvider{}
+		cfg.TokenCounter = stubTokenCounter{}
+		cfg.Manifest.ContextManagement.EmbeddingModel = "m"
+		existing := recall.NewGetMessagesTool(cfg.Store)
+		cfg.Tools = []tool.Tool{existing}
+
+		registered := recall.RegisterRecallTools(cfg)
+
+		count := 0
+		for _, configured := range cfg.Tools {
+			if configured.Name() == "get_messages" {
+				count++
+			}
+		}
+		Expect(count).To(Equal(1),
+			"a recall tool already carried by the config must not be duplicated — "+
+				"providers reject duplicate tool names with a 400")
+		Expect(registered).NotTo(BeNil(),
+			"registration must report the recall tools as present even when "+
+				"a name already existed, so engine.New does not log a "+
+				"missing-dependency failure for an already-registered engine")
+		found := false
+		for _, registeredTool := range registered {
+			if registeredTool.Name() == "get_messages" {
+				found = true
+			}
+		}
+		Expect(found).To(BeTrue(), "the pre-existing recall tool must be reported as registered")
+	})
+})
