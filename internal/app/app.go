@@ -1822,6 +1822,39 @@ func (a *App) buildDelegateMaps(
 	return engines, streamers
 }
 
+// BuildDelegateEnginesForTest constructs one delegate engine per
+// registered agent except excludeID, mirroring the production
+// buildDelegateMaps construction path. It exists so BDD wiring steps can
+// observe the engine configurations the app builds for its agents
+// without driving a full delegation turn.
+//
+// Expected:
+//   - excludeID is the coordinating agent whose engine is skipped.
+//   - the App carries a constructed primary engine.
+//
+// Returns:
+//   - A map of agent ID to the constructed delegate engine.
+//   - An empty map when the primary engine is absent.
+//
+// Side effects:
+//   - Constructs an engine per non-excluded agent through
+//     createDelegateEngine, including its harness streamer.
+func (a *App) BuildDelegateEnginesForTest(excludeID string) map[string]*engine.Engine {
+	if a.Engine == nil {
+		return map[string]*engine.Engine{}
+	}
+	store := coordination.NewMemoryStore()
+	engines := make(map[string]*engine.Engine)
+	for _, agentManifest := range a.Registry.List() {
+		if agentManifest.ID == excludeID {
+			continue
+		}
+		targetEngine, _ := a.createDelegateEngine(*agentManifest, store, a.Engine.EventBus())
+		engines[agentManifest.ID] = targetEngine
+	}
+	return engines
+}
+
 // buildComplexityResolver constructs a CategoryResolver for chat-model
 // routing in buildDelegateMaps. It attaches the default provider's model
 // lister (so abstract descriptors resolve to real model IDs) and the

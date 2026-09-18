@@ -18,3 +18,14 @@ Feature: Recall tools follow the effective Qdrant configuration
     When FlowState wires its engine tools with QDRANT_URL unset
     Then the "mcp_vault-rag_query_vault" tool is not registered for the agent
     And the "mcp_memory_open_nodes" tool is not registered for the agent
+
+  Scenario: A wired boot broker propagates recall dependencies to every engine
+    Given a config with a reachable qdrant url and collection
+    When the app constructs engines for its agents
+    Then every constructed engine registers recall tools
+    And no "recall tools not registered" error is logged
+
+  Scenario: Omitting qdrant keeps the recall gate closed
+    Given a config without a qdrant url
+    When the app constructs engines for its agents
+    Then no engine registers recall tools
