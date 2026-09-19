@@ -140,11 +140,11 @@ var _ = Describe("Engine skill guard telemetry", func() {
 			},
 		}
 		cfg := engine.Config{
-			Manifest:      manifest,
-			AgentRegistry: agent.NewRegistry(),
-			Registry:      providerReg,
-			ChatProvider:  &mockProvider{name: "spy"},
-			Recorder:      rec,
+			Manifest:        manifest,
+			AgentRegistry:   agent.NewRegistry(),
+			Registry:        providerReg,
+			ChatProvider:    &mockProvider{name: "spy"},
+			Recorder:        rec,
 			KnownSkillsFunc: func() []string { return knownSkills },
 		}
 		eng := engine.New(cfg)
