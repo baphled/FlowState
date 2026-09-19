@@ -229,10 +229,6 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 		hash:    currentHash,
 		summary: &summaryCopy,
 	}
-	// H1 — a fresh compaction produces a new summary with its own
-	// FilesToRestore. Clear the consumed flag so buildContextWindow
-	// knows to rehydrate against this new summary on the next turn.
-	delete(e.sessionRehydrated, sessionID)
 	e.buildStateMu.Unlock()
 
 	summaryText := autoCompactedSummaryPrefix + string(summaryJSON)
@@ -391,10 +387,6 @@ func (e *Engine) maybeAutoCompactExplicit(ctx context.Context, sessionID string,
 		hash:    currentHash,
 		summary: &summaryCopy,
 	}
-	// H1 — a fresh compaction produces a new summary with its own
-	// FilesToRestore. Clear the consumed flag so buildContextWindow
-	// knows to rehydrate against this new summary on the next turn.
-	delete(e.sessionRehydrated, sessionID)
 	e.buildStateMu.Unlock()
 
 	summaryText := autoCompactedSummaryPrefix + string(summaryJSON)
@@ -418,6 +410,85 @@ func ratioOrForceTrigger(forceTrigger string) string {
 		return "ratio"
 	}
 	return forceTrigger
+}
+
+// midLoopCompactionMinMessages is the floor below which the mid-loop
+// compactor declines to invoke the summariser: a window shorter than
+// this cannot shed a meaningful share of its tokens through summary
+// replacement, so the cheap minimum-trim guard skips the fire outright.
+const midLoopCompactionMinMessages = 6
+
+// midLoopCompactionGuard carries the per-turn hysteresis state for the
+// mid-tool-loop compactor. A guard instance is created once per
+// streamWithToolLoop turn and threaded through ctx, so suppression never
+// leaks across turns or sessions.
+//
+// The hysteresis rule is once-per-turn: after the mid-loop compactor has
+// fired, further proactive mid-loop fires are suppressed for the rest of
+// the turn and the post-fire rebuild reuses the fresh summary instead of
+// re-invoking the summariser. A marginal trim refills the window within
+// a couple of tool batches, so a re-fire cooldown measured in batches
+// would only pace the waste; the next turn's buildContextWindow trigger
+// re-evaluates with fresh material, and genuine provider refusals still
+// escape through the context-overflow recovery path, which fires the
+// summariser directly and is not guarded.
+type midLoopCompactionGuard struct {
+	fired bool
+}
+
+// midLoopCompactionGuardKey is the ctx key carrying the per-turn guard.
+type midLoopCompactionGuardKey struct{}
+
+// withMidLoopCompactionGuard binds the per-turn mid-loop compaction guard
+// onto ctx so every mid-loop fire site shares one hysteresis state.
+//
+// Expected: ctx is the turn context; guard is the turn's guard instance.
+// Returns: the derived context.
+// Side effects: None.
+func withMidLoopCompactionGuard(ctx context.Context, guard *midLoopCompactionGuard) context.Context {
+	return context.WithValue(ctx, midLoopCompactionGuardKey{}, guard)
+}
+
+// midLoopCompactionGuardFromContext returns the turn's mid-loop
+// compaction guard, or nil when ctx carries none (non-tool-loop callers).
+func midLoopCompactionGuardFromContext(ctx context.Context) *midLoopCompactionGuard {
+	guard, _ := ctx.Value(midLoopCompactionGuardKey{}).(*midLoopCompactionGuard)
+	return guard
+}
+
+// midLoopCompactionGuardFired reports whether the turn's mid-loop
+// compactor has already fired. Callers that would re-invoke the
+// summariser on the same material (the context-overflow recovery path)
+// consult this so the once-per-turn hysteresis holds across every fire
+// site; they fall back to their own bounded recovery when it returns
+// true.
+//
+// Expected: ctx is the turn context.
+// Returns: true when the turn's guard exists and has fired.
+// Side effects: None.
+func midLoopCompactionGuardFired(ctx context.Context) bool {
+	guard := midLoopCompactionGuardFromContext(ctx)
+	return guard != nil && guard.fired
+}
+
+// compactionSummaryIdentity derives a stable identity for a compaction
+// summary from the fields rehydration consumes. Identical summaries map
+// to identical identities, so the rehydrate-once flag keyed on this
+// identity never re-injects the same FilesToRestore twice, while a
+// genuinely new summary still rehydrates exactly once.
+//
+// Expected: summary is the compaction summary to identify.
+// Returns: the hex-encoded identity hash.
+// Side effects: None.
+func compactionSummaryIdentity(summary ctxstore.CompactionSummary) string {
+	h := sha256.New()
+	_, _ = h.Write([]byte(summary.Intent))
+	_, _ = h.Write([]byte{0})
+	for _, f := range summary.FilesToRestore {
+		_, _ = h.Write([]byte(f))
+		_, _ = h.Write([]byte{0})
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
 // reuseMemoisedSummary looks up the per-session H2 memo and returns a
@@ -503,11 +574,13 @@ func (e *Engine) getPriorCompactionSummary(sessionID string) *ctxstore.Compactio
 // file contents inserted just before the trailing user turn, or
 // before the tail if no user turn is present.
 //
-// Consume-once semantics: the first call after a fresh compaction
-// reads the files and sets the sessionRehydrated flag; subsequent
-// builds that see the same summary skip the disk I/O and return msgs
-// unchanged. The flag clears when a new compaction produces a new
-// summary (see maybeAutoCompact) and when the session ends.
+// Consume-once-per-summary semantics: the first call after a fresh
+// compaction reads the files and records the summary's identity in the
+// sessionRehydrated flag; subsequent builds that see the SAME summary
+// identity skip the disk I/O and return msgs unchanged. A genuinely new
+// summary (different identity) rehydrates exactly once — repeated fires
+// that reproduce an identical summary no longer refill the window with
+// the same FilesToRestore on every build.
 //
 // Graceful degradation on missing files: the audit flagged re-read
 // of moved/deleted files as a real risk. A read failure on any
@@ -534,9 +607,13 @@ func (e *Engine) maybeRehydrate(sessionID string, msgs []provider.Message) []pro
 	}
 	e.buildStateMu.Lock()
 	summary := e.lastCompactionSummary
-	_, consumed := e.sessionRehydrated[sessionID]
+	consumedIdentity := e.sessionRehydrated[sessionID]
 	e.buildStateMu.Unlock()
-	if summary == nil || consumed || len(summary.FilesToRestore) == 0 {
+	if summary == nil || len(summary.FilesToRestore) == 0 {
+		return msgs
+	}
+	identity := compactionSummaryIdentity(*summary)
+	if identity == consumedIdentity {
 		return msgs
 	}
 
@@ -557,7 +634,7 @@ func (e *Engine) maybeRehydrate(sessionID string, msgs []provider.Message) []pro
 	// turn will not make missing files suddenly present, and re-
 	// reading present files duplicates the content in-window.
 	e.buildStateMu.Lock()
-	e.sessionRehydrated[sessionID] = struct{}{}
+	e.sessionRehydrated[sessionID] = identity
 	e.buildStateMu.Unlock()
 
 	if len(rehydrated) == 0 {

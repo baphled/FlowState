@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -12,6 +13,8 @@ import (
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
+	"github.com/baphled/flowstate/internal/session"
+	"github.com/baphled/flowstate/internal/tool"
 )
 
 // Phase 5b — feedback-aware auto-compaction gate. The soft trigger's
@@ -235,5 +238,98 @@ var _ = Describe("Engine token-budgeted window truncation", func() {
 
 		Expect(rebuilt[len(rebuilt)-1]).To(Equal(provider.Message{Role: "user", Content: "rebuild this request"}),
 			"the rebuilt slice must preserve the original user prompt instead of dropping the newest message")
+	})
+})
+
+// hysteresisTokenCounter is a deterministic TokenCounter whose Count
+// tracks text length so a bulky tool-result wave crosses the low
+// ModelLimit budget after a handful of batches.
+type hysteresisTokenCounter struct{ limit int }
+
+// Count reports one token per four bytes of text.
+func (c *hysteresisTokenCounter) Count(text string) int { return len(text) / 4 }
+
+// ModelLimit returns the deliberately low model budget.
+func (c *hysteresisTokenCounter) ModelLimit(string) int { return c.limit }
+
+// sliverSummariser counts its invocations and returns a bulky summary
+// whose payload is deliberately large relative to the compacted range,
+// modelling a compaction that only ever trims a sliver of the window.
+type sliverSummariser struct {
+	calls int
+}
+
+// Summarise returns a valid but bulky compaction summary and records
+// the invocation.
+func (s *sliverSummariser) Summarise(_ context.Context, _, _ string, _ []provider.Message) (string, error) {
+	s.calls++
+	summary := ctxstore.CompactionSummary{
+		Intent:    "continue the bounded session invariant scenario: " + strings.Repeat("detail ", 260),
+		NextSteps: []string{"resume the bounded turn: " + strings.Repeat("step ", 60)},
+	}
+	data, err := json.Marshal(summary)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+var _ = Describe("Mid-loop compaction hysteresis", func() {
+	It("fires the summariser at most once per turn when the achievable trim is marginal", func() {
+		echo := &executableMockTool{
+			name:       "echoer",
+			execResult: tool.Result{Output: strings.Repeat("gate-window-payload ", 90)},
+		}
+		registry := tool.NewRegistry()
+		registry.Register(echo)
+		registry.SetPermission(echo.Name(), tool.Allow)
+
+		store, err := recall.NewFileContextStore(GinkgoT().TempDir()+"/ctx.json", "hysteresis-model")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(store.Close)
+
+		summariser := &sliverSummariser{}
+		cfg := ctxstore.DefaultCompressionConfig()
+		cfg.AutoCompaction.Enabled = true
+		cfg.AutoCompaction.Threshold = 0.75
+
+		prov := &repeatingToolProvider{
+			name: "hysteresis-sliver",
+			call: &provider.ToolCall{
+				ID:        "call_echo",
+				Name:      "echoer",
+				Arguments: map[string]any{"x": 1},
+			},
+		}
+		eng := engine.New(engine.Config{
+			ChatProvider: prov,
+			Manifest: agent.Manifest{
+				ID:   "hysteresis-agent",
+				Name: "Hysteresis Agent",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"echoer"},
+				},
+			},
+			Tools:             []tool.Tool{echo},
+			ToolRegistry:      registry,
+			Store:             store,
+			TokenCounter:      &hysteresisTokenCounter{limit: 12000},
+			AutoCompactor:     ctxstore.NewAutoCompactor(summariser),
+			CompressionConfig: cfg,
+		})
+		eng.SetMaxToolLoopIterationsForTest(40)
+		eng.SetMaxIdenticalToolCallsForTest(0)
+		eng.SetMaxSameToolPatternCallsForTest(0)
+		eng.SetMaxToolLoopDurationForTest(0)
+
+		const sessionID = "hysteresis-session"
+		ctx := context.WithValue(context.Background(), session.IDKey{}, sessionID)
+		chunks, err := eng.Stream(ctx, sessionID, "Go")
+		Expect(err).NotTo(HaveOccurred())
+		for range chunks {
+		}
+
+		Expect(summariser.calls).To(BeNumerically("<=", 1),
+			"a marginal trim must not re-fire the mid-loop summariser within the turn (ran %d times)", summariser.calls)
 	})
 })

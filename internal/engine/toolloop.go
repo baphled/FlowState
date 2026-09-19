@@ -500,6 +500,7 @@ func (e *Engine) streamWithToolLoop(
 		watchdog = newTurnWatchdog(e.toolLoopWatchdog)
 		ctx = withTurnWatchdog(ctx, watchdog)
 	}
+	ctx = withMidLoopCompactionGuard(ctx, &midLoopCompactionGuard{})
 	ctx, loopCancel := context.WithCancel(ctx)
 	defer loopCancel()
 	watchdogDone := make(chan struct{})
@@ -999,12 +1000,12 @@ func (e *Engine) streamWithToolLoop(
 						"overflow_retry", overflowRetries,
 						"max_overflow_retries", maxOverflowRetries,
 					)
-					forceManifest := e.Manifest()
-					forceBudget := e.ModelContextLimit()
-					compacted := ""
-					if forceBudget > 0 {
-						compacted = e.maybeAutoCompactExplicit(ctx, sessionID, &forceManifest, forceBudget, "tool_result_wave", messages)
-					}
+				forceManifest := e.Manifest()
+				forceBudget := e.ModelContextLimit()
+				compacted := ""
+				if forceBudget > 0 && !midLoopCompactionGuardFired(ctx) {
+					compacted = e.maybeAutoCompactExplicit(ctx, sessionID, &forceManifest, forceBudget, "tool_result_wave", messages)
+				}
 					// Part 3: accept the compacted window only when it
 					// meaningfully reduces the estimated token load —
 					// a compaction that produces no reduction will not
@@ -1514,12 +1515,12 @@ func (e *Engine) streamWithToolLoop(
 		// than the swollen pre-compaction prefix. The no-fire branch
 		// returns false and we skip the reload — buildContextWindow
 		// is not free.
-		compacted := e.emitMidToolLoopRefresh(ctx, sessionID, outChan, messages)
-		if compacted {
-			if rebuilt := e.rebuildContextWindowAfterMidLoopCompaction(ctx, sessionID, messages); rebuilt != nil {
-				messages = rebuilt
-			}
+	compacted := e.emitMidToolLoopRefresh(ctx, sessionID, outChan, messages)
+	if compacted {
+		if rebuilt := e.rebuildContextWindowAfterMidLoopCompaction(ctx, sessionID, messages); rebuilt != nil {
+			messages = rebuilt
 		}
+	}
 
 		attempt++
 
@@ -1619,24 +1620,24 @@ func (e *Engine) streamWithToolLoop(
 				"identical_run", identicalRun,
 				"same_tool_run", sameToolPatternRun,
 				"elapsed", elapsed,
-			"wall_elapsed", wallElapsed,
-			"non_delegated_tool_time", nonDelegatedToolExecDuration,
-			"max_iterations", e.maxToolLoopIterations,
-			"max_duration", e.maxToolLoopDuration,
-			"max_identical", e.maxIdenticalToolCalls,
-			"max_same_tool", e.maxSameToolPatternCalls,
-		)
-		if durationTripped || totalToolTimeTripped {
-			slog.Info("turn time budget exhausted, ending turn through forced summary",
-				"session", sessionID,
-				"trip", reason,
+				"wall_elapsed", wallElapsed,
+				"non_delegated_tool_time", nonDelegatedToolExecDuration,
+				"max_iterations", e.maxToolLoopIterations,
+				"max_duration", e.maxToolLoopDuration,
+				"max_identical", e.maxIdenticalToolCalls,
+				"max_same_tool", e.maxSameToolPatternCalls,
 			)
-			if forcedSummaryTerminal(reason) {
-				continue
+			if durationTripped || totalToolTimeTripped {
+				slog.Info("turn time budget exhausted, ending turn through forced summary",
+					"session", sessionID,
+					"trip", reason,
+				)
+				if forcedSummaryTerminal(reason) {
+					continue
+				}
+				return
 			}
-			return
-		}
-		todosAllComplete := false
+			todosAllComplete := false
 			if e.todoStore != nil {
 				if hasMore, _ := e.hasIncompleteTodos(sessionID); !hasMore {
 					todosAllComplete = true

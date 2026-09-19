@@ -161,14 +161,13 @@ type Engine struct {
 	// does not rob session B of its own ContextCompactedEvent and
 	// per-session metrics bump.
 	sessionCompactionMemo map[string]sessionCompactionMemoEntry
-	// sessionRehydrated tracks which sessions have already consumed
-	// their compaction summary's FilesToRestore, so the next turn
-	// after a compaction rehydrates exactly once rather than re-
-	// reading the same files on every subsequent build. The set
-	// invalidates when the compaction summary changes (a fresh
-	// compaction produced a new summary with its own FilesToRestore)
-	// and on session.ended.
-	sessionRehydrated map[string]struct{}
+	// sessionRehydrated maps each session to the identity of the
+	// compaction summary whose FilesToRestore it has already consumed,
+	// so the next turn after a compaction rehydrates exactly once per
+	// summary identity rather than re-reading the same files on every
+	// subsequent build. A genuinely new summary (different identity)
+	// rehydrates again; an identical re-fire does not refill the window.
+	sessionRehydrated map[string]string
 
 	// seededSessions tracks which session IDs have had their historical
 	// messages loaded into e.store via SeedHistory. Once a session is
@@ -1171,7 +1170,7 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		sessionSplitters:                 make(map[string]*sessionSplitterEntry),
 		sessionCompressionMetrics:        make(map[string]*ctxstore.CompressionMetrics),
 		sessionCompactionMemo:            make(map[string]sessionCompactionMemoEntry),
-		sessionRehydrated:                make(map[string]struct{}),
+		sessionRehydrated:                make(map[string]string),
 		seededSessions:                   make(map[string]struct{}),
 		sessionLookup:                    cfg.SessionLookup,
 		permissionPrompter:               cfg.PermissionPrompter,
@@ -3694,7 +3693,13 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 		gateProxTrigger = "gate_proximity"
 	}
 
-	compactedSummary := e.maybeAutoCompact(ctx, sessionID, &manifestCopy, tokenBudget, gateProxTrigger)
+	compactedSummary := ""
+	if guard := midLoopCompactionGuardFromContext(ctx); guard != nil && guard.fired {
+		compactedSummary = e.lastCompactionSummaryText()
+	}
+	if compactedSummary == "" {
+		compactedSummary = e.maybeAutoCompact(ctx, sessionID, &manifestCopy, tokenBudget, gateProxTrigger)
+	}
 
 	result := e.assembleBuildResult(buildResultInputs{
 		manifest:         &manifestCopy,
@@ -3928,6 +3933,16 @@ func (e *Engine) emitMidToolLoopRefreshExplicit(
 	if tokenBudget <= 0 {
 		return false
 	}
+	guard := midLoopCompactionGuardFromContext(ctx)
+	if guard != nil && guard.fired {
+		slog.Debug("mid-loop compaction already fired this turn; suppressing re-fire",
+			"session", sessionID,
+		)
+		return false
+	}
+	if len(liveMessages) < midLoopCompactionMinMessages {
+		return false
+	}
 	forceTrigger := ""
 	if e.shouldCompactExplicitForGate(manifestCopy, "", tokenBudget, tools, liveMessages) {
 		forceTrigger = "tool_result_wave"
@@ -3946,7 +3961,13 @@ func (e *Engine) emitMidToolLoopRefreshExplicit(
 		return false
 	}
 	summary := e.maybeAutoCompactExplicit(ctx, sessionID, manifestCopy, tokenBudget, forceTrigger, liveMessages)
-	return summary != ""
+	if summary == "" {
+		return false
+	}
+	if guard != nil {
+		guard.fired = true
+	}
+	return true
 }
 
 // tryEmitContextUsage writes a context_usage StreamChunk onto outChan
