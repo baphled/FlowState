@@ -1234,27 +1234,27 @@ func (e *Engine) streamWithToolLoop(
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
 			}
-		deliveryStopped := false
-		switch maybeRetryDelivery(func() {
-			deliveryStopped = true
-		}) {
-		case deliveryRetryContinue:
-			continue
-		case deliveryRetryStop:
-			e.completeResponse(ctx, sessionID, responseContent, thinkingContent)
-			return
-		}
-		if deliveryStopped {
-			if completeAfterTodoCheck("delivery retry exhausted after stream truncation") {
+			deliveryStopped := false
+			switch maybeRetryDelivery(func() {
+				deliveryStopped = true
+			}) {
+			case deliveryRetryContinue:
+				continue
+			case deliveryRetryStop:
+				e.completeResponse(ctx, sessionID, responseContent, thinkingContent)
+				return
+			}
+			if deliveryStopped {
+				if completeAfterTodoCheck("delivery retry exhausted after stream truncation") {
+					continue
+				}
+				return
+			}
+			if completeAfterTodoCheck("turn end without todo continuation") {
 				continue
 			}
 			return
 		}
-		if completeAfterTodoCheck("turn end without todo continuation") {
-			continue
-		}
-		return
-	}
 
 		if len(result.toolCalls) == 0 {
 			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore {
@@ -1554,10 +1554,11 @@ func (e *Engine) streamWithToolLoop(
 		//      never hit the iteration ceiling. Added June 2026.
 		//   4. Same-tool-pattern detector: counts consecutive
 		//      continuations where the SAME set of tool-call names
-		//      recurs when the assistant text is empty/whitespace;
-		//      trips at maxSameToolPatternCalls. Catches stalls where varied
-		//      tool args dodge the fingerprint and the low count
-		//      dodges the iteration backstop.
+		//      recurs, regardless of the assistant response text
+		//      content — narration alongside an identical tool batch is
+		//      not progress; trips at maxSameToolPatternCalls. Catches
+		//      stalls where varied tool args dodge the fingerprint and
+		//      the low count dodges the iteration backstop.
 		// Zero/negative on any field disables its respective check.
 		iterations++
 		watchdog.recordIterations(iterations)
@@ -1572,7 +1573,7 @@ func (e *Engine) streamWithToolLoop(
 		}
 
 		if e.maxSameToolPatternCalls > 0 {
-			if strings.TrimSpace(result.responseContent) == "" && len(result.toolCalls) > 0 {
+			if len(result.toolCalls) > 0 {
 				names := make([]string, len(result.toolCalls))
 				for i, tc := range result.toolCalls {
 					names[i] = tc.Name

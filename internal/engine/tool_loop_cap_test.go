@@ -602,9 +602,54 @@ var _ = Describe("Engine tool-loop cap", func() {
 					tripped = true
 				}
 			}
-			Expect(tripped).To(BeTrue(),
-				"3 consecutive empty-text same-tool-name turns must trip the detector")
+		Expect(tripped).To(BeTrue(),
+			"3 consecutive empty-text same-tool-name turns must trip the detector")
+	})
+
+	It("trips after 3 consecutive narrated same-tool responses", func() {
+		alpha := &executableMockTool{name: "alpha", execResult: tool.Result{Output: "a"}}
+
+		registry := tool.NewRegistry()
+		registry.Register(alpha)
+		registry.SetPermission(alpha.Name(), tool.Allow)
+
+		prov := &scriptedChunkProvider{
+			name: "same-tool-narrated-spin",
+			script: []scriptedBatch{
+				{content: "Let me check that again.", toolCalls: []*provider.ToolCall{{ID: "c1", Name: "alpha", Arguments: map[string]any{"i": 0}}}},
+				{content: "Still checking.", toolCalls: []*provider.ToolCall{{ID: "c2", Name: "alpha", Arguments: map[string]any{"i": 1}}}},
+				{content: "Checking once more.", toolCalls: []*provider.ToolCall{{ID: "c3", Name: "alpha", Arguments: map[string]any{"i": 2}}}},
+				{content: "Checking again.", toolCalls: []*provider.ToolCall{{ID: "c4", Name: "alpha", Arguments: map[string]any{"i": 3}}}},
+			},
+		}
+
+		eng := engine.New(engine.Config{
+			ChatProvider: prov,
+			Manifest:     manifest,
+			Tools:        []tool.Tool{alpha},
+			ToolRegistry: registry,
 		})
+		eng.SetMaxIdenticalToolCallsForTest(0)
+		eng.SetMaxToolLoopIterationsForTest(0)
+		eng.SetMaxToolLoopDurationForTest(0)
+		eng.SetMaxSameToolPatternCallsForTest(3)
+
+		chunks, err := eng.Stream(context.Background(), "loop-cap-agent", "Go")
+		Expect(err).NotTo(HaveOccurred())
+
+		received, closed := drain(chunks)
+		Expect(closed).To(BeTrue(),
+			"the same-tool-pattern detector must terminate the narrated turn")
+
+		var tripped bool
+		for _, c := range received {
+			if c.Done && c.StopReason == session.StopReasonToolLoopExceeded {
+				tripped = true
+			}
+		}
+		Expect(tripped).To(BeTrue(),
+			"3 consecutive narrated same-tool-name turns must trip the detector — narration is not progress")
+	})
 
 		It("does NOT trip on 2 consecutive varied-tool turns", func() {
 			alpha := &executableMockTool{name: "alpha", execResult: tool.Result{Output: "a"}}
