@@ -578,18 +578,20 @@ func (e *Engine) streamWithToolLoop(
 	consecutiveSameToolContinuations := 0
 	const maxRejectedToolCalls = 3
 	consecutiveRejectedToolCalls := 0
-	workedSinceContinuation := false
 	delegationGraceUsed := false
 	finalResponseGraceUsed := false
 	forcedSummaryUsed := false
 	skillsGuardRejectionLoop := false
+	// updateTodoContinuationProgress applies the continuation progress rule:
+	// progress means the todo snapshot changed since the last continuation
+	// decision. Tool activity alone does not count — repeated identical
+	// tool batches with an unchanged todo list are not progress.
 	updateTodoContinuationProgress := func(current []todo.Item) {
-		if !workedSinceContinuation && slices.Equal(lastTodoContinuationSnapshot, current) {
+		if slices.Equal(lastTodoContinuationSnapshot, current) {
 			noProgressContinuations++
 		} else {
 			noProgressContinuations = 0
 		}
-		workedSinceContinuation = false
 		lastTodoContinuationSnapshot = append([]todo.Item(nil), current...)
 	}
 	checkIncompleteTodosBeforeComplete := func(
@@ -1369,9 +1371,6 @@ func (e *Engine) streamWithToolLoop(
 		// when execution is skipped — otherwise the persisted session is
 		// indistinguishable from the model having replied with no tool use at
 		// all (session-1776623141279480382).
-		if len(result.toolCalls) > 0 {
-			workedSinceContinuation = true
-		}
 		e.storeAssistantToolUseBatch(result.toolCalls, result.responseContent)
 
 		// Permission checks are sequential and fast — run them before launching
@@ -1724,26 +1723,26 @@ func (e *Engine) streamWithToolLoop(
 					}
 					return
 				}
-			// Guard: consecutive same-tool-pattern caps across continuation
-			// boundaries means the model is stuck repeating the same tool.
-			// One recovery is allowed; a second consecutive cap is a pattern —
-			// stop through the forced-summary terminal without injecting
-			// another continuation.
-			if reason == "same_tool_pattern" {
-				consecutiveSameToolContinuations++
-				if consecutiveSameToolContinuations >= 2 {
-					slog.Warn("consecutive same-tool-pattern caps, stopping",
-						"session", sessionID,
-						"consecutive", consecutiveSameToolContinuations,
-					)
-					if forcedSummaryTerminal("consecutive same-tool-pattern caps") {
-						continue
+				// Guard: consecutive same-tool-pattern caps across continuation
+				// boundaries means the model is stuck repeating the same tool.
+				// One recovery is allowed; a second consecutive cap is a pattern —
+				// stop through the forced-summary terminal without injecting
+				// another continuation.
+				if reason == "same_tool_pattern" {
+					consecutiveSameToolContinuations++
+					if consecutiveSameToolContinuations >= 2 {
+						slog.Warn("consecutive same-tool-pattern caps, stopping",
+							"session", sessionID,
+							"consecutive", consecutiveSameToolContinuations,
+						)
+						if forcedSummaryTerminal("consecutive same-tool-pattern caps") {
+							continue
+						}
+						return
 					}
-					return
+				} else {
+					consecutiveSameToolContinuations = 0
 				}
-			} else {
-				consecutiveSameToolContinuations = 0
-			}
 				if todoContinuationCount >= maxTodoContinuations {
 					slog.Warn("todo continuation budget exhausted after tool loop cap",
 						"session", sessionID,

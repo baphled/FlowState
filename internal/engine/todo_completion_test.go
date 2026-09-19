@@ -166,7 +166,7 @@ var _ = Describe("Engine todo-completion continuation", func() {
 				"engine should have retried and received the provider's default completion response")
 		})
 
-		It("treats executed tool calls as progress when the todo list is unchanged", func() {
+		It("does not treat unchanged-todo tool activity as continuation progress", func() {
 			alpha := &executableMockTool{name: "alpha", execResult: tool.Result{Output: "a"}}
 			beta := &executableMockTool{name: "beta", execResult: tool.Result{Output: "b"}}
 			registry := tool.NewRegistry()
@@ -222,9 +222,6 @@ var _ = Describe("Engine todo-completion continuation", func() {
 				drained <- true
 			}()
 
-			Eventually(func() int { return prov.callCount() }, "5s", "100ms").Should(BeNumerically(">=", 10),
-				"tool-working turns between stalls must reset the no-progress counter — the three-stall gate must not trip while the model keeps executing tools")
-
 			closed := false
 			select {
 			case <-drained:
@@ -233,9 +230,14 @@ var _ = Describe("Engine todo-completion continuation", func() {
 				closed = false
 			}
 			Expect(closed).To(BeTrue(),
-				"channel must close after the post-script stalls exhaust")
+				"channel must close after the no-progress guard stops the turn")
+			Expect(prov.callCount()).To(BeNumerically("<=", 9),
+				"tool activity with an unchanged todo snapshot is not progress — the no-progress guard must bound the turn")
+			Expect(alpha.execCalled).To(BeTrue())
+			Expect(beta.execCalled).To(BeTrue())
 			for _, c := range received {
-				Expect(c.StopReason).NotTo(Equal(session.StopReasonToolLoopExceeded))
+				Expect(c.StopReason).NotTo(Equal(session.StopReasonToolLoopExceeded),
+					"the forced-summary round must let the model close the turn naturally")
 			}
 		})
 	})

@@ -288,7 +288,7 @@ var _ = Describe("Engine todo continuation budget", func() {
 	}
 
 	Context("when incomplete todos remain and the model keeps working without finishing them", func() {
-		It("terminates the turn within a single Stream invocation after twenty todo continuations", func() {
+		It("terminates the turn within a single Stream invocation after three no-progress continuations", func() {
 			manifest := agent.Manifest{
 				ID:   "todo-continuation-budget-agent",
 				Name: "Todo Continuation Budget Agent",
@@ -345,11 +345,11 @@ var _ = Describe("Engine todo continuation budget", func() {
 			reason, sawDone := terminalStopReason(received)
 			Expect(sawDone).To(BeTrue(), "expected a terminal Done chunk")
 			Expect(reason).To(Equal(session.StopReasonToolLoopExceeded),
-				"exhausting the todo continuation budget must stamp tool_loop_exceeded")
-			Expect(prov.callCount()).To(BeNumerically(">=", 40),
-				"the turn-local guards must sustain twenty todo continuations before tripping")
-			Expect(prov.callCount()).To(BeNumerically("<=", 60),
-				"the turn-local guards must stop the cycle far below unbounded spinning")
+				"the no-progress guard must stamp tool_loop_exceeded on the capped turn")
+			Expect(prov.callCount()).To(BeNumerically(">=", 8),
+				"the no-progress guard must allow three continuations before tripping")
+			Expect(prov.callCount()).To(BeNumerically("<=", 12),
+				"tool activity with an unchanged todo snapshot is not progress — the guard must stop the cycle early")
 		})
 	})
 })
