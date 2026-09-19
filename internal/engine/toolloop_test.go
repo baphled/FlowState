@@ -488,11 +488,74 @@ var _ = Describe("Engine capped-turn terminal persistence", func() {
 
 		assertPersistedTerminal(store)
 	})
-})
 
-// drainChunks collects every chunk from the channel and reports whether
-// the channel closed. Bounded by the passed duration so a stuck stream
-// fails the spec rather than hanging the suite.
+	It("does not reset the turn time budget when continuations are injected", func() {
+		const sessionID = "monotonic-time-budget-session"
+		todoStore := todo.NewMemoryStore()
+		Expect(todoStore.Set(sessionID, []todo.Item{
+			{Content: "never done", Status: "pending", Priority: "high"},
+		})).NotTo(HaveOccurred())
+
+		slowpoke := &delayedExecutableMockTool{
+			name:       "spinner",
+			delay:      40 * time.Millisecond,
+			execResult: tool.Result{Output: "spun"},
+		}
+		registry := tool.NewRegistry()
+		registry.Register(slowpoke)
+		registry.SetPermission(slowpoke.Name(), tool.Allow)
+
+		store, err := recall.NewFileContextStore(GinkgoT().TempDir()+"/ctx.json", "terminal-model")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(store.Close)
+
+		prov := &repeatingToolProvider{
+			name: "monotonic-time-budget",
+			call: &provider.ToolCall{
+				ID:        "call_spinner",
+				Name:      "spinner",
+				Arguments: map[string]any{"x": 1},
+			},
+		}
+		eng := engine.New(engine.Config{
+			ChatProvider: prov,
+			Manifest: agent.Manifest{
+				ID:   "terminal-persistence-agent",
+				Name: "Terminal Persistence Agent",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"spinner"},
+				},
+			},
+			Tools:        []tool.Tool{slowpoke},
+			ToolRegistry: registry,
+			TodoStore:    todoStore,
+			Store:        store,
+		})
+		eng.SetMaxToolLoopIterationsForTest(0)
+		eng.SetMaxIdenticalToolCallsForTest(0)
+		eng.SetMaxSameToolPatternCallsForTest(0)
+		eng.SetMaxToolLoopDurationForTest(150 * time.Millisecond)
+
+		ctx := context.WithValue(context.Background(), session.IDKey{}, sessionID)
+		start := time.Now()
+		chunks, err := eng.Stream(ctx, sessionID, "Go")
+		Expect(err).NotTo(HaveOccurred())
+
+		received, closed := drain(chunks)
+		elapsed := time.Since(start)
+		Expect(closed).To(BeTrue(), "the time-budget terminal must end the turn")
+
+		Expect(elapsed).To(BeNumerically("<", 300*time.Millisecond),
+			"continuation injection must not reset the duration budget — the whole turn must finish within twice the 150ms cap (took %s)", elapsed)
+
+		reason, sawDone := terminalStopReason(received)
+		Expect(sawDone).To(BeTrue(), "expected a terminal Done chunk")
+		Expect(reason).To(Equal(session.StopReasonToolLoopExceeded),
+			"the monotonic time budget must stamp tool_loop_exceeded")
+
+		assertPersistedTerminal(store)
+	})
+})
 func drainCooldownChunks(chunks <-chan provider.StreamChunk, within time.Duration) ([]provider.StreamChunk, bool) {
 	var received []provider.StreamChunk
 	done := make(chan struct{})

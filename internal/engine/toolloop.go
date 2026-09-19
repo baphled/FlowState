@@ -527,15 +527,20 @@ func (e *Engine) streamWithToolLoop(
 	const maxBackgroundContinuations = 20
 
 	attempt := 0
-	// loopStart records the wall clock when the tool loop began. Compared
-	// against maxToolLoopDuration in the cap check below to provide a
-	// cumulative time budget backstop alongside the iteration ceiling.
+	// loopStart is the monotonic turn clock, captured once at tool-loop
+	// entry and never reset — continuation injections, grace rounds, and
+	// forced-summary rounds all draw from the SAME turn-level time
+	// budget. Compared against maxToolLoopDuration in the cap check below
+	// so a duration cap that a continuation window could previously reset
+	// is now a real upper bound on the whole turn.
 	loopStart := time.Now()
-	// toolExecDuration accumulates time spent executing tools across
-	// iterations within the current budget window. It is subtracted from
-	// the wall-clock elapsed when checking maxToolLoopDuration so that
-	// slow tools do not consume the duration budget meant to cap
-	// provider round-trips and retry logic.
+	// toolExecDuration accumulates time spent executing tools across the
+	// WHOLE turn (monotonic, never reset). It is subtracted from the
+	// wall-clock elapsed when checking maxToolLoopDuration so that slow
+	// tools do not consume the duration budget meant to cap provider
+	// round-trips and retry logic; nonDelegatedToolExecDuration mirrors
+	// it for the total-tool-time backstop and excludes delegation-shaped
+	// calls that inherit the parent deadline.
 	var toolExecDuration time.Duration
 	var nonDelegatedToolExecDuration time.Duration
 	// Turn-local tool-loop guard state. Declared here (never on the Engine)
@@ -870,8 +875,6 @@ func (e *Engine) streamWithToolLoop(
 		lastFingerprint = ""
 		sameToolPatternRun = 0
 		lastToolNames = ""
-		loopStart = time.Now()
-		toolExecDuration, nonDelegatedToolExecDuration = 0, 0
 		e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 		return true
 	}
@@ -1166,7 +1169,6 @@ func (e *Engine) streamWithToolLoop(
 							lastFingerprint = ""
 							sameToolPatternRun = 0
 							lastToolNames = ""
-							toolExecDuration, nonDelegatedToolExecDuration = 0, 0
 							e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 							continue
 						} else if stop {
@@ -1228,8 +1230,6 @@ func (e *Engine) streamWithToolLoop(
 				lastFingerprint = ""
 				sameToolPatternRun = 0
 				lastToolNames = ""
-				loopStart = time.Now()
-				toolExecDuration, nonDelegatedToolExecDuration = 0, 0
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
 			}
@@ -1293,7 +1293,6 @@ func (e *Engine) streamWithToolLoop(
 							lastFingerprint = ""
 							sameToolPatternRun = 0
 							lastToolNames = ""
-							toolExecDuration, nonDelegatedToolExecDuration = 0, 0
 							e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 							continue
 						} else if stop {
@@ -1354,8 +1353,6 @@ func (e *Engine) streamWithToolLoop(
 				lastFingerprint = ""
 				sameToolPatternRun = 0
 				lastToolNames = ""
-				loopStart = time.Now()
-				toolExecDuration, nonDelegatedToolExecDuration = 0, 0
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
 			}
@@ -1622,14 +1619,24 @@ func (e *Engine) streamWithToolLoop(
 				"identical_run", identicalRun,
 				"same_tool_run", sameToolPatternRun,
 				"elapsed", elapsed,
-				"wall_elapsed", wallElapsed,
-				"non_delegated_tool_time", nonDelegatedToolExecDuration,
-				"max_iterations", e.maxToolLoopIterations,
-				"max_duration", e.maxToolLoopDuration,
-				"max_identical", e.maxIdenticalToolCalls,
-				"max_same_tool", e.maxSameToolPatternCalls,
+			"wall_elapsed", wallElapsed,
+			"non_delegated_tool_time", nonDelegatedToolExecDuration,
+			"max_iterations", e.maxToolLoopIterations,
+			"max_duration", e.maxToolLoopDuration,
+			"max_identical", e.maxIdenticalToolCalls,
+			"max_same_tool", e.maxSameToolPatternCalls,
+		)
+		if durationTripped || totalToolTimeTripped {
+			slog.Info("turn time budget exhausted, ending turn through forced summary",
+				"session", sessionID,
+				"trip", reason,
 			)
-			todosAllComplete := false
+			if forcedSummaryTerminal(reason) {
+				continue
+			}
+			return
+		}
+		todosAllComplete := false
 			if e.todoStore != nil {
 				if hasMore, _ := e.hasIncompleteTodos(sessionID); !hasMore {
 					todosAllComplete = true
@@ -1661,8 +1668,6 @@ func (e *Engine) streamWithToolLoop(
 				lastFingerprint = ""
 				sameToolPatternRun = 0
 				lastToolNames = ""
-				loopStart = time.Now()
-				toolExecDuration, nonDelegatedToolExecDuration = 0, 0
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
 			}
@@ -1704,7 +1709,6 @@ func (e *Engine) streamWithToolLoop(
 							lastFingerprint = ""
 							sameToolPatternRun = 0
 							lastToolNames = ""
-							toolExecDuration, nonDelegatedToolExecDuration = 0, 0
 							e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 							continue
 						} else if stop {
@@ -1781,8 +1785,6 @@ func (e *Engine) streamWithToolLoop(
 				lastFingerprint = ""
 				sameToolPatternRun = 0
 				lastToolNames = ""
-				loopStart = time.Now() // reset wall-clock budget for continuation
-				toolExecDuration, nonDelegatedToolExecDuration = 0, 0
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
 			} else if activeTasks := e.activeBackgroundTaskCount(sessionID); activeTasks > 0 {
@@ -1823,8 +1825,6 @@ func (e *Engine) streamWithToolLoop(
 				lastFingerprint = ""
 				sameToolPatternRun = 0
 				lastToolNames = ""
-				loopStart = time.Now()
-				toolExecDuration, nonDelegatedToolExecDuration = 0, 0
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
 			} else if !finalResponseGraceUsed && !durationTripped && !totalToolTimeTripped && delegationGraceUsed &&
@@ -1855,8 +1855,6 @@ func (e *Engine) streamWithToolLoop(
 				lastFingerprint = ""
 				sameToolPatternRun = 0
 				lastToolNames = ""
-				loopStart = time.Now()
-				toolExecDuration, nonDelegatedToolExecDuration = 0, 0
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
 			} else if !forcedSummaryUsed {
