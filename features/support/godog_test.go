@@ -110,6 +110,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterTurnWatchdogSteps(ctx)
 	RegisterTurnCompletesSteps(ctx)
 	RegisterSessionBoundedSteps(ctx)
+	RegisterSkillsGuaranteeSteps(ctx)
 	registerOpenAICompatClassificationSteps(ctx)
 	registerTurnDeadlineSteps(ctx)
 	RegisterBashProcessKillSteps(ctx, &BashProcessKillSteps{})

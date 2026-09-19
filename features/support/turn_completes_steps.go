@@ -220,6 +220,19 @@ func (c *invariantLogCapturer) messageCount(message string) int {
 	return c.messages[message]
 }
 
+// messageSnapshot copies the captured message-to-count map. Assertion
+// failures quote it so the invariants ledger records the exact log
+// surface the engine exposed (or failed to expose) during a scenario.
+func (c *invariantLogCapturer) messageSnapshot() map[string]int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	snapshot := make(map[string]int, len(c.messages))
+	for message, count := range c.messages {
+		snapshot[message] = count
+	}
+	return snapshot
+}
+
 // continuationInjectionCount reports how many records were continuation
 // injections, matched on the shared "injecting ... continuation" phrasing
 // of every injection log site.
