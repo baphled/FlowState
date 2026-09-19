@@ -456,6 +456,38 @@ var _ = Describe("Engine capped-turn terminal persistence", func() {
 
 		assertPersistedTerminal(store)
 	})
+
+	It("stops consecutive same-tool-pattern caps via the forced summary without further continuations", func() {
+		prov := &repeatingToolProvider{
+			name: "consecutive-same-tool-stop",
+			call: &provider.ToolCall{
+				ID:        "call_spinner",
+				Name:      "spinner",
+				Arguments: map[string]any{"x": 1},
+			},
+		}
+		eng, store, sessionID := newTerminalPersistenceEngine(prov)
+		eng.SetMaxToolLoopIterationsForTest(0)
+		eng.SetMaxIdenticalToolCallsForTest(0)
+		eng.SetMaxSameToolPatternCallsForTest(3)
+		eng.SetMaxToolLoopDurationForTest(0)
+
+		ctx := context.WithValue(context.Background(), session.IDKey{}, sessionID)
+		chunks, err := eng.Stream(ctx, sessionID, "Go")
+		Expect(err).NotTo(HaveOccurred())
+
+		received, closed := drain(chunks)
+		Expect(closed).To(BeTrue(), "the consecutive same-tool stop must terminate the turn")
+
+		Expect(prov.callCount()).To(BeNumerically("<=", 12),
+			"the second consecutive same-tool-pattern cap must be terminal — no third todo continuation may be injected")
+
+		reason, sawDone := terminalStopReason(received)
+		Expect(sawDone).To(BeTrue(), "expected a terminal Done chunk")
+		Expect(reason).To(Equal(session.StopReasonToolLoopExceeded))
+
+		assertPersistedTerminal(store)
+	})
 })
 
 // drainChunks collects every chunk from the channel and reports whether

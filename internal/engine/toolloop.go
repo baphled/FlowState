@@ -1724,24 +1724,26 @@ func (e *Engine) streamWithToolLoop(
 					}
 					return
 				}
-				// Guard: consecutive same-tool-pattern caps across continuation
-				// boundaries means the model is stuck repeating the same tool.
-				// One recovery is allowed; a second consecutive cap is a pattern — stop.
-				if reason == "same_tool_pattern" {
-					consecutiveSameToolContinuations++
-					if consecutiveSameToolContinuations >= 2 {
-						slog.Warn("consecutive same-tool-pattern caps, stopping",
-							"session", sessionID,
-							"consecutive", consecutiveSameToolContinuations,
-						)
-						if doneAfterTodoCheck("consecutive same-tool-pattern caps") {
-							continue
-						}
-						return
+			// Guard: consecutive same-tool-pattern caps across continuation
+			// boundaries means the model is stuck repeating the same tool.
+			// One recovery is allowed; a second consecutive cap is a pattern —
+			// stop through the forced-summary terminal without injecting
+			// another continuation.
+			if reason == "same_tool_pattern" {
+				consecutiveSameToolContinuations++
+				if consecutiveSameToolContinuations >= 2 {
+					slog.Warn("consecutive same-tool-pattern caps, stopping",
+						"session", sessionID,
+						"consecutive", consecutiveSameToolContinuations,
+					)
+					if forcedSummaryTerminal("consecutive same-tool-pattern caps") {
+						continue
 					}
-				} else {
-					consecutiveSameToolContinuations = 0
+					return
 				}
+			} else {
+				consecutiveSameToolContinuations = 0
+			}
 				if todoContinuationCount >= maxTodoContinuations {
 					slog.Warn("todo continuation budget exhausted after tool loop cap",
 						"session", sessionID,
