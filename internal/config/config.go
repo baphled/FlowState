@@ -44,6 +44,27 @@ type DelegationConfig struct {
 	RequireCoordinationWrites bool `json:"require_coordination_writes" yaml:"require_coordination_writes"`
 }
 
+// SessionLimitsConfig bounds a single session's lifetime. Whichever
+// bound trips first wins; the engine refuses further turns on the
+// session with an honest terminal (a persisted assistant message naming
+// the exhausted budget plus an error terminal chunk — no new StopReason
+// sentinel). Zero on a field inherits the engine's compiled-in default;
+// a negative value disables that bound.
+type SessionLimitsConfig struct {
+	// MaxSessionTurns bounds the number of streamed turns a session may
+	// consume. Zero inherits the engine default (40); negative disables.
+	MaxSessionTurns int `json:"max_session_turns" yaml:"max_session_turns"`
+	// MaxSessionMessages bounds the number of persisted messages a
+	// session may accumulate. Zero inherits the engine default (1000);
+	// negative disables.
+	MaxSessionMessages int `json:"max_session_messages" yaml:"max_session_messages"`
+	// MaxSessionAge bounds the wall-clock age of a session measured from
+	// its first streamed turn, as a Go duration string ("24h", "30m").
+	// Empty inherits the engine default (24h); "off" or a negative
+	// duration disables.
+	MaxSessionAge string `json:"max_session_age" yaml:"max_session_age"`
+}
+
 // AppConfig holds the complete application configuration.
 type AppConfig struct {
 	Providers ProvidersConfig `json:"providers" yaml:"providers"`
@@ -172,6 +193,15 @@ type AppConfig struct {
 	// inherit the compiled-in default (200). Complex multi-wave swarm
 	// sessions are the typical reason to raise this.
 	ToolLoopIterations int `json:"tool_loop_iterations,omitempty" yaml:"tool_loop_iterations,omitempty"`
+
+	// SessionLimits bounds a single session's lifetime: streamed turns,
+	// persisted messages, and wall-clock age. Whichever bound trips
+	// first refuses further turns on the session with an honest terminal
+	// (persisted assistant message naming the exhausted budget). Zero on
+	// every field inherits the engine's compiled-in defaults (40 turns,
+	// 1000 messages, 24h); negative values disable the corresponding
+	// bound. See SessionLimitsConfig for the field-level contract.
+	SessionLimits SessionLimitsConfig `json:"session_limits" yaml:"session_limits"`
 
 	// PlanLocation overrides the directory FlowState reads/writes plan
 	// markdown files from. Resolution rules (see ResolvedPlanLocation):
@@ -364,6 +394,38 @@ func (c *AppConfig) ParsedToolLoopWatchdog() time.Duration {
 		return 0
 	}
 	return parseDurationField(c.ToolLoopWatchdog, "tool_loop_watchdog")
+}
+
+// ParsedSessionMaxAge returns the parsed value of
+// SessionLimits.MaxSessionAge. Empty inherits the engine's compiled-in
+// default (24h → reported as 0 so the engine resolves it); "off" or a
+// negative duration disables the bound (reported as a negative
+// duration). Invalid values log a WARN once and inherit the default.
+//
+// Returns:
+//   - The parsed MaxSessionAge duration, 0 when unset/invalid/nil
+//     receiver (engine default), or negative when disabled.
+//
+// Side effects:
+//   - Logs a WARN once when the configured value fails to parse.
+//
+// Expected: parameters for ParsedSessionMaxAge.
+func (c *AppConfig) ParsedSessionMaxAge() time.Duration {
+	if c == nil {
+		return 0
+	}
+	raw := strings.TrimSpace(c.SessionLimits.MaxSessionAge)
+	if raw == "" {
+		return 0
+	}
+	if strings.EqualFold(raw, "off") || raw == "-" {
+		return -1
+	}
+	parsed := parseDurationField(raw, "session_limits.max_session_age")
+	if parsed < 0 {
+		return parsed
+	}
+	return parsed
 }
 
 // ParsedToolLoopIterations returns the configured max tool-loop iteration

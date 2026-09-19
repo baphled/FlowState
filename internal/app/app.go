@@ -590,6 +590,7 @@ func configureApplicationAfterBuild(
 		app.completionOrchestrator = engine.NewCompletionOrchestrator(
 			app.backgroundManager, app.sessionManager, eng.EventBus(), nil,
 		)
+		app.completionOrchestrator.SetSessionLifetimeChecker(eng.SessionLifetimeExceeded)
 		app.completionOrchestrator.Start()
 		if app.API != nil {
 			app.API.SetCompletionOrchestrator(app.completionOrchestrator)
@@ -836,6 +837,13 @@ type engineParams struct {
 	// a single turn's tool-loop continuations. Zero inherits the
 	// engine's compiled-in default (200).
 	toolLoopIterations int
+	// sessionMaxTurns / sessionMaxMessages / sessionMaxAge mirror
+	// cfg.SessionLimits. Zero inherits the engine's compiled-in
+	// defaults (40 turns, 1000 messages, 24h); negative disables the
+	// corresponding bound.
+	sessionMaxTurns    int
+	sessionMaxMessages int
+	sessionMaxAge      time.Duration
 	// systemPromptBudget mirrors cfg.ResolvedSystemPromptBudget(). Zero
 	// inherits the engine's compiled-in default
 	// (ctxstore.DefaultModelContextFallback, 16K). Forwarded to
@@ -1172,6 +1180,9 @@ func buildEngineParams(in engineAssemblyParams) engineParams {
 		toolLoopDuration:        in.setup.cfg.ParsedToolLoopDuration(),
 		toolLoopWatchdog:        in.setup.cfg.ParsedToolLoopWatchdog(),
 		toolLoopIterations:      in.setup.cfg.ParsedToolLoopIterations(),
+		sessionMaxTurns:         in.setup.cfg.SessionLimits.MaxSessionTurns,
+		sessionMaxMessages:      in.setup.cfg.SessionLimits.MaxSessionMessages,
+		sessionMaxAge:           in.setup.cfg.ParsedSessionMaxAge(),
 		systemPromptBudget:      in.setup.cfg.ResolvedSystemPromptBudget(),
 		todoStrictMode:          in.setup.cfg.Features.TodoStrictMode,
 		todoStore:               in.tools.todoStore,
@@ -1691,6 +1702,9 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 		MaxToolLoopDuration:       params.toolLoopDuration,
 		ToolLoopWatchdog:          params.toolLoopWatchdog,
 		MaxToolLoopIterations:     params.toolLoopIterations,
+		MaxSessionTurns:           params.sessionMaxTurns,
+		MaxSessionMessages:        params.sessionMaxMessages,
+		MaxSessionAge:             params.sessionMaxAge,
 		SystemPromptBudget:        params.systemPromptBudget,
 		TodoStrictMode:            params.todoStrictMode,
 		TodoStore:                 params.todoStore,
@@ -2684,6 +2698,9 @@ func (a *App) createDelegateEngine(
 		MaxToolLoopDuration:       a.Config.ParsedToolLoopDuration(),
 		ToolLoopWatchdog:          a.Config.ParsedToolLoopWatchdog(),
 		MaxToolLoopIterations:     a.Config.ParsedToolLoopIterations(),
+		MaxSessionTurns:           a.Config.SessionLimits.MaxSessionTurns,
+		MaxSessionMessages:        a.Config.SessionLimits.MaxSessionMessages,
+		MaxSessionAge:             a.Config.ParsedSessionMaxAge(),
 		SystemPromptBudget:        a.Config.ResolvedSystemPromptBudget(),
 		TodoStrictMode:            a.Config.TodoStrictModeEnabled(),
 		TodoStore:                 a.TodoStore,

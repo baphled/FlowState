@@ -272,6 +272,15 @@ type Engine struct {
 	// enforce the hard gate. Protected by e.mu.
 	sessionComplexity map[string]TaskComplexity
 
+	// Session lifetime bound state. maxSessionTurns, maxSessionMessages,
+	// and maxSessionAge are the resolved bounds (zero disables);
+	// sessionLifetime tracks per-session turn counts and first-turn
+	// timestamps. Protected by e.mu.
+	maxSessionTurns    int
+	maxSessionMessages int
+	maxSessionAge      time.Duration
+	sessionLifetime    map[string]*sessionLifetimeEntry
+
 	// knownSkillsFunc is the optional catalogue accessor consulted by
 	// executeToolCall before the generic tool-not-found fallback. Item
 	// 3 of the Agent Runtime Quality plan (May 2026). Nil disables the
@@ -700,6 +709,24 @@ type Config struct {
 	// iterations, the turn terminates regardless of wall-clock duration.
 	// Zero falls back to the compiled-in default (200).
 	MaxToolLoopIterations int
+
+	// MaxSessionTurns bounds the number of streamed turns a single
+	// session may consume before the engine refuses further turns with
+	// an honest terminal. Zero falls back to the compiled-in default
+	// (40); negative disables the bound.
+	MaxSessionTurns int
+
+	// MaxSessionMessages bounds the number of persisted messages a
+	// session may accumulate before further turns are refused. Zero
+	// falls back to the compiled-in default (1000); negative disables
+	// the bound.
+	MaxSessionMessages int
+
+	// MaxSessionAge bounds the wall-clock age of a session, measured
+	// from its first streamed turn, before further turns are refused.
+	// Zero falls back to the compiled-in default (24h); negative
+	// disables the bound.
+	MaxSessionAge time.Duration
 
 	// CategoryResolver, when non-nil, is consulted at Stream time to
 	// source caller-controlled chat parameters (Temperature, MaxTokens,
@@ -1185,6 +1212,10 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		deliveryToolCalled:               make(map[string]bool),
 		sessionManifests:                 make(map[string]*agent.Manifest),
 		sessionComplexity:                make(map[string]TaskComplexity),
+		maxSessionTurns:                  resolveMaxSessionTurns(cfg),
+		maxSessionMessages:               resolveMaxSessionMessages(cfg),
+		maxSessionAge:                    resolveMaxSessionAge(cfg),
+		sessionLifetime:                  make(map[string]*sessionLifetimeEntry),
 		knownSkillsFunc:                  cfg.KnownSkillsFunc,
 		lastUsagePayload:                 make(map[string]string),
 		sessionOutputTokens:              make(map[string]int64),

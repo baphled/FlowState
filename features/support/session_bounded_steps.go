@@ -41,6 +41,7 @@ type sessionBoundedSteps struct {
 	storeDir          string
 	maxIter           int
 	maxDuration       time.Duration
+	maxSessionTurns   int
 	tokenCounter      *engineStepTokenCounter
 	summariser        *boundedSliverSummariser
 	compressionConfig *ctxstore.CompressionConfig
@@ -195,6 +196,7 @@ func (s *sessionBoundedSteps) reset(sessionID string) {
 	s.store = store
 	s.maxIter = 0
 	s.maxDuration = 0
+	s.maxSessionTurns = 0
 	s.tokenCounter = nil
 	s.summariser = nil
 	s.compressionConfig = nil
@@ -248,6 +250,7 @@ func (s *sessionBoundedSteps) buildEngine() *engine.Engine {
 		Store:                 s.store,
 		MaxToolLoopIterations: maxIter,
 		MaxToolLoopDuration:   s.maxDuration,
+		MaxSessionTurns:       s.maxSessionTurns,
 		ToolOutputRetention:   -1,
 	}
 	if s.tokenCounter != nil {
@@ -325,9 +328,12 @@ func (s *sessionBoundedSteps) modelKeepsCallingToolsTodoUnchanged() error {
 
 // modelEndsTurnWithoutFinishingTodos scripts a text-only answer that
 // never addresses the pending todo, so every turn is auto-continued by
-// the todo machinery until a guard stops it.
+// the todo machinery until a guard stops it. The lifetime bound is
+// armed tight (four turns) so the scenario's six streamed turns
+// observably trip it.
 func (s *sessionBoundedSteps) modelEndsTurnWithoutFinishingTodos() error {
 	s.provider.turns = []invariantTurn{{content: "Done for now."}}
+	s.maxSessionTurns = 4
 	return nil
 }
 

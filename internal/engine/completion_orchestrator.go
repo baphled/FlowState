@@ -100,6 +100,12 @@ type CompletionOrchestrator struct {
 	// delivered to the subscriber instead of the broker.
 	subsMu       sync.RWMutex
 	rePromptSubs map[string]chan<- (<-chan provider.StreamChunk)
+
+	// sessionLifetimeExceeded, when non-nil, reports whether a session has
+	// spent its lifetime budget. The orchestrator skips re-prompts for such
+	// sessions so auto-continuation respects the bound. Nil (unset) keeps
+	// the pre-bound behaviour.
+	sessionLifetimeExceeded func(sessionID string) bool
 }
 
 // NewCompletionOrchestrator creates a new orchestrator. Call Start() to begin
@@ -137,6 +143,19 @@ func NewCompletionOrchestrator(
 		maxRePrompts:    3,
 		rePromptSubs:    make(map[string]chan<- (<-chan provider.StreamChunk)),
 	}
+}
+
+// SetSessionLifetimeChecker wires the session lifetime predicate the
+// orchestrator consults before re-prompting. A session whose lifetime
+// budget is spent is never auto-continued, regardless of its remaining
+// re-prompt depth.
+//
+// Expected: checker reports whether the named session has spent its
+// lifetime budget; nil clears the check.
+// Returns: None.
+// Side effects: replaces the orchestrator's lifetime checker.
+func (o *CompletionOrchestrator) SetSessionLifetimeChecker(checker func(sessionID string) bool) {
+	o.sessionLifetimeExceeded = checker
 }
 
 // Start subscribes to background task completion and failure events on the
@@ -251,6 +270,12 @@ func (o *CompletionOrchestrator) drainLoop() {
 // Returns: result of processCompletion.
 func (o *CompletionOrchestrator) processCompletion(evt completionEvent) {
 	if o.backgroundMgr.ActiveCountForSession(evt.sessionID) > 0 {
+		return
+	}
+
+	if o.sessionLifetimeExceeded != nil && o.sessionLifetimeExceeded(evt.sessionID) {
+		slog.Warn("completion orchestrator: session lifetime budget spent; skipping re-prompt",
+			"session_id", evt.sessionID)
 		return
 	}
 

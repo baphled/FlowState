@@ -98,6 +98,11 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 	}
 	e.mu.Unlock()
 
+	if limitReason := e.sessionLifetimeReason(sessionID); limitReason != "" {
+		return e.streamSessionLimitTerminal(ctx, sessionID, message, limitReason), nil
+	}
+	e.recordSessionTurn(sessionID)
+
 	// Resolve THIS call's manifest. When the caller supplies an
 	// agentID, we look it up in the registry directly so the
 	// snapshot we bind into ctx reflects the requested agent
