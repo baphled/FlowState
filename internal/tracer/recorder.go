@@ -73,6 +73,29 @@ type Recorder interface {
 	// negative readings would lie to dashboards. Implementations
 	// should clamp at zero defensively.
 	DecPermissionPending()
+
+	// RecordSkillGuardAutoInjection records one successful deterministic
+	// auto-injection by the skills-first guard: declared active skill
+	// content was resolvable and baked into the session, so the guarded
+	// call proceeded without rejection. Call site: engine
+	// autoInjectAlwaysActiveSkills on the inject path.
+	RecordSkillGuardAutoInjection()
+
+	// RecordSkillGuardRejection records one skills-first guard
+	// rejection: the model attempted a non-skill_load tool call before
+	// loading its declared active skills and no content was injectable.
+	// Paired with the circuit-breaker counter so a rising rejection rate
+	// with zero injections means the resolver is misconfigured.
+	// Call site: engine recordSkillGuardRejection.
+	RecordSkillGuardRejection()
+
+	// RecordSkillGuardCircuitBreakerTrip records one circuit-breaker
+	// trip: the guard rejected SkillGuardCircuitBreakerThreshold
+	// consecutive calls without compliance and auto-satisfied the gate.
+	// A non-zero rate means models are routinely ignoring the
+	// skill_load-first contract.
+	// Call site: engine tripSkillGuardCircuitBreaker.
+	RecordSkillGuardCircuitBreakerTrip()
 }
 
 // NoopRecorder is a Recorder that discards all metrics. Useful for testing.
@@ -182,3 +205,25 @@ func (n *NoopRecorder) IncPermissionPending() {}
 // Expected: parameters for DecPermissionPending.
 // Returns: result of DecPermissionPending.
 func (n *NoopRecorder) DecPermissionPending() {}
+
+// RecordSkillGuardAutoInjection discards the skill-guard auto-injection.
+// Side effects: none.
+//
+// Expected: parameters for RecordSkillGuardAutoInjection.
+// Returns: result of RecordSkillGuardAutoInjection.
+func (n *NoopRecorder) RecordSkillGuardAutoInjection() {}
+
+// RecordSkillGuardRejection discards the skill-guard rejection.
+// Side effects: none.
+//
+// Expected: parameters for RecordSkillGuardRejection.
+// Returns: result of RecordSkillGuardRejection.
+func (n *NoopRecorder) RecordSkillGuardRejection() {}
+
+// RecordSkillGuardCircuitBreakerTrip discards the skill-guard
+// circuit-breaker trip.
+// Side effects: none.
+//
+// Expected: parameters for RecordSkillGuardCircuitBreakerTrip.
+// Returns: result of RecordSkillGuardCircuitBreakerTrip.
+func (n *NoopRecorder) RecordSkillGuardCircuitBreakerTrip() {}

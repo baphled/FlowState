@@ -376,4 +376,8 @@ func (s *spyRecorder) RecordCompressionOverheadTokens(agentID string, overheadTo
 func (s *spyRecorder) IncPermissionPending() {}
 func (s *spyRecorder) DecPermissionPending() {}
 
+func (s *spyRecorder) RecordSkillGuardAutoInjection()      {}
+func (s *spyRecorder) RecordSkillGuardRejection()          {}
+func (s *spyRecorder) RecordSkillGuardCircuitBreakerTrip() {}
+
 var _ tracer.Recorder = (*spyRecorder)(nil)

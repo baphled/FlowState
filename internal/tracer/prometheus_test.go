@@ -322,3 +322,25 @@ func gaugeValue(reg *prometheus.Registry, name string, labels prometheus.Labels)
 	Fail(fmt.Sprintf("gauge metric %q with labels %v not found", name, labels))
 	return 0
 }
+
+var _ = Describe("Skill guard counters", func() {
+	It("exposes the three skill guard counters under their documented names", func() {
+		guardReg := prometheus.NewRegistry()
+		guardRec := tracer.NewPrometheusRecorder(guardReg)
+		guardRec.RecordSkillGuardAutoInjection()
+		guardRec.RecordSkillGuardRejection()
+		guardRec.RecordSkillGuardRejection()
+		guardRec.RecordSkillGuardCircuitBreakerTrip()
+
+		counterValue := func(name string) float64 {
+			family := gatherMetricFamily(guardReg, name)
+			metrics := family.GetMetric()
+			Expect(metrics).To(HaveLen(1))
+			return metrics[0].GetCounter().GetValue()
+		}
+
+		Expect(counterValue("flowstate_skill_guard_auto_injections_total")).To(Equal(float64(1)))
+		Expect(counterValue("flowstate_skill_guard_rejections_total")).To(Equal(float64(2)))
+		Expect(counterValue("flowstate_skill_guard_circuit_breaker_trips_total")).To(Equal(float64(1)))
+	})
+})

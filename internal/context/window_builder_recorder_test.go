@@ -46,8 +46,12 @@ func (r *recordingRecorder) RecordCompressionTokensSaved(agentID string, tokensS
 	r.savedCalls = append(r.savedCalls, savedObservation{agentID: agentID, tokensSaved: tokensSaved})
 }
 func (r *recordingRecorder) RecordCompressionOverheadTokens(string, int) {}
-func (r *recordingRecorder) IncPermissionPending()                       {}
-func (r *recordingRecorder) DecPermissionPending()                       {}
+
+func (r *recordingRecorder) RecordSkillGuardAutoInjection()      {}
+func (r *recordingRecorder) RecordSkillGuardRejection()          {}
+func (r *recordingRecorder) RecordSkillGuardCircuitBreakerTrip() {}
+func (r *recordingRecorder) IncPermissionPending()               {}
+func (r *recordingRecorder) DecPermissionPending()               {}
 
 var _ = Describe("WindowBuilder Recorder wiring", func() {
 	// WithRecorder_ReturnsReceiver asserts the fluent setter follows

@@ -59,6 +59,9 @@ func (e *Engine) autoInjectAlwaysActiveSkills(sessionID string) bool {
 		e.store.Append(provider.Message{Role: "system", Content: sb.String()})
 	}
 	e.markSkillLoadCalled(sessionID)
+	if e.recorder != nil {
+		e.recorder.RecordSkillGuardAutoInjection()
+	}
 	slog.Info("skills-first guard auto-injected always-active skills",
 		"session", sessionID,
 		"skills", len(skills),
@@ -81,6 +84,9 @@ func (e *Engine) tripSkillGuardCircuitBreaker(sessionID string) {
 		e.store.Append(provider.Message{Role: "system", Content: notice})
 	}
 	e.markSkillLoadCalled(sessionID)
+	if e.recorder != nil {
+		e.recorder.RecordSkillGuardCircuitBreakerTrip()
+	}
 	slog.Warn("skills-first guard circuit breaker tripped — auto-satisfying gate",
 		"session", sessionID,
 		"threshold", SkillGuardCircuitBreakerThreshold,
@@ -95,9 +101,13 @@ func (e *Engine) tripSkillGuardCircuitBreaker(sessionID string) {
 // Side effects: mutates the skillGuardRejections map.
 func (e *Engine) recordSkillGuardRejection(sessionID string) int {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	e.skillGuardRejections[sessionID]++
-	return e.skillGuardRejections[sessionID]
+	count := e.skillGuardRejections[sessionID]
+	e.mu.Unlock()
+	if e.recorder != nil {
+		e.recorder.RecordSkillGuardRejection()
+	}
+	return count
 }
 
 // skillGuardRejectionCount returns the per-session consecutive rejection count.

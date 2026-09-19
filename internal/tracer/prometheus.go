@@ -25,6 +25,14 @@ type prometheusRecorder struct {
 	// scope for v1 and would inflate cardinality without a clear
 	// operations story.
 	permissionPending prometheus.Gauge
+	// Skill-guard telemetry (turn-lifecycle RC10b). Label-less
+	// daemon-wide counters mirroring permissionPending's cardinality
+	// stance: the skills-first guard is a per-session mechanism, but
+	// the operations story is aggregate (a rising rejection rate with
+	// flat auto-injections means the resolver is misconfigured).
+	skillGuardAutoInjections      prometheus.Counter
+	skillGuardRejections          prometheus.Counter
+	skillGuardCircuitBreakerTrips prometheus.Counter
 }
 
 // NewPrometheusRecorder returns a Recorder backed by Prometheus metrics registered with reg.
@@ -104,8 +112,30 @@ func NewPrometheusRecorder(reg prometheus.Registerer) Recorder {
 				"PermissionPrompter when it Registers a request; decremented " +
 				"on EventPermissionGranted, EventPermissionDenied, or " +
 				"EventPermissionTimeout. A sustained non-zero reading past " +
-				"the 5-minute auto-deny timeout suggests the prompter or " +
-				"the operator-grant HTTP handler is broken.",
+				"the 5-minute auto-deny timeout suggests the prompter or the " +
+				"operator-grant HTTP handler is broken.",
+		}),
+		skillGuardAutoInjections: promauto.With(reg).NewCounter(prometheus.CounterOpts{
+			Name: "flowstate_skill_guard_auto_injections_total",
+			Help: "Total successful deterministic auto-injections by the " +
+				"skills-first guard: declared active skill content was resolvable " +
+				"and baked into the session, so the guarded tool call proceeded " +
+				"without rejection.",
+		}),
+		skillGuardRejections: promauto.With(reg).NewCounter(prometheus.CounterOpts{
+			Name: "flowstate_skill_guard_rejections_total",
+			Help: "Total skills-first guard rejections: a non-skill_load tool " +
+				"call arrived before the declared active skills were loaded and no " +
+				"content was injectable. A rising rate with flat " +
+				"auto_injections means the skill resolver is misconfigured.",
+		}),
+		skillGuardCircuitBreakerTrips: promauto.With(reg).NewCounter(prometheus.CounterOpts{
+			Name: "flowstate_skill_guard_circuit_breaker_trips_total",
+			Help: "Total skills-first guard circuit-breaker trips: the guard " +
+				"rejected the configured threshold of consecutive calls without " +
+				"model compliance and auto-satisfied the gate. A non-zero rate " +
+				"means models are routinely ignoring the skill_load-first " +
+				"contract.",
 		}),
 	}
 }
@@ -243,4 +273,42 @@ func (p *prometheusRecorder) IncPermissionPending() {
 // Returns: result of DecPermissionPending.
 func (p *prometheusRecorder) DecPermissionPending() {
 	p.permissionPending.Dec()
+}
+
+// RecordSkillGuardAutoInjection increments the skill-guard
+// auto-injection counter.
+//
+// Side effects:
+//   - Increments the flowstate_skill_guard_auto_injections_total
+//     counter.
+//
+// Expected: parameters for RecordSkillGuardAutoInjection.
+// Returns: result of RecordSkillGuardAutoInjection.
+func (p *prometheusRecorder) RecordSkillGuardAutoInjection() {
+	p.skillGuardAutoInjections.Inc()
+}
+
+// RecordSkillGuardRejection increments the skill-guard rejection
+// counter.
+//
+// Side effects:
+//   - Increments the flowstate_skill_guard_rejections_total counter.
+//
+// Expected: parameters for RecordSkillGuardRejection.
+// Returns: result of RecordSkillGuardRejection.
+func (p *prometheusRecorder) RecordSkillGuardRejection() {
+	p.skillGuardRejections.Inc()
+}
+
+// RecordSkillGuardCircuitBreakerTrip increments the skill-guard
+// circuit-breaker counter.
+//
+// Side effects:
+//   - Increments the flowstate_skill_guard_circuit_breaker_trips_total
+//     counter.
+//
+// Expected: parameters for RecordSkillGuardCircuitBreakerTrip.
+// Returns: result of RecordSkillGuardCircuitBreakerTrip.
+func (p *prometheusRecorder) RecordSkillGuardCircuitBreakerTrip() {
+	p.skillGuardCircuitBreakerTrips.Inc()
 }

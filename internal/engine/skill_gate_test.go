@@ -11,6 +11,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/tool"
+	"github.com/baphled/flowstate/internal/tracer"
 )
 
 // P1 (July 2026) — deterministic skills-first gate. The guard
@@ -106,5 +107,94 @@ var _ = Describe("Engine skills-first deterministic gate", func() {
 			Expect(engine.SkillGuardRejectionCountForTest(eng, "sess-skill-gate")).To(Equal(0),
 				"a compliant skill_load resets the streak so a later non-compliance burst starts from zero")
 		})
+	})
+})
+
+// countingSkillGuardRecorder captures the skill-guard telemetry calls
+// so specs can assert the gate paths move the recorder counters.
+type countingSkillGuardRecorder struct {
+	tracer.NoopRecorder
+	autoInjections int
+	rejections     int
+	breakerTrips   int
+}
+
+// RecordSkillGuardAutoInjection counts one auto-injection.
+func (r *countingSkillGuardRecorder) RecordSkillGuardAutoInjection() { r.autoInjections++ }
+
+// RecordSkillGuardRejection counts one rejection.
+func (r *countingSkillGuardRecorder) RecordSkillGuardRejection() { r.rejections++ }
+
+// RecordSkillGuardCircuitBreakerTrip counts one circuit-breaker trip.
+func (r *countingSkillGuardRecorder) RecordSkillGuardCircuitBreakerTrip() { r.breakerTrips++ }
+
+var _ = Describe("Engine skill guard telemetry", func() {
+	makeRecordedEngine := func(knownSkills []string, rec *countingSkillGuardRecorder) *engine.Engine {
+		providerReg := provider.NewRegistry()
+		providerReg.Register(&mockProvider{name: "spy"})
+		manifest := agent.Manifest{
+			ID:   "telemetry-tester",
+			Name: "Telemetry Tester",
+			Capabilities: agent.Capabilities{
+				Tools: []string{"bash"},
+			},
+		}
+		cfg := engine.Config{
+			Manifest:      manifest,
+			AgentRegistry: agent.NewRegistry(),
+			Registry:      providerReg,
+			ChatProvider:  &mockProvider{name: "spy"},
+			Recorder:      rec,
+			KnownSkillsFunc: func() []string { return knownSkills },
+		}
+		eng := engine.New(cfg)
+		eng.AddTool(&gateHaltFakeTool{name: "bash", err: nil})
+		return eng
+	}
+
+	runGateTool := func(eng *engine.Engine) (tool.Result, error) {
+		return eng.ExecuteToolCallForTest(context.Background(), "sess-skill-gate-telemetry", &provider.ToolCall{
+			ID:        "call-bash",
+			Name:      "bash",
+			Arguments: map[string]any{},
+		})
+	}
+
+	It("counts a deterministic auto-injection through the inject path", func() {
+		rec := &countingSkillGuardRecorder{}
+		eng := makeRecordedEngine([]string{"pre-action"}, rec)
+		engine.SetSkillsForTest(eng, []skill.Skill{{Name: "pre-action", Content: "content of pre-action"}})
+
+		result, err := runGateTool(eng)
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.IsError).To(BeFalse())
+		Expect(rec.autoInjections).To(Equal(1),
+			"the auto-inject path must move flowstate_skill_guard_auto_injections_total")
+		Expect(rec.rejections).To(Equal(0))
+		Expect(rec.breakerTrips).To(Equal(0))
+	})
+
+	It("counts rejections and the circuit-breaker trip through the reject path", func() {
+		rec := &countingSkillGuardRecorder{}
+		eng := makeRecordedEngine([]string{"pre-action"}, rec)
+
+		for i := 0; i < 3; i++ {
+			result, err := runGateTool(eng)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.IsError).To(BeTrue(), "call %d rejects while content is unresolvable", i+1)
+		}
+		Expect(rec.rejections).To(Equal(3),
+			"each rejection must move flowstate_skill_guard_rejections_total")
+		Expect(rec.breakerTrips).To(Equal(0))
+
+		result, err := runGateTool(eng)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.IsError).To(BeFalse(),
+			"the fourth call auto-satisfies the gate through the circuit breaker")
+		Expect(rec.breakerTrips).To(Equal(1),
+			"the circuit-breaker path must move flowstate_skill_guard_circuit_breaker_trips_total")
+		Expect(rec.autoInjections).To(Equal(0),
+			"no content was injectable, so the auto-injection counter stays flat")
 	})
 })
