@@ -1,6 +1,6 @@
 # Turn Lifecycle Invariants — Tests-First Ledger
 
-**Status: awaiting owner review. No production code has been changed.**
+**Status: RESOLVED 2026-09-19 — all 13 scenarios green; fixes delivered in three tiers (owner-approved 2026-09-19).**
 
 ## Methodology
 
@@ -37,6 +37,67 @@ engine knob; there is no "untestable without knob X" entry.
 is exactly the 9 intended red scenarios below — no other scenario
 changed outcome in either direction.
 
+## Resolution (2026-09-19)
+
+The nine red scenarios below were fixed in three reviewed tiers and the
+ledger is closed; owner approval recorded 2026-09-19. The historical
+failure evidence is retained deliberately — it documents the violations
+that were present before the fixes landed.
+
+### Commit map
+
+| Tier | Scope | Commits |
+|---|---|---|
+| 1 — honest terminals | RC1, RC2, RC3 | `2d8cd960`, `9e14e12e`, `e8c27172` |
+| 2 — real bounds | RC5, RC6, RC7 | `82712080`, `942c9b52`, `d255e5a1` (+ `72e9a693` nil-safe accessor fixup) |
+| 3 — integrity & observability | RC4a/RC4c, RC8, RC10a/RC10b | `024e59e5`, `9df66590`, `1fb16dc0`, `c6bc8381` (+ `248248a1` formatting chore) |
+
+### Final counts (independently verified)
+
+- `turn_completes_completely` — **5/5 passed**.
+- `session_bounded_lifecycle` — **6/6 passed**.
+- `skills_guarantee` — **2/2 passed**.
+
+### Full-suite reconciliation
+
+The full e2e failing count has returned to the pre-invariant baseline of
+**99** — byte-for-byte the same failing set as before this suite was
+added (verified by set comparison; the delta was exactly the nine reds,
+now green).
+
+### Design outcomes
+
+- Capped/exhausted turns end with a persisted final assistant message,
+  via forced summary or synthesised terminal.
+- Consecutive same-tool stops are genuinely terminal.
+- Todo-snapshot change is the only continuation progress.
+- The turn duration budget is monotonic across continuations.
+- Mid-loop compaction fires at most once per turn (min-trim floor +
+  summary-identity rehydration).
+- Sessions carry lifetime bounds (`max_session_turns=40`,
+  `max_session_messages=1000`, `max_session_age=24h`;
+  zero-inherits/off-disables) with an honest terminal and re-prompt
+  suppression.
+- Denied tool calls are answered with persisted results.
+- Narrated same-tool patterns count toward the cap.
+- Missing always-active skills WARN at load and FAIL
+  `flowstate agents validate`.
+- Three skill-guard Prometheus counters are exposed:
+  `flowstate_skill_guard_auto_injections_total`,
+  `flowstate_skill_guard_rejections_total`,
+  `flowstate_skill_guard_circuit_breaker_trips_total`.
+
+### Parallel operational change (same day)
+
+Zai-only provider migration: 34 agent manifests plus the `config.yaml`
+failover chains were de-anthropic'd and de-openai'd; anthropic/openai
+are intentionally unconfigured per owner policy. Backup at
+`~/.config/flowstate/backup-20260919`.
+
+### Deployment
+
+The daemon is running commit `248248a1`.
+
 ## Root-cause register (from the three-lane code investigation)
 
 | Ref | Finding | Site |
@@ -60,19 +121,19 @@ violation documentation; the scenario must stay red until the fix lands.
 
 | Scenario | Invariant | Expected | Actual (observed, trimmed) | Root cause | Proposed fix direction (NOT implemented) |
 |---|---|---|---|---|---|
-| turn_completes: Natural completion ends with a final assistant message | 1 | ✅ pass | **PASS** — transcript ends with assistant "All done."; one terminal chunk | — | — |
-| turn_completes: same-tool-pattern cap ends with a final assistant message | 1 | ❌ fail | **FAIL** — `persisted transcript ends with role "tool" (content "ok")`; 21 `same_tool_pattern` cap trips, 60 todo-continuation requests before the sentinel | RC1, RC2 (RC3 keeps the loop alive) | Terminal paths must persist a final assistant message (store a bounded "stopped because…" notice) before emitting the sentinel Done |
-| turn_completes: todo-continuation budget exhausted ends with a persisted terminal assistant message | 1 | ❌ fail | **FAIL** — `no persisted assistant message carries stop reason tool_loop_exceeded; terminal wire stop reasons were [tool_loop_exceeded]` (following transcript-ends assertion skipped, same path) | RC1, RC4b | Stamp the sentinel stop reason on the persisted terminal assistant message so session failover state can flip to `failed` |
-| turn_completes: capped turn still emits exactly one terminal chunk on the wire | 1 (wire-level control) | ✅ pass | **PASS** on the wire — exactly one Done chunk. Transcript gap (final message is a tool_result) is recorded by the two scenarios above | RC1 (wire is fine; persistence is not) | — |
-| turn_completes: permission-denied leaves no dangling tool_call | 1 | ❌ fail | **FAIL** — `dangling tool calls without a tool result: [call_0(echoer)]` | RC4c | On deny, persist a synthetic tool_result (`IsError: permission denied`) before returning, mirroring the exec-error path at `toolloop.go:1373-1393` |
-| session_bounded: narration + identical tool calls trip the same-tool-pattern cap | 2 | ❌ fail | **FAIL** — `expected a same_tool_pattern cap trip, saw trips [iteration_backstop iteration_backstop]`; narration text resets the run every round | RC8 | Align the detector with its documented contract: count the tool-name pattern regardless of assistant text, or tighten the comment and add a narrating-model detector |
-| session_bounded: todo no-progress guard trips despite ongoing tool activity | 2 | ❌ fail | **FAIL** — `expected the no-progress guard to stop the turn within 3 continuations, saw 20 continuation injections` (todo snapshot unchanged throughout) | RC3 | Derive progress from todo-state change (or tool-result content change), not from "any tool call happened" |
-| session_bounded: continuation injection does not reset the duration budget | 2 | ❌ fail | **FAIL** — `turn ran for 3.40s, more than twice the original 150ms cap` (21 `total_tool_time_backstop` trips, 20 continuation injections) | RC5 | Give the turn (not the continuation window) a monotonic budget: keep `loopStart`/accumulated tool time across injections and decrement a remaining-budget counter |
-| session_bounded: mid-loop compaction does not re-fire on marginal trim | 2 | ❌ fail | **FAIL** — `summariser ran 18 times` in one 42-iteration turn with a deliberately sliver-trimming summariser | RC6 | Add hysteresis (e.g. re-fire only when estimate exceeds `usable` by a margin, or back off after a fire that trimmed <N%); stop clearing `sessionRehydrated` unconditionally |
-| session_bounded: a session has a lifetime bound | 2 | ❌ fail | **FAIL** — `no session-lifetime bound tripped: 6 auto-continued turns were accepted with 24 provider calls and 12 persisted messages, every turn completed naturally` | RC7 | Introduce a session-lifetime ceiling (max turns/messages/duration) enforced at Stream entry, with a distinct stop reason |
-| session_bounded: background-task re-prompt chain is bounded | 2 | ✅ pass (control) | **PASS** — four sequential completions produced ≤3 re-prompt sends (existing `maxRePrompts=3` depth limit pinned) | pins current behaviour | — |
-| skills_guarantee: always-active skill body in the first provider request | skills | ✅ pass | **PASS** — first request's system message embeds `INVARIANT_ALWAYS_ACTIVE_BODY` | pins current behaviour (`skill_gate.go:48-67`) | — |
-| skills_guarantee: manifest skill missing on disk is reported | skills | ❌ fail | **FAIL** — `missing always-active skill "ghost-skill" was silently dropped: loader returned 1 of 2 requested skills, logged 0 distinct messages … and the API has no error return` | RC10 | Diff requested vs loaded names at load time; WARN (or fail validation) per missing skill, and add metrics for guard trips/rejections |
+| turn_completes: Natural completion ends with a final assistant message | 1 | ✅ pass | **PASS** — transcript ends with assistant "All done."; one terminal chunk → GREEN (control) | — | — |
+| turn_completes: same-tool-pattern cap ends with a final assistant message | 1 | ❌ fail | **FAIL** — `persisted transcript ends with role "tool" (content "ok")`; 21 `same_tool_pattern` cap trips, 60 todo-continuation requests before the sentinel → GREEN (tier 1, 2d8cd960 + 9e14e12e) | RC1, RC2 (RC3 keeps the loop alive) | Terminal paths must persist a final assistant message (store a bounded "stopped because…" notice) before emitting the sentinel Done |
+| turn_completes: todo-continuation budget exhausted ends with a persisted terminal assistant message | 1 | ❌ fail | **FAIL** — `no persisted assistant message carries stop reason tool_loop_exceeded; terminal wire stop reasons were [tool_loop_exceeded]` (following transcript-ends assertion skipped, same path) → GREEN (tier 1, 2d8cd960) | RC1, RC4b | Stamp the sentinel stop reason on the persisted terminal assistant message so session failover state can flip to `failed` |
+| turn_completes: capped turn still emits exactly one terminal chunk on the wire | 1 (wire-level control) | ✅ pass | **PASS** on the wire — exactly one Done chunk. Transcript gap (final message is a tool_result) is recorded by the two scenarios above → GREEN (control) | RC1 (wire is fine; persistence is not) | — |
+| turn_completes: permission-denied leaves no dangling tool_call | 1 | ❌ fail | **FAIL** — `dangling tool calls without a tool result: [call_0(echoer)]` → GREEN (tier 3, 024e59e5) | RC4c | On deny, persist a synthetic tool_result (`IsError: permission denied`) before returning, mirroring the exec-error path at `toolloop.go:1373-1393` |
+| session_bounded: narration + identical tool calls trip the same-tool-pattern cap | 2 | ❌ fail | **FAIL** — `expected a same_tool_pattern cap trip, saw trips [iteration_backstop iteration_backstop]`; narration text resets the run every round → GREEN (tier 3, 9df66590) | RC8 | Align the detector with its documented contract: count the tool-name pattern regardless of assistant text, or tighten the comment and add a narrating-model detector |
+| session_bounded: todo no-progress guard trips despite ongoing tool activity | 2 | ❌ fail | **FAIL** — `expected the no-progress guard to stop the turn within 3 continuations, saw 20 continuation injections` (todo snapshot unchanged throughout) → GREEN (tier 1, e8c27172) | RC3 | Derive progress from todo-state change (or tool-result content change), not from "any tool call happened" |
+| session_bounded: continuation injection does not reset the duration budget | 2 | ❌ fail | **FAIL** — `turn ran for 3.40s, more than twice the original 150ms cap` (21 `total_tool_time_backstop` trips, 20 continuation injections) → GREEN (tier 2, 82712080) | RC5 | Give the turn (not the continuation window) a monotonic budget: keep `loopStart`/accumulated tool time across injections and decrement a remaining-budget counter |
+| session_bounded: mid-loop compaction does not re-fire on marginal trim | 2 | ❌ fail | **FAIL** — `summariser ran 18 times` in one 42-iteration turn with a deliberately sliver-trimming summariser → GREEN (tier 2, 942c9b52) | RC6 | Add hysteresis (e.g. re-fire only when estimate exceeds `usable` by a margin, or back off after a fire that trimmed <N%); stop clearing `sessionRehydrated` unconditionally |
+| session_bounded: a session has a lifetime bound | 2 | ❌ fail | **FAIL** — `no session-lifetime bound tripped: 6 auto-continued turns were accepted with 24 provider calls and 12 persisted messages, every turn completed naturally` → GREEN (tier 2, d255e5a1 + 72e9a693) | RC7 | Introduce a session-lifetime ceiling (max turns/messages/duration) enforced at Stream entry, with a distinct stop reason |
+| session_bounded: background-task re-prompt chain is bounded | 2 | ✅ pass (control) | **PASS** — four sequential completions produced ≤3 re-prompt sends (existing `maxRePrompts=3` depth limit pinned) → GREEN (control) | pins current behaviour | — |
+| skills_guarantee: always-active skill body in the first provider request | skills | ✅ pass | **PASS** — first request's system message embeds `INVARIANT_ALWAYS_ACTIVE_BODY` → GREEN (control) | pins current behaviour (`skill_gate.go:48-67`) | — |
+| skills_guarantee: manifest skill missing on disk is reported | skills | ❌ fail | **FAIL** — `missing always-active skill "ghost-skill" was silently dropped: loader returned 1 of 2 requested skills, logged 0 distinct messages … and the API has no error return` → GREEN (tier 3, 1fb16dc0 + c6bc8381) | RC10 | Diff requested vs loaded names at load time; WARN (or fail validation) per missing skill, and add metrics for guard trips/rejections |
 
 ## Totals
 
@@ -84,3 +145,6 @@ violation documentation; the scenario must stay red until the fix lands.
   definitions (godog v0.15.1 strict mode; no `ErrAmbiguous`).
 - No production code, config, or existing scenario was modified. Failing
   scenarios are committed as-is per the repo's `[red]` convention.
+- **Final state (2026-09-19):** all 13 scenarios green — the 4 controls
+  plus the 9 former reds, resolved across the three tiers in the
+  Resolution section above.
