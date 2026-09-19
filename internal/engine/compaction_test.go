@@ -119,6 +119,30 @@ var _ = Describe("Engine token-budgeted window truncation", func() {
 			"the in-memory clamp keeps the head of the oversized message, not an empty husk")
 	})
 
+	It("returns the input verbatim when the context is already cancelled", func() {
+		summariser := &recordingSummariser{response: buildSummaryJSON()}
+		eng, _ := newFullWindowEngine(summariser, false, 0.99)
+
+		words := make([]string, 100)
+		for i := range words {
+			words[i] = "w"
+		}
+		content := strings.Join(words, " ")
+		messages := make([]provider.Message, 0, 81)
+		messages = append(messages, provider.Message{Role: "system", Content: "sys"})
+		for i := 0; i < 80; i++ {
+			messages = append(messages, provider.Message{Role: "assistant", Content: content})
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		bounded := eng.TruncateMessagesTokenBoundedForTest(ctx, messages)
+
+		Expect(bounded).To(Equal(messages),
+			"a cancelled context must preserve the input verbatim so any cost blowup in the "+
+				"truncation loop stays cancellable by the turn watchdog")
+	})
+
 	It("accounts the prepended system-prompt prefix in the token-bounded rebuild", func() {
 		summariser := &recordingSummariser{response: buildSummaryJSON()}
 		tempDir := GinkgoT().TempDir()

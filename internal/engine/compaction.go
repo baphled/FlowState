@@ -1330,20 +1330,63 @@ func (e *Engine) shouldCompactExplicitForGate(manifest *agent.Manifest, userMess
 //   - Same as buildContextWindow (publishes context-window events,
 //     updates lastContextResult). Acceptable because mid-loop reload
 //     is a real assembly cycle the operator wants observability for.
+//   - Logs one INFO record carrying the session, message counts, token
+//     estimates, and duration so this historically silent path is
+//     observable in production.
 func (e *Engine) rebuildContextWindowAfterMidLoopCompaction(ctx context.Context, sessionID string, messages []provider.Message) []provider.Message {
 	if e == nil || e.store == nil || sessionID == "" {
 		return nil
 	}
+	started := time.Now()
+	preEstimate := e.estimateMessagesForLog(ctx, messages)
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == "user" {
 			rebuilt := e.buildContextWindow(ctx, sessionID, messages[i].Content)
 			if rebuilt == nil {
+				slog.Info("mid-loop compaction rebuild failed to reassemble window",
+					"session", sessionID,
+					"messages", len(messages),
+					"pre_estimate_tokens", preEstimate,
+					"duration", time.Since(started),
+				)
 				return nil
 			}
-			return e.truncateMessagesTokenBounded(ctx, rebuilt)
+			bounded := e.truncateMessagesTokenBounded(ctx, rebuilt)
+			slog.Info("mid-loop compaction rebuild completed",
+				"session", sessionID,
+				"messages", len(messages),
+				"rebuilt_messages", len(bounded),
+				"pre_estimate_tokens", preEstimate,
+				"post_estimate_tokens", e.estimateMessagesForLog(ctx, bounded),
+				"duration", time.Since(started),
+			)
+			return bounded
 		}
 	}
 	return nil
+}
+
+// estimateMessagesForLog returns the estimated request tokens for a
+// message slice, or -1 when no token counter is wired so log consumers
+// can distinguish an unavailable figure from a genuine zero.
+//
+// Expected:
+//   - messages may be any slice, including nil.
+//
+// Returns:
+//   - The estimateRequestTokens figure, or -1 without a counter.
+//
+// Side effects:
+//   - None.
+func (e *Engine) estimateMessagesForLog(ctx context.Context, messages []provider.Message) int {
+	if e.tokenCounter == nil {
+		return -1
+	}
+	return e.estimateRequestTokens(&provider.ChatRequest{
+		Provider: e.lastProviderCtx(ctx),
+		Model:    e.lastModelCtx(ctx),
+		Messages: messages,
+	})
 }
 
 // lastCompactionSummaryText returns the most recent compaction summary
@@ -1490,7 +1533,9 @@ const autoCompactedSummaryPrefix = "[auto-compacted summary]: "
 // floor that never drops the newest message. When the bound cannot be
 // computed (no token counter, unresolvable model limit) the input is
 // preserved verbatim so callers degrade to today's behaviour instead of
-// losing messages.
+// losing messages. A cancelled context takes the same verbatim exit:
+// the shrink loop checks the context every iteration so any future cost
+// blowup stays cancellable by the turn watchdog.
 //
 // Expected:
 //   - ctx carries the provider/model resolution keys used for the
@@ -1547,6 +1592,9 @@ func (e *Engine) truncateMessagesTokenBounded(ctx context.Context, messages []pr
 
 	tail := messages[len(fixed):]
 	for len(tail) > 1 {
+		if ctx.Err() != nil {
+			return messages
+		}
 		if estimatedTail(tail) <= target {
 			break
 		}
