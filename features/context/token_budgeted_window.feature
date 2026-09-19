@@ -31,3 +31,8 @@ Feature: Token-budgeted context-window truncation
     When the token-budget session streams a turn that overflows the usable window
     Then the compacted retry request fits the 4723-token target
     And the compacted retry request keeps the newest message
+
+  Scenario: Repeated token counting reuses one encoder construction
+    Given a tiktoken counter is wired for the token-budget session
+    When the counter counts 120 realistic payloads
+    Then the counting completes within 2 seconds

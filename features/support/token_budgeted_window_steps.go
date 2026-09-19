@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/cucumber/godog"
 
@@ -25,13 +26,17 @@ import (
 // scenarios. The engine, store, summariser, and scripted provider are
 // wired by the first Given step; later steps stream turns against the
 // same engine and assert on the requests the provider actually received.
+// The counter and counting elapsed fields serve the encoder-cache
+// performance scenario, which exercises the tokeniser directly.
 type tokenBudgetState struct {
-	eng        *engine.Engine
-	store      *recall.FileContextStore
-	summariser *countingE2ESummariser
-	provider   *tokenBudgetStubProvider
-	sessID     string
-	tempDir    string
+	eng          *engine.Engine
+	store        *recall.FileContextStore
+	summariser   *countingE2ESummariser
+	provider     *tokenBudgetStubProvider
+	sessID       string
+	tempDir      string
+	counter      flowctx.TokenCounter
+	countElapsed time.Duration
 }
 
 // tokenBudgetStubProvider is a provider.Provider double that records
@@ -187,6 +192,32 @@ func RegisterTokenBudgetedWindowSteps(ctx *godog.ScenarioContext) {
 
 	ctx.Step(`^a token-budget engine is wired with an (\d+)-word system prompt, a 0\.99 threshold and a (\d+)-token limit$`, func(systemWords, limit int) error {
 		return state.wireEngine(limit, true, 0.99, systemWords, nil)
+	})
+
+	ctx.Step(`^a tiktoken counter is wired for the token-budget session$`, func() error {
+		state.counter = flowctx.NewTiktokenCounter()
+		return nil
+	})
+
+	ctx.Step(`^the counter counts (\d+) realistic payloads$`, func(calls int) error {
+		if state.counter == nil {
+			return fmt.Errorf("tiktoken counter not wired by a prior Given step")
+		}
+		payload := strings.Repeat("token budget regression payload ", 12)
+		start := time.Now()
+		for i := 0; i < calls; i++ {
+			state.counter.Count(payload)
+		}
+		state.countElapsed = time.Since(start)
+		return nil
+	})
+
+	ctx.Step(`^the counting completes within (\d+) seconds$`, func(bound int) error {
+		limit := time.Duration(bound) * time.Second
+		if state.countElapsed >= limit {
+			return fmt.Errorf("counting took %s, exceeding the %s bound; the encoder must be cached across calls", state.countElapsed, limit)
+		}
+		return nil
 	})
 
 	ctx.Step(`^(\d+) messages of (\d+) words each are seeded into the token-budget session store$`, func(msgCount, wordCount int) error {
