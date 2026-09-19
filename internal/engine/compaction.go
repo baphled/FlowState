@@ -451,6 +451,10 @@ func withMidLoopCompactionGuard(ctx context.Context, guard *midLoopCompactionGua
 
 // midLoopCompactionGuardFromContext returns the turn's mid-loop
 // compaction guard, or nil when ctx carries none (non-tool-loop callers).
+//
+// Expected: ctx is the turn context.
+// Returns: the bound guard, or nil.
+// Side effects: None.
 func midLoopCompactionGuardFromContext(ctx context.Context) *midLoopCompactionGuard {
 	guard, _ := ctx.Value(midLoopCompactionGuardKey{}).(*midLoopCompactionGuard)
 	return guard

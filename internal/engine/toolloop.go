@@ -1000,12 +1000,12 @@ func (e *Engine) streamWithToolLoop(
 						"overflow_retry", overflowRetries,
 						"max_overflow_retries", maxOverflowRetries,
 					)
-				forceManifest := e.Manifest()
-				forceBudget := e.ModelContextLimit()
-				compacted := ""
-				if forceBudget > 0 && !midLoopCompactionGuardFired(ctx) {
-					compacted = e.maybeAutoCompactExplicit(ctx, sessionID, &forceManifest, forceBudget, "tool_result_wave", messages)
-				}
+					forceManifest := e.Manifest()
+					forceBudget := e.ModelContextLimit()
+					compacted := ""
+					if forceBudget > 0 && !midLoopCompactionGuardFired(ctx) {
+						compacted = e.maybeAutoCompactExplicit(ctx, sessionID, &forceManifest, forceBudget, "tool_result_wave", messages)
+					}
 					// Part 3: accept the compacted window only when it
 					// meaningfully reduces the estimated token load —
 					// a compaction that produces no reduction will not
@@ -1515,12 +1515,12 @@ func (e *Engine) streamWithToolLoop(
 		// than the swollen pre-compaction prefix. The no-fire branch
 		// returns false and we skip the reload — buildContextWindow
 		// is not free.
-	compacted := e.emitMidToolLoopRefresh(ctx, sessionID, outChan, messages)
-	if compacted {
-		if rebuilt := e.rebuildContextWindowAfterMidLoopCompaction(ctx, sessionID, messages); rebuilt != nil {
-			messages = rebuilt
+		compacted := e.emitMidToolLoopRefresh(ctx, sessionID, outChan, messages)
+		if compacted {
+			if rebuilt := e.rebuildContextWindowAfterMidLoopCompaction(ctx, sessionID, messages); rebuilt != nil {
+				messages = rebuilt
+			}
 		}
-	}
 
 		attempt++
 

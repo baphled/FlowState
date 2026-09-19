@@ -21,10 +21,10 @@ var _ = Describe("Engine session lifetime bound", func() {
 
 		prov := &scriptedTodoProvider{name: "lifetime-prov", script: []todoProviderTurn{}}
 		eng := engine.New(engine.Config{
-			ChatProvider: prov,
-			Manifest:     agent.Manifest{ID: "lifetime-agent", Name: "Lifetime Agent"},
-			Tools:        []tool.Tool{},
-			Store:        store,
+			ChatProvider:    prov,
+			Manifest:        agent.Manifest{ID: "lifetime-agent", Name: "Lifetime Agent"},
+			Tools:           []tool.Tool{},
+			Store:           store,
 			MaxSessionTurns: 2,
 		})
 

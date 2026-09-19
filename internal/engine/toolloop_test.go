@@ -556,6 +556,7 @@ var _ = Describe("Engine capped-turn terminal persistence", func() {
 		assertPersistedTerminal(store)
 	})
 })
+
 func drainCooldownChunks(chunks <-chan provider.StreamChunk, within time.Duration) ([]provider.StreamChunk, bool) {
 	var received []provider.StreamChunk
 	done := make(chan struct{})

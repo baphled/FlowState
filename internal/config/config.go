@@ -428,6 +428,38 @@ func (c *AppConfig) ParsedSessionMaxAge() time.Duration {
 	return parsed
 }
 
+// SessionMaxTurns returns the configured session turn bound. Nil
+// receivers report 0 so the engine resolves its compiled-in default.
+//
+// Returns:
+//   - The MaxSessionTurns bound, 0 when unset or nil receiver.
+//
+// Side effects: None.
+//
+// Expected: parameters for SessionMaxTurns.
+func (c *AppConfig) SessionMaxTurns() int {
+	if c == nil {
+		return 0
+	}
+	return c.SessionLimits.MaxSessionTurns
+}
+
+// SessionMaxMessages returns the configured session message bound. Nil
+// receivers report 0 so the engine resolves its compiled-in default.
+//
+// Returns:
+//   - The MaxSessionMessages bound, 0 when unset or nil receiver.
+//
+// Side effects: None.
+//
+// Expected: parameters for SessionMaxMessages.
+func (c *AppConfig) SessionMaxMessages() int {
+	if c == nil {
+		return 0
+	}
+	return c.SessionLimits.MaxSessionMessages
+}
+
 // ParsedToolLoopIterations returns the configured max tool-loop iteration
 // ceiling, with nil-receiver safety. Zero inherits the engine's compiled-in
 // default (200).
