@@ -557,6 +557,71 @@ var _ = Describe("Engine capped-turn terminal persistence", func() {
 	})
 })
 
+var _ = Describe("Engine permission-denial transcript integrity", func() {
+	It("answers every denied tool call with a persisted tool result", func() {
+		guarded := &executableMockTool{name: "echoer", execResult: tool.Result{Output: "must not run"}}
+		registry := tool.NewRegistry()
+		registry.Register(guarded)
+		registry.SetPermission("echoer", tool.Deny)
+
+		store, err := recall.NewFileContextStore(GinkgoT().TempDir()+"/ctx.json", "denial-model")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(store.Close)
+
+		prov := &repeatingToolProvider{
+			name: "denial-loop",
+			call: &provider.ToolCall{
+				ID:        "call_echo",
+				Name:      "echoer",
+				Arguments: map[string]any{"x": 1},
+			},
+		}
+		eng := engine.New(engine.Config{
+			ChatProvider: prov,
+			Manifest: agent.Manifest{
+				ID:   "denial-agent",
+				Name: "Denial Agent",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"echoer"},
+				},
+			},
+			Tools:        []tool.Tool{guarded},
+			ToolRegistry: registry,
+			Store:        store,
+		})
+
+		const sessionID = "denial-session"
+		ctx := context.WithValue(context.Background(), session.IDKey{}, sessionID)
+		chunks, err := eng.Stream(ctx, sessionID, "Go")
+		Expect(err).NotTo(HaveOccurred())
+		for range chunks {
+		}
+
+		results := make(map[string]bool)
+		for _, sm := range store.GetStoredMessages() {
+			if sm.Message.Role != "tool" {
+				continue
+			}
+			for _, tc := range sm.Message.ToolCalls {
+				results[tc.ID] = true
+			}
+		}
+		var dangling []string
+		for _, sm := range store.GetStoredMessages() {
+			if sm.Message.Role != "assistant" {
+				continue
+			}
+			for _, tc := range sm.Message.ToolCalls {
+				if !results[tc.ID] {
+					dangling = append(dangling, tc.ID)
+				}
+			}
+		}
+		Expect(dangling).To(BeEmpty(),
+			"a permission denial must leave no dangling tool call in the transcript")
+	})
+})
+
 func drainCooldownChunks(chunks <-chan provider.StreamChunk, within time.Duration) ([]provider.StreamChunk, bool) {
 	var received []provider.StreamChunk
 	done := make(chan struct{})

@@ -3264,6 +3264,36 @@ func levenshtein(a, b string) int {
 	return prev[lb]
 }
 
+// persistDeniedToolResult answers a denied tool call with a persisted
+// synthetic tool result so the transcript never carries a dangling
+// tool_use. Mirrors the tool-execution-error path: the result carries
+// the denial reason, and a matching tool_result chunk is emitted before
+// the terminal error chunk so wire consumers see the pair.
+//
+// Expected: toolCall is the denied invocation; reason names the denial
+// cause; outChan is the engine's output channel (nil skips emission).
+// Returns: None.
+// Side effects: appends a tool-result message to the context store and
+// emits one tool_result chunk onto outChan.
+func (e *Engine) persistDeniedToolResult(toolCall *provider.ToolCall, reason string, outChan chan<- provider.StreamChunk) {
+	synthetic := tool.Result{
+		Output:  "Error: " + reason,
+		IsError: true,
+		Error:   fmt.Errorf("tool %q denied: %s", toolCall.Name, reason),
+	}
+	e.storeToolResult(toolCall, synthetic)
+	if outChan != nil {
+		outChan <- provider.StreamChunk{
+			EventType: "tool_result",
+			ToolCallID: toolCall.ID,
+			ToolResult: &provider.ToolResultInfo{
+				Content: synthetic.Output,
+				IsError: true,
+			},
+		}
+	}
+}
+
 // checkToolPermission verifies the tool has permission to execute.
 //
 // Expected:
@@ -3274,7 +3304,8 @@ func levenshtein(a, b string) int {
 //   - true if the tool was denied (caller should return), false to proceed.
 //
 // Side effects:
-//   - Sends an error chunk to outChan if the tool is denied.
+//   - Persists a synthetic denial tool_result and sends an error chunk
+//     to outChan if the tool is denied.
 //   - Invokes the permission handler for Ask permission.
 func (e *Engine) checkToolPermission(toolCall *provider.ToolCall, outChan chan<- provider.StreamChunk) bool {
 	if e.toolRegistry == nil {
@@ -3287,8 +3318,10 @@ func (e *Engine) checkToolPermission(toolCall *provider.ToolCall, outChan chan<-
 	case tool.Allow:
 		return false
 	case tool.Deny:
+		reason := fmt.Sprintf("tool %q denied by permission policy", toolCall.Name)
+		e.persistDeniedToolResult(toolCall, reason, outChan)
 		outChan <- provider.StreamChunk{
-			Error: fmt.Errorf("tool %q denied by permission policy", toolCall.Name),
+			Error: fmt.Errorf("%s", reason),
 			Done:  true,
 		}
 		return true
@@ -3313,8 +3346,10 @@ func (e *Engine) checkToolPermission(toolCall *provider.ToolCall, outChan chan<-
 //   - Sends an error chunk to outChan if denied or handler is absent.
 func (e *Engine) handleAskPermission(toolCall *provider.ToolCall, outChan chan<- provider.StreamChunk) bool {
 	if e.permissionHandler == nil {
+		reason := fmt.Sprintf("tool %q denied: no permission handler configured", toolCall.Name)
+		e.persistDeniedToolResult(toolCall, reason, outChan)
 		outChan <- provider.StreamChunk{
-			Error: fmt.Errorf("tool %q denied: no permission handler configured", toolCall.Name),
+			Error: fmt.Errorf("%s", reason),
 			Done:  true,
 		}
 		return true
@@ -3327,8 +3362,10 @@ func (e *Engine) handleAskPermission(toolCall *provider.ToolCall, outChan chan<-
 
 	approved, err := e.permissionHandler(req)
 	if err != nil || !approved {
+		reason := fmt.Sprintf("tool %q denied by user", toolCall.Name)
+		e.persistDeniedToolResult(toolCall, reason, outChan)
 		outChan <- provider.StreamChunk{
-			Error: fmt.Errorf("tool %q denied by user", toolCall.Name),
+			Error: fmt.Errorf("%s", reason),
 			Done:  true,
 		}
 		return true

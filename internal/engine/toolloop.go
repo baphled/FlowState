@@ -1234,26 +1234,27 @@ func (e *Engine) streamWithToolLoop(
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
 			}
-			deliveryStopped := false
-			switch maybeRetryDelivery(func() {
-				deliveryStopped = true
-			}) {
-			case deliveryRetryContinue:
-				continue
-			case deliveryRetryStop:
-				return
-			}
-			if deliveryStopped {
-				if completeAfterTodoCheck("delivery retry exhausted after stream truncation") {
-					continue
-				}
-				return
-			}
-			if completeAfterTodoCheck("turn end without todo continuation") {
+		deliveryStopped := false
+		switch maybeRetryDelivery(func() {
+			deliveryStopped = true
+		}) {
+		case deliveryRetryContinue:
+			continue
+		case deliveryRetryStop:
+			e.completeResponse(ctx, sessionID, responseContent, thinkingContent)
+			return
+		}
+		if deliveryStopped {
+			if completeAfterTodoCheck("delivery retry exhausted after stream truncation") {
 				continue
 			}
 			return
 		}
+		if completeAfterTodoCheck("turn end without todo continuation") {
+			continue
+		}
+		return
+	}
 
 		if len(result.toolCalls) == 0 {
 			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore {
@@ -1372,9 +1373,19 @@ func (e *Engine) streamWithToolLoop(
 		e.storeAssistantToolUseBatch(result.toolCalls, result.responseContent)
 
 		// Permission checks are sequential and fast — run them before launching
-		// any goroutines so a denied call halts the whole batch cleanly.
-		for _, tc := range result.toolCalls {
+		// any goroutines so a denied call halts the whole batch cleanly. The
+		// denied call is answered inside checkToolPermission; any earlier
+		// calls that were allowed but never executed are answered here so
+		// the persisted transcript carries no dangling tool_use.
+		for i, tc := range result.toolCalls {
 			if denied := e.checkToolPermission(tc, outChan); denied {
+				for _, halted := range result.toolCalls[:i] {
+					e.storeToolResult(halted, tool.Result{
+						Output:  "Error: permission denial halted the batch before this tool ran",
+						IsError: true,
+						Error:   fmt.Errorf("batch halted by permission denial"),
+					})
+				}
 				return
 			}
 		}
