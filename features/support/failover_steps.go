@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cucumber/godog"
@@ -21,6 +22,7 @@ import (
 	"github.com/baphled/flowstate/internal/hook"
 	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/session"
 )
 
 var errFailoverMockNotImplemented = errors.New("failover mock: method not implemented")
@@ -132,6 +134,12 @@ type FailoverSteps struct {
 	receivedError     string
 	reloadedHealth    *failover.HealthManager
 	refreshSucceeded  bool
+	strictChain       []provider.ModelPreference
+	globalChain       []provider.ModelPreference
+	resolvedChain     []provider.ModelPreference
+	attemptedMu       sync.Mutex
+	attemptedProviders []string
+	lastContent       string
 }
 
 type equivalentProviderSpec struct {
@@ -171,6 +179,11 @@ func RegisterFailoverSteps(ctx *godog.ScenarioContext) {
 		fs.receivedError = ""
 		fs.reloadedHealth = nil
 		fs.refreshSucceeded = false
+		fs.strictChain = nil
+		fs.globalChain = nil
+		fs.resolvedChain = nil
+		fs.attemptedProviders = nil
+		fs.lastContent = ""
 		return bctx, nil
 	})
 
@@ -215,6 +228,16 @@ func RegisterFailoverSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the health manager marks "([^"]*)" / "([^"]*)" as rate-limited$`, fs.healthManagerMarksAsRateLimited)
 	ctx.Step(`^the health manager does NOT mark "([^"]*)" / "([^"]*)" as rate-limited$`, fs.healthManagerDoesNotMarkAsRateLimited)
 	ctx.Step(`^the cooldown for "([^"]*)" / "([^"]*)" is at least (\d+) hours$`, fs.cooldownIsAtLeastHours)
+	ctx.Step(`^a strict chain pinned to "([^"]*)" / "([^"]*)"$`, fs.aStrictChainPinnedTo)
+	ctx.Step(`^the global chain is "([^"]*)" / "([^"]*)" and "([^"]*)" / "([^"]*)"$`, fs.theGlobalChainIs)
+	ctx.Step(`^the pinned pair is hard-down$`, fs.thePinnedPairIsHardDown)
+	ctx.Step(`^the pair "([^"]*)" / "([^"]*)" is cooldowned$`, fs.thePairIsCooldowned)
+	ctx.Step(`^the strict chain is resolved against the healthy fallback$`, fs.theStrictChainIsResolvedAgainstTheHealthyFallback)
+	ctx.Step(`^the resolved chain should be:$`, fs.theResolvedChainShouldBe)
+	ctx.Step(`^the fallback provider "([^"]*)" succeeds$`, fs.theFallbackProviderSucceeds)
+	ctx.Step(`^the failover hook executes a chat request pinned to "([^"]*)" / "([^"]*)"$`, fs.failoverHookExecutesChatRequestPinnedTo)
+	ctx.Step(`^the turn should complete on "([^"]*)"$`, fs.theTurnShouldCompleteOn)
+	ctx.Step(`^the pinned provider should never be attempted$`, fs.thePinnedProviderShouldNeverBeAttempted)
 	ctx.Step(`^the pair receives a typed billing error$`, fs.thePairReceivesTypedBillingError)
 	ctx.Step(`^the pair receives a typed auth failure with an account code$`, fs.thePairReceivesTypedAuthAccountCode)
 	ctx.Step(`^the health manager records a typed auth failure for the pair$`, fs.theHealthManagerRecordsTypedAuthFailure)
@@ -1656,4 +1679,173 @@ func (fs *FailoverSteps) theHealthManagerResetsThePair() error {
 		return errors.New("health manager not initialised")
 	}
 	return fs.health.ResetProviderHealth(fs.trackedProvider, fs.trackedModel)
+}
+
+// aStrictChainPinnedTo arms the strict single-element chain the
+// fallback helper resolves.
+//
+// Expected: providerName and model name the strict head.
+// Returns: None.
+// Side effects: resets failover state and records the strict chain.
+func (fs *FailoverSteps) aStrictChainPinnedTo(providerName, model string) error {
+	fs.ensureFailoverState()
+	fs.strictChain = []provider.ModelPreference{{Provider: providerName, Model: model}}
+	fs.resolvedChain = nil
+	return nil
+}
+
+// theGlobalChainIs arms the global healthy chain used as the fallback
+// tail source.
+//
+// Expected: two provider/model pairs.
+// Returns: None.
+// Side effects: records the global chain.
+func (fs *FailoverSteps) theGlobalChainIs(p1, m1, p2, m2 string) error {
+	fs.globalChain = []provider.ModelPreference{
+		{Provider: p1, Model: m1},
+		{Provider: p2, Model: m2},
+	}
+	return nil
+}
+
+// thePinnedPairIsHardDown trips the hard-down breaker on the strict
+// chain's head.
+//
+// Expected: the strict chain was initialised.
+// Returns: an error when the strict chain is missing.
+// Side effects: mutates health state.
+func (fs *FailoverSteps) thePinnedPairIsHardDown() error {
+	if len(fs.strictChain) == 0 {
+		return errors.New("strict chain not initialised")
+	}
+	head := fs.strictChain[0]
+	fs.health.MarkHardDown(head.Provider, head.Model, "scenario pin")
+	return nil
+}
+
+// thePairIsCooldowned puts an arbitrary pair into a live cooldown so
+// the fallback tail excludes it.
+//
+// Expected: providerName and model identify the pair.
+// Returns: None.
+// Side effects: mutates health state.
+func (fs *FailoverSteps) thePairIsCooldowned(providerName, model string) error {
+	fs.health.MarkRateLimited(providerName, model, time.Now().Add(time.Hour))
+	return nil
+}
+
+// theStrictChainIsResolvedAgainstTheHealthyFallback invokes the shared
+// fallback helper exactly as the strict-tail decision sites do.
+//
+// Expected: the strict and global chains were initialised.
+// Returns: an error when the inputs are missing.
+// Side effects: records the resolved chain.
+func (fs *FailoverSteps) theStrictChainIsResolvedAgainstTheHealthyFallback() error {
+	if len(fs.strictChain) == 0 {
+		return errors.New("strict chain not initialised")
+	}
+	fs.resolvedChain = failover.StrictChainWithHealthyFallback(fs.strictChain, fs.globalChain, fs.health)
+	return nil
+}
+
+// theResolvedChainShouldBe asserts the helper's output order.
+//
+// Expected: the table lists provider/model rows in order.
+// Returns: an error on mismatch.
+// Side effects: None.
+func (fs *FailoverSteps) theResolvedChainShouldBe(table *godog.Table) error {
+	expected := parseExpectedPairs(table)
+	if !reflect.DeepEqual(fs.resolvedChain, expected) {
+		return fmt.Errorf("expected resolved chain %v, got %v", expected, fs.resolvedChain)
+	}
+	return nil
+}
+
+// theFallbackProviderSucceeds registers a mock provider that streams a
+// successful terminal chunk, recording attempts for order assertions.
+//
+// Expected: providerName names the fallback provider to register.
+// Returns: None.
+// Side effects: registers a provider and resets the attempt log.
+func (fs *FailoverSteps) theFallbackProviderSucceeds(providerName string) error {
+	fs.attemptedProviders = nil
+	fs.registry.Register(&FailoverMockStreamProvider{
+		name: providerName,
+		streamFn: func(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+			fs.attemptedMu.Lock()
+			fs.attemptedProviders = append(fs.attemptedProviders, providerName)
+			fs.attemptedMu.Unlock()
+			ch := make(chan provider.StreamChunk, 1)
+			ch <- provider.StreamChunk{Content: providerName + "-fallback-reply", Done: true}
+			close(ch)
+			return ch, nil
+		},
+	})
+	return nil
+}
+
+// failoverHookExecutesChatRequestPinnedTo drives one chat request
+// through the failover hook with the caller-pinned pair, using the
+// resolved strict chain as the agent chain.
+//
+// Expected: providerName and model name the pinned pair.
+// Returns: an error when the stream fails to open.
+// Side effects: records the winning provider.
+func (fs *FailoverSteps) failoverHookExecutesChatRequestPinnedTo(providerName, model string) error {
+	attemptRecording := hook.HandlerFunc(func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+		fs.attemptedMu.Lock()
+		fs.attemptedProviders = append(fs.attemptedProviders, req.Provider)
+		fs.attemptedMu.Unlock()
+		return failoverBaseHandler(fs.registry)(ctx, req)
+	})
+	chainCtx := session.WithPreferredModels(context.Background(), fs.strictChain)
+	handler := fs.streamHook.Execute(attemptRecording)
+	ch, err := handler(chainCtx, &provider.ChatRequest{Provider: providerName, Model: model})
+	if err != nil {
+		fs.selectionErr = err
+		return nil
+	}
+	for raw := range ch {
+		if raw.Done {
+			fs.lastContent = raw.Content
+		}
+	}
+	return nil
+}
+
+// theTurnShouldCompleteOn asserts the turn's terminal chunk came from
+// the named fallback provider.
+//
+// Expected: providerName names the expected winner.
+// Returns: an error on mismatch or failure.
+// Side effects: None.
+func (fs *FailoverSteps) theTurnShouldCompleteOn(providerName string) error {
+	if fs.selectionErr != nil {
+		return fmt.Errorf("the turn failed instead of completing: %v", fs.selectionErr)
+	}
+	if fs.lastContent != providerName+"-fallback-reply" {
+		return fmt.Errorf("expected the turn to complete on %q, got %q", providerName, fs.lastContent)
+	}
+	return nil
+}
+
+// thePinnedProviderShouldNeverBeApplied asserts the dead pin never
+// received an attempt.
+//
+// Expected: the strict chain was initialised.
+// Returns: an error when the pin was attempted.
+// Side effects: None.
+func (fs *FailoverSteps) thePinnedProviderShouldNeverBeAttempted() error {
+	if len(fs.strictChain) == 0 {
+		return errors.New("strict chain not initialised")
+	}
+	head := fs.strictChain[0]
+	fs.attemptedMu.Lock()
+	defer fs.attemptedMu.Unlock()
+	for _, p := range fs.attemptedProviders {
+		if p == head.Provider {
+			return fmt.Errorf("the hard-down pin %q must never be attempted", head.Provider)
+		}
+	}
+	return nil
 }
