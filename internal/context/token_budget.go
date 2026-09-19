@@ -1,8 +1,58 @@
 package context
 
 import (
+	"sync"
+
 	"github.com/pkoukk/tiktoken-go"
 )
+
+// encodingCache holds one constructed tiktoken.Tiktoken per encoding
+// name, shared by every TiktokenCounter in the process. tiktoken-go
+// v0.1.8 GetEncoding is a plain function with no internal cache, and a
+// single construction parses and sorts the ~100k-rank BPE vocabulary
+// (~40ms); the token-bounded truncation loops call Count O(N^2) times
+// per rebuild, so per-call construction burned 10-22 minutes of CPU on
+// real sessions. The cached *Tiktoken is safe for concurrent use: its
+// rank tables are immutable after construction and the underlying
+// regexp2 matchers are documented as goroutine-safe.
+var encodingCache = struct {
+	sync.RWMutex
+	encodings map[string]*tiktoken.Tiktoken
+}{encodings: make(map[string]*tiktoken.Tiktoken)}
+
+// encodingFor returns the shared tiktoken.Tiktoken for the named
+// encoding, constructing and caching it on first use. Construction
+// failures are never cached: they are environment-dependent (loader
+// hiccups), and pinning one would permanently degrade every counter to
+// approximate counting; retrying costs a single construction attempt on
+// a path that is already failing, and the last-writer-wins on a
+// successful concurrent construction is harmless because both instances
+// are equivalent.
+//
+// Expected:
+//   - encoding names a tiktoken encoding ("cl100k_base").
+//
+// Returns:
+//   - The shared encoder, or an error when construction fails.
+//
+// Side effects:
+//   - Populates the package-level cache on the first successful call.
+func encodingFor(encoding string) (*tiktoken.Tiktoken, error) {
+	encodingCache.RLock()
+	enc, ok := encodingCache.encodings[encoding]
+	encodingCache.RUnlock()
+	if ok {
+		return enc, nil
+	}
+	enc, err := tiktoken.GetEncoding(encoding)
+	if err != nil {
+		return nil, err
+	}
+	encodingCache.Lock()
+	encodingCache.encodings[encoding] = enc
+	encodingCache.Unlock()
+	return enc, nil
+}
 
 // DefaultModelContextFallback is the safety-net token cap used when a
 // provider/model lookup cannot supply a concrete ContextLength. It
@@ -114,9 +164,10 @@ func NewTiktokenCounterWithResolver(resolver ModelResolver, provider string) *Ti
 //   - The token count for the given text.
 //
 // Side effects:
-//   - Falls back to approximate counting if the encoding fails to load.
+//   - Constructs and caches the shared encoder on first use; falls back
+//     to approximate counting if the encoding fails to load.
 func (c *TiktokenCounter) Count(text string) int {
-	enc, err := tiktoken.GetEncoding(c.encoding)
+	enc, err := encodingFor(c.encoding)
 	if err != nil {
 		fallback := NewApproximateCounter()
 		return fallback.Count(text)

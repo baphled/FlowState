@@ -2,6 +2,7 @@ package context_test
 
 import (
 	"strings"
+	"time"
 
 	"github.com/baphled/flowstate/internal/context"
 	. "github.com/onsi/ginkgo/v2"
@@ -106,6 +107,20 @@ var _ = Describe("TokenBudget", func() {
 			It("returns positive count for non-empty text", func() {
 				counter := context.NewTiktokenCounter()
 				Expect(counter.Count("hello world")).To(BeNumerically(">", 0))
+			})
+		})
+
+		Context("cached encoder performance", func() {
+			It("counts 120 payloads without reconstructing the encoder per call", func() {
+				payload := strings.Repeat("token budget regression payload ", 12)
+				counter := context.NewTiktokenCounter()
+				start := time.Now()
+				for i := 0; i < 120; i++ {
+					counter.Count(payload)
+				}
+				elapsed := time.Since(start)
+				Expect(elapsed).To(BeNumerically("<", 2*time.Second),
+					"Count must reuse a cached encoder; 120 counts took %s", elapsed)
 			})
 		})
 
