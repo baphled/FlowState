@@ -11,6 +11,7 @@ import (
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool"
 	"github.com/baphled/flowstate/internal/tool/todo"
@@ -350,6 +351,110 @@ var _ = Describe("Engine todo continuation budget", func() {
 			Expect(prov.callCount()).To(BeNumerically("<=", 60),
 				"the turn-local guards must stop the cycle far below unbounded spinning")
 		})
+	})
+})
+
+var _ = Describe("Engine capped-turn terminal persistence", func() {
+	drain := func(chunks <-chan provider.StreamChunk) ([]provider.StreamChunk, bool) {
+		var received []provider.StreamChunk
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for c := range chunks {
+				received = append(received, c)
+			}
+		}()
+		select {
+		case <-done:
+			return received, true
+		case <-time.After(10 * time.Second):
+			return received, false
+		}
+	}
+
+	terminalStopReason := func(received []provider.StreamChunk) (string, bool) {
+		var reason string
+		var sawDone bool
+		for _, c := range received {
+			if c.Done {
+				reason = c.StopReason
+				sawDone = true
+			}
+		}
+		return reason, sawDone
+	}
+
+	newTerminalPersistenceEngine := func(prov provider.Provider) (*engine.Engine, *recall.FileContextStore, string) {
+		const sessionID = "terminal-persistence-session"
+		todoStore := todo.NewMemoryStore()
+		Expect(todoStore.Set(sessionID, []todo.Item{
+			{Content: "never done", Status: "pending", Priority: "high"},
+		})).NotTo(HaveOccurred())
+
+		spinner := &executableMockTool{name: "spinner", execResult: tool.Result{Output: "spun"}}
+		registry := tool.NewRegistry()
+		registry.Register(spinner)
+		registry.SetPermission(spinner.Name(), tool.Allow)
+
+		store, err := recall.NewFileContextStore(GinkgoT().TempDir()+"/ctx.json", "terminal-model")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(store.Close)
+
+		eng := engine.New(engine.Config{
+			ChatProvider: prov,
+			Manifest: agent.Manifest{
+				ID:   "terminal-persistence-agent",
+				Name: "Terminal Persistence Agent",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"spinner"},
+				},
+			},
+			Tools:        []tool.Tool{spinner},
+			ToolRegistry: registry,
+			TodoStore:    todoStore,
+			Store:        store,
+		})
+		return eng, store, sessionID
+	}
+
+	assertPersistedTerminal := func(store *recall.FileContextStore) {
+		stored := store.GetStoredMessages()
+		Expect(stored).NotTo(BeEmpty())
+		last := stored[len(stored)-1].Message
+		Expect(last.Role).To(Equal("assistant"),
+			"the persisted transcript must end with an assistant message, not a dangling tool result")
+		Expect(last.StopReason).To(Equal(session.StopReasonToolLoopExceeded),
+			"the persisted terminal assistant message must carry the stop-reason stamp")
+	}
+
+	It("persists a stamped terminal assistant message when the todo machinery stops a capped turn", func() {
+		prov := &repeatingToolProvider{
+			name: "terminal-persistence-spin",
+			call: &provider.ToolCall{
+				ID:        "call_spinner",
+				Name:      "spinner",
+				Arguments: map[string]any{"x": 1},
+			},
+		}
+		eng, store, sessionID := newTerminalPersistenceEngine(prov)
+		eng.SetMaxToolLoopIterationsForTest(2)
+		eng.SetMaxIdenticalToolCallsForTest(0)
+		eng.SetMaxSameToolPatternCallsForTest(0)
+		eng.SetMaxToolLoopDurationForTest(0)
+
+		ctx := context.WithValue(context.Background(), session.IDKey{}, sessionID)
+		chunks, err := eng.Stream(ctx, sessionID, "Go")
+		Expect(err).NotTo(HaveOccurred())
+
+		received, closed := drain(chunks)
+		Expect(closed).To(BeTrue(), "the capped turn must terminate and close the channel")
+
+		reason, sawDone := terminalStopReason(received)
+		Expect(sawDone).To(BeTrue(), "expected a terminal Done chunk")
+		Expect(reason).To(Equal(session.StopReasonToolLoopExceeded),
+			"the sentinel Done chunk must still carry tool_loop_exceeded")
+
+		assertPersistedTerminal(store)
 	})
 })
 

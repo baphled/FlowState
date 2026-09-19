@@ -880,10 +880,27 @@ func (e *Engine) streamWithToolLoop(
 		e.completeResponse(ctx, sessionID, responseContent, thinkingContent)
 		return false
 	}
-	doneAfterTodoCheck := func(reason string) bool {
-		if continueAfterTodoCheck(reason) {
-			return true
+	forcedSummaryTerminal := func(reason string) bool {
+		if !forcedSummaryUsed {
+			forcedSummaryUsed = true
+			slog.Info("forced summary round: terminal stop, stripping tools",
+				"session", sessionID,
+				"reason", reason,
+			)
+			messages = append(messages, buildFinalResponseMessage())
+			var streamErr error
+			providerChunks, streamErr = e.retryStreamForToolResultNoSchemas(ctx, sessionID, messages, attempt)
+			if streamErr == nil {
+				attempt++
+				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
+				return true
+			}
+			slog.Error("forced summary round stream failed",
+				"session", sessionID,
+				"error", streamErr,
+			)
 		}
+		e.persistCappedTurnTerminal(ctx, sessionID, reason)
 		e.warnDeliveryToolBypassCtx(ctx, sessionID)
 		emitTerminalStreamChunk(ctx, outChan, provider.StreamChunk{
 			Done:       true,
@@ -892,6 +909,12 @@ func (e *Engine) streamWithToolLoop(
 			ProviderID: e.lastProviderCtx(ctx),
 		})
 		return false
+	}
+	doneAfterTodoCheck := func(reason string) bool {
+		if continueAfterTodoCheck(reason) {
+			return true
+		}
+		return forcedSummaryTerminal(reason)
 	}
 	for {
 		watchdog.markProgress()
@@ -1859,6 +1882,7 @@ func (e *Engine) streamWithToolLoop(
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
 			} else {
+				e.persistCappedTurnTerminal(ctx, sessionID, reason)
 				e.warnDeliveryToolBypassCtx(ctx, sessionID)
 				emitTerminalStreamChunk(ctx, outChan, provider.StreamChunk{
 					Done:       true,
@@ -2177,6 +2201,67 @@ func buildFinalResponseMessage() provider.Message {
 		Role:    "user",
 		Content: "Your tool loop budget is exhausted. Please provide a final summary of what you've accomplished — the results of each tool call are still visible in the conversation above.",
 	}
+}
+
+// buildCappedTurnTerminalContent renders the engine-synthesised terminal
+// assistant message persisted when a capped turn ends without a
+// model-produced summary. It names the stop reason and the incomplete todo
+// state so the transcript records why the turn ended and what remains
+// outstanding.
+//
+// Expected: reason is the tool-loop cap trip reason; incomplete is the
+// snapshot of todo items still outstanding at the terminal decision.
+// Returns: the terminal message content.
+// Side effects: None.
+func buildCappedTurnTerminalContent(reason string, incomplete []todo.Item) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Turn stopped by the engine (%s).", reason))
+	if len(incomplete) == 0 {
+		sb.WriteString(" No incomplete todos remain.")
+		return sb.String()
+	}
+	sb.WriteString(fmt.Sprintf(" %d incomplete todo(s) remain:", len(incomplete)))
+	for _, it := range incomplete {
+		sb.WriteString(fmt.Sprintf("\n- [%s] %s", it.Status, it.Content))
+	}
+	return sb.String()
+}
+
+// persistCappedTurnTerminal stores the engine-synthesised terminal assistant
+// message for a capped turn so the persisted transcript never ends on a
+// dangling tool result. The message carries the tool_loop_exceeded stop
+// reason stamp alongside a short structured summary of the terminal state.
+//
+// Expected: ctx is the turn context; sessionID identifies the active
+// session; reason is the tool-loop cap trip or todo-machinery stop reason.
+// Returns: None.
+// Side effects: appends the terminal assistant message to the context
+// store and chain store when configured, embeds it when an embedding
+// provider is wired, and logs the persistence.
+func (e *Engine) persistCappedTurnTerminal(ctx context.Context, sessionID, reason string) {
+	var incomplete []todo.Item
+	if e.todoStore != nil {
+		if has, items := e.hasIncompleteTodos(sessionID); has {
+			incomplete = items
+		}
+	}
+	content := buildCappedTurnTerminalContent(reason, incomplete)
+	if e.store == nil {
+		return
+	}
+	msg := provider.Message{
+		Role:       "assistant",
+		Content:    content,
+		StopReason: session.StopReasonToolLoopExceeded,
+		ModelID:    e.LastModel(),
+	}
+	msgID := e.store.AppendReturningID(msg)
+	e.dualWriteToChainStore(ctx, msg)
+	e.embedMessage(ctx, content, msgID)
+	slog.Info("persisted terminal assistant message for capped turn",
+		"session", sessionID,
+		"reason", reason,
+	)
 }
 
 // deduplicateToolCalls collapses identical tool calls (same name + canonical
