@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -90,6 +92,87 @@ func ValidateManifestSet(root fs.FS, dir string) ([]Violation, error) {
 	return violations, nil
 }
 
+// ValidateAlwaysActiveSkillsOnDisk reports every manifest whose
+// always_active_skills entries resolve to no on-disk skill directory
+// (a skill exists iff <skillsDir>/<name>/SKILL.md is readable). This is
+// the validation-time surface of the loader's runtime WARN: boot stays
+// resilient (missing skills are skipped), but `flowstate agents
+// validate` fails loudly so a silent drop cannot ship.
+//
+// Expected:
+//   - root is a non-nil fs.FS holding the manifests (same producers as
+//     ValidateManifestSet).
+//   - dir is the directory inside root that holds the manifests.
+//   - skillsDir is the configured on-disk skills directory.
+//
+// Returns:
+//   - One always-active-skill-missing Violation per (manifest, skill)
+//     pair that resolves to nothing on disk, ordered by manifest.
+//   - A non-nil error only when root/dir cannot be enumerated.
+//
+// Side effects:
+//   - Reads files from root and stats skill paths under skillsDir.
+func ValidateAlwaysActiveSkillsOnDisk(root fs.FS, dir, skillsDir string) ([]Violation, error) {
+	entries, err := fs.ReadDir(root, dir)
+	if err != nil {
+		return nil, fmt.Errorf("reading agents directory %q: %w", dir, err)
+	}
+
+	var violations []Violation
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		var path string
+		if dir == "" || dir == "." {
+			path = e.Name()
+		} else {
+			path = dir + "/" + e.Name()
+		}
+		data, readErr := fs.ReadFile(root, path)
+		if readErr != nil {
+			return nil, fmt.Errorf("reading manifest %q: %w", path, readErr)
+		}
+		violations = append(violations, validateAlwaysActiveSkillsOneManifest(e.Name(), data, skillsDir)...)
+	}
+	return violations, nil
+}
+
+// validateAlwaysActiveSkillsOneManifest applies the on-disk skill
+// presence rule to one manifest's always_active_skills list.
+//
+// Expected: name is the manifest file name; data is the manifest body;
+// skillsDir is the configured on-disk skills directory.
+// Returns: one Violation per declared skill missing on disk.
+// Side effects: stats skill paths under skillsDir.
+func validateAlwaysActiveSkillsOneManifest(name string, data []byte, skillsDir string) []Violation {
+	frontmatter, parseErr := extractFrontmatterOrEmpty(string(data))
+	if parseErr != nil {
+		return nil
+	}
+	var probe validatorManifestProbe
+	if err := yaml.Unmarshal([]byte(frontmatter), &probe); err != nil {
+		return nil
+	}
+	if len(probe.Capabilities.AlwaysActiveSkills) == 0 {
+		return nil
+	}
+
+	var violations []Violation
+	for _, skillName := range probe.Capabilities.AlwaysActiveSkills {
+		skillPath := filepath.Join(skillsDir, skillName, "SKILL.md")
+		if _, statErr := os.Stat(skillPath); statErr != nil {
+			violations = append(violations, Violation{
+				Manifest: name,
+				Rule:     "always-active-skill-missing",
+				Detail: fmt.Sprintf("always_active_skills entry %q resolves to no on-disk %s — the agent will run without it",
+					skillName, skillPath),
+			})
+		}
+	}
+	return violations
+}
+
 // validateOneManifest parses a manifest's YAML frontmatter and applies
 // every rule against it. The function is exported only via
 // ValidateManifestSet to keep the per-file parse logic out of the
@@ -129,8 +212,9 @@ type validatorManifestProbe struct {
 		Role string `yaml:"role"`
 	} `yaml:"metadata"`
 	Capabilities struct {
-		Tools     []string `yaml:"tools"`
-		ToolsDeny []string `yaml:"tools_deny"`
+		Tools              []string `yaml:"tools"`
+		ToolsDeny          []string `yaml:"tools_deny"`
+		AlwaysActiveSkills []string `yaml:"always_active_skills"`
 	} `yaml:"capabilities"`
 	Delegation struct {
 		CanDelegate bool `yaml:"can_delegate"`

@@ -95,6 +95,11 @@ func runAgentsValidate(cmd *cobra.Command, application *app.App) error {
 	if err != nil {
 		return fmt.Errorf("validating manifests in %s: %w", agentsDir, err)
 	}
+	if skillViolations, skillErr := validateAlwaysActiveSkills(application, agentsDir); skillErr != nil {
+		return skillErr
+	} else {
+		violations = append(violations, skillViolations...)
+	}
 	if writeErr := writeValidateReport(cmd.OutOrStdout(), agentsDir, violations); writeErr != nil {
 		return writeErr
 	}
@@ -102,6 +107,33 @@ func runAgentsValidate(cmd *cobra.Command, application *app.App) error {
 		return fmt.Errorf("%d violations in %s", len(violations), agentsDir)
 	}
 	return nil
+}
+
+// validateAlwaysActiveSkills applies the on-disk always-active skill
+// presence rule when a skill directory is configured. Manifest
+// validation itself never depends on it: an unconfigured skill dir
+// (fresh installs default elsewhere) yields no violations.
+//
+// Expected:
+//   - application carries the resolved AppConfig (may be nil).
+//   - agentsDir is the validated manifest directory, used for the
+//     report header when violations fire.
+//
+// Returns:
+//   - The always-active-skill-missing violations, possibly empty.
+//   - A non-nil error only when the manifest directory cannot be read.
+//
+// Side effects:
+//   - Reads manifests and stats skill paths under the configured dir.
+func validateAlwaysActiveSkills(application *app.App, agentsDir string) ([]agent.Violation, error) {
+	if application == nil || application.Config == nil || application.Config.SkillDir == "" {
+		return nil, nil
+	}
+	violations, err := agent.ValidateAlwaysActiveSkillsOnDisk(os.DirFS(agentsDir), ".", application.Config.SkillDir)
+	if err != nil {
+		return nil, fmt.Errorf("validating always-active skills in %s: %w", agentsDir, err)
+	}
+	return violations, nil
 }
 
 // writeValidateReport renders the violation list as a table-shaped

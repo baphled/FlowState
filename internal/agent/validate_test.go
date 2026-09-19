@@ -20,6 +20,8 @@
 package agent_test
 
 import (
+	"os"
+	"path/filepath"
 	"testing/fstest"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -491,3 +493,45 @@ func concatDetails(violations []agent.Violation, rule string) string {
 	}
 	return out
 }
+
+var _ = Describe("ValidateAlwaysActiveSkillsOnDisk", func() {
+	var skillsDir string
+
+	BeforeEach(func() {
+		skillsDir = GinkgoT().TempDir()
+		present := filepath.Join(skillsDir, "present-skill")
+		Expect(os.MkdirAll(present, 0o755)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(present, "SKILL.md"), []byte("---\nname: present-skill\n---\nbody\n"), 0o600)).To(Succeed())
+	})
+
+	manifestWithSkills := func(skills string) string {
+		return "---\n" +
+			"id: Skilled-Agent\n" +
+			"name: Skilled Agent\n" +
+			"capabilities:\n" +
+			"  tools: [bash]\n" +
+			"  always_active_skills: [" + skills + "]\n" +
+			"---\nbody\n"
+	}
+
+	It("reports each always-active skill that resolves to no on-disk SKILL.md", func() {
+		fs := manifestFS(map[string]string{
+			"agents/Skilled-Agent.md": manifestWithSkills("present-skill, ghost-skill"),
+		})
+
+		violations, err := agent.ValidateAlwaysActiveSkillsOnDisk(fs, "agents", skillsDir)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(violationRules(violations)).To(ConsistOf("always-active-skill-missing"))
+		Expect(concatDetails(violations, "always-active-skill-missing")).To(ContainSubstring("ghost-skill"))
+	})
+
+	It("reports nothing when every declared skill exists on disk", func() {
+		fs := manifestFS(map[string]string{
+			"agents/Skilled-Agent.md": manifestWithSkills("present-skill"),
+		})
+
+		violations, err := agent.ValidateAlwaysActiveSkillsOnDisk(fs, "agents", skillsDir)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(violations).To(BeEmpty())
+	})
+})

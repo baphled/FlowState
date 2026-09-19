@@ -1,6 +1,8 @@
 package engine_test
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -72,14 +74,21 @@ var _ = Describe("LoadAlwaysActiveSkills", func() {
 			createSkill("memory-keeper", "---\nname: memory-keeper\n---\n# Memory Keeper")
 		})
 
-		It("silently skips skills not found on disk", func() {
+		It("skips skills not found on disk but warns naming them", func() {
 			appLevel := []string{"memory-keeper", "non-existent-skill"}
 			agentLevel := []string{}
+
+			var buf bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+			defer slog.SetDefault(previous)
 
 			skills := engine.LoadAlwaysActiveSkills(tempDir, appLevel, agentLevel)
 
 			Expect(skills).To(HaveLen(1))
 			Expect(skills[0].Name).To(Equal("memory-keeper"))
+			Expect(buf.String()).To(ContainSubstring("non-existent-skill"),
+				"the loader must warn naming each always-active skill missing on disk — a silent drop means the agent runs without instructions nobody noticed were lost")
 		})
 	})
 

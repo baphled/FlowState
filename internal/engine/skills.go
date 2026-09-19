@@ -1,10 +1,18 @@
 package engine
 
 import (
+	"log/slog"
+
 	"github.com/baphled/flowstate/internal/skill"
 )
 
 // LoadAlwaysActiveSkills loads skills that should always be active for the given agent.
+//
+// Every requested skill that resolves to no on-disk SKILL.md is skipped
+// (boot-time resilience is unchanged — a missing skill never blocks
+// startup) but is reported loudly: one WARN per missing name, with the
+// name embedded in the message so log consumers and validators can
+// surface the silent-drop case the invariant suite pins.
 //
 // Expected:
 //   - skillsDir is the directory path containing skill definitions.
@@ -16,6 +24,7 @@ import (
 //
 // Side effects:
 //   - Reads skill files from the skillsDir directory.
+//   - Logs one WARN per requested skill missing on disk.
 func LoadAlwaysActiveSkills(skillsDir string, appLevel []string, agentLevel []string) []skill.Skill {
 	merged := MergeSkillNames(appLevel, agentLevel)
 	if len(merged) == 0 {
@@ -25,10 +34,41 @@ func LoadAlwaysActiveSkills(skillsDir string, appLevel []string, agentLevel []st
 	loader := skill.NewFileSkillLoader(skillsDir)
 	allSkills, err := loader.LoadAll()
 	if err != nil {
+		slog.Warn("always-active skills could not be read from the skills directory",
+			"skills_dir", skillsDir,
+			"error", err,
+		)
 		return nil
 	}
 
-	return filterSkillsByName(allSkills, merged)
+	loaded := filterSkillsByName(allSkills, merged)
+	warnMissingAlwaysActiveSkills(merged, loaded, skillsDir)
+	return loaded
+}
+
+// warnMissingAlwaysActiveSkills logs one WARN per requested always-active
+// skill name that resolved to no loaded skill. The skill name is embedded
+// in the message body (not only as an attribute) so message-keyed log
+// consumers and validation harnesses can match it directly.
+//
+// Expected: merged is the requested skill-name list; loaded is the
+// resolved skill slice; skillsDir names the directory that was searched.
+// Returns: None.
+// Side effects: emits one slog.Warn per missing skill name.
+func warnMissingAlwaysActiveSkills(merged []string, loaded []skill.Skill, skillsDir string) {
+	present := make(map[string]bool, len(loaded))
+	for _, s := range loaded {
+		present[s.Name] = true
+	}
+	for _, name := range merged {
+		if present[name] {
+			continue
+		}
+		slog.Warn("always-active skill "+name+" not found on disk under the configured skill_dir — the agent will run without it",
+			"skill", name,
+			"skills_dir", skillsDir,
+		)
+	}
 }
 
 // MergeSkillNames combines application-level and agent-level skill names, removing duplicates.

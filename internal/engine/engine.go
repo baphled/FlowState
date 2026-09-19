@@ -3284,7 +3284,7 @@ func (e *Engine) persistDeniedToolResult(toolCall *provider.ToolCall, reason str
 	e.storeToolResult(toolCall, synthetic)
 	if outChan != nil {
 		outChan <- provider.StreamChunk{
-			EventType: "tool_result",
+			EventType:  "tool_result",
 			ToolCallID: toolCall.ID,
 			ToolResult: &provider.ToolResultInfo{
 				Content: synthetic.Output,
