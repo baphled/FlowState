@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/baphled/flowstate/internal/provider"
 )
 
 const (
@@ -435,6 +437,51 @@ func (hm *HealthManager) IsRateLimited(provider, model string) bool {
 	return false
 }
 
+// MarkPermanentFailure records one permanent-class failure against a
+// provider/model pair and applies the hard-down circuit breaker
+// thresholds. Billing failures (and auth failures carrying
+// billing-class account codes) trip immediately; other auth failures
+// trip on the third consecutive occurrence. Transient classes are not
+// routed here at all. Stub pending the breaker implementation.
+//
+// Expected: provider and model are non-empty; errorType is the typed
+// provider classification; errorCode carries the provider auth code
+// when present.
+// Returns: true when this call tripped the breaker.
+// Side effects: none in the stub.
+func (hm *HealthManager) MarkPermanentFailure(provider, model string, errorType provider.ErrorType, errorCode string) bool {
+	_ = provider
+	_ = model
+	_ = errorType
+	_ = errorCode
+	return false
+}
+
+// MarkHardDown trips the hard-down breaker for a provider/model pair
+// unconditionally. Stub pending the breaker implementation.
+//
+// Expected: provider and model are non-empty; reason names the trip
+// cause for observability.
+// Returns: None.
+// Side effects: none in the stub.
+func (hm *HealthManager) MarkHardDown(provider, model, reason string) {
+	_ = provider
+	_ = model
+	_ = reason
+}
+
+// IsHardDown reports whether the hard-down breaker has tripped for the
+// provider/model pair. Stub pending the breaker implementation.
+//
+// Expected: provider and model are non-empty strings.
+// Returns: false in the stub.
+// Side effects: none.
+func (hm *HealthManager) IsHardDown(provider, model string) bool {
+	_ = provider
+	_ = model
+	return false
+}
+
 // GetHealthyAlternatives returns all ProviderModels not currently rate-limited.
 //
 // Expected: provider and model parameters are reserved for future use.
@@ -467,6 +514,8 @@ type HealthStateEntry struct {
 	ConsecutiveFails int
 	LastCooldown     time.Duration
 	LastFailureAt    time.Time
+	HardDown         bool
+	HardDownReason   string
 }
 
 // persistedEntry is the on-disk representation of one rate-limit

@@ -215,6 +215,13 @@ func RegisterFailoverSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the health manager marks "([^"]*)" / "([^"]*)" as rate-limited$`, fs.healthManagerMarksAsRateLimited)
 	ctx.Step(`^the health manager does NOT mark "([^"]*)" / "([^"]*)" as rate-limited$`, fs.healthManagerDoesNotMarkAsRateLimited)
 	ctx.Step(`^the cooldown for "([^"]*)" / "([^"]*)" is at least (\d+) hours$`, fs.cooldownIsAtLeastHours)
+	ctx.Step(`^the pair receives a typed billing error$`, fs.thePairReceivesTypedBillingError)
+	ctx.Step(`^the pair receives a typed auth failure with an account code$`, fs.thePairReceivesTypedAuthAccountCode)
+	ctx.Step(`^the health manager records a typed auth failure for the pair$`, fs.theHealthManagerRecordsTypedAuthFailure)
+	ctx.Step(`^the pair should be hard-down$`, fs.thePairShouldBeHardDown)
+	ctx.Step(`^the pair should not be hard-down$`, fs.thePairShouldNotBeHardDown)
+	ctx.Step(`^the pair should be hard-down after a restart$`, fs.thePairShouldBeHardDownAfterRestart)
+	ctx.Step(`^the health manager resets the pair$`, fs.theHealthManagerResetsThePair)
 }
 
 // aFailoverHookWithSingleCandidate sets up the failover infrastructure
@@ -743,6 +750,9 @@ func (fs *FailoverSteps) theHealthManagerRestarts() error {
 	if fs.health == nil {
 		return errors.New("health manager not initialised")
 	}
+	if err := fs.health.Flush(); err != nil {
+		return err
+	}
 	fs.reloadedHealth = failover.NewHealthManager()
 	fs.reloadedHealth.SetPersistPath(fs.health.PersistPath())
 	if err := fs.reloadedHealth.LoadState(fs.health.PersistPath()); err != nil {
@@ -863,6 +873,25 @@ func (fs *FailoverSteps) requestCorrectableScenario() bool {
 func (fs *FailoverSteps) classificationStreamFn() func(context.Context, provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	lower := strings.ToLower(fs.receivedError)
 	switch {
+	case strings.Contains(lower, "typed billing error"):
+		return func(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+			return nil, &provider.Error{
+				HTTPStatus: 400,
+				ErrorType:  provider.ErrorTypeBilling,
+				Provider:   fs.trackedProvider,
+				Message:    "insufficient balance",
+			}
+		}
+	case strings.Contains(lower, "typed auth account code"):
+		return func(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+			return nil, &provider.Error{
+				HTTPStatus: 401,
+				ErrorCode:  "account_deactivated",
+				ErrorType:  provider.ErrorTypeAuthFailure,
+				Provider:   fs.trackedProvider,
+				Message:    "account deactivated",
+			}
+		}
 	case strings.Contains(lower, "successful refresh"):
 		calls := 0
 		return func(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
@@ -1525,4 +1554,106 @@ func (fs *FailoverSteps) rotationOrderByLeastRecentlyUsed() []provider.ModelPref
 		}
 	}
 	return ordered
+}
+
+// thePairReceivesTypedBillingError arms the classification stream with a
+// typed provider billing error so the hook's permanent-failure seam is
+// exercised end to end.
+//
+// Expected: the tracked pair was initialised.
+// Returns: None.
+// Side effects: sets the received error text consumed by the
+// classification step.
+func (fs *FailoverSteps) thePairReceivesTypedBillingError() error {
+	fs.receivedError = "typed billing error"
+	return nil
+}
+
+// thePairReceivesTypedAuthAccountCode arms the classification stream
+// with a typed auth failure carrying the account_deactivated code — the
+// billing-class account state that trips the breaker after one failure.
+//
+// Expected: the tracked pair was initialised.
+// Returns: None.
+// Side effects: sets the received error text consumed by the
+// classification step.
+func (fs *FailoverSteps) thePairReceivesTypedAuthAccountCode() error {
+	fs.receivedError = "typed auth account code"
+	return nil
+}
+
+// theHealthManagerRecordsTypedAuthFailure records one typed auth
+// failure against the tracked pair through the permanent-failure seam,
+// mirroring what markProviderHealth does per failed attempt.
+//
+// Expected: the tracked pair was initialised.
+// Returns: an error when the health manager is missing.
+// Side effects: mutates the health manager's permanent-failure state.
+func (fs *FailoverSteps) theHealthManagerRecordsTypedAuthFailure() error {
+	if fs.health == nil {
+		return errors.New("health manager not initialised")
+	}
+	fs.health.MarkPermanentFailure(fs.trackedProvider, fs.trackedModel, provider.ErrorTypeAuthFailure, "")
+	return nil
+}
+
+// thePairShouldBeHardDown asserts the tracked pair tripped the
+// hard-down circuit breaker.
+//
+// Expected: the tracked pair was initialised.
+// Returns: an error when the pair is not hard-down.
+// Side effects: None.
+func (fs *FailoverSteps) thePairShouldBeHardDown() error {
+	if fs.health == nil {
+		return errors.New("health manager not initialised")
+	}
+	if !fs.health.IsHardDown(fs.trackedProvider, fs.trackedModel) {
+		return fmt.Errorf("expected %q / %q to be hard-down", fs.trackedProvider, fs.trackedModel)
+	}
+	return nil
+}
+
+// thePairShouldNotBeHardDown asserts the tracked pair did not trip the
+// hard-down circuit breaker.
+//
+// Expected: the tracked pair was initialised.
+// Returns: an error when the pair is hard-down.
+// Side effects: None.
+func (fs *FailoverSteps) thePairShouldNotBeHardDown() error {
+	if fs.health == nil {
+		return errors.New("health manager not initialised")
+	}
+	if fs.health.IsHardDown(fs.trackedProvider, fs.trackedModel) {
+		return fmt.Errorf("expected %q / %q to remain breakable", fs.trackedProvider, fs.trackedModel)
+	}
+	return nil
+}
+
+// thePairShouldBeHardDownAfterRestart asserts the hard-down state
+// survived a health manager reload from disk, past any cooldown expiry.
+//
+// Expected: the reloaded health manager exists.
+// Returns: an error when the reloaded state is not hard-down.
+// Side effects: None.
+func (fs *FailoverSteps) thePairShouldBeHardDownAfterRestart() error {
+	if fs.reloadedHealth == nil {
+		return errors.New("health manager was not restarted")
+	}
+	if !fs.reloadedHealth.IsHardDown(fs.trackedProvider, fs.trackedModel) {
+		return fmt.Errorf("expected hard-down for %q / %q to survive restart", fs.trackedProvider, fs.trackedModel)
+	}
+	return nil
+}
+
+// theHealthManagerResetsThePair clears all health state for the tracked
+// pair through the operator reset path the health CLI drives.
+//
+// Expected: the tracked pair was initialised.
+// Returns: an error when the reset fails.
+// Side effects: clears health state and rewrites the persist file.
+func (fs *FailoverSteps) theHealthManagerResetsThePair() error {
+	if fs.health == nil {
+		return errors.New("health manager not initialised")
+	}
+	return fs.health.ResetProviderHealth(fs.trackedProvider, fs.trackedModel)
 }
