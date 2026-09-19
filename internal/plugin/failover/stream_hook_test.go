@@ -2947,3 +2947,126 @@ var _ = Describe("StreamHook failover notification", func() {
 		})
 	})
 })
+
+var _ = Describe("Hard-down consultation sites", func() {
+	var (
+		registry *provider.Registry
+		health   *failover.HealthManager
+		manager  *failover.Manager
+		sh       *failover.StreamHook
+	)
+
+	BeforeEach(func() {
+		registry = provider.NewRegistry()
+		health = failover.NewHealthManager()
+		health.SetPersistPath(filepath.Join(GinkgoT().TempDir(), "provider-health.json"))
+		manager = failover.NewManager(registry, health, 2*time.Second)
+		sh = failover.NewStreamHook(manager, nil, "")
+	})
+
+	It("excludes the hard-down pair from Candidates", func() {
+		manager.SetBasePreferences([]provider.ModelPreference{
+			{Provider: "zai", Model: "glm-5"},
+			{Provider: "openai", Model: "gpt-4o"},
+		})
+		health.MarkPermanentFailure("zai", "glm-5", provider.ErrorTypeBilling, "")
+
+		for _, c := range manager.Candidates() {
+			Expect(c.Provider).NotTo(Equal("zai"),
+				"hard-down pairs must be excluded from the ranked candidate pool")
+		}
+	})
+
+	It("skips a hard-down pinned pair and completes on the healthy fallback", func() {
+		var attemptedMu sync.Mutex
+		var attempted []string
+
+		registry.Register(&mockStreamProvider{
+			name: "ollama",
+			streamFn: successStreamFn(
+				provider.StreamChunk{Content: "ollama-reply", Done: true},
+			),
+		})
+		registry.Register(&mockStreamProvider{
+			name: "anthropic",
+			streamFn: successStreamFn(
+				provider.StreamChunk{Content: "anthropic-reply", Done: true},
+			),
+		})
+		manager.SetBasePreferences([]provider.ModelPreference{
+			{Provider: "anthropic", Model: "claude-sonnet-4"},
+			{Provider: "ollama", Model: "llama3.2"},
+		})
+		health.MarkPermanentFailure("anthropic", "claude-sonnet-4", provider.ErrorTypeBilling, "")
+
+		recordingHandler := func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+			attemptedMu.Lock()
+			attempted = append(attempted, req.Provider)
+			attemptedMu.Unlock()
+			p, err := registry.Get(req.Provider)
+			if err != nil {
+				return nil, err
+			}
+			return p.Stream(ctx, *req)
+		}
+
+		handler := sh.Execute(recordingHandler)
+		pinnedReq := &provider.ChatRequest{Provider: "anthropic", Model: "claude-sonnet-4"}
+		ch, err := handler(context.Background(), pinnedReq)
+		Expect(err).NotTo(HaveOccurred())
+
+		var contents []string
+		for raw := range ch {
+			contents = append(contents, raw.Content)
+		}
+
+		attemptedMu.Lock()
+		defer attemptedMu.Unlock()
+		Expect(attempted).To(Equal([]string{"ollama"}),
+			"the hard-down pin must be skipped before its attempt, never re-inserted")
+		Expect(contents).To(ContainElement("ollama-reply"))
+	})
+
+	It("marks hard-down through the failover hook seam on a typed billing failure", func() {
+		billingErr := &provider.Error{
+			HTTPStatus: 400,
+			ErrorType:  provider.ErrorTypeBilling,
+			Provider:   "anthropic",
+			Message:    "billing hard-down seam",
+		}
+		registry.Register(&mockStreamProvider{
+			name:     "anthropic",
+			streamFn: syncErrorStreamFn(billingErr),
+		})
+		registry.Register(&mockStreamProvider{
+			name: "zai",
+			streamFn: successStreamFn(
+				provider.StreamChunk{Content: "zai-reply", Done: true},
+			),
+		})
+		manager.SetBasePreferences([]provider.ModelPreference{
+			{Provider: "anthropic", Model: "claude-sonnet-4"},
+			{Provider: "zai", Model: "glm-5"},
+		})
+
+		handler := sh.Execute(baseHandler(registry))
+		_, err := handler(context.Background(), &provider.ChatRequest{})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(health.IsHardDown("anthropic", "claude-sonnet-4")).To(BeTrue(),
+			"the stream hook's health-marking seam must trip the breaker on billing")
+		Expect(manager.LastProvider()).To(Equal("zai"))
+	})
+
+	It("marks hard-down through the detector bus seam on a typed billing failure", func() {
+		billingErr := &provider.Error{
+			HTTPStatus: 400,
+			ErrorType:  provider.ErrorTypeBilling,
+			Provider:   "anthropic",
+			Message:    "billing bus seam",
+		}
+		Expect(failover.CheckAndMarkRateLimited(health, "anthropic", "claude-sonnet-4", billingErr)).To(BeTrue())
+		Expect(health.IsHardDown("anthropic", "claude-sonnet-4")).To(BeTrue(),
+			"the bus-driven marking seam must trip the breaker identically to the sync seam")
+	})
+})

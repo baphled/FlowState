@@ -83,6 +83,12 @@ func newHealthStatusCmd() *cobra.Command {
 				if remaining < 0 {
 					cooldownStr = "expired"
 				}
+				if entry.HardDown {
+					cooldownStr = "HARD-DOWN (permanent)"
+					if entry.HardDownReason != "" {
+						cooldownStr = "HARD-DOWN: " + entry.HardDownReason
+					}
+				}
 				fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\n",
 					entry.Provider,
 					entry.Model,

@@ -67,12 +67,15 @@ var _ = Describe("Integration: full error classification chain", Label("integrat
 			Expect(chunks[0].Content).To(Equal("Fallback via Anthropic"))
 		})
 
-		It("marks the billing provider as unavailable with 24h cooldown", func() {
+		It("marks the billing provider unavailable after one failure — hard-down plus cooldown", func() {
 			handler := sh.Execute(baseHandler(registry))
 			_, err := handler(context.Background(), &provider.ChatRequest{})
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(health.IsRateLimited("zai", "glm-5")).To(BeTrue())
+			Expect(health.IsRateLimited("zai", "glm-5")).To(BeTrue(),
+				"the pair remains unavailable (cooldown assignment still applies)")
+			Expect(health.IsHardDown("zai", "glm-5")).To(BeTrue(),
+				"adaptive health: a billing rejection trips the hard-down breaker after one failure")
 		})
 
 		It("classifies billing via CheckAndMarkRateLimited", func() {
@@ -261,6 +264,14 @@ var _ = Describe("Integration: full error classification chain", Label("integrat
 				"AuthFailure marks health post-S1")
 			Expect(health.IsRateLimited("zai", "glm-5")).To(BeTrue(),
 				"Billing still marks health — per-credential exhaustion")
+			// Adaptive health: a single plain auth failure (no billing-class
+			// account code) counts toward the breaker but does not trip it —
+			// two more windows remain for an OAuth refresh to recover the
+			// credential. Billing trips immediately.
+			Expect(health.IsHardDown("anthropic", "claude-3")).To(BeFalse(),
+				"one auth failure alone must not retire the credential")
+			Expect(health.IsHardDown("zai", "glm-5")).To(BeTrue(),
+				"billing retires the credential after one failure")
 		})
 	})
 

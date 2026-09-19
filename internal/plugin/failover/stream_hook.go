@@ -1536,6 +1536,45 @@ func failoverTransportError(providerName string, err error) *provider.Error {
 	}
 }
 
+// PermanentFailureAware is the hard-down marking seam. Implemented by
+// *HealthManager; the sync path (markProviderHealth) and the bus path
+// (RateLimitDetector.HandleError / CheckAndMarkRateLimited) both assert
+// it so the two seams apply identical breaker semantics.
+//
+// Expected: implemented by *HealthManager.
+// Returns: nothing.
+// Side effects: MarkPermanentFailure mutates breaker state.
+type PermanentFailureAware interface {
+	// MarkPermanentFailure records one permanent-class failure and
+	// applies the hard-down thresholds.
+	MarkPermanentFailure(provider, model string, errorType provider.ErrorType, errorCode string) bool
+}
+
+// classifyPermanentFailure extracts the typed classification the
+// hard-down breaker counts. Only typed provider errors participate —
+// plain-text heuristics keep pure cooldown semantics so a fuzzy match
+// can never permanently break a provider.
+//
+// Expected: err is the provider attempt error (may be nil).
+// Returns: the typed classification, its auth code, and whether the
+// class counts toward the breaker.
+// Side effects: None.
+func classifyPermanentFailure(err error) (provider.ErrorType, string, bool) {
+	if err == nil || isAggregateFailoverError(err) {
+		return "", "", false
+	}
+	var provErr *provider.Error
+	if !errors.As(err, &provErr) {
+		return "", "", false
+	}
+	switch provErr.ErrorType {
+	case provider.ErrorTypeBilling, provider.ErrorTypeAuthFailure:
+		return provErr.ErrorType, provErr.ErrorCode, true
+	default:
+		return "", "", false
+	}
+}
+
 // markProviderHealth ...
 //
 // Expected: parameters for markProviderHealth.
@@ -1550,6 +1589,11 @@ func markProviderHealth(health RateLimitAware, providerName, model string, err e
 	}
 	if cooldown, ok := classifyProviderHealthCooldown(err); ok {
 		health.MarkRateLimited(providerName, model, time.Now().Add(cooldown))
+	}
+	if pa, ok := health.(PermanentFailureAware); ok {
+		if errorType, errorCode, permanent := classifyPermanentFailure(err); permanent {
+			pa.MarkPermanentFailure(providerName, model, errorType, errorCode)
+		}
 	}
 }
 

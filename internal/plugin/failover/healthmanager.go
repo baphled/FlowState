@@ -34,6 +34,9 @@ type healthEntry struct {
 	consecutiveFails int
 	lastCooldown     time.Duration
 	lastFailureAt    time.Time
+	hardDown         bool
+	hardDownReason   string
+	permanentFails   int
 }
 
 // HealthManager manages provider/model rate-limit health with concurrency safety.
@@ -170,7 +173,7 @@ func (hm *HealthManager) GetHealthState() map[ProviderModel]healthEntry {
 	snapshot := make(map[ProviderModel]healthEntry, len(hm.data))
 	now := time.Now()
 	for k, v := range hm.data {
-		if v.expiresAt.After(now) {
+		if v.hardDown || v.expiresAt.After(now) {
 			snapshot[k] = v
 		}
 	}
@@ -195,7 +198,7 @@ func (hm *HealthManager) GetHealthStateEntries() []HealthStateEntry {
 	now := time.Now()
 	var result []HealthStateEntry
 	for k, v := range hm.data {
-		if v.expiresAt.After(now) {
+		if v.hardDown || v.expiresAt.After(now) {
 			result = append(result, HealthStateEntry{
 				Provider:         k.Provider,
 				Model:            k.Model,
@@ -203,6 +206,8 @@ func (hm *HealthManager) GetHealthStateEntries() []HealthStateEntry {
 				ConsecutiveFails: v.consecutiveFails,
 				LastCooldown:     v.lastCooldown,
 				LastFailureAt:    v.lastFailureAt,
+				HardDown:         v.hardDown,
+				HardDownReason:   v.hardDownReason,
 			})
 		}
 	}
@@ -339,12 +344,16 @@ func (hm *HealthManager) MarkRateLimited(provider, model string, retryAfter time
 	// When the caller passes a past time, they want to clear the entry
 	// (used by tests and the Sleep function to re-open a candidate).
 	// Don't escalate — just record the past expiry so IsRateLimited
-	// returns false on the next check.
+	// returns false on the next check. A hard-down pair is never
+	// re-opened this way: the terminal state outlives cooldowns.
 	if !retryAfter.After(now) {
 		entry := healthEntry{expiresAt: retryAfter, lastFailureAt: retryAfter}
 		if existing, ok := hm.data[key]; ok {
 			entry.consecutiveFails = existing.consecutiveFails
 			entry.lastCooldown = existing.lastCooldown
+			entry.hardDown = existing.hardDown
+			entry.hardDownReason = existing.hardDownReason
+			entry.permanentFails = existing.permanentFails
 		} else {
 			entry.consecutiveFails = 1
 		}
@@ -364,9 +373,13 @@ func (hm *HealthManager) MarkRateLimited(provider, model string, retryAfter time
 	// Escalation: when the existing entry has not yet expired AND the
 	// error type is the same (proxied by newCooldown >= existing cooldown),
 	// double the cooldown capped at 24h and increment consecutiveFails.
-	// When the existing entry has already expired, start fresh.
+	// When the existing entry has already expired, start fresh. The
+	// terminal breaker state carries across every overwrite.
 	if existing, ok := hm.data[key]; ok {
-		if existing.expiresAt.After(now) {
+		newEntry.hardDown = existing.hardDown
+		newEntry.hardDownReason = existing.hardDownReason
+		newEntry.permanentFails = existing.permanentFails
+		if existing.expiresAt.After(now) || existing.hardDown {
 			// Same-pair failure with live cooldown — escalate.
 			escalated := existing.lastCooldown * 2
 			cap := 24 * time.Hour
@@ -415,21 +428,31 @@ func (hm *HealthManager) RateLimitedUntil(provider, model string) (time.Time, bo
 	hm.mu.RLock()
 	defer hm.mu.RUnlock()
 	expiry, ok := hm.data[ProviderModel{Provider: provider, Model: model}]
-	if !ok || !expiry.expiresAt.After(time.Now()) {
+	if !ok || expiry.hardDown {
+		return time.Time{}, false
+	}
+	if !expiry.expiresAt.After(time.Now()) {
 		return time.Time{}, false
 	}
 	return expiry.expiresAt, true
 }
 
-// IsRateLimited returns true if provider/model is currently rate-limited.
+// IsRateLimited returns true if provider/model is currently unavailable:
+// either rate-limited with a live cooldown, or hard-down. Hard-down pairs
+// report unavailable so every consultation site (candidate ranking,
+// attempt selection, agent-chain prepending, the detector hook) skips
+// them exactly like cooldowned ones.
 //
 // Expected: provider and model are non-empty strings.
-// Returns: true if the provider/model is rate-limited and has not yet expired.
+// Returns: true if the provider/model is rate-limited or hard-down.
 // Side effects: none.
 func (hm *HealthManager) IsRateLimited(provider, model string) bool {
 	entry, ok := hm.healthEntry(provider, model)
 	if !ok {
 		return false
+	}
+	if entry.hardDown {
+		return true
 	}
 	if entry.expiresAt.After(time.Now()) {
 		return true
@@ -437,49 +460,145 @@ func (hm *HealthManager) IsRateLimited(provider, model string) bool {
 	return false
 }
 
+// hardDownAuthCodes are the auth-layer error codes that describe
+// billing-class account states. No credential refresh can recover them,
+// so they trip the breaker immediately like a billing rejection.
+var hardDownAuthCodes = map[string]bool{
+	"account_deactivated": true,
+	"billing_not_active":  true,
+}
+
+// hardDownPermanentFailThreshold is the number of consecutive auth
+// failures that trips the breaker when the failure is not a
+// billing-class account code. Two windows remain for the reactive OAuth
+// refresh to recover an expiring token before the pair is retired.
+const hardDownPermanentFailThreshold = 3
+
 // MarkPermanentFailure records one permanent-class failure against a
 // provider/model pair and applies the hard-down circuit breaker
-// thresholds. Billing failures (and auth failures carrying
-// billing-class account codes) trip immediately; other auth failures
-// trip on the third consecutive occurrence. Transient classes are not
-// routed here at all. Stub pending the breaker implementation.
+// thresholds. Billing failures and auth failures carrying billing-class
+// account codes trip immediately; other auth failures trip on the third
+// consecutive occurrence. Transient classes are ignored (return false
+// without state change). The breaker is permanent until
+// ResetProviderHealth — there is no auto re-probe. A trip writes
+// through the persistence debounce so a crash cannot lose it.
 //
 // Expected: provider and model are non-empty; errorType is the typed
 // provider classification; errorCode carries the provider auth code
 // when present.
-// Returns: true when this call tripped the breaker.
-// Side effects: none in the stub.
+// Returns: true when the pair is hard-down after this call.
+// Side effects: mutates the pair's health state; persists on trip.
 func (hm *HealthManager) MarkPermanentFailure(provider, model string, errorType provider.ErrorType, errorCode string) bool {
-	_ = provider
-	_ = model
-	_ = errorType
-	_ = errorCode
-	return false
+	permanent, immediate := permanentFailureClass(errorType, errorCode)
+	if !permanent {
+		return false
+	}
+	hm.mu.Lock()
+	key := ProviderModel{Provider: provider, Model: model}
+	entry := hm.data[key]
+	entry.permanentFails++
+	entry.lastFailureAt = time.Now()
+	threshold := hardDownPermanentFailThreshold
+	if immediate {
+		threshold = 1
+	}
+	if entry.permanentFails >= threshold && !entry.hardDown {
+		entry.hardDown = true
+		entry.hardDownReason = hardDownReason(errorType, errorCode)
+		hm.data[key] = entry
+		snapshot := make(map[ProviderModel]healthEntry, len(hm.data))
+		for k, v := range hm.data {
+			snapshot[k] = v
+		}
+		if err := hm.PersistState(hm.persistPath, snapshot); err == nil {
+			hm.dirty = false
+			hm.mutations = 0
+			hm.lastPersist = time.Now()
+		}
+		hm.mu.Unlock()
+		return true
+	}
+	hm.data[key] = entry
+	hm.maybePersistLocked()
+	hm.mu.Unlock()
+	return entry.hardDown
+}
+
+// permanentFailureClass reports whether the typed classification is a
+// permanent-failure class the breaker counts, and whether it trips
+// immediately (billing and billing-class account codes) or only after
+// the consecutive threshold (other auth failures).
+//
+// Expected: errorType is the typed provider classification; errorCode
+// may carry a provider auth code.
+// Returns: whether the class counts, and whether it trips immediately.
+// Side effects: none.
+func permanentFailureClass(errorType provider.ErrorType, errorCode string) (permanent, immediate bool) {
+	switch errorType {
+	case provider.ErrorTypeBilling:
+		return true, true
+	case provider.ErrorTypeAuthFailure:
+		return true, hardDownAuthCodes[errorCode]
+	default:
+		return false, false
+	}
+}
+
+// hardDownReason renders the trip cause for the health CLI and logs.
+//
+// Expected: errorType is the typed classification; errorCode may carry
+// a provider auth code.
+// Returns: the human-readable trip reason.
+// Side effects: none.
+func hardDownReason(errorType provider.ErrorType, errorCode string) string {
+	if errorCode != "" {
+		return string(errorType) + "/" + errorCode
+	}
+	return string(errorType)
 }
 
 // MarkHardDown trips the hard-down breaker for a provider/model pair
-// unconditionally. Stub pending the breaker implementation.
+// directly, bypassing the class thresholds. Intended for operator
+// tooling and future explicit unavailability signalling. The state is
+// permanent until ResetProviderHealth.
 //
 // Expected: provider and model are non-empty; reason names the trip
 // cause for observability.
 // Returns: None.
-// Side effects: none in the stub.
+// Side effects: mutates the pair's health state and persists through.
 func (hm *HealthManager) MarkHardDown(provider, model, reason string) {
-	_ = provider
-	_ = model
-	_ = reason
+	hm.mu.Lock()
+	key := ProviderModel{Provider: provider, Model: model}
+	entry := hm.data[key]
+	entry.hardDown = true
+	entry.hardDownReason = reason
+	entry.lastFailureAt = time.Now()
+	hm.data[key] = entry
+	snapshot := make(map[ProviderModel]healthEntry, len(hm.data))
+	for k, v := range hm.data {
+		snapshot[k] = v
+	}
+	if err := hm.PersistState(hm.persistPath, snapshot); err == nil {
+		hm.dirty = false
+		hm.mutations = 0
+		hm.lastPersist = time.Now()
+	}
+	hm.mu.Unlock()
 }
 
 // IsHardDown reports whether the hard-down breaker has tripped for the
-// provider/model pair. Stub pending the breaker implementation.
+// provider/model pair. Hard-down is permanent until ResetProviderHealth
+// — there is no expiry and no auto re-probe.
 //
 // Expected: provider and model are non-empty strings.
-// Returns: false in the stub.
+// Returns: true when the pair is hard-down.
 // Side effects: none.
 func (hm *HealthManager) IsHardDown(provider, model string) bool {
-	_ = provider
-	_ = model
-	return false
+	entry, ok := hm.healthEntry(provider, model)
+	if !ok {
+		return false
+	}
+	return entry.hardDown
 }
 
 // GetHealthyAlternatives returns all ProviderModels not currently rate-limited.
@@ -498,7 +617,7 @@ func (hm *HealthManager) GetHealthyAlternatives(_, _ string) []ProviderModel {
 	var result []ProviderModel
 	now := time.Now()
 	for k, entry := range snapshot {
-		if !entry.expiresAt.After(now) && k.Provider != "" && k.Model != "" {
+		if !entry.hardDown && !entry.expiresAt.After(now) && k.Provider != "" && k.Model != "" {
 			result = append(result, k)
 		}
 	}
@@ -530,6 +649,9 @@ type persistedEntry struct {
 	ConsecutiveFails int    `json:"consecutive_fails,omitempty"`
 	LastCooldownMs   int64  `json:"last_cooldown_ms,omitempty"`
 	LastFailureAt    string `json:"last_failure_at,omitempty"`
+	HardDown         bool   `json:"hard_down,omitempty"`
+	HardDownReason   string `json:"hard_down_reason,omitempty"`
+	PermanentFails   int    `json:"permanent_fails,omitempty"`
 }
 
 // PersistState writes the health state to disk atomically.
@@ -555,6 +677,9 @@ func (hm *HealthManager) PersistState(path string, snapshot map[ProviderModel]he
 			ConsecutiveFails: v.consecutiveFails,
 			LastCooldownMs:   v.lastCooldown.Milliseconds(),
 			LastFailureAt:    v.lastFailureAt.UTC().Format(time.RFC3339),
+			HardDown:         v.hardDown,
+			HardDownReason:   v.hardDownReason,
+			PermanentFails:   v.permanentFails,
 		})
 	}
 	b, err := json.MarshalIndent(entries, "", "  ")
@@ -607,7 +732,9 @@ func (hm *HealthManager) LoadState(path string) error {
 	}
 	now := time.Now()
 
-	// Post-M3: array of records.
+	// Post-M3: array of records. Hard-down entries survive regardless of
+	// expiry — the terminal state is permanent until operator reset, so
+	// the expiry sweep must not drop them.
 	var entries []persistedEntry
 	if jerr := json.Unmarshal(b, &entries); jerr == nil {
 		for _, e := range entries {
@@ -615,10 +742,10 @@ func (hm *HealthManager) LoadState(path string) error {
 				continue
 			}
 			t, perr := time.Parse(time.RFC3339, e.ExpiresAt)
-			if perr != nil {
+			if perr != nil && !e.HardDown {
 				continue
 			}
-			if t.After(now) {
+			if e.HardDown || t.After(now) {
 				failureAt := t
 				if e.LastFailureAt != "" {
 					if parsedFailureAt, ferr := time.Parse(time.RFC3339, e.LastFailureAt); ferr == nil {
@@ -632,6 +759,9 @@ func (hm *HealthManager) LoadState(path string) error {
 					consecutiveFails: e.ConsecutiveFails,
 					lastCooldown:     time.Duration(e.LastCooldownMs) * time.Millisecond,
 					lastFailureAt:    failureAt,
+					hardDown:         e.HardDown,
+					hardDownReason:   e.HardDownReason,
+					permanentFails:   e.PermanentFails,
 				}
 			}
 		}

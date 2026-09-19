@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/baphled/flowstate/internal/provider"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -266,5 +268,129 @@ var _ = Describe("HealthManager persist debounce", func() {
 		fresh.SetPersistPath(path)
 		Expect(fresh.LoadState(path)).To(Succeed())
 		Expect(fresh.IsRateLimited("zai", "glm-4.6")).To(BeTrue())
+	})
+})
+
+var _ = Describe("HealthManager hard-down circuit breaker", func() {
+	var (
+		health *HealthManager
+	)
+
+	BeforeEach(func() {
+		health = NewHealthManager()
+		health.SetPersistPath(filepath.Join(GinkgoT().TempDir(), "provider-health.json"))
+	})
+
+	Describe("trip thresholds", func() {
+		It("trips hard-down on a single billing failure", func() {
+			tripped := health.MarkPermanentFailure("zai", "glm-5", provider.ErrorTypeBilling, "")
+			Expect(tripped).To(BeTrue(), "billing is terminal after one failure")
+			Expect(health.IsHardDown("zai", "glm-5")).To(BeTrue())
+		})
+
+		It("trips hard-down on a single auth failure carrying a billing-class account code", func() {
+			tripped := health.MarkPermanentFailure("openai", "gpt-4o", provider.ErrorTypeAuthFailure, "account_deactivated")
+			Expect(tripped).To(BeTrue(), "account_deactivated is a billing-class account state")
+			Expect(health.IsHardDown("openai", "gpt-4o")).To(BeTrue())
+
+			health.ResetProviderHealth("openai", "gpt-4o")
+			tripped = health.MarkPermanentFailure("openai", "gpt-4o", provider.ErrorTypeAuthFailure, "billing_not_active")
+			Expect(tripped).To(BeTrue(), "billing_not_active is a billing-class account state")
+			Expect(health.IsHardDown("openai", "gpt-4o")).To(BeTrue())
+		})
+
+		It("trips hard-down on the third consecutive auth failure, not sooner", func() {
+			Expect(health.MarkPermanentFailure("openai", "gpt-4o", provider.ErrorTypeAuthFailure, "")).To(BeFalse())
+			Expect(health.IsHardDown("openai", "gpt-4o")).To(BeFalse(),
+				"one auth failure leaves room for an OAuth refresh to recover the credential")
+
+			Expect(health.MarkPermanentFailure("openai", "gpt-4o", provider.ErrorTypeAuthFailure, "")).To(BeFalse())
+			Expect(health.IsHardDown("openai", "gpt-4o")).To(BeFalse(),
+				"two auth failures still leave one refresh chance")
+
+			Expect(health.MarkPermanentFailure("openai", "gpt-4o", provider.ErrorTypeAuthFailure, "")).To(BeTrue())
+			Expect(health.IsHardDown("openai", "gpt-4o")).To(BeTrue(),
+				"three consecutive auth failures mean the credential cannot recover")
+		})
+
+		It("never trips hard-down on transient classes", func() {
+			Expect(health.MarkPermanentFailure("zai", "glm-5", provider.ErrorTypeRateLimit, "")).To(BeFalse())
+			Expect(health.MarkPermanentFailure("zai", "glm-5", provider.ErrorTypeOverload, "")).To(BeFalse())
+			Expect(health.MarkPermanentFailure("zai", "glm-5", provider.ErrorTypeNetworkError, "")).To(BeFalse())
+			Expect(health.MarkPermanentFailure("zai", "glm-5", provider.ErrorTypeServerError, "")).To(BeFalse())
+			Expect(health.IsHardDown("zai", "glm-5")).To(BeFalse(),
+				"transient classes keep cooldown semantics and never break the provider")
+		})
+
+		It("keeps the hard-down pair visible to IsRateLimited so every consultation site skips it", func() {
+			health.MarkPermanentFailure("zai", "glm-5", provider.ErrorTypeBilling, "")
+			Expect(health.IsRateLimited("zai", "glm-5")).To(BeTrue(),
+				"hard-down pairs must be skipped exactly like rate-limited ones")
+		})
+	})
+
+	Describe("persistence", func() {
+		It("survives LoadState past any cooldown expiry", func() {
+			health.MarkPermanentFailure("zai", "glm-5", provider.ErrorTypeBilling, "")
+			Expect(health.Flush()).To(Succeed())
+
+			reloaded := NewHealthManager()
+			reloaded.SetPersistPath(health.PersistPath())
+			Expect(reloaded.LoadState(health.PersistPath())).To(Succeed())
+			Expect(reloaded.IsHardDown("zai", "glm-5")).To(BeTrue(),
+				"hard-down is permanent — expiry sweeping must not drop it")
+		})
+
+		It("keeps a persisted hard-down entry whose cooldown already expired", func() {
+			health.MarkRateLimited("zai", "glm-5", time.Now().Add(-time.Minute))
+			health.MarkPermanentFailure("zai", "glm-5", provider.ErrorTypeBilling, "")
+			Expect(health.Flush()).To(Succeed())
+
+			reloaded := NewHealthManager()
+			reloaded.SetPersistPath(health.PersistPath())
+			Expect(reloaded.LoadState(health.PersistPath())).To(Succeed())
+			Expect(reloaded.IsHardDown("zai", "glm-5")).To(BeTrue(),
+				"an expired cooldown on a hard-down entry must not resurrect the provider")
+			Expect(reloaded.IsRateLimited("zai", "glm-5")).To(BeTrue())
+		})
+
+		It("excludes hard-down pairs from healthy alternatives", func() {
+			health.MarkRateLimited("openai", "gpt-4o", time.Now().Add(time.Hour))
+			health.MarkPermanentFailure("zai", "glm-5", provider.ErrorTypeBilling, "")
+			alternatives := health.GetHealthyAlternatives("", "")
+			for _, alt := range alternatives {
+				Expect(alt.Provider).NotTo(Equal("zai"),
+					"hard-down pairs must not be offered as healthy alternatives")
+			}
+		})
+
+		It("surfaces hard-down entries to the health CLI snapshot", func() {
+			health.MarkPermanentFailure("zai", "glm-5", provider.ErrorTypeBilling, "")
+			entries := health.GetHealthStateEntries()
+			var found bool
+			for _, e := range entries {
+				if e.Provider == "zai" && e.Model == "glm-5" {
+					found = e.HardDown
+				}
+			}
+			Expect(found).To(BeTrue(), "the CLI snapshot must carry the hard-down marker")
+		})
+	})
+
+	Describe("reset", func() {
+		It("clears the hard-down state through ResetProviderHealth", func() {
+			health.MarkPermanentFailure("zai", "glm-5", provider.ErrorTypeBilling, "")
+			Expect(health.ResetProviderHealth("zai", "glm-5")).To(Succeed())
+			Expect(health.IsHardDown("zai", "glm-5")).To(BeFalse(),
+				"the operator reset path un-trips the breaker")
+			Expect(health.IsRateLimited("zai", "glm-5")).To(BeFalse())
+		})
+	})
+
+	It("persists the trip immediately so a crash cannot lose it", func() {
+		health.MarkPermanentFailure("zai", "glm-5", provider.ErrorTypeBilling, "")
+		_, statErr := os.Stat(health.PersistPath())
+		Expect(statErr).NotTo(HaveOccurred(),
+			"hard-down trips must write through the persistence debounce")
 	})
 })

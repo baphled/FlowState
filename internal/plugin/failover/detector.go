@@ -27,12 +27,18 @@ import (
 // Side effects:
 //   - May update health state for the given provider/model.
 func CheckAndMarkRateLimited(health RateLimitAware, providerName, model string, err error) bool {
-	cooldown, ok := classifyProviderHealthCooldown(err)
-	if !ok {
-		return false
+	marked := false
+	if cooldown, ok := classifyProviderHealthCooldown(err); ok {
+		health.MarkRateLimited(providerName, model, time.Now().Add(cooldown))
+		marked = true
 	}
-	health.MarkRateLimited(providerName, model, time.Now().Add(cooldown))
-	return true
+	if pa, ok := health.(PermanentFailureAware); ok {
+		if errorType, errorCode, permanent := classifyPermanentFailure(err); permanent {
+			pa.MarkPermanentFailure(providerName, model, errorType, errorCode)
+			marked = true
+		}
+	}
+	return marked
 }
 
 // CooldownForErrorType returns the recommended cooldown duration for a given provider error type.
@@ -155,6 +161,11 @@ func (d *RateLimitDetector) HandleError(event any) {
 			ProviderName: data.ProviderName,
 		}))
 		d.publishCooldownNotification(data.ProviderName, data.ModelName, cooldown)
+	}
+	if pa, ok := d.health.(PermanentFailureAware); ok {
+		if errorType, errorCode, permanent := classifyPermanentFailure(data.Error); permanent {
+			pa.MarkPermanentFailure(data.ProviderName, data.ModelName, errorType, errorCode)
+		}
 	}
 }
 
