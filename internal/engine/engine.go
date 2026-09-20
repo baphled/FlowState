@@ -2327,7 +2327,12 @@ func (e *Engine) ReseedFailoverBasePreferences(manifest agent.Manifest, provider
 		prefs = append(prefs, mp)
 	}
 	// Strict-policy agents only ever run on their declared models — no
-	// config fallback tail. Matches createDelegateEngine.
+	// config fallback tail. Matches createDelegateEngine. The one
+	// exception: when the strict head has tripped the hard-down breaker
+	// the healthy global chain is appended as a fallback tail so an
+	// unpaid provider does not doom the agent (adaptive provider
+	// health; the dead head stays in the chain and is skipped at
+	// attempt time).
 	if manifest.ModelPolicy != agent.ModelPolicyStrict {
 		for _, p := range configBaseline {
 			key := p.Provider + "/" + p.Model
@@ -2337,6 +2342,8 @@ func (e *Engine) ReseedFailoverBasePreferences(manifest agent.Manifest, provider
 			seen[key] = true
 			prefs = append(prefs, p)
 		}
+	} else if e.failoverManager != nil {
+		prefs = failover.StrictChainWithHealthyFallback(prefs, configBaseline, e.failoverManager.Health())
 	}
 
 	manifestHead := prefs[0]

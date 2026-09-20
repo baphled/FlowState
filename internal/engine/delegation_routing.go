@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
 )
 
@@ -266,7 +267,7 @@ func (d *DelegateTool) resolveChildModelChain(parentSessionID string, target del
 	}
 	manifestChain := d.fetchManifestChain(target)
 	if target.resolvedProvider == "" && target.resolvedModel == "" {
-		return manifestChain
+		return d.withHealthyStrictFallback(manifestChain)
 	}
 	categoryPair := provider.ModelPreference{Provider: target.resolvedProvider, Model: target.resolvedModel}
 	if len(manifestChain) == 0 {
@@ -281,6 +282,24 @@ func (d *DelegateTool) resolveChildModelChain(parentSessionID string, target del
 		chain = append(chain, pref)
 	}
 	return chain
+}
+
+// withHealthyStrictFallback applies the shared adaptive-health fallback
+// to a resolved child chain when the app failover layer is wired: a
+// hard-down chain head gains the healthy global chain as a fallback
+// tail so a strict-pinned delegate child completes its work instead of
+// dying with "all providers failed". The historical behaviour is
+// preserved untouched for callers without the wiring.
+//
+// Expected: chain is the resolved child chain (may be nil).
+// Returns: the chain unchanged without wiring or a healthy head; the
+// chain plus the healthy global tail when the head is hard-down.
+// Side effects: emits one WARN per pinned pair on the first fallback.
+func (d *DelegateTool) withHealthyStrictFallback(chain []provider.ModelPreference) []provider.ModelPreference {
+	if d.failoverManager == nil || len(chain) == 0 {
+		return chain
+	}
+	return failover.StrictChainWithHealthyFallback(chain, d.failoverManager.Preferences(), d.failoverManager.Health())
 }
 
 // parentPinnedModelPair returns the parent session's explicitly pinned

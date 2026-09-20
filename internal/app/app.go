@@ -2291,6 +2291,13 @@ func (a *App) wireCoordinationToolIfDeclared(
 func (a *App) configureDelegateTool(dt *engine.DelegateTool, eng *engine.Engine) {
 	dt.WithRegistry(a.Registry)
 
+	// Adaptive provider health: child chains resolved against the
+	// hard-down breaker need the app failover layer for the healthy
+	// fallback tail.
+	if a.plugins != nil && a.plugins.failoverManager != nil {
+		dt.WithFailoverManager(a.plugins.failoverManager)
+	}
+
 	if embedder := a.resolveEmbedder(); embedder != nil {
 		ed := discovery.NewEmbeddingDiscovery(a.Registry, embedder)
 		dt.SetEmbeddingDiscovery(ed)
@@ -2619,7 +2626,10 @@ func (a *App) createDelegateEngine(
 			prefs := agentToProviderPreferences(manifest.PreferredModels)
 			// For permissive/empty policy, append parent preferences as fallback so
 			// delegation survives when all declared preferred models are rate-limited.
-			// Strict-policy agents must only run on their declared models — no fallback.
+			// Strict-policy agents must only run on their declared models — no fallback,
+			// unless the strict head has tripped the hard-down breaker: then the
+			// healthy parent chain is appended as a fallback tail so an unpaid
+			// provider does not doom the delegated child (adaptive provider health).
 			if manifest.ModelPolicy != agent.ModelPolicyStrict && a.plugins.failoverManager != nil {
 				seen := make(map[string]bool, len(prefs))
 				for _, p := range prefs {
@@ -2631,6 +2641,8 @@ func (a *App) createDelegateEngine(
 						seen[p.Provider+"/"+p.Model] = true
 					}
 				}
+			} else if manifest.ModelPolicy == agent.ModelPolicyStrict && a.plugins.failoverManager != nil {
+				prefs = failover.StrictChainWithHealthyFallback(prefs, a.plugins.failoverManager.Preferences(), a.plugins.healthManager)
 			}
 			childFailoverMgr.SetBasePreferences(prefs)
 		} else if a.plugins.failoverManager != nil {

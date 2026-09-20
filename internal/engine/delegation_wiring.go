@@ -12,6 +12,7 @@ import (
 	"github.com/baphled/flowstate/internal/delegation"
 	"github.com/baphled/flowstate/internal/discovery"
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
@@ -96,6 +97,20 @@ func (d *DelegateTool) withChildTurnRegistry(reg childTurnRegistry) *DelegateToo
 //   - Sets the streamers map on the DelegateTool.
 func (d *DelegateTool) WithStreamers(streamers map[string]streaming.Streamer) *DelegateTool {
 	d.streamers = streamers
+	return d
+}
+
+// WithFailoverManager wires the app-level failover manager consulted
+// when resolving child model chains. A strict manifest whose head has
+// tripped the hard-down breaker resolves with the healthy global chain
+// appended as a fallback tail. Nil (the zero value) keeps the
+// historical chain resolution.
+//
+// Expected: mgr may be nil to clear the wiring.
+// Returns: the DelegateTool for chaining.
+// Side effects: replaces the failover manager reference.
+func (d *DelegateTool) WithFailoverManager(mgr *failover.Manager) *DelegateTool {
+	d.failoverManager = mgr
 	return d
 }
 

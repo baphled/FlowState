@@ -1708,18 +1708,30 @@ func (fs *FailoverSteps) theGlobalChainIs(p1, m1, p2, m2 string) error {
 	return nil
 }
 
+// pinnedPair reports the pair the fallback scenario considers pinned:
+// the strict chain head when armed, otherwise the single-candidate pin.
+//
+// Returns: the pinned provider and model, or empty strings.
+func (fs *FailoverSteps) pinnedPair() (string, string) {
+	if len(fs.strictChain) > 0 {
+		head := fs.strictChain[0]
+		return head.Provider, head.Model
+	}
+	return fs.candidateProvider, fs.candidateModel
+}
+
 // thePinnedPairIsHardDown trips the hard-down breaker on the strict
 // chain's head.
 //
-// Expected: the strict chain was initialised.
-// Returns: an error when the strict chain is missing.
+// Expected: the strict chain (or single-candidate pin) was initialised.
+// Returns: an error when no pin is armed.
 // Side effects: mutates health state.
 func (fs *FailoverSteps) thePinnedPairIsHardDown() error {
-	if len(fs.strictChain) == 0 {
-		return errors.New("strict chain not initialised")
+	providerName, model := fs.pinnedPair()
+	if providerName == "" || model == "" {
+		return errors.New("no pinned pair armed")
 	}
-	head := fs.strictChain[0]
-	fs.health.MarkHardDown(head.Provider, head.Model, "scenario pin")
+	fs.health.MarkHardDown(providerName, model, "scenario pin")
 	return nil
 }
 
@@ -1792,13 +1804,22 @@ func (fs *FailoverSteps) theFallbackProviderSucceeds(providerName string) error 
 // Returns: an error when the stream fails to open.
 // Side effects: records the winning provider.
 func (fs *FailoverSteps) failoverHookExecutesChatRequestPinnedTo(providerName, model string) error {
+	pin := []provider.ModelPreference{{Provider: providerName, Model: model}}
+	if len(fs.strictChain) > 0 {
+		pin = fs.strictChain
+	}
+	resolved := pin
+	if len(fs.globalChain) > 0 {
+		resolved = failover.StrictChainWithHealthyFallback(pin, fs.globalChain, fs.health)
+	}
+	fs.manager.SetBasePreferences(resolved)
 	attemptRecording := hook.HandlerFunc(func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 		fs.attemptedMu.Lock()
 		fs.attemptedProviders = append(fs.attemptedProviders, req.Provider)
 		fs.attemptedMu.Unlock()
 		return failoverBaseHandler(fs.registry)(ctx, req)
 	})
-	chainCtx := session.WithPreferredModels(context.Background(), fs.strictChain)
+	chainCtx := session.WithPreferredModels(context.Background(), pin)
 	handler := fs.streamHook.Execute(attemptRecording)
 	ch, err := handler(chainCtx, &provider.ChatRequest{Provider: providerName, Model: model})
 	if err != nil {
@@ -1832,19 +1853,19 @@ func (fs *FailoverSteps) theTurnShouldCompleteOn(providerName string) error {
 // thePinnedProviderShouldNeverBeApplied asserts the dead pin never
 // received an attempt.
 //
-// Expected: the strict chain was initialised.
-// Returns: an error when the pin was attempted.
+// Expected: a pinned pair is armed.
+// Returns: an error when the pin was attempted or nothing is armed.
 // Side effects: None.
 func (fs *FailoverSteps) thePinnedProviderShouldNeverBeAttempted() error {
-	if len(fs.strictChain) == 0 {
-		return errors.New("strict chain not initialised")
+	providerName, _ := fs.pinnedPair()
+	if providerName == "" {
+		return errors.New("no pinned pair armed")
 	}
-	head := fs.strictChain[0]
 	fs.attemptedMu.Lock()
 	defer fs.attemptedMu.Unlock()
 	for _, p := range fs.attemptedProviders {
-		if p == head.Provider {
-			return fmt.Errorf("the hard-down pin %q must never be attempted", head.Provider)
+		if p == providerName {
+			return fmt.Errorf("the hard-down pin %q must never be attempted", providerName)
 		}
 	}
 	return nil

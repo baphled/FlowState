@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -3382,5 +3383,91 @@ var _ = Describe("Engine", func() {
 				Expect(hasResponse).To(BeTrue(), "response content should be forwarded")
 			})
 		})
+	})
+})
+
+var _ = Describe("Strict pin fallback to the healthy chain", func() {
+	It("completes a strict-pinned turn on the healthy fallback when the head is hard-down", func() {
+		health := failover.NewHealthManager()
+		health.SetPersistPath(filepath.Join(GinkgoT().TempDir(), "provider-health.json"))
+		providerReg := provider.NewRegistry()
+		providerReg.Register(&mockProvider{
+			name: "anthropic",
+			streamErr: &provider.Error{
+				HTTPStatus: 400,
+				ErrorType:  provider.ErrorTypeBilling,
+				Provider:   "anthropic",
+				Message:    "insufficient balance",
+			},
+		})
+		providerReg.Register(&mockProvider{
+			name:         "zai",
+			streamChunks: []provider.StreamChunk{{Content: "healthy fallback reply", Done: true}},
+		})
+		failoverMgr := failover.NewManager(providerReg, health, 2*time.Second)
+		failoverMgr.SetBasePreferences([]provider.ModelPreference{
+			{Provider: "zai", Model: "glm-4.6"},
+		})
+
+		manifest := agent.Manifest{
+			ID:   "junior-engineer",
+			Name: "Junior Engineer",
+			Capabilities: agent.Capabilities{
+				Tools: []string{},
+			},
+			ModelPolicy:      agent.ModelPolicyStrict,
+			PreferredModels: []agent.ModelPreference{{Provider: "anthropic", Model: "claude-sonnet-4"}},
+		}
+		eng := engine.New(engine.Config{
+			ChatProvider:   &mockProvider{name: "zai"},
+			Registry:       providerReg,
+			FailoverManager: failoverMgr,
+			Manifest:       manifest,
+			Tools:          []tool.Tool{},
+		})
+
+		health.MarkHardDown("anthropic", "claude-sonnet-4", "billing")
+
+		var logBuf strings.Builder
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		eng.ReseedFailoverBasePreferences(manifest, "", "")
+		slog.SetDefault(previous)
+
+		Expect(logBuf.String()).To(ContainSubstring("pinned provider hard-down"),
+			"the fallback must WARN once naming the pinned pair")
+		Expect(logBuf.String()).To(ContainSubstring("anthropic"))
+		Expect(logBuf.String()).To(ContainSubstring("claude-sonnet-4"))
+
+		prefs := failoverMgr.Preferences()
+		Expect(prefs).NotTo(BeEmpty())
+		Expect(prefs[0]).To(Equal(provider.ModelPreference{Provider: "anthropic", Model: "claude-sonnet-4"}),
+			"the dead pin stays at the head of the preferences — skipped at attempt time")
+		var hasZai bool
+		for _, p := range prefs {
+			if p.Provider == "zai" {
+				hasZai = true
+			}
+		}
+		Expect(hasZai).To(BeTrue(), "the healthy global chain is appended as the fallback tail")
+
+		const sessionID = "strict-fallback-session"
+		ctx := context.WithValue(context.Background(), session.IDKey{}, sessionID)
+		chunks, err := eng.Stream(ctx, sessionID, "Do the work")
+		Expect(err).NotTo(HaveOccurred())
+
+		var contents []string
+		var sawDone bool
+		for c := range chunks {
+			if c.Content != "" {
+				contents = append(contents, c.Content)
+			}
+			if c.Done {
+				sawDone = true
+			}
+		}
+		Expect(sawDone).To(BeTrue(), "the turn must complete instead of failing with all-providers-failed")
+		Expect(strings.Join(contents, " ")).To(ContainSubstring("healthy fallback reply"),
+			"the strict-pinned turn completes on the healthy fallback")
 	})
 })

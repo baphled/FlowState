@@ -15,6 +15,7 @@ import (
 	"github.com/baphled/flowstate/internal/delegation"
 	"github.com/baphled/flowstate/internal/discovery"
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/session"
@@ -107,6 +108,13 @@ type DelegateTool struct {
 	sessionsDir        string // sessionsDir is the directory for session metadata persistence.
 	streamers          map[string]streaming.Streamer
 	rejectionTracker   *delegation.RejectionTracker
+	// failoverManager is the app-level failover manager consulted when
+	// resolving a child's model chain: a strict manifest whose head has
+	// tripped the hard-down breaker gets the healthy global chain
+	// appended as a fallback tail (adaptive provider health). Nil keeps
+	// the historical chain resolution for callers that have not wired
+	// the app failover layer (unit tests).
+	failoverManager *failover.Manager
 	// toolCapableModels is the allow-list of model-name patterns the
 	// resolved sub-agent's model must match before the sub-engine is
 	// streamed. Empty / nil means "skip the gate" — preserves the
