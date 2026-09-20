@@ -3415,15 +3415,15 @@ var _ = Describe("Strict pin fallback to the healthy chain", func() {
 			Capabilities: agent.Capabilities{
 				Tools: []string{},
 			},
-			ModelPolicy:      agent.ModelPolicyStrict,
+			ModelPolicy:     agent.ModelPolicyStrict,
 			PreferredModels: []agent.ModelPreference{{Provider: "anthropic", Model: "claude-sonnet-4"}},
 		}
 		eng := engine.New(engine.Config{
-			ChatProvider:   &mockProvider{name: "zai"},
-			Registry:       providerReg,
+			ChatProvider:    &mockProvider{name: "zai"},
+			Registry:        providerReg,
 			FailoverManager: failoverMgr,
-			Manifest:       manifest,
-			Tools:          []tool.Tool{},
+			Manifest:        manifest,
+			Tools:           []tool.Tool{},
 		})
 
 		health.MarkHardDown("anthropic", "claude-sonnet-4", "billing")
