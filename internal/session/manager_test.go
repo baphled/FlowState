@@ -1589,12 +1589,14 @@ var _ = Describe("Manager", func() {
 
 				ctx := context.Background()
 				mockStream.addChunk(provider.StreamChunk{Content: "Hello"})
-				_, err = mgr.SendMessage(ctx, sess.ID, "Hi")
+				stream, err := mgr.SendMessage(ctx, sess.ID, "Hi")
 				Expect(err).NotTo(HaveOccurred())
+				for range stream {
+				}
 
 				summaries := mgr.ListSessions()
 				Expect(summaries).To(HaveLen(1))
-				Expect(summaries[0].MessageCount).To(Equal(1))
+				Expect(summaries[0].MessageCount).To(Equal(2))
 			})
 		})
 
@@ -1789,21 +1791,26 @@ var _ = Describe("Manager", func() {
 
 			It("calls the streamer with the correct agent ID", func() {
 				mockStream.addChunk(provider.StreamChunk{Done: true})
-				_, err := mgr.SendMessage(ctx, sess.ID, "Test message")
+				stream, err := mgr.SendMessage(ctx, sess.ID, "Test message")
 				Expect(err).NotTo(HaveOccurred())
+				for range stream {
+				}
 				Expect(mockStream.lastAgentID).To(Equal("test-agent"))
 			})
 
 			It("adds the message to the session history", func() {
 				mockStream.addChunk(provider.StreamChunk{Done: true})
-				_, err := mgr.SendMessage(ctx, sess.ID, "User message")
+				stream, err := mgr.SendMessage(ctx, sess.ID, "User message")
 				Expect(err).NotTo(HaveOccurred())
+				for range stream {
+				}
 
 				sess, err = mgr.GetSession(sess.ID)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(sess.Messages).To(HaveLen(1))
+				Expect(sess.Messages).To(HaveLen(2))
 				Expect(sess.Messages[0].Role).To(Equal("user"))
 				Expect(sess.Messages[0].Content).To(Equal("User message"))
+				Expect(sess.Messages[1].Role).To(Equal("assistant"))
 			})
 
 			It("receives chunks from the streamer channel", func() {
@@ -1835,8 +1842,10 @@ var _ = Describe("Manager", func() {
 			It("injects CurrentModelID and CurrentProviderID into the stream context when both are set", func() {
 				Expect(mgr.UpdateSessionModel(sess.ID, "anthropic", "claude-opus-4.7")).To(Succeed())
 				mockStream.addChunk(provider.StreamChunk{Done: true})
-				_, err := mgr.SendMessage(ctx, sess.ID, "test")
+				stream, err := mgr.SendMessage(ctx, sess.ID, "test")
 				Expect(err).NotTo(HaveOccurred())
+				for range stream {
+				}
 				Expect(mockStream.lastProviderOverride).To(Equal("anthropic"))
 				Expect(mockStream.lastModelOverride).To(Equal("claude-opus-4.7"))
 			})
@@ -1845,16 +1854,20 @@ var _ = Describe("Manager", func() {
 				Expect(mgr.UpdateSessionModel(sess.ID, "openai", "")).To(Succeed())
 
 				mockStream.addChunk(provider.StreamChunk{Done: true})
-				_, err := mgr.SendMessage(ctx, sess.ID, "test")
+				stream, err := mgr.SendMessage(ctx, sess.ID, "test")
 				Expect(err).NotTo(HaveOccurred())
+				for range stream {
+				}
 				Expect(mockStream.lastProviderOverride).To(Equal("openai"))
 				Expect(mockStream.lastModelOverride).To(BeEmpty())
 			})
 
 			It("passes empty overrides when no session model/provider is configured", func() {
 				mockStream.addChunk(provider.StreamChunk{Done: true})
-				_, err := mgr.SendMessage(ctx, sess.ID, "test")
+				stream, err := mgr.SendMessage(ctx, sess.ID, "test")
 				Expect(err).NotTo(HaveOccurred())
+				for range stream {
+				}
 				Expect(mockStream.lastProviderOverride).To(BeEmpty())
 				Expect(mockStream.lastModelOverride).To(BeEmpty())
 			})
@@ -3066,8 +3079,10 @@ var _ = Describe("Manager", func() {
 			// produces 3 user + 3 placeholder = 6 persisted messages.
 			for _, text := range []string{"first", "second", "third"} {
 				mockStream.addChunk(provider.StreamChunk{Done: true})
-				_, err = mgr.SendMessage(ctx, sess.ID, text)
+				stream, err := mgr.SendMessage(ctx, sess.ID, text)
 				Expect(err).NotTo(HaveOccurred())
+				for range stream {
+				}
 			}
 			// Drain accumulator goroutines for all sessions before reading.
 			Eventually(func() int {
@@ -3139,8 +3154,10 @@ var _ = Describe("Manager", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				mockStream.addChunk(provider.StreamChunk{Done: true})
-				_, err = mgr.SendMessage(ctx, sess.ID, "hello")
+				stream, err := mgr.SendMessage(ctx, sess.ID, "hello")
 				Expect(err).NotTo(HaveOccurred())
+				for range stream {
+				}
 
 				Expect(mockStream.lastAgentID).To(Equal("agent-b"),
 					"SendMessage must use the switched-to agent, not the original session agent")
@@ -3148,8 +3165,10 @@ var _ = Describe("Manager", func() {
 
 			It("falls back to the original agent if UpdateSessionAgent was never called", func() {
 				mockStream.addChunk(provider.StreamChunk{Done: true})
-				_, err := mgr.SendMessage(ctx, sess.ID, "hello")
+				stream, err := mgr.SendMessage(ctx, sess.ID, "hello")
 				Expect(err).NotTo(HaveOccurred())
+				for range stream {
+				}
 
 				Expect(mockStream.lastAgentID).To(Equal("agent-a"),
 					"SendMessage must use the original session agent when no switch has occurred")
@@ -3183,8 +3202,10 @@ var _ = Describe("Manager", func() {
 				Expect(mgr.UpdateSessionAgent(sess.ID, "agent-b")).To(Succeed())
 
 				mockStream.addChunk(provider.StreamChunk{Done: true})
-				_, err := mgr.SendMessage(ctx, sess.ID, "hello after switch")
+				stream, err := mgr.SendMessage(ctx, sess.ID, "hello after switch")
 				Expect(err).NotTo(HaveOccurred())
+				for range stream {
+				}
 
 				stored, err := mgr.GetSession(sess.ID)
 				Expect(err).NotTo(HaveOccurred())
@@ -3200,8 +3221,10 @@ var _ = Describe("Manager", func() {
 				// message carries it (i.e. the resolution rule is the same
 				// as the streaming path, not "always sess.AgentID").
 				mockStream.addChunk(provider.StreamChunk{Done: true})
-				_, err := mgr.SendMessage(ctx, sess.ID, "hello no switch")
+				stream, err := mgr.SendMessage(ctx, sess.ID, "hello no switch")
 				Expect(err).NotTo(HaveOccurred())
+				for range stream {
+				}
 
 				stored, err := mgr.GetSession(sess.ID)
 				Expect(err).NotTo(HaveOccurred())
