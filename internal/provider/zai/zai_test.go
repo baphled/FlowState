@@ -98,7 +98,8 @@ var _ = Describe("ZAI Provider", func() {
 				contextLength int
 				outputLimit   int
 			}{
-				{id: "glm-5", contextLength: 128000, outputLimit: 8192},
+				{id: "glm-5.3", contextLength: 128000, outputLimit: 8192},
+				{id: "glm-5.2", contextLength: 128000, outputLimit: 8192},
 				{id: "glm-4.7", contextLength: 128000, outputLimit: 8192},
 				{id: "glm-4.7-flash", contextLength: 128000, outputLimit: 8192},
 				{id: "glm-4.6", contextLength: 128000, outputLimit: 8192},

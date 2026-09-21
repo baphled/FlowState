@@ -363,6 +363,7 @@ func (p *Provider) fetchModels() ([]provider.Model, error) {
 //   - None.
 func fallbackModels() []provider.Model {
 	return []provider.Model{
+		{ID: "glm-5.3", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
 		{ID: "glm-5.2", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
 		{ID: "glm-5", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
 		{ID: "glm-4.7", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
