@@ -78,12 +78,16 @@ var _ = Describe("flowstate auth csrf-key gen — save-to-config behaviour (Auth
 		cfg := config.DefaultConfig()
 		cfg.DataDir = filepath.Join(tmpDir, "data")
 		Expect(os.MkdirAll(cfg.DataDir, 0o700)).To(Succeed())
+		// Suppress PATH-discovered MCP servers (fix for the suite hang).
+		cfg.MCPServers = cliTestDisabledMCPServers()
 
 		testApp, err = app.New(cfg)
 		Expect(err).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
+		// Stop leaked goroutines (drainLoop, quotaPersistLoop, memstore) between specs.
+		Expect(testApp.Shutdown()).To(Succeed())
 		Expect(os.Unsetenv("OPENAI_API_KEY")).To(Succeed())
 		if envWasSet {
 			Expect(os.Setenv("FLOWSTATE_AUTH_CSRF_KEY", originalEnv)).To(Succeed())

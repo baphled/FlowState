@@ -60,6 +60,8 @@ var _ = Describe("flowstate auth reset (admin recovery — Auth Track C9 PR4 + p
 		cfg := config.DefaultConfig()
 		cfg.DataDir = filepath.Join(tmpDir, "data")
 		Expect(os.MkdirAll(cfg.DataDir, 0o700)).To(Succeed())
+		// Suppress PATH-discovered MCP servers (fix for the suite hang).
+		cfg.MCPServers = cliTestDisabledMCPServers()
 
 		testApp, err = app.New(cfg)
 		Expect(err).NotTo(HaveOccurred())
@@ -77,6 +79,8 @@ var _ = Describe("flowstate auth reset (admin recovery — Auth Track C9 PR4 + p
 	})
 
 	AfterEach(func() {
+		// Stop leaked goroutines (drainLoop, quotaPersistLoop, memstore) between specs.
+		Expect(testApp.Shutdown()).To(Succeed())
 		// Restore production stdin probe.
 		cli.RestoreStdinIsTerminal()
 		cli.SetResetStore(nil)

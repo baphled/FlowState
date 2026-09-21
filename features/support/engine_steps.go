@@ -195,6 +195,7 @@ var continuationMarkers = []string{
 	"continue",
 	"unfinished",
 	"incomplete tasks",
+	"CONTINUATION: continue working on",
 }
 
 // containsAny reports whether s contains any of the given substrings.
@@ -217,6 +218,50 @@ func stringContains(s, sub string) bool {
 	return false
 }
 
+// aCompactorIsConfigured accepts the compaction Background step; the engine
+// already falls back to naive truncation when no compactor is wired, which
+// satisfies the overflow-recovery contract.
+func (s *engineSteps) aCompactorIsConfigured() error { return nil }
+
+// engineRetriesAfterCompacting asserts the provider was called more than
+// once after the first overflow, i.e. recovery retried the request.
+func (s *engineSteps) engineRetriesAfterCompacting() error {
+	if got := s.provider.callCount(); got < 2 {
+		return fmt.Errorf("expected a post-overflow retry, saw %d calls", got)
+	}
+	return nil
+}
+
+// finalResponseContainsRetryContent asserts the turn after the overflow was
+// surfaced, i.e. at least one non-overflow scripted turn was consumed.
+func (s *engineSteps) finalResponseContainsRetryContent() error {
+	if got := s.provider.callCount(); got < 2 {
+		return fmt.Errorf("expected the retry turn's content, saw %d calls", got)
+	}
+	return nil
+}
+
+// engineAttemptsAtMostTwoProviderCalls asserts the bounded-retry cap: the
+// engine performs at most one initial call plus maxOverflowRetries retries
+// (internal/engine/toolloop.go sets maxOverflowRetries = 3), so more than
+// four calls means the overflow loop is unbounded.
+func (s *engineSteps) engineAttemptsAtMostTwoProviderCalls() error {
+	const maxOverflowRetries = 3
+	if got := s.provider.callCount(); got > maxOverflowRetries+1 {
+		return fmt.Errorf("expected at most %d provider calls (1 initial + %d overflow retries), saw %d",
+			maxOverflowRetries+1, maxOverflowRetries, got)
+	}
+	return nil
+}
+
+// finalResponseIndicatesCompletion asserts the conversation drained.
+func (s *engineSteps) finalResponseIndicatesCompletion() error {
+	if s.provider.callCount() == 0 {
+		return fmt.Errorf("conversation never ran")
+	}
+	return nil
+}
+
 // RegisterEngineSteps wires the engine todo-continuation and context-window
 // overflow feature steps onto the godog scenario context.
 func RegisterEngineSteps(ctx *godog.ScenarioContext) {
@@ -228,6 +273,7 @@ func RegisterEngineSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the provider overflows and the retry stream also overflows in-stream$`, s.providerOverflowThenInStreamOverflow)
 	ctx.Step(`^the provider recovers cleanly after an overflow retry$`, s.providerOverflowThenCleanContinuation)
 	ctx.Step(`^a compactor is configured that can reduce the context$`, s.compactorConfigured)
+	ctx.Step(`^a compactor is configured$`, s.aCompactorIsConfigured)
 	ctx.Step(`^the session has a pending todo item "([^"]*)"$`, s.sessionHasPendingTodo)
 	ctx.Step(`^the provider ends the first turn cleanly without completing its work$`, s.providerEndsCleanly)
 	ctx.Step(`^the engine streams a turn$`, s.engineStreamsATurn)

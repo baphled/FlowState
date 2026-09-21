@@ -51,6 +51,8 @@ var _ = Describe("flowstate auth user (multi-user provisioning — Auth Track C9
 		cfg := config.DefaultConfig()
 		cfg.DataDir = filepath.Join(tmpDir, "data")
 		Expect(os.MkdirAll(cfg.DataDir, 0o700)).To(Succeed())
+		// Suppress PATH-discovered MCP servers (fix for the suite hang).
+		cfg.MCPServers = cliTestDisabledMCPServers()
 
 		testApp, err = app.New(cfg)
 		Expect(err).NotTo(HaveOccurred())
@@ -294,3 +296,25 @@ var _ = Describe("flowstate auth user (multi-user provisioning — Auth Track C9
 		})
 	})
 })
+
+// cliTestDisabledMCPServers returns an MCPServerConfig slice that
+// explicitly disables every server name config.DiscoverMCPServers can
+// surface (memory, vault-rag, filesystem). appmcp.MergeServers prefers
+// configured entries on name collision, so these explicit
+// enabled=false entries suppress PATH-discovered servers and app.New's
+// MCP Connect loop becomes a no-op instead of shelling out to npx /
+// mcp-mem0-server and blocking on jsonrpc2 handshakes that never return
+// in the sandboxed CLI suite.
+//
+// This is the fix for the internal/cli test hang: goroutine dumps showed
+// app.New blocking in internal/mcp Manager.Connect waiting on a
+// filesystem MCP server (2/3 servers connected, 30s context deadline),
+// which blew the suite's per-spec budget.
+func cliTestDisabledMCPServers() []config.MCPServerConfig {
+	disabled := false
+	return []config.MCPServerConfig{
+		{Name: "memory", Command: "unused-disabled-for-cli-tests", Enabled: &disabled},
+		{Name: "vault-rag", Command: "unused-disabled-for-cli-tests", Enabled: &disabled},
+		{Name: "filesystem", Command: "unused-disabled-for-cli-tests", Enabled: &disabled},
+	}
+}

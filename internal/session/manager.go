@@ -1779,6 +1779,13 @@ func (m *Manager) SendMessage(ctx context.Context, sessionID string, message str
 // decodeToolInputArguments parses a persisted ToolInput string as a JSON
 // object for structured replay onto provider.Message.ToolCalls.
 //
+// Expected:
+//   - raw is a tool-call arguments string as captured from a provider
+//     payload (may be empty, a display string, or non-object JSON).
+//
+// Side effects:
+//   - None; purely functional decode with no I/O or state mutation.
+//
 // Returns:
 //   - The decoded argument map and true when raw is a JSON object carrying
 //     at least one key.

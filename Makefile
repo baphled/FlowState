@@ -3,13 +3,17 @@
 BINARY_NAME=flowstate
 BUILD_DIR=./build
 
-# Go parameters
-GOCMD=go
-GOBUILD=$(GOCMD) build
-GOTEST=$(GOCMD) test
-GOFMT=$(GOCMD) fmt
-GOVET=$(GOCMD) vet
-GOMOD=$(GOCMD) mod
+# Go parameters — hardened: pre-set environment GOTEST/GO* values are
+# rejected so wrapper scripts (e.g. /tmp/gotest-wrap.sh) cannot intercept
+# test runs. Unset GOTEST/GOFLAGS and let make manage these variables.
+GUARDED_VARS := GOTEST GOBUILD GOFMT GOVET GOMOD GOFLAGS
+$(foreach v,$(GUARDED_VARS),$(if $(filter environment,$(origin $(v))),$(error Refusing to run: $(v) is set in the environment ($(value $(v))); unset it - Makefile-managed variable)))
+GOCMD := go
+GOBUILD := $(GOCMD) build
+GOTEST := $(GOCMD) test
+GOFMT := $(GOCMD) fmt
+GOVET := $(GOCMD) vet
+GOMOD := $(GOCMD) mod
 
 # Build identity (injected via -ldflags so startup banner reflects current HEAD)
 BUILD_COMMIT=$(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
@@ -341,7 +345,7 @@ session-history: ## Show session conversation history (ID=<session-id>)
 	fi
 	@python3 scripts/session-history.py "$(ID)" $(OPTS)
 
-session-history-detail: ## Show detailed session history with full content (ID=<session-id>)
+session-history-detail: ## Show detailed session history with full content (ID=<session-uuid>)
 	@if [ -z "$(ID)" ]; then \
 		echo "Usage: make session-history-detail ID=<session-uuid>"; \
 		exit 1; \
@@ -372,7 +376,7 @@ qdrant-up: ## Start the local Qdrant container in the background
 	docker compose -f docker-compose.dev.yml up -d qdrant
 	@echo ""
 	@echo "Qdrant REST: http://127.0.0.1:6333"
-	@echo "Dashboard:   http://127.0.0.1:6333/dashboard"
+	@echo "Dashboard:   http://127.0.0.1:6334/dashboard"
 	@echo "Run 'make qdrant-status' once health is green."
 
 qdrant-down: ## Stop the local Qdrant container (data persists on host)

@@ -41,12 +41,18 @@ var _ = Describe("Auth Commands", func() {
 		cfg := config.DefaultConfig()
 		cfg.DataDir = filepath.Join(tmpDir, "data")
 		Expect(os.MkdirAll(cfg.DataDir, 0o700)).To(Succeed())
+		// Suppress PATH-discovered MCP servers so app.New never shells
+		// out to npx/mcp-mem0-server (fix for the suite hang).
+		cfg.MCPServers = cliTestDisabledMCPServers()
 
 		testApp, err = app.New(cfg)
 		Expect(err).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
+		// Stop drainLoop, quotaPersistLoop and memstore goroutines so
+		// they do not leak across specs.
+		Expect(testApp.Shutdown()).To(Succeed())
 		Expect(os.Unsetenv("OPENAI_API_KEY")).To(Succeed())
 		if originalDr != "" {
 			Expect(os.Setenv("XDG_CONFIG_HOME", originalDr)).To(Succeed())

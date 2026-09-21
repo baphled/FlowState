@@ -35,12 +35,16 @@ var _ = Describe("auth ollama subcommand", func() {
 		cfg := config.DefaultConfig()
 		cfg.DataDir = filepath.Join(tmpDir, "data")
 		Expect(os.MkdirAll(cfg.DataDir, 0o700)).To(Succeed())
+		// Suppress PATH-discovered MCP servers (fix for the suite hang).
+		cfg.MCPServers = cliTestDisabledMCPServers()
 
 		testApp, err = app.New(cfg)
 		Expect(err).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
+		// Stop leaked goroutines (drainLoop, quotaPersistLoop, memstore) between specs.
+		Expect(testApp.Shutdown()).To(Succeed())
 		if restore != nil {
 			restore()
 			restore = nil
