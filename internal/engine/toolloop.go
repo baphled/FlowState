@@ -560,6 +560,7 @@ func (e *Engine) streamWithToolLoop(
 	// engineMaxToolLoopIterations / engineMaxIdenticalToolCalls /
 	// engineMaxSameToolPatternCalls.
 	iterations := 0
+	softTripContinuations := 0
 	lastFingerprint := ""
 	identicalRun := 0
 	sameToolPatternRun := 0
@@ -583,6 +584,7 @@ func (e *Engine) streamWithToolLoop(
 	lastTodoContinuationSnapshot = []todo.Item(nil)
 	consecutiveSameToolContinuations := 0
 	const maxRejectedToolCalls = 3
+	const maxSoftTripContinuations = 3
 	consecutiveRejectedToolCalls := 0
 	delegationGraceUsed := false
 	finalResponseGraceUsed := false
@@ -756,6 +758,55 @@ func (e *Engine) streamWithToolLoop(
 			}
 			pendingSkipOverflow = true
 			return true
+		}
+		return false
+	}
+	// compactSoftContinuation gates soft-cap continuation on context
+	// headroom. Unlike maybeCompactForRetry it does NOT require an
+	// existing overflow error: when the context is over the
+	// auto-compaction threshold it force-compacts (trigger
+	// "soft_continuation") and rebuilds the window; the continuation
+	// is only allowed when the result provably fits.
+	compactSoftContinuation := func() bool {
+		if e == nil || e.store == nil || e.tokenCounter == nil {
+			return true
+		}
+		provName := e.lastProviderCtx(ctx)
+		modelName := e.lastModelCtx(ctx)
+		if provOverride := session.ProviderOverrideFromContext(ctx); provOverride != "" {
+			provName = provOverride
+		}
+		if modelOverride := session.ModelOverrideFromContext(ctx); modelOverride != "" {
+			modelName = modelOverride
+		}
+		tokenBudget := e.ResolveContextLength(provName, modelName)
+		if tokenBudget <= 0 {
+			// Legacy engines without compaction wiring keep the old
+			// permissive behaviour.
+			return true
+		}
+		manifestCopy := e.Manifest()
+		fullWindowTokens := e.estimateRequestTokens(&provider.ChatRequest{
+			Provider: provName,
+			Model:    modelName,
+			Messages: messages,
+			Tools:    e.buildToolSchemasCtx(ctx),
+		})
+		if threshold, ok := e.autoCompactionThreshold(&manifestCopy, tokenBudget); !ok ||
+			float64(fullWindowTokens) <= threshold*float64(tokenBudget) {
+			// Under the auto-compaction threshold — there is headroom,
+			// continue without compaction.
+			return true
+		}
+		slog.Info("soft continuation: context over threshold, force-compacting",
+			"session", sessionID,
+			"full_window_tokens", fullWindowTokens,
+			"token_budget", tokenBudget)
+		if summary := e.maybeAutoCompactExplicit(ctx, sessionID, &manifestCopy, tokenBudget, "soft_continuation", messages); summary != "" {
+			if rebuilt := e.rebuildContextWindowTokenBounded(ctx, sessionID, messages, summary); rebuilt != nil {
+				messages = rebuilt
+				return true
+			}
 		}
 		return false
 	}
@@ -1047,12 +1098,16 @@ func (e *Engine) streamWithToolLoop(
 						// cold prefix is replaced by the summary but
 						// the hot tail plus summary may remain over
 						// the refusal boundary. Mirror
-						// maybeCompactForRetry's proven pattern:
-						// skip the proactive overflow gate on this
 						// one retry so the real provider (whose
 						// limit differs from the fallback-derived
-						// estimate) gets the final say.
-						retryCtx := session.WithSkipContextWindowOverflowCheck(ctx)
+						// estimate) gets the final say. Only skip
+						// when the rebuilt window is no longer
+						// estimated over budget — an over-budget
+						// rebuild must keep the gate armed.
+						var retryCtx context.Context = ctx
+						if !e.contextEstimateOverBudget(ctx, messages) {
+							retryCtx = session.WithSkipContextWindowOverflowCheck(ctx)
+						}
 						var retryErr error
 						providerChunks, retryErr = e.retryStreamForToolResult(retryCtx, sessionID, messages, attempt)
 						if retryErr == nil {
@@ -1612,7 +1667,23 @@ func (e *Engine) streamWithToolLoop(
 			})
 			return
 		}
-		if repeatTripped || backstopTripped || durationTripped || totalToolTimeTripped || sameToolTripped || rejectionTripped {
+		softTripped := (backstopTripped || durationTripped || totalToolTimeTripped) && !repeatTripped && !sameToolTripped && !rejectionTripped && softTripContinuations < maxSoftTripContinuations
+		if softTripped && !compactSoftContinuation() {
+			softTripped = false
+		}
+		if softTripped {
+			softTripContinuations++
+			iterations = 0
+			// loopStart / toolExecDuration / nonDelegatedToolExecDuration
+			// are deliberately NOT reset: resetting them would zero the
+			// duration budget on every soft continuation and the loop
+			// would never reach forcedSummaryTerminal after
+			// maxSoftTripContinuations.
+			slog.Info("tool loop soft cap tripped without loop signature, continuing",
+				"session", sessionID,
+				"continuations", softTripContinuations)
+		}
+		if !softTripped && (repeatTripped || backstopTripped || durationTripped || totalToolTimeTripped || sameToolTripped || rejectionTripped) {
 			reason := "iteration_backstop"
 			if repeatTripped {
 				reason = "identical_call_repeat"

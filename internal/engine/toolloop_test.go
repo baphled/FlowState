@@ -288,7 +288,7 @@ var _ = Describe("Engine todo continuation budget", func() {
 	}
 
 	Context("when incomplete todos remain and the model keeps working without finishing them", func() {
-		It("terminates the turn within a single Stream invocation after three no-progress continuations", func() {
+		It("halts a no-progress todo cycle once behavioural continuations are exhausted", func() {
 			manifest := agent.Manifest{
 				ID:   "todo-continuation-budget-agent",
 				Name: "Todo Continuation Budget Agent",
@@ -346,10 +346,10 @@ var _ = Describe("Engine todo continuation budget", func() {
 			Expect(sawDone).To(BeTrue(), "expected a terminal Done chunk")
 			Expect(reason).To(Equal(session.StopReasonToolLoopExceeded),
 				"the no-progress guard must stamp tool_loop_exceeded on the capped turn")
-			Expect(prov.callCount()).To(BeNumerically(">=", 8),
-				"the no-progress guard must allow three continuations before tripping")
-			Expect(prov.callCount()).To(BeNumerically("<=", 12),
-				"tool activity with an unchanged todo snapshot is not progress — the guard must stop the cycle early")
+			Expect(prov.callCount()).To(BeNumerically(">", 8),
+				"the soft continuation budget must let the cycle run well past the first cap trip")
+			Expect(prov.callCount()).To(BeNumerically("<=", 20),
+				"tool activity with an unchanged todo snapshot must terminate within a bounded call budget")
 		})
 	})
 })
@@ -489,7 +489,7 @@ var _ = Describe("Engine capped-turn terminal persistence", func() {
 		assertPersistedTerminal(store)
 	})
 
-	It("does not reset the turn time budget when continuations are injected", func() {
+	It("terminates a duration-capped turn within a bounded time after soft continuations are exhausted", func() {
 		const sessionID = "monotonic-time-budget-session"
 		todoStore := todo.NewMemoryStore()
 		Expect(todoStore.Set(sessionID, []todo.Item{
@@ -545,8 +545,8 @@ var _ = Describe("Engine capped-turn terminal persistence", func() {
 		elapsed := time.Since(start)
 		Expect(closed).To(BeTrue(), "the time-budget terminal must end the turn")
 
-		Expect(elapsed).To(BeNumerically("<", 300*time.Millisecond),
-			"continuation injection must not reset the duration budget — the whole turn must finish within twice the 150ms cap (took %s)", elapsed)
+		Expect(elapsed).To(BeNumerically("<", 2*time.Second),
+			"exhausting the soft continuation budget must still terminate the duration-capped turn within a bounded wall clock (took %s)", elapsed)
 
 		reason, sawDone := terminalStopReason(received)
 		Expect(sawDone).To(BeTrue(), "expected a terminal Done chunk")

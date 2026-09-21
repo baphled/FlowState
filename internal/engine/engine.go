@@ -3050,16 +3050,34 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 				workDone := e.workCallsSinceLastTodoCompletion[sessionID]
 				e.mu.RUnlock()
 				if workDone == 0 {
-					e.mu.Lock()
-					_, seen := e.workCallsSinceLastTodoCompletion[sessionID]
-					e.mu.Unlock()
-					if seen {
-						return tool.Result{
-							Output:  errTodoNoWorkDone,
-							IsError: true,
-							Error:   fmt.Errorf("todo completion rejected: no work done since last completion"),
-						}, nil
+					hasMore, incompletes := e.hasIncompleteTodos(sessionID)
+					if hasMore && len(incompletes) > 1 {
+						e.mu.RLock()
+						continuedWork := e.workToolCallsSinceContinuation[sessionID]
+						e.mu.RUnlock()
+						if continuedWork == 0 {
+							return tool.Result{
+								Output:  errTodoNoWorkDone,
+								IsError: true,
+								Error:   fmt.Errorf("todo completion rejected: no work done this turn"),
+							}, nil
+						}
+						e.mu.Lock()
+						_, seen := e.workCallsSinceLastTodoCompletion[sessionID]
+						e.mu.Unlock()
+						if seen {
+							return tool.Result{
+								Output:  errTodoNoWorkDone,
+								IsError: true,
+								Error:   fmt.Errorf("todo completion rejected: no work done since last completion"),
+							}, nil
+						}
 					}
+					e.mu.Lock()
+					e.workCallsSinceLastTodoCompletion[sessionID] = 0
+					e.mu.Unlock()
+					slog.Warn("todo completion with no work done allowed as terminal bookkeeping",
+						"session", sessionID)
 				}
 			}
 		}

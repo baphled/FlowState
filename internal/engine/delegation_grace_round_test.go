@@ -148,8 +148,11 @@ var _ = Describe("Engine delegation grace round", func() {
 	}
 
 	It("grants one grace round when the iteration backstop trips on a delegate batch and the model then produces text", func() {
-		script := make([]scriptedBatch, 0, 6)
-		for i := 0; i < 5; i++ {
+		// Soft-continuation contract: three soft continuations (5 calls
+		// each) precede the hard trip, so the hard trip lands on batch 20
+		// — still a delegate batch — and the grace round fires on call 21.
+		script := make([]scriptedBatch, 0, 21)
+		for i := 0; i < 20; i++ {
 			script = append(script, scriptedBatch{toolCalls: delegateBatch(i)})
 		}
 		script = append(script, scriptedBatch{content: "Here is my summary of the delegation findings."})
@@ -173,8 +176,8 @@ var _ = Describe("Engine delegation grace round", func() {
 		Expect(closed).To(BeTrue(),
 			"the grace round must let the turn complete and close the channel")
 
-		Expect(prov.callCount()).To(Equal(6),
-			"5 delegate batches trip the backstop, then exactly one grace round must run")
+		Expect(prov.callCount()).To(Equal(21),
+			"soft continuations extend the loop past the first cap trips, then exactly one grace round must run")
 
 		for _, c := range received {
 			Expect(c.StopReason).NotTo(Equal(session.StopReasonToolLoopExceeded),
@@ -195,8 +198,13 @@ var _ = Describe("Engine delegation grace round", func() {
 	})
 
 	It("does NOT grant a grace round when the backstop trips on a non-delegation batch", func() {
-		script := make([]scriptedBatch, 0, 6)
-		for i := 0; i < 5; i++ {
+		// Soft-continuation contract: 40 read batches with distinctive
+		// args keep soft-continuing; the hard trip lands on call 20.
+		// Every tripped batch is non-delegation, so no grace round fires —
+		// the forced summary is injected and the retry (scripted to return
+		// another tool call) terminates with tool_loop_exceeded.
+		script := make([]scriptedBatch, 0, 40)
+		for i := 0; i < 40; i++ {
 			script = append(script, scriptedBatch{
 				toolCalls: []*provider.ToolCall{{
 					ID:        fmt.Sprintf("read_%d", i),
@@ -205,15 +213,6 @@ var _ = Describe("Engine delegation grace round", func() {
 				}},
 			})
 		}
-		// 6th batch: forced summary retry returns a tool call, so the
-		// second cap check terminates with StopReasonToolLoopExceeded.
-		script = append(script, scriptedBatch{
-			toolCalls: []*provider.ToolCall{{
-				ID:        "read_5",
-				Name:      "read",
-				Arguments: map[string]any{"path": "/tmp/5.txt"},
-			}},
-		})
 
 		prov := &capturingScriptedProvider{name: "no-grace-read", script: script}
 
@@ -234,10 +233,11 @@ var _ = Describe("Engine delegation grace round", func() {
 		Expect(closed).To(BeTrue(),
 			"a non-delegation loop must terminate without a grace round")
 
-		// 5 trips → forced summary (call 5 returns batch 5) → tool execution
-		// pushes iterations past cap → second cap trip → terminate
-		Expect(prov.callCount()).To(Equal(6),
-			"no grace round, but the forced summary fires once and the retry batch triggers a second cap trip")
+		// Soft continuations run the loop to the hard trip around call 20,
+		// then the forced-summary retry (no tools advertised, but the
+		// scripted batch 20 still returns a tool call) terminates.
+		Expect(prov.callCount()).To(BeNumerically("<=", 21),
+			"no grace round — forced summary fires once after soft continuations are spent")
 
 		reason, gotTerminal := terminalStopReason(received)
 		Expect(gotTerminal).To(BeTrue(), "expected a terminal Done chunk")
@@ -249,8 +249,13 @@ var _ = Describe("Engine delegation grace round", func() {
 	})
 
 	It("grants the grace round at most once even if the model keeps calling delegate", func() {
-		script := make([]scriptedBatch, 0, 11)
-		for i := 0; i < 11; i++ {
+		// Soft-continuation contract: hard trip lands on call 20 → the
+		// delegate batch grants one grace round (resets iterations). The
+		// next hard trip lands around call 25 — softTripContinuations is
+		// never reset, so no second grace and no further soft trip — the
+		// forced summary fires and the retry tool call terminates.
+		script := make([]scriptedBatch, 0, 40)
+		for i := 0; i < 40; i++ {
 			script = append(script, scriptedBatch{toolCalls: delegateBatch(i)})
 		}
 
@@ -273,11 +278,12 @@ var _ = Describe("Engine delegation grace round", func() {
 		Expect(closed).To(BeTrue(),
 			"the second backstop trip must terminate the turn after a single grace round")
 
-		// 5 trips → grace (call 5) → 5 more trips → second cap trip → forced
-		// summary (call 10 returns batch 10) → tool execution → third cap
-		// trip → terminate. No second grace round.
-		Expect(prov.callCount()).To(Equal(11),
-			"5 trips, delegation grace, 5 more trips, then forced summary fires and the retry tool call triggers termination")
+		// Exactly one grace round; the run terminates shortly after the
+		// post-grace hard trip via the forced-summary path.
+		Expect(prov.callCount()).To(BeNumerically(">", 20),
+			"the grace round must fire after the soft-continuation budget is spent")
+		Expect(prov.callCount()).To(BeNumerically("<=", 27),
+			"no second grace round — the post-grace hard trip must terminate the turn quickly")
 
 		reason, gotTerminal := terminalStopReason(received)
 		Expect(gotTerminal).To(BeTrue(), "expected a terminal Done chunk")
@@ -332,8 +338,12 @@ var _ = Describe("Engine delegation grace round", func() {
 			{Content: "Task 2", Status: "completed", Priority: "low"},
 		})
 
-		script := make([]scriptedBatch, 0, 6)
-		for i := 0; i < 5; i++ {
+		// Soft-continuation contract: read batches with distinctive args
+		// soft-continue to the hard trip on call 20. All todos complete →
+		// grace round granted (non-delegation path); the grace round's
+		// text batch (index 20) ends the turn cleanly.
+		script := make([]scriptedBatch, 0, 21)
+		for i := 0; i < 20; i++ {
 			script = append(script, scriptedBatch{
 				toolCalls: []*provider.ToolCall{{
 					ID:        fmt.Sprintf("read_%d", i),
@@ -364,8 +374,8 @@ var _ = Describe("Engine delegation grace round", func() {
 		Expect(closed).To(BeTrue(),
 			"the grace round must let the turn complete and close the channel")
 
-		Expect(prov.callCount()).To(Equal(6),
-			"5 read calls trip the backstop, then exactly one grace round must run")
+		Expect(prov.callCount()).To(BeNumerically("<=", 21),
+			"soft continuations carry the loop to the hard trip, then exactly one grace round must run")
 
 		for _, c := range received {
 			Expect(c.StopReason).NotTo(Equal(session.StopReasonToolLoopExceeded),

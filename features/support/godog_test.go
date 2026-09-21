@@ -107,6 +107,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterEngineSteps(ctx)
 	RegisterBatchedPersistenceSteps(ctx)
 	RegisterToolLoopBudgetSteps(ctx)
+	RegisterLoopGuardSteps(ctx)
 	RegisterTurnWatchdogSteps(ctx)
 	RegisterTurnCompletesSteps(ctx)
 	RegisterSessionBoundedSteps(ctx)

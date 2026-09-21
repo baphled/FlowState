@@ -207,10 +207,8 @@ var _ = Describe("Engine.executeToolCall todo counter tracking", func() {
 			})
 
 			Expect(err).NotTo(HaveOccurred())
-			Expect(secondCompletion.IsError).To(BeTrue(),
-				"a coordination_store write is a handoff artefact, not substantive implementation work")
-			Expect(secondCompletion.Output).To(ContainSubstring("without doing any work"))
-			Expect(secondCompletion.Output).NotTo(ContainSubstring("coordination_store"))
+			Expect(secondCompletion.IsError).To(BeFalse(),
+				"coordination_store no longer hard-blocks completion — with at most one incomplete todo the completion is allowed as terminal bookkeeping")
 		})
 	})
 })
