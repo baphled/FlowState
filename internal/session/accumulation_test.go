@@ -91,7 +91,7 @@ var _ = Describe("Message accumulation", func() {
 			Expect(toolResults).To(HaveLen(1))
 			Expect(toolResults[0].Content).To(Equal("file1.go\nfile2.go"))
 			Expect(toolResults[0].ToolName).To(Equal("bash"))
-			Expect(toolResults[0].ToolInput).To(Equal("ls -la"))
+			Expect(toolResults[0].ToolInput).To(Equal(`{"command":"ls -la"}`))
 		})
 	})
 

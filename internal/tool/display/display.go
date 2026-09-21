@@ -285,6 +285,89 @@ func Summary(name string, args map[string]any) string {
 	return fmt.Sprintf("%s: %s", name, value)
 }
 
+// WholeArgsJSON renders the complete tool-call argument map as deterministic
+// compact JSON, redacting sensitive values, for capture into Message.ToolInput.
+//
+// Unlike the display summaries, the rendered payload keeps every argument
+// (including empty-string values), never truncates, and sorts keys so the
+// same argument map always persists to the same bytes.
+//
+// Unlike compactJSONFallback, empty-string values are preserved rather than
+// dropped: whole-input fidelity is required for the replay round-trip, and a
+// dropped `"k":""` entry would mutate the argument set on replay. Unmarshalable
+// values are skipped exactly as compactJSONFallback does.
+//
+// Expected:
+//   - args is the tool call argument map (may be nil).
+//
+// Returns:
+//   - The sorted-key compact JSON object for all arguments, or an empty
+//     string when args is nil or empty.
+//
+// Side effects:
+//   - None.
+func WholeArgsJSON(args map[string]any) string {
+	if len(args) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(args))
+	for k := range args {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	type entry struct {
+		key     string
+		encoded []byte
+	}
+	entries := make([]entry, 0, len(keys))
+	for _, k := range keys {
+		v, present := args[k]
+		if !present {
+			continue
+		}
+		if s, isStr := v.(string); isStr {
+			redacted := redactIfSensitive(k, s)
+			vJSON, err := json.Marshal(redacted)
+			if err != nil {
+				continue
+			}
+			entries = append(entries, entry{key: k, encoded: vJSON})
+			continue
+		}
+		if isSensitiveKey(k) {
+			vJSON, err := json.Marshal(redactedPlaceholder)
+			if err != nil {
+				continue
+			}
+			entries = append(entries, entry{key: k, encoded: vJSON})
+			continue
+		}
+		vJSON, err := json.Marshal(v)
+		if err != nil {
+			continue
+		}
+		entries = append(entries, entry{key: k, encoded: vJSON})
+	}
+	if len(entries) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteByte('{')
+	for i, e := range entries {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		kJSON, _ := json.Marshal(e.key)
+		sb.Write(kJSON)
+		sb.WriteByte(':')
+		sb.Write(e.encoded)
+	}
+	sb.WriteByte('}')
+	return sb.String()
+}
+
 // truncate caps s at truncateLen characters, appending "..." when truncation
 // occurs. Returns s unchanged when within the limit.
 //

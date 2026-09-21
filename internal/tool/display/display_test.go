@@ -1,6 +1,8 @@
 package tooldisplay_test
 
 import (
+	"strings"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -111,5 +113,52 @@ var _ = Describe("Summary", func() {
 		It("returns formatted summary with skill name", func() {
 			Expect(tooldisplay.Summary("skill_load", map[string]any{"name": "golang"})).To(Equal("skill_load: golang"))
 		})
+	})
+})
+
+var _ = Describe("WholeArgsJSON", func() {
+	It("renders every argument as compact JSON with sorted keys", func() {
+		Expect(tooldisplay.WholeArgsJSON(map[string]any{
+			"workdir": "/tmp",
+			"command": "ls -la",
+			"timeout": 30,
+		})).To(Equal(`{"command":"ls -la","timeout":30,"workdir":"/tmp"}`))
+	})
+
+	It("includes empty-string values", func() {
+		Expect(tooldisplay.WholeArgsJSON(map[string]any{
+			"pattern": "func",
+			"path":    "",
+		})).To(Equal(`{"path":"","pattern":"func"}`))
+	})
+
+	It("marshals numbers, bools, arrays, and objects verbatim", func() {
+		Expect(tooldisplay.WholeArgsJSON(map[string]any{
+			"count": 42,
+			"force": true,
+			"tags":  []any{"a", "b"},
+			"opts":  map[string]any{"k": "v"},
+		})).To(Equal(`{"count":42,"force":true,"opts":{"k":"v"},"tags":["a","b"]}`))
+	})
+
+	It("redacts top-level sensitive keys to [REDACTED]", func() {
+		Expect(tooldisplay.WholeArgsJSON(map[string]any{
+			"api_key": "sk-live-value",
+			"query":   "hello",
+		})).To(Equal(`{"api_key":"[REDACTED]","query":"hello"}`))
+	})
+
+	It("does not truncate long values", func() {
+		long := strings.Repeat("x", 250)
+		Expect(tooldisplay.WholeArgsJSON(map[string]any{"command": long})).
+			To(Equal(`{"command":"` + long + `"}`))
+	})
+
+	It("returns an empty string for nil args", func() {
+		Expect(tooldisplay.WholeArgsJSON(nil)).To(BeEmpty())
+	})
+
+	It("returns an empty string for empty args", func() {
+		Expect(tooldisplay.WholeArgsJSON(map[string]any{})).To(BeEmpty())
 	})
 })

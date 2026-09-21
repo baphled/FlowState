@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sort"
 	"strings"
@@ -1775,6 +1776,26 @@ func (m *Manager) SendMessage(ctx context.Context, sessionID string, message str
 	return m.StartStream(preparedCtx, sessionID, agentID, message)
 }
 
+// decodeToolInputArguments parses a persisted ToolInput string as a JSON
+// object for structured replay onto provider.Message.ToolCalls.
+//
+// Returns:
+//   - The decoded argument map and true when raw is a JSON object carrying
+//     at least one key.
+//   - nil and false for every other shape — display strings, bare scalars,
+//     arrays, unparseable input, and the empty object — so those fall back
+//     to the legacy descriptive-text wrap.
+func decodeToolInputArguments(raw string) (map[string]any, bool) {
+	var args map[string]any
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return nil, false
+	}
+	if len(args) == 0 {
+		return nil, false
+	}
+	return args, true
+}
+
 // PrepareSend appends the user message to the session, builds provider
 // messages from prior history, and returns the prepared context plus the
 // resolved agent ID. The returned context carries all per-turn values
@@ -1848,6 +1869,16 @@ func (m *Manager) PrepareSend(ctx context.Context, sessionID string, message str
 			case "tool_result":
 				role = "tool"
 			case "tool_call":
+				if args, ok := decodeToolInputArguments(msg.ToolInput); ok {
+					providerMsgs = append(providerMsgs, provider.Message{
+						Role: "assistant",
+						ToolCalls: []provider.ToolCall{{
+							Name:      msg.ToolName,
+							Arguments: args,
+						}},
+					})
+					continue
+				}
 				var content string
 				if msg.ToolInput != "" {
 					content = "[" + msg.Content + " with input: " + msg.ToolInput + "]"
