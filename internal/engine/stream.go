@@ -1139,7 +1139,6 @@ func (e *Engine) overflowRefusalChannel(pErr *provider.Error) <-chan provider.St
 	ch := make(chan provider.StreamChunk, 1)
 	ch <- provider.StreamChunk{
 		Error: pErr,
-		Done:  true,
 	}
 	close(ch)
 	return ch

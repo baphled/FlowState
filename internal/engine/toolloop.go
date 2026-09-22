@@ -183,12 +183,13 @@ func turnWatchdogFromContext(ctx context.Context) *turnWatchdog {
 // compaction, a provider that never opens the next stream) makes no
 // boundary progress and previously wedged indefinitely.
 type turnWatchdog struct {
-	window            time.Duration
-	lastProgress      atomic.Int64
-	toolExecStartedAt atomic.Int64
-	iterations        atomic.Int64
-	fired             atomic.Bool
-	terminalSent      atomic.Bool
+	window                  time.Duration
+	lastProgress            atomic.Int64
+	toolExecStartedAt       atomic.Int64
+	iterations              atomic.Int64
+	fired                   atomic.Bool
+	toolTimeBudgetExhausted atomic.Bool
+	terminalSent            atomic.Bool
 }
 
 // newTurnWatchdog returns a watchdog armed for the given window and
@@ -335,6 +336,21 @@ func (w *turnWatchdog) recordIterations(n int) {
 	w.iterations.Store(int64(n))
 }
 
+// markFired flags the watchdog as fired without going through the
+// watch loop. The duration/tool-time backstops are budget mechanisms
+// orthogonal to the no-progress window; when they trip, recovery-exit
+// chunk construction (terminalRecoveryChunk) must still stamp
+// tool_loop_exceeded, so the backstop marks the turn as fired.
+//
+// Side effects:
+//   - Sets the fired flag (idempotent).
+func (w *turnWatchdog) markFired() {
+	if w == nil {
+		return
+	}
+	w.fired.Store(true)
+}
+
 // hasFired reports whether the watchdog has fired for this turn.
 //
 // Expected:
@@ -347,6 +363,36 @@ func (w *turnWatchdog) recordIterations(n int) {
 //   - None.
 func (w *turnWatchdog) hasFired() bool {
 	return w != nil && w.fired.Load()
+}
+
+// markToolTimeBudgetExhausted flags that the total tool-execution-time
+// budget has been exhausted. Unlike the duration backstop this does
+// not mark the turn fired, but recovery-exit chunk construction
+// (terminalRecoveryChunk) still stamps tool_loop_exceeded so the
+// terminal chunk carries a stop reason.
+//
+// Side effects:
+//   - Sets the tool-time budget exhausted flag (idempotent).
+func (w *turnWatchdog) markToolTimeBudgetExhausted() {
+	if w == nil {
+		return
+	}
+	w.toolTimeBudgetExhausted.Store(true)
+}
+
+// hasToolTimeBudgetExhausted reports whether the total tool-execution
+// time budget was exhausted for this turn.
+//
+// Expected:
+//   - the receiver may be nil.
+//
+// Returns:
+//   - true once the tool-time budget backstop has tripped.
+//
+// Side effects:
+//   - None.
+func (w *turnWatchdog) hasToolTimeBudgetExhausted() bool {
+	return w != nil && w.toolTimeBudgetExhausted.Load()
 }
 
 // claimTerminal reports whether the caller is responsible for emitting
@@ -473,6 +519,40 @@ func emitTerminalStreamChunk(ctx context.Context, outChan chan<- provider.Stream
 	default:
 		slog.Warn("engine terminal chunk dropped: output channel unavailable after turn cancellation")
 	}
+}
+
+// terminalRecoveryChunk builds the terminal Done chunk for an
+// error-recovery exit (synthetic tool-result error, stream-error after
+// retry, context-cancel fall-through). When the turn watchdog has
+// fired — including a fired-but-unclaimed watchdog racing a
+// compaction/overflow recovery — the StopReason sentinel is stamped so
+// consumers reading the terminal chunk still observe tool_loop_exceeded
+// instead of an empty reason; model/provider mirror the normal
+// terminal path (cf. toolloop.go:1972/1987/2798).
+//
+// Expected:
+//   - ctx is the turn context carrying the turn watchdog and last
+//     provider/model resolution.
+//   - err is the recovery error carried on the chunk (may be nil only
+//     on watchdog-only exits).
+//
+// Side effects:
+//   - Stamps the StopReason sentinel tool_loop_exceeded on the terminal
+//     chunk when the turn watchdog has fired or the tool time budget is
+//     exhausted.
+//
+// Returns: the fully stamped terminal chunk.
+func (e *Engine) terminalRecoveryChunk(w *turnWatchdog, ctx context.Context, err error) provider.StreamChunk {
+	chunk := provider.StreamChunk{
+		Error:      err,
+		Done:       true,
+		ModelID:    e.lastModelCtx(ctx),
+		ProviderID: e.lastProviderCtx(ctx),
+	}
+	if w != nil && (w.hasFired() || w.hasToolTimeBudgetExhausted()) {
+		chunk.StopReason = session.StopReasonToolLoopExceeded
+	}
+	return chunk
 }
 
 // streamWithToolLoop processes streaming chunks, handles tool calls, and loops until completion.
@@ -1031,6 +1111,9 @@ func (e *Engine) streamWithToolLoop(
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
 			}
+			if e.maxToolLoopDuration > 0 && time.Since(loopStart)-toolExecDuration >= e.maxToolLoopDuration {
+				watchdog.markFired()
+			}
 			if result.contextOverflow {
 				sawContextOverflow = true
 				if pendingOverflowRecovery {
@@ -1038,11 +1121,11 @@ func (e *Engine) streamWithToolLoop(
 						"session", sessionID,
 						"overflow_retries", overflowRetries,
 					)
-					emitTerminalStreamChunk(ctx, outChan, provider.StreamChunk{
-						Done:       true,
-						StopReason: session.StopReasonToolLoopExceeded,
-						Error:      fmt.Errorf("%w", ErrCompactionInsufficient),
-					})
+					recoveryChunk := e.terminalRecoveryChunk(watchdog, ctx, fmt.Errorf("%w", ErrCompactionInsufficient))
+					if e.maxToolLoopDuration > 0 && (time.Since(loopStart)-toolExecDuration >= e.maxToolLoopDuration || nonDelegatedToolExecDuration >= e.maxToolLoopDuration) {
+						recoveryChunk.StopReason = session.StopReasonToolLoopExceeded
+					}
+					emitTerminalStreamChunk(ctx, outChan, recoveryChunk)
 					return
 				}
 				if overflowRetries < maxOverflowRetries {
@@ -1073,11 +1156,11 @@ func (e *Engine) streamWithToolLoop(
 									"session", sessionID,
 									"messages", len(messages),
 								)
-								emitTerminalStreamChunk(ctx, outChan, provider.StreamChunk{
-									Done:       true,
-									StopReason: session.StopReasonToolLoopExceeded,
-									Error:      fmt.Errorf("%w", ErrCompactionInsufficient),
-								})
+								recoveryChunk := e.terminalRecoveryChunk(watchdog, ctx, fmt.Errorf("%w", ErrCompactionInsufficient))
+								if e.maxToolLoopDuration > 0 && (time.Since(loopStart)-toolExecDuration >= e.maxToolLoopDuration || nonDelegatedToolExecDuration >= e.maxToolLoopDuration) {
+									recoveryChunk.StopReason = session.StopReasonToolLoopExceeded
+								}
+								emitTerminalStreamChunk(ctx, outChan, recoveryChunk)
 								return
 							}
 							messages = rebuilt
@@ -1476,7 +1559,7 @@ func (e *Engine) streamWithToolLoop(
 				if e.requiresDeliveryToolCtx(ctx) && !e.deliveryToolCompleted(sessionID) {
 					e.warnDeliveryToolBypassCtx(ctx, sessionID)
 				}
-				emitTerminalStreamChunk(ctx, outChan, provider.StreamChunk{Error: er.err, Done: true})
+				emitTerminalStreamChunk(ctx, outChan, e.terminalRecoveryChunk(watchdog, ctx, er.err))
 				return
 			}
 		}
@@ -1674,6 +1757,9 @@ func (e *Engine) streamWithToolLoop(
 			softTripped = false
 		}
 		if softTripped {
+			if totalToolTimeTripped {
+				watchdog.markToolTimeBudgetExhausted()
+			}
 			softTripContinuations++
 			iterations = 0
 			// loopStart / toolExecDuration / nonDelegatedToolExecDuration
@@ -1717,6 +1803,9 @@ func (e *Engine) streamWithToolLoop(
 					"session", sessionID,
 					"trip", reason,
 				)
+				// Mark the turn fired so recovery exits stamp the
+				// tool_loop_exceeded sentinel on the terminal chunk.
+				watchdog.markFired()
 				if forcedSummaryTerminal(reason) {
 					continue
 				}
@@ -1995,7 +2084,7 @@ func (e *Engine) streamWithToolLoop(
 			if e.requiresDeliveryToolCtx(ctx) && !e.deliveryToolCompleted(sessionID) {
 				e.warnDeliveryToolBypassCtx(ctx, sessionID)
 			}
-			emitTerminalStreamChunk(ctx, outChan, provider.StreamChunk{Error: streamErr, Done: true})
+			emitTerminalStreamChunk(ctx, outChan, e.terminalRecoveryChunk(watchdog, ctx, streamErr))
 			return
 		}
 
@@ -2803,7 +2892,7 @@ func (e *Engine) processStreamChunks(
 				})
 				return streamChunkResult{responseContent: responseContent.String(), thinkingContent: thinkingContent.String(), done: true}
 			}
-			emitTerminalStreamChunk(ctx, outChan, provider.StreamChunk{Error: ctx.Err(), Done: true, ModelID: e.LastModel(), ProviderID: e.LastProvider()})
+			emitTerminalStreamChunk(ctx, outChan, e.terminalRecoveryChunk(chunkWatchdog, ctx, ctx.Err()))
 			return streamChunkResult{responseContent: responseContent.String(), thinkingContent: thinkingContent.String(), done: true}
 		case <-idleC:
 			// Idle-stream watchdog fired. Emit a synthetic Done so
@@ -2876,11 +2965,15 @@ func (e *Engine) processStreamChunks(
 				//     follow-up stream was dropped and the user saw an
 				//     "interrupted" state for a turn that completed
 				//     successfully (Bug C1, May 2026 bughunt).
-				if len(toolCalls) == 0 {
+				if len(toolCalls) == 0 && !overflowDetected {
 					emitPostTurn()
+					stopReason := session.StopReasonEmptyTurn
+					if chunkWatchdog != nil && chunkWatchdog.hasFired() && chunkWatchdog.claimTerminal() {
+						stopReason = session.StopReasonToolLoopExceeded
+					}
 					emitTerminalStreamChunk(ctx, outChan, provider.StreamChunk{
 						Done:       true,
-						StopReason: session.StopReasonEmptyTurn,
+						StopReason: stopReason,
 						ModelID:    e.LastModel(),
 						ProviderID: e.LastProvider(),
 					})
@@ -3001,11 +3094,31 @@ func (e *Engine) processStreamChunks(
 						thinkingContent: thinkingContent.String(),
 					}
 				}
+				if overflowDetected {
+					return streamChunkResult{
+						toolCalls:       toolCalls,
+						responseContent: responseContent.String(),
+						thinkingContent: thinkingContent.String(),
+						stopReason:      chunk.StopReason,
+						done:            true,
+						contextOverflow: overflowDetected,
+					}
+				}
 				// Phase 3 — emit a fresh context_usage chunk before
 				// the terminal Done so the chip ticks up to reflect
 				// the just-extended message history. SSE consumers
 				// return on Done, so this MUST land first.
 				emitPostTurn()
+				// Forced-summary recovery: when the tool loop ended the
+				// turn through a duration/total-tool-time trip and the
+				// forced summary round completed naturally, this Done is
+				// the turn's terminal event and must carry the
+				// tool_loop_exceeded sentinel. The claim guard keeps the
+				// stamp single-shot and inert on ordinary completions
+				// (mirrors the stream-error exit at ~2027).
+				if chunkWatchdog != nil && chunkWatchdog.hasFired() && chunkWatchdog.claimTerminal() {
+					chunk.StopReason = session.StopReasonToolLoopExceeded
+				}
 				emitTerminalStreamChunk(ctx, outChan, chunk)
 				return streamChunkResult{
 					responseContent: responseContent.String(),

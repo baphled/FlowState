@@ -1589,12 +1589,14 @@ var _ = Describe("Manager", func() {
 
 				ctx := context.Background()
 				mockStream.addChunk(provider.StreamChunk{Content: "Hello"})
-				_, err = mgr.SendMessage(ctx, sess.ID, "Hi")
+				stream, err := mgr.SendMessage(ctx, sess.ID, "Hi")
 				Expect(err).NotTo(HaveOccurred())
+				for range stream {
+				}
 
 				summaries := mgr.ListSessions()
 				Expect(summaries).To(HaveLen(1))
-				Expect(summaries[0].MessageCount).To(Equal(1))
+				Expect(summaries[0].MessageCount).To(Equal(2))
 			})
 		})
 

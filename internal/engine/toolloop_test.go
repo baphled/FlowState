@@ -172,13 +172,13 @@ var _ = Describe("Engine soft continuation guard", func() {
 		}
 
 		prov := &capturingScriptedProvider{name: "soft-cont-duration", script: script}
-		// wordTokenCounter budget. Must exceed the overflow gate's
+		// 100000: must exceed the overflow gate's
 		// defaultOutputReserve (4096) — with a limit below the reserve
 		// floor, usable = limit-reserve collapses to ~1 and every
 		// non-skip-flagged request is refused over-budget, so the run
 		// terminates through ErrCompactionInsufficient instead of the
 		// duration backstop this spec exercises.
-		eng, store := newSoftContinuationEngine(prov, summariser, 8000)
+		eng, store := newSoftContinuationEngine(prov, summariser, 100000)
 		seedSoftContinuationHistory(store)
 
 		eng.SetMaxToolLoopIterationsForTest(0)
@@ -230,10 +230,10 @@ var _ = Describe("Engine soft continuation guard", func() {
 		}
 
 		prov := &capturingScriptedProvider{name: "soft-cont-todo", script: script}
-		// 8000: must clear the overflow gate's 4096 default output
+		// 100000: must clear the overflow gate's 4096 default output
 		// reserve or the first request is refused over-budget and the
 		// todo-guard script never runs.
-		eng, _ := newSoftContinuationEngine(prov, summariser, 8000)
+		eng, _ := newSoftContinuationEngine(prov, summariser, 100000)
 
 		eng.SetMaxToolLoopIterationsForTest(10)
 		eng.SetMaxIdenticalToolCallsForTest(0)
