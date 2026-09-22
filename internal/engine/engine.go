@@ -3517,7 +3517,7 @@ func (e *Engine) appendToolResultsBatchToMessages(
 	// tool-loop emit site (lines ~5116-5118).
 	totalContentBytes := 0
 	for i, tc := range toolCalls {
-		content := results[i].Output
+		content := capInFlightToolResult(results[i].Output)
 		isError := results[i].Error != nil
 		if isError && content == "" {
 			content = "Error: " + results[i].Error.Error()

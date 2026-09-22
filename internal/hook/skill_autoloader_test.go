@@ -529,7 +529,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			}
 		})
 
-		It("injects skill content blocks when cache is provided", func() {
+		It("injects lean skill entries even when cache is provided", func() {
 			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, cache)
 			wrapped := autoloader(passthrough)
 
@@ -537,9 +537,9 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			systemContent := capturedRequest.Messages[0].Content
-			Expect(systemContent).To(ContainSubstring(`<skill name="skill-a">`))
-			Expect(systemContent).To(ContainSubstring("# My Skill"))
-			Expect(systemContent).To(ContainSubstring("</skill>"))
+			Expect(systemContent).To(ContainSubstring("<available_skills>"))
+			Expect(systemContent).To(ContainSubstring(`<skill name="skill-a" />`))
+			Expect(systemContent).NotTo(ContainSubstring("# My Skill"))
 		})
 
 		It("falls back to <available_skills> lean injection when cache is nil", func() {
@@ -551,11 +551,6 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 
 			systemContent := capturedRequest.Messages[0].Content
 			Expect(systemContent).To(ContainSubstring("<available_skills>"))
-			// The lean fallback emits self-closing `<skill name="..." />`
-			// entries grouped under <session_start>/<contextual> subsections;
-			// the cache-driven content path emits free-standing
-			// `<skill name="...">` blocks with content bodies. The two are
-			// distinguishable by the trailing `/>` of the self-closing form.
 			Expect(systemContent).To(ContainSubstring(`<skill name="skill-a" />`))
 		})
 	})
@@ -613,16 +608,9 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			systemContent := capturedRequest.Messages[0].Content
-			// The lean header emits `<skill name="X" />` self-closing
-			// entries for every selected skill grouped under
-			// <session_start>/<contextual> subsections, BEFORE the cache
-			// content blocks. Cache content blocks use `<skill name="X">`
-			// (immediate `>` after the closing quote, followed by a newline
-			// and the content body); we count those specifically by matching
-			// the `">` + newline pattern that only the content-block form
-			// produces.
-			contentBlockCount := strings.Count(systemContent, `">`+"\n")
-			Expect(contentBlockCount).To(Equal(3))
+			Expect(strings.Count(systemContent, `<skill name=`)).To(Equal(3))
+			Expect(systemContent).NotTo(ContainSubstring(`<skill name="skill-3"`))
+			Expect(systemContent).NotTo(ContainSubstring(`<skill name="skill-4"`))
 		})
 	})
 
@@ -680,8 +668,8 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			systemContent := capturedRequest.Messages[0].Content
-			Expect(systemContent).To(ContainSubstring(`<skill name="small-skill">`))
-			Expect(systemContent).NotTo(ContainSubstring(`<skill name="oversized-skill">`))
+			Expect(systemContent).To(ContainSubstring(`<skill name="small-skill" />`))
+			Expect(systemContent).NotTo(ContainSubstring(`<skill name="oversized-skill"`))
 		})
 	})
 
@@ -734,16 +722,8 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 
 			systemContent := capturedRequest.Messages[0].Content
 			Expect(systemContent).To(ContainSubstring("<available_skills>"))
-			Expect(systemContent).To(ContainSubstring(`<skill name="skill-a">`))
-
-			leanIdx := strings.Index(systemContent, "<available_skills>")
-			// The cache-driven content block uses the same `<skill name=`
-			// prefix as the lean fallback; pick a distinct opening match
-			// via `<skill name="skill-a">\n# Skill A` (the content body
-			// follows the open tag immediately under the cache path).
-			blockIdx := strings.Index(systemContent, `<skill name="skill-a">`+"\n# Skill A")
-			Expect(blockIdx).To(BeNumerically(">", 0))
-			Expect(leanIdx).To(BeNumerically("<", blockIdx))
+			Expect(systemContent).To(ContainSubstring(`<skill name="skill-a" />`))
+			Expect(systemContent).NotTo(ContainSubstring("# Skill A"))
 		})
 	})
 
@@ -916,7 +896,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(systemContent).To(ContainSubstring(`<skill name="clean-code" />`))
 
 			// Session-start directive pin
-			Expect(systemContent).To(ContainSubstring("their content is active NOW"))
+			Expect(systemContent).To(ContainSubstring("call skill_load(name="))
 			Expect(systemContent).To(ContainSubstring("before your first tool call"))
 
 			// Anti-hallucination clause pin (scoped to contextual tier)

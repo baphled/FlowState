@@ -531,3 +531,16 @@ func SkillGuardRejectionCountForTest(e *Engine, sessionID string) int {
 func CapPersistedToolResultForTest(content string) string {
 	return capPersistedToolResult(content)
 }
+
+// CapInFlightToolResultForTest exposes capInFlightToolResult so the
+// in-flight cap specs can pin the truncation contract.
+func CapInFlightToolResultForTest(content string) string {
+	return capInFlightToolResult(content)
+}
+
+// TruncationMarkerForTest exposes the deterministic truncation-marker
+// prefix so specs can assert marker presence without duplicating the
+// format string.
+func TruncationMarkerForTest() string {
+	return truncationDetector
+}

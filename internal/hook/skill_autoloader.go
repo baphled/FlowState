@@ -10,12 +10,8 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 )
 
-// SkillAutoLoaderHook creates a hook that injects skill content into the system prompt.
-//
-// When cache is non-nil, skill content is injected directly as XML-style <skill> blocks,
-// respecting MaxAutoSkillsBytes for non-baseline skills. When cache is nil, the hook
-// falls back to the lean <available_skills> system-reminder block (Agent Runtime
-// Quality plan, Item 2 — May 2026).
+// SkillAutoLoaderHook creates a hook that injects lean skill-name blocks into the
+// system prompt. Skills are loaded in full on demand via skill_load.
 //
 // Expected:
 //   - config is a non-nil SkillAutoLoaderConfig.
@@ -24,8 +20,8 @@ import (
 //     already injected into the system prompt via BuildSystemPrompt. When non-nil, any
 //     skill in this set is stripped from the lean injection to avoid duplication.
 //     Pass nil to disable deduplication (backwards compatible).
-//   - cache is an optional pre-initialised SkillContentCache. When non-nil, skill content
-//     is injected directly instead of lean names. Pass nil for lean injection fallback.
+//   - cache is an optional pre-initialised SkillContentCache, retained for selection
+//     heuristics. Skill bodies are never injected; full content loads via skill_load.
 //
 // Returns:
 //   - A Hook that injects skill content or lean names into the system message on the
@@ -94,8 +90,8 @@ func selectSkillsFromManifest(
 	return SelectSkills(input, config)
 }
 
-// injectSelectedSkills chooses between content block injection (when cache is non-nil) and
-// lean name injection (when cache is nil), then mutates the request's system message.
+// injectSelectedSkills injects lean skill-name blocks for the selected skills,
+// then mutates the request's system message.
 //
 // Expected:
 //   - req is a non-nil ChatRequest.
@@ -128,23 +124,11 @@ func injectSelectedSkills(
 			contextual = append(contextual, s)
 		}
 	}
-	if cache != nil {
-		blocks, _ := buildSkillContentBlocks(skills, cache, config.MaxAutoSkillsBytes, baselineSet)
-		lean := buildLeanInjection(baseline, contextual)
-		if blocks != "" {
-			injectLeanSkills(req, lean+"\n\n"+blocks)
-		} else {
-			injectLeanSkills(req, lean)
-		}
-		return
-	}
-	// Baseline skills are always injected as session-start mandatory; only strip baked skills
-	// from the contextual (non-baseline) list.
 	contextual = stripBakedSkills(contextual, bakedSkillNames)
 	if len(baseline) == 0 && len(contextual) == 0 {
 		return
 	}
-	lean := buildLeanInjection(baseline, contextual)
+	lean := BuildLeanInjection(baseline, contextual)
 	injectLeanSkills(req, lean)
 }
 
@@ -167,45 +151,8 @@ func injectBaselineOnly(req *provider.ChatRequest, baselineSkills []string, bake
 	if len(remaining) == 0 {
 		return
 	}
-	lean := buildLeanInjection(remaining, nil)
+	lean := BuildLeanInjection(remaining, nil)
 	injectLeanSkills(req, lean)
-}
-
-// buildSkillContentBlocks formats skill content from the cache into XML-style blocks.
-// It enforces ceiling for non-baseline skills, returning injected content and dropped skill names.
-//
-// Expected:
-//   - skills is the ordered list of skill names to inject.
-//   - cache is a non-nil, initialised SkillContentCache.
-//   - ceiling is the maximum total bytes for non-baseline skill content (0 = no limit).
-//   - baselineSet contains skill names that are exempt from byte-budget enforcement.
-//
-// Returns:
-//   - The concatenated skill block content string.
-//   - A slice of skill names that were dropped due to ceiling enforcement.
-//
-// Side effects:
-//   - None.
-func buildSkillContentBlocks(skills []string, cache *SkillContentCache, ceiling int, baselineSet map[string]bool) (string, []string) {
-	var sb strings.Builder
-	var dropped []string
-	var bytesUsed int
-	for _, name := range skills {
-		content, ok := cache.GetContent(name)
-		if !ok {
-			continue
-		}
-		isBaseline := baselineSet[name]
-		if !isBaseline && ceiling > 0 && bytesUsed+len(content) > ceiling {
-			dropped = append(dropped, name)
-			continue
-		}
-		fmt.Fprintf(&sb, "<skill name=%q>\n%s\n</skill>\n", name, content)
-		if !isBaseline {
-			bytesUsed += len(content)
-		}
-	}
-	return sb.String(), dropped
 }
 
 // stripBakedSkills returns a filtered copy of skills, removing any name that appears
@@ -264,7 +211,7 @@ func containsAssistantMessage(messages []provider.Message) bool {
 // expensive to compare on every request.
 const availableSkillsBlockMarker = "<available_skills>"
 
-// buildLeanInjection renders the Item 2 <available_skills>
+// BuildLeanInjection renders the lean <available_skills>
 // system-reminder block (Agent Runtime Quality plan, May 2026). The
 // pre-D1 prose format ("Your load_skills: session start...; load when
 // relevant: [...]") was a known hallucination vector: the model treated
@@ -300,14 +247,14 @@ const availableSkillsBlockMarker = "<available_skills>"
 //
 // Side effects:
 //   - None.
-func buildLeanInjection(sessionStartSkills, contextualSkills []string) string {
+func BuildLeanInjection(sessionStartSkills, contextualSkills []string) string {
 	if len(sessionStartSkills) == 0 && len(contextualSkills) == 0 {
 		return ""
 	}
 	var sb strings.Builder
 	sb.WriteString("<system-reminder>\n")
 	if len(sessionStartSkills) > 0 {
-		sb.WriteString("The following skills are available. Session-start skills are already loaded into your system prompt above — their content is active NOW. Act on their instructions (e.g. any Phase 0 classification a discovery skill prescribes) before your first tool call.\n\n")
+		sb.WriteString("The following skills are available. Session-start skills are listed below; call skill_load(name=\"<exact-name>\") on each when its domain is relevant, before your first tool call where a discovery skill prescribes a Phase 0 classification.\n\n")
 	} else {
 		sb.WriteString("The following skills are available.\n\n")
 	}

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/baphled/flowstate/internal/agent"
+	"github.com/baphled/flowstate/internal/hook"
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/swarm"
 )
@@ -147,8 +148,12 @@ func (e *Engine) assembleSystemPromptLocked(manifest agent.Manifest, skills []sk
 		}
 	}
 
+	skillNames := make([]string, len(skills))
 	for i := range skills {
-		base = base + "\n\n# Skill: " + skills[i].Name + "\n\n" + skills[i].Content
+		skillNames[i] = skills[i].Name
+	}
+	if lean := hook.BuildLeanInjection(skillNames, nil); lean != "" {
+		base = base + "\n\n" + lean
 	}
 
 	if manifest.Delegation.CanDelegate {

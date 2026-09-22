@@ -518,7 +518,10 @@ var _ = Describe("Engine Integration", Label("integration"), func() {
 			}
 		})
 
-		It("bakes multi-skill content into the provider system message", func() {
+		It("injects lean multi-skill headers into the provider system message", func() {
+			// Behaviour-Pinned: lean-only injection — self-closing
+			// <skill name="X" /> entries inside <available_skills>,
+			// no full skill bodies; content loads on demand via skill_load.
 			eng := engine.New(engine.Config{
 				ChatProvider: capture,
 				Manifest: agent.Manifest{
@@ -544,10 +547,14 @@ var _ = Describe("Engine Integration", Label("integration"), func() {
 			Expect(capture.capturedRequest).NotTo(BeNil())
 			Expect(capture.capturedRequest.Messages).NotTo(BeEmpty())
 			Expect(capture.capturedRequest.Messages[0].Role).To(Equal("system"))
-			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring("# Skill: pre-action"))
-			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring("PREFLIGHT"))
-			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring("# Skill: memory-keeper"))
-			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring("MEMORY"))
+			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring("<available_skills>"))
+			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring(`<skill name="pre-action" />`))
+			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring(`<skill name="memory-keeper" />`))
+			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring(`skill_load(name=`))
+			Expect(capture.capturedRequest.Messages[0].Content).NotTo(ContainSubstring("# Skill: pre-action"))
+			Expect(capture.capturedRequest.Messages[0].Content).NotTo(ContainSubstring("PREFLIGHT"))
+			Expect(capture.capturedRequest.Messages[0].Content).NotTo(ContainSubstring("# Skill: memory-keeper"))
+			Expect(capture.capturedRequest.Messages[0].Content).NotTo(ContainSubstring("MEMORY"))
 		})
 
 		It("produces no skill markers when Skills is nil", func() {
@@ -615,7 +622,10 @@ var _ = Describe("Engine Integration", Label("integration"), func() {
 
 			Expect(capture.capturedRequest).NotTo(BeNil())
 			Expect(capture.capturedRequest.Messages).NotTo(BeEmpty())
-			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring("# Skill: pre-action"))
+			// Lean-only: full bodies are never baked; the session-start
+			// entry for a baseline skill is always present, baked or not.
+			Expect(capture.capturedRequest.Messages[0].Content).NotTo(ContainSubstring("# Skill: pre-action"))
+			Expect(capture.capturedRequest.Messages[0].Content).NotTo(ContainSubstring("PREFLIGHT"))
 			// Behaviour-Pinned: the pre-D1 assertion
 			//   NotTo(ContainSubstring("Your load_skills: [pre-action"))
 			// was a vacuous pin. The actual contract (asserted by
@@ -656,7 +666,8 @@ var _ = Describe("Engine Integration", Label("integration"), func() {
 
 			Expect(capture.capturedRequest).NotTo(BeNil())
 			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring("You are Planner"))
-			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring("# Skill: pre-action"))
+			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring(`<skill name="pre-action" />`))
+			Expect(capture.capturedRequest.Messages[0].Content).NotTo(ContainSubstring("# Skill: pre-action"))
 
 			capture.capturedRequest = nil
 			eng.SetManifest(agent.Manifest{
@@ -676,7 +687,8 @@ var _ = Describe("Engine Integration", Label("integration"), func() {
 			Expect(capture.capturedRequest).NotTo(BeNil())
 			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring("You are Executor"))
 			Expect(capture.capturedRequest.Messages[0].Content).NotTo(ContainSubstring("You are Planner"))
-			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring("# Skill: pre-action"))
+			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring(`<skill name="pre-action" />`))
+			Expect(capture.capturedRequest.Messages[0].Content).NotTo(ContainSubstring("# Skill: pre-action"))
 		})
 	})
 
@@ -734,9 +746,13 @@ var _ = Describe("Engine Integration", Label("integration"), func() {
 
 			Expect(capture.capturedRequest).NotTo(BeNil())
 			Expect(capture.capturedRequest.Messages).NotTo(BeEmpty())
-			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring("# Skill: pre-action"))
-			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring("PRE_ACTION_BODY"))
+			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring("<available_skills>"))
+			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring(`<skill name="pre-action" />`))
+			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring(`skill_load(name=`))
+			Expect(capture.capturedRequest.Messages[0].Content).NotTo(ContainSubstring("# Skill: pre-action"))
+			Expect(capture.capturedRequest.Messages[0].Content).NotTo(ContainSubstring("PRE_ACTION_BODY"))
 			Expect(capture.capturedRequest.Messages[0].Content).NotTo(ContainSubstring("# Skill: memory-keeper"))
+			Expect(capture.capturedRequest.Messages[0].Content).NotTo(ContainSubstring(`<skill name="memory-keeper"`))
 		})
 	})
 })

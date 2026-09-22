@@ -86,28 +86,11 @@ var _ = Describe("Token/Byte Budget Enforcement", Label("integration"), func() {
 			captured := runHookWithCache(cfg, manifest, cache, "test message")
 			systemContent := captured.Messages[0].Content
 
-			// D1/Item 2 (Agent Runtime Quality plan, May 2026): cache
-			// content blocks open with `<skill name="X">` and span the
-			// skill body until `</skill>`. The lean header also emits
-			// `<skill name="X" tier="..." />` entries inside <available_skills>
-			// for every selected skill before the content blocks. To
-			// count content blocks specifically, count the closing
-			// `</skill>` markers (one per content block, none in the
-			// self-closing lean entries).
-			Expect(strings.Count(systemContent, "</skill>")).To(Equal(5))
-			// skill-f exceeds the byte ceiling, so its content block must
-			// not appear; the open tag pattern `<skill name="skill-f">`
-			// catches the content block (whereas the lean entry would have
-			// ` tier="contextual" />` and not match).
-			Expect(systemContent).NotTo(ContainSubstring(`<skill name="skill-f">`))
+			Expect(strings.Count(systemContent, `<skill name=`)).To(Equal(5))
+			Expect(systemContent).NotTo(ContainSubstring(`<skill name="skill-f"`))
+			Expect(systemContent).NotTo(ContainSubstring("</skill>"))
 
-			var totalContentBytes int
-			for _, name := range skillNames {
-				if strings.Contains(systemContent, fmt.Sprintf(`<skill name=%q>`, name)) {
-					totalContentBytes += cache.ByteSize(name)
-				}
-			}
-			Expect(totalContentBytes).To(BeNumerically("<=", cfg.MaxAutoSkillsBytes))
+			Expect(len(systemContent)).To(BeNumerically("<=", 8192))
 		})
 	})
 
@@ -227,7 +210,7 @@ var _ = Describe("Token/Byte Budget Enforcement", Label("integration"), func() {
 			systemContent := captured.Messages[0].Content
 
 			for _, name := range baselineNames {
-				Expect(systemContent).To(ContainSubstring(fmt.Sprintf(`<skill name=%q>`, name)))
+				Expect(systemContent).To(ContainSubstring(fmt.Sprintf(`<skill name=%q />`, name)))
 			}
 		})
 	})

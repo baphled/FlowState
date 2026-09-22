@@ -306,8 +306,6 @@ func NewTruncateContextTool(store *FileContextStore) *TruncateContextTool {
 //
 // Side effects:
 //   - None.
-//
-// Expected: parameters for Name.
 func (t *TruncateContextTool) Name() string {
 	return "truncate_context"
 }
@@ -319,8 +317,6 @@ func (t *TruncateContextTool) Name() string {
 //
 // Side effects:
 //   - None.
-//
-// Expected: parameters for Description.
 func (t *TruncateContextTool) Description() string {
 	return "Truncate oldest unpinned messages until token budget is met"
 }
@@ -332,8 +328,6 @@ func (t *TruncateContextTool) Description() string {
 //
 // Side effects:
 //   - None.
-//
-// Expected: parameters for Schema.
 func (t *TruncateContextTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
@@ -394,8 +388,6 @@ func NewPinMessageTool(store *FileContextStore) *PinMessageTool {
 //
 // Side effects:
 //   - None.
-//
-// Expected: parameters for Name.
 func (t *PinMessageTool) Name() string {
 	return "pin_message"
 }
@@ -407,8 +399,6 @@ func (t *PinMessageTool) Name() string {
 //
 // Side effects:
 //   - None.
-//
-// Expected: parameters for Description.
 func (t *PinMessageTool) Description() string {
 	return "Pin or unpin a message by index to protect from truncation"
 }
@@ -420,8 +410,6 @@ func (t *PinMessageTool) Description() string {
 //
 // Side effects:
 //   - None.
-//
-// Expected: parameters for Schema.
 func (t *PinMessageTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
