@@ -20,9 +20,10 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/spf13/cobra"
+
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/voice"
-	"github.com/spf13/cobra"
 )
 
 // talkOptions holds the flags for `flowstate talk`.
