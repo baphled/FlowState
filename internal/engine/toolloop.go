@@ -1039,8 +1039,9 @@ func (e *Engine) streamWithToolLoop(
 						"overflow_retries", overflowRetries,
 					)
 					emitTerminalStreamChunk(ctx, outChan, provider.StreamChunk{
-						Done:  true,
-						Error: fmt.Errorf("%w", ErrCompactionInsufficient),
+						Done:       true,
+						StopReason: session.StopReasonToolLoopExceeded,
+						Error:      fmt.Errorf("%w", ErrCompactionInsufficient),
 					})
 					return
 				}
@@ -1073,8 +1074,9 @@ func (e *Engine) streamWithToolLoop(
 									"messages", len(messages),
 								)
 								emitTerminalStreamChunk(ctx, outChan, provider.StreamChunk{
-									Done:  true,
-									Error: fmt.Errorf("%w", ErrCompactionInsufficient),
+									Done:       true,
+									StopReason: session.StopReasonToolLoopExceeded,
+									Error:      fmt.Errorf("%w", ErrCompactionInsufficient),
 								})
 								return
 							}
