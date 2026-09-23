@@ -1745,20 +1745,6 @@ func (sh *StreamHook) publishFailoverError(
 	}
 }
 
-// PublishFailoverErrorForTest exposes publishFailoverError for tests
-// that assert the failover error and notification events.
-//
-// Expected: parameters mirror publishFailoverError.
-// Returns: none.
-// Side effects: publishes provider.error and notification events.
-func (sh *StreamHook) PublishFailoverErrorForTest(
-	ctx context.Context,
-	candidate provider.ModelPreference,
-	err error,
-) {
-	sh.publishFailoverError(ctx, candidate, provider.RequestDebugStats{}, err, attemptDebugMeta{})
-}
-
 // publishFailoverNotification surfaces a failed failover attempt as a
 // user-facing NotificationEvent so the client can render a warning that
 // the active provider was switched away from.

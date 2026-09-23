@@ -1148,7 +1148,7 @@ func (a streamingAdapter) Stream(ctx context.Context, agentID, message string) (
 //
 // Expected: parameters for Handler.
 func (s *Server) Handler() http.Handler {
-	return securityHeaders(s.mux)
+	return securityHeaders(rejectEmptyTurnID(s.mux))
 }
 
 // InstallAuth wires the auth bundle and rebuilds the route map. Called
@@ -1289,6 +1289,7 @@ func (s *Server) setupRoutes() {
 	// POST /messages to read the engine-emitted messages and the
 	// running → completed | failed status transition.
 	s.registerProtected("GET /api/v1/sessions/{id}/turns/{turn_id}", s.handleGetTurn)
+	s.registerProtected("GET /api/v1/sessions/{id}/turns/{turn_id}/events", s.handleTurnEvents)
 	// User-initiated cancel surface for the post-then-poll wire
 	// (Phase-4-Commit-2 of "Turn-Based Post-Then-Poll Architecture
 	// (May 2026)" retired the session-scoped SSE cancel).

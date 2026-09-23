@@ -119,6 +119,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterStopButtonSteps(ctx, &stopButtonSteps{})
 	RegisterDelegationIntegritySteps(ctx)
 	RegisterDelegationCoordinationSteps(ctx)
+	RegisterTurnEventsSSESteps(ctx)
 	VoiceTalkContext(ctx)
 	VoiceCLIContext(ctx)
 	VoiceTTSContext(ctx)
