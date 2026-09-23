@@ -309,6 +309,7 @@ func NewWithTurns(
 //
 // Side effects:
 //   - Cancellation of rootCtx cancels all live stream contexts.
+//
 func NewWithRootContext(
 	rootCtx context.Context,
 	streamer Streamer,
@@ -1207,8 +1208,42 @@ func (d *Dispatcher) wrapWithTurnLifecycle(
 			// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
 			//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-α.
 			if chunk.EventType == "model_active" || chunk.EventType == "provider_changed" {
-				if lastProviderID != "" || lastModelID != "" {
-					d.turnRegistry.SetProviderModel(turnID, lastProviderID, lastModelID)
+				providerID, modelID := chunk.ProviderID, chunk.ModelID
+				if providerID == "" && chunk.Content != "" {
+					// The failover stream_hook emits model_active and
+					// provider_changed as Content-embedded JSON payloads
+					// ({"provider","model"} and {"to_provider","to_model"}
+					// respectively), leaving the chunk's own ProviderID/
+					// ModelID fields empty. Fall back to the payload so
+					// SetProviderModel — and its NotifyChange broadcast —
+					// fires the moment the announcement arrives rather
+					// than only at terminal stamping.
+					var pair struct {
+						Provider   string `json:"provider"`
+						Model      string `json:"model"`
+						ToProvider string `json:"to_provider"`
+						ToModel    string `json:"to_model"`
+					}
+					if err := json.Unmarshal([]byte(chunk.Content), &pair); err == nil {
+						if providerID == "" {
+							if pair.Provider != "" {
+								providerID = pair.Provider
+							} else {
+								providerID = pair.ToProvider
+							}
+						}
+						if modelID == "" {
+							if pair.Model != "" {
+								modelID = pair.Model
+							} else {
+								modelID = pair.ToModel
+							}
+						}
+					}
+				}
+				if providerID != "" || modelID != "" {
+					d.turnRegistry.SetProviderModel(turnID, providerID, modelID)
+					lastProviderID, lastModelID = providerID, modelID
 				}
 			}
 			// Phase-5 §1c-β: surface the live context_usage figure onto the
