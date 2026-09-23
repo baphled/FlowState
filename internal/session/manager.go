@@ -1585,6 +1585,7 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 	// BenchmarkAppendSessionMessage). The mutation counter forces a
 	// coalesced write once PersistMutationLimit appends accumulate.
 	if mustPersist {
+		delete(m.persistDirty, sess.ID)
 		sessionsDir := m.sessionsDir
 		persistFn := m.persistFn
 		snap := *sess

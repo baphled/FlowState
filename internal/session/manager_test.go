@@ -708,6 +708,24 @@ var _ = Describe("Manager", func() {
 					"immediately rather than waiting on the 30-min boot-time orphan reap")
 		})
 
+		It("persists the sidecar immediately when the assistant turn carries StopReasonStreamTruncated", func() {
+			tmpDir := GinkgoT().TempDir()
+			mgr.SetSessionsDir(tmpDir)
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:       "assistant",
+				Content:    "truncated mid-flight",
+				StopReason: session.StopReasonStreamTruncated,
+			})
+
+			_, err = session.LoadSessionMetadata(tmpDir, sess.ID)
+			Expect(err).NotTo(HaveOccurred(),
+				"a terminal assistant append must flush the sidecar synchronously — "+
+					"the metadata must be readable from disk immediately without a background sweep")
+		})
+
 		It("does not flip active when the assistant message carries a different StopReason", func() {
 			sess, err := mgr.CreateSession("agent-x")
 			Expect(err).NotTo(HaveOccurred())
