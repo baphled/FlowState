@@ -67,7 +67,19 @@ func teeToParentStream(ctx context.Context, agentID string, src <-chan provider.
 	go func() {
 		defer close(out)
 		batch := make([]provider.StreamChunk, 0, teeBatchSize)
+		var flushTimer *time.Timer
+		defer func() {
+			if flushTimer != nil {
+				flushTimer.Stop()
+			}
+		}()
+		var timerC <-chan time.Time
 		flush := func() bool {
+			if flushTimer != nil {
+				flushTimer.Stop()
+				flushTimer = nil
+				timerC = nil
+			}
 			if len(batch) == 0 {
 				return true
 			}
@@ -82,45 +94,69 @@ func teeToParentStream(ctx context.Context, agentID string, src <-chan provider.
 			batch = batch[:0]
 			return true
 		}
-		for chunk := range src {
+		for {
 			select {
-			case out <- chunk:
 			case <-ctx.Done():
 				return
-			}
+			case <-timerC:
+				if !flush() {
+					return
+				}
+			case chunk, ok := <-src:
+				if !ok {
+					if !flush() {
+						return
+					}
+					return
+				}
+				select {
+				case out <- chunk:
+				case <-ctx.Done():
+					return
+				}
 
-			if chunk.Done || chunk.DelegationInfo != nil {
-				if !flush() {
-					return
+				if chunk.Done || chunk.DelegationInfo != nil {
+					if !flush() {
+						return
+					}
+					continue
 				}
-				continue
-			}
-			if streaming.IsControlEvent(chunk.EventType) {
-				if !flush() {
-					return
+				if streaming.IsControlEvent(chunk.EventType) {
+					if !flush() {
+						return
+					}
+					continue
 				}
-				continue
-			}
-			if chunk.Content == "" && chunk.Thinking == "" {
-				if !flush() {
-					return
+				if chunk.Content == "" && chunk.Thinking == "" {
+					if !flush() {
+						return
+					}
+					continue
 				}
-				continue
-			}
 
-			batch = append(batch, chunk)
-			if len(batch) >= teeBatchSize {
-				if !flush() {
-					return
+				batch = append(batch, chunk)
+				if flushTimer == nil {
+					flushTimer = time.NewTimer(teeFlushInterval)
+					timerC = flushTimer.C
+				}
+				if len(batch) >= teeBatchSize {
+					if !flush() {
+						return
+					}
 				}
 			}
-		}
-		if !flush() {
-			return
 		}
 	}()
 	return out
 }
+
+// teeFlushInterval bounds how long a partial batch may wait for more
+// chunks before the timer flushes it regardless of count, so slow or
+// trickling child streams cannot stall parent-stream tokens for the
+// full teeBatchSize accumulation (Sept 2026 responsiveness audit of
+// commit 4d7e274f: no timer meant multi-second parent stalls on
+// trickling children, hurting perceived UI responsiveness).
+const teeFlushInterval = 50 * time.Millisecond
 
 // teeBatchSize is the number of chunks the tee forwarder accumulates before
 // forwarding the batch to the parent stream, reducing context-aware select

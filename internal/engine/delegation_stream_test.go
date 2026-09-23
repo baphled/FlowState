@@ -92,6 +92,49 @@ var _ = Describe("teeToParentStream batching", func() {
 			"24 chunks must be forwarded in roughly 8-per-batch groups, not one select send per chunk")
 	})
 
+	// The flush-on-timer spec (Sept 2026 responsiveness audit) pins the
+	// latency bound on the tee batcher: a slow, trickling child stream
+	// must not stall parent-stream tokens for the full 8-chunk batch.
+	// With 2 chunks arriving 10ms apart and no further chunks, the
+	// parent must still receive both within a generous 100ms window —
+	// no Done, no batch completion — because the 50ms teeFlushInterval
+	// timer flushes the partial batch.
+	It("flushes a partial batch on the tee flush timer", func() {
+		src := make(chan provider.StreamChunk, 4)
+		parentOut := make(chan provider.StreamChunk, 64)
+		ctx, cancel := context.WithCancel(engine.WithStreamOutput(context.Background(), parentOut))
+		defer cancel()
+
+		out := engine.TeeToParentStreamForTest(ctx, "child-agent", src)
+
+		go func() {
+			src <- contentChunk(0)
+			time.Sleep(10 * time.Millisecond)
+			src <- contentChunk(1)
+		}()
+
+		select {
+		case <-out:
+		case <-time.After(2 * time.Second):
+			Fail("forwarder never produced a chunk")
+		}
+
+		var parent []provider.StreamChunk
+		deadline := time.After(100 * time.Millisecond)
+	collect:
+		for len(parent) < 2 {
+			select {
+			case c := <-parentOut:
+				parent = append(parent, c)
+			case <-deadline:
+				break collect
+			}
+		}
+
+		Expect(parent).To(HaveLen(2),
+			"timer must flush the partial batch even without 8 chunks, a Done, or a source close")
+	})
+
 	It("cancels mid-batch: parent receives nothing further once ctx is done", func() {
 		src := make(chan provider.StreamChunk, 4)
 		parentOut := make(chan provider.StreamChunk, 2)
