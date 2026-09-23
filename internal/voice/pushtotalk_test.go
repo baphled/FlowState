@@ -52,10 +52,9 @@ func TestPushToTalkSessionCloseIdempotent(t *testing.T) {
 // when voice is unavailable and the text fallback engages; the
 // wording is user-facing contract kept stable deliberately.
 func TestPipelineFallbackWarningShape(t *testing.T) {
+	t.Setenv("FLOWSTATE_VOICE_CAPTURE", "")
+	t.Setenv("PATH", t.TempDir())
 	_, err := voice.NewCaptureTool("")
-	if err == nil {
-		t.Skip("capture binary unexpectedly available")
-	}
 	if !strings.Contains(err.Error(), "capture") && err.Error() == "" {
 		t.Fatalf("empty capture-tool error for missing binary: %v", err)
 	}
