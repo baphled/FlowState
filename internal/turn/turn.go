@@ -823,6 +823,7 @@ func (r *Registry) Start(sessionID string) (string, error) {
 	}
 	r.byID[id] = t
 	r.byActiveSession[sessionID] = id
+	r.broadcastChangeLocked()
 	return id, nil
 }
 
