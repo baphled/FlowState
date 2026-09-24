@@ -1313,11 +1313,4 @@ voice:
 		Expect(cfg.Voice.STTCmd).To(Equal("envstt {file}"))
 	})
 
-	It("lets FLOWSTATE_VOICE_CAPTURE override the capture command", func() {
-		GinkgoT().Setenv("FLOWSTATE_VOICE_CAPTURE", "envcapture {file}")
-		path := writeVoiceConfig("log_level: info\n")
-		cfg, err := config.LoadConfigFromPath(path)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(cfg.Voice.CaptureCmd).To(Equal("envcapture {file}"))
-	})
 })

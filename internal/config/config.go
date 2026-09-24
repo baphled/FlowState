@@ -2030,14 +2030,14 @@ func DefaultVoiceConfig() VoiceConfig {
 
 // applyVoiceDefaults fills unset voice fields from defaults and then
 // applies FLOWSTATE_VOICE_* environment overrides (highest
-// precedence). Capture/STT templates left empty resolve at use time.
+// precedence). STT/TTS templates left empty resolve at use time.
 //
 // Expected:
 //   - cfg is a non-nil AppConfig pointer.
 //
 // Side effects:
-//   - Mutates cfg.Voice in place; reads FLOWSTATE_VOICE_CAPTURE,
-//     FLOWSTATE_VOICE_STT and FLOWSTATE_VOICE_TTS.
+//   - Mutates cfg.Voice in place; reads FLOWSTATE_VOICE_STT and
+//     FLOWSTATE_VOICE_TTS.
 func applyVoiceDefaults(cfg *AppConfig) {
 	d := DefaultVoiceConfig()
 	if cfg.Voice.SampleRate == 0 {
@@ -2049,9 +2049,6 @@ func applyVoiceDefaults(cfg *AppConfig) {
 	// A YAML file without a voice: block decodes Enabled as false;
 	// treat zero-valued blocks as "use the default" so absence keeps
 	// voice enabled.
-	if v := os.Getenv("FLOWSTATE_VOICE_CAPTURE"); v != "" {
-		cfg.Voice.CaptureCmd = v
-	}
 	if v := os.Getenv("FLOWSTATE_VOICE_STT"); v != "" {
 		cfg.Voice.STTCmd = v
 	}

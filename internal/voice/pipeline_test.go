@@ -39,7 +39,7 @@ func writeFakeSTTBin(t *testing.T, transcript string) string {
 // transcribes caller audio and dispatches with mention scanning.
 func TestDispatchAudioTranscribesAndDispatchs(t *testing.T) {
 	spy := &fakeDispatchSpy{}
-	p := NewPipeline("", writeFakeSTTBin(t, "hello @swarm from browser"))
+	p := NewPipeline(writeFakeSTTBin(t, "hello @swarm from browser"))
 	got, err := p.DispatchAudio(context.Background(), spy, []byte("RIFFb\x00\x00\x00WAVEfmt "))
 	if err != nil {
 		t.Fatalf("DispatchAudio: %v", err)
@@ -60,7 +60,7 @@ func TestDispatchAudioTranscribesAndDispatchs(t *testing.T) {
 
 // TestDispatchAudioRejectsEmptyAudio asserts the caller error for empty bytes.
 func TestDispatchAudioRejectsEmptyAudio(t *testing.T) {
-	p := NewPipeline("", "")
+	p := NewPipeline("")
 	if _, err := p.DispatchAudio(context.Background(), &fakeDispatchSpy{}, nil); err == nil {
 		t.Fatal("expected error for empty audio")
 	}
@@ -68,7 +68,7 @@ func TestDispatchAudioRejectsEmptyAudio(t *testing.T) {
 
 // TestDispatchAudioNilDispatcher asserts the nil-dispatcher guard.
 func TestDispatchAudioNilDispatcher(t *testing.T) {
-	p := NewPipeline("", "")
+	p := NewPipeline("")
 	if _, err := p.DispatchAudio(context.Background(), nil, []byte("wav")); err == nil {
 		t.Fatal("expected error for nil dispatcher")
 	}
@@ -78,7 +78,7 @@ func TestDispatchAudioNilDispatcher(t *testing.T) {
 // propagates from the shared path.
 func TestDispatchAudioSttUnavailable(t *testing.T) {
 	t.Setenv("FLOWSTATE_VOICE_STT", "definitely-not-an-stt-binary-xyz {file}")
-	p := NewPipeline("", "")
+	p := NewPipeline("")
 	_, err := p.DispatchAudio(context.Background(), &fakeDispatchSpy{}, []byte("RIFF"))
 	if !errors.Is(err, ErrSTTUnavailable) {
 		t.Fatalf("err = %v, want ErrSTTUnavailable", err)

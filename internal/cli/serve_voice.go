@@ -114,7 +114,7 @@ func InstallVoiceFromConfig(apiServer *api.Server, cfg *config.AppConfig) error 
 	if dispatcher == nil {
 		return nil
 	}
-	pipeline := voice.NewPipeline(cfg.Voice.CaptureCmd, cfg.Voice.STTCmd)
+	pipeline := voice.NewPipeline(cfg.Voice.STTCmd)
 	apiServer.ApplyOption(api.WithVoiceTurnPipeline(&voicePipelineAdapter{
 		pipeline:   pipeline,
 		dispatcher: &voiceDispatchAdapter{svc: dispatcher},

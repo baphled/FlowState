@@ -21,12 +21,9 @@ type Dispatcher interface {
 	DispatchEphemeral(ctx context.Context, req dispatchpkg.DispatchRequest, consumer interface{}) (dispatchpkg.EphemeralHandle, error)
 }
 
-// Pipeline captures audio, transcribes it, and hands the transcript
-// to the Dispatcher. It is the "one talk turn" unit the CLI and API
-// surfaces both call.
+// Pipeline transcribes audio and hands the transcript to the
+// Dispatcher. It is the "one talk turn" unit the API surface calls.
 type Pipeline struct {
-	// Capture is the resolved capture command template.
-	Capture string
 	// STT is the resolved STT command template; empty defers to
 	// env/defaults inside NewSTTTool.
 	STT string
@@ -34,59 +31,21 @@ type Pipeline struct {
 	MaxDuration time.Duration
 }
 
-// NewPipeline builds a talk pipeline from explicit command templates.
-// Empty strings defer to environment overrides and PATH probes inside
-// the respective tools, matching the env > config > default contract.
+// NewPipeline builds a talk pipeline from an explicit STT command
+// template. An empty string defers to environment overrides and PATH
+// probes inside the tool, matching the env > config > default
+// contract.
 //
 // Expected:
-//   - capture is a capture command template (may be empty).
 //   - stt is an STT command template (may be empty).
 //
 // Returns:
 //   - A *Pipeline with MaxDuration defaulted to 30s.
 //
 // Side effects:
-//   - None; resolution happens at RunTurn time.
-func NewPipeline(capture, stt string) *Pipeline {
-	return &Pipeline{Capture: capture, STT: stt, MaxDuration: 30 * time.Second}
-}
-
-// RunTurn performs one capture → transcribe → dispatch cycle. The
-// transcript is dispatched with ScanMentions true so "@swarm" speech
-// routes to the right target without a separate UI step.
-//
-// Expected:
-//   - ctx is non-nil; cancellation aborts capture.
-//   - d is a non-nil Dispatcher.
-//
-// Returns:
-//   - The transcript that was dispatched.
-//   - ErrCaptureUnavailable when no capture binary resolves.
-//   - ErrSTTUnavailable when no STT binary resolves.
-//   - The dispatcher's error verbatim when dispatch fails.
-//
-// Side effects:
-//   - Spawns capture and STT child processes; removes the temporary
-//     WAV after transcription.
-func (p *Pipeline) RunTurn(ctx context.Context, d Dispatcher) (string, error) {
-	if d == nil {
-		return "", errors.New("voice: nil dispatcher")
-	}
-	capTool, err := NewCaptureTool(p.Capture)
-	if err != nil {
-		return "", err
-	}
-	rec, err := capTool.Record(ctx, p.MaxDuration)
-	if err != nil {
-		return "", err
-	}
-	defer rec.Cleanup()
-
-	audio, err := os.ReadFile(rec.Path)
-	if err != nil {
-		return "", fmt.Errorf("voice: read recording: %w", err)
-	}
-	return p.DispatchAudio(ctx, d, audio)
+//   - None; resolution happens at dispatch time.
+func NewPipeline(stt string) *Pipeline {
+	return &Pipeline{STT: stt, MaxDuration: 30 * time.Second}
 }
 
 // DispatchAudio transcribes caller-supplied WAV audio and dispatches

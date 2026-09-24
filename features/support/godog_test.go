@@ -120,9 +120,6 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterDelegationIntegritySteps(ctx)
 	RegisterDelegationCoordinationSteps(ctx)
 	RegisterTurnEventsSSESteps(ctx)
-	VoiceTalkContext(ctx)
-	VoiceCLIContext(ctx)
 	VoiceTTSContext(ctx)
 	VoiceAPIContext(ctx)
-	VoiceResumeContext(ctx)
 }
