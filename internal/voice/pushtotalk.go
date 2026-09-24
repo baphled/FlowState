@@ -3,8 +3,6 @@ package voice
 import (
 	"context"
 	"errors"
-	"fmt"
-	"io"
 	"time"
 )
 
@@ -136,45 +134,4 @@ func (s *PushToTalkSession) Close() error {
 		rec.Cleanup()
 	}
 	return err
-}
-
-// ResolveTurnFallback attempts one voice turn and, when voice is
-// unavailable (capture or STT binary absent), emits the fallback
-// warning to out and falls back to the supplied text-turn reader.
-//
-// Expected:
-//   - ctx is non-nil; out is a non-nil writer; textTurn yields the
-//     fallback turn content (commonly one line from stdin).
-//
-// Returns:
-//   - The transcript from whichever source succeeded.
-//   - The textTurn error when both voice and fallback fail.
-//
-// Side effects:
-//   - Spawns capture/STT subprocesses when voice resolves; writes
-//     the fallback warning to out when it does not.
-func ResolveTurnFallback(ctx context.Context, out io.Writer, textTurn func() (string, error)) (string, error) {
-	pipeline := NewPipeline("", "")
-	capTool, capErr := NewCaptureTool(pipeline.Capture)
-	if capErr == nil {
-		rec, recErr := capTool.Record(ctx, pipeline.MaxDuration)
-		if recErr == nil {
-			defer rec.Cleanup()
-			sttTool, sttErr := NewSTTTool(pipeline.STT)
-			if sttErr == nil {
-				transcript, err := sttTool.Transcribe(ctx, rec.Path)
-				if err == nil {
-					return transcript, nil
-				}
-				fmt.Fprintf(out, "voice unavailable, falling back to text-only mode: %v\n", err)
-				return textTurn()
-			}
-			fmt.Fprintf(out, "voice unavailable, falling back to text-only mode: %v\n", sttErr)
-			return textTurn()
-		}
-		fmt.Fprintf(out, "voice unavailable, falling back to text-only mode: %v\n", recErr)
-		return textTurn()
-	}
-	fmt.Fprintf(out, "voice unavailable, falling back to text-only mode: %v\n", capErr)
-	return textTurn()
 }
