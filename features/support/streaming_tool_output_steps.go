@@ -23,9 +23,9 @@ type StreamingToolOutputSteps struct {
 	hasToolResult  bool
 	toolResultText string
 
-	pendingToolCall   *provider.ToolCall
-	captureManager    *session.Manager
-	captureSessionID  string
+	pendingToolCall    *provider.ToolCall
+	captureManager     *session.Manager
+	captureSessionID   string
 	persistedToolInput string
 
 	replayStreamer  *toolInputHistorySeeder

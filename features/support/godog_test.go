@@ -122,4 +122,5 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterTurnEventsSSESteps(ctx)
 	VoiceTTSContext(ctx)
 	VoiceAPIContext(ctx)
+	NarrationContext(ctx)
 }

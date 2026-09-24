@@ -80,10 +80,10 @@ type stopButtonSteps struct {
 // the healthy follow-up cannot demote the session before the meta.json
 // assertion has run.
 type stopButtonScriptedProvider struct {
-	name  string
-	marker string
-	mu             sync.Mutex
-	secondSeenOnce bool
+	name             string
+	marker           string
+	mu               sync.Mutex
+	secondSeenOnce   bool
 	secondPromptSeen chan struct{}
 	release          chan struct{}
 }

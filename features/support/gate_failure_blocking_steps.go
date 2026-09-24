@@ -37,11 +37,11 @@ func (passingGateRunner) Run(_ context.Context, _ swarm.GateSpec, _ swarm.GateAr
 
 // gateBlockingState carries the per-scenario gate-blocking BDD state.
 type gateBlockingState struct {
-	specs        []swarm.GateSpec
-	runner       swarm.GateRunner
-	report       swarm.DispatchReport
-	haltErr      error
-	gateFailure  turn.GateFailure
+	specs       []swarm.GateSpec
+	runner      swarm.GateRunner
+	report      swarm.DispatchReport
+	haltErr     error
+	gateFailure turn.GateFailure
 }
 
 // RegisterGateFailureBlockingSteps wires the gate-blocking step

@@ -240,10 +240,10 @@ func (s *toolLoopBudgetSteps) runTurn(sessionID, prompt string, watchdog time.Du
 		maxIterations = 10000
 	}
 	eng := engine.New(engine.Config{
-		ChatProvider:         s.provider,
-		Manifest:             manifest,
-		Tools:                s.tools,
-		MaxToolLoopDuration:  s.cap,
+		ChatProvider:          s.provider,
+		Manifest:              manifest,
+		Tools:                 s.tools,
+		MaxToolLoopDuration:   s.cap,
 		MaxToolLoopIterations: maxIterations,
 	})
 

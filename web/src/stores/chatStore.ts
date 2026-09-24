@@ -22,6 +22,12 @@ import { exhaustivenessGuard, parseSSEPayload, type SSEEvent } from '@/lib/sseEv
 import { dismissToast, showToast, updateToast } from '@/composables/useToast'
 import { useTodoStore } from './todoStore'
 import { useQuotaStore } from './quotaStore'
+// Voice (chain voice-web-1): dynamic-friendly import — voiceStore's
+// talk-back path dynamically imports THIS module, so a static import
+// here would only be a cycle if voiceStore statically imported back.
+// It does not (it uses `await import('./chatStore')`), so this static
+// edge is safe.
+import { useVoiceStore } from './voiceStore'
 
 const activeSessionStorageKey = 'chat.currentSessionId'
 const activeAgentStorageKey = 'chat.agentId'
@@ -3196,6 +3202,23 @@ export const useChatStore = defineStore('chat', {
         // been renamed to the canonical id, so the merge's orphan-
         // preservation rule produces zero duplicates.
         await this.reconcileFromBackend(capturedSessionId)
+
+        // Voice (chain voice-web-1) — agent-speaks-first. Fire-and-
+        // forget once the turn is reconciled: build a narration from
+        // this session's assistant/tool_call rows and speak it if
+        // voice settings say enabled. speakAgentTurn never rejects and
+        // never touches this.error — silent/non-blocking by contract.
+        if (this.currentSessionId === capturedSessionId) {
+          const narratable = this.messages
+            .filter((m) => m.role === 'assistant' || m.role === 'tool_call')
+            .map((m) => ({
+              id: m.id,
+              role: m.role,
+              content: m.content,
+              toolName: (m as { toolName?: string }).toolName,
+            }))
+          void useVoiceStore().speakAgentTurn(narratable)
+        }
 
         await this.loadSessions()
       } catch (error) {

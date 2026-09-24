@@ -97,5 +97,3 @@ func (s *openAICompatClassificationSteps) errorIsNotRetriable() error {
 	}
 	return nil
 }
-
-

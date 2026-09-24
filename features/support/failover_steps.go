@@ -112,34 +112,34 @@ func (m *FailoverMockStreamProvider) RefreshStatus() (time.Time, int) {
 
 // FailoverSteps holds state for failover BDD step definitions.
 type FailoverSteps struct {
-	registry          *provider.Registry
-	health            *failover.HealthManager
-	manager           *failover.Manager
-	streamHook        *failover.StreamHook
-	candidateProvider string
-	candidateModel    string
-	defaultProvider   string
-	defaultModel      string
-	configured        []provider.ModelPreference
-	equivalentSpecs   []equivalentProviderSpec
-	eligible          map[provider.ModelPreference]bool
-	chain             []provider.ModelPreference
-	selectionErr      error
-	preparedRound     []provider.ModelPreference
-	selected          provider.ModelPreference
-	selectedModel     string
-	rotationOrder     []provider.ModelPreference
-	trackedProvider   string
-	trackedModel      string
-	receivedError     string
-	reloadedHealth    *failover.HealthManager
-	refreshSucceeded  bool
-	strictChain       []provider.ModelPreference
-	globalChain       []provider.ModelPreference
-	resolvedChain     []provider.ModelPreference
-	attemptedMu       sync.Mutex
+	registry           *provider.Registry
+	health             *failover.HealthManager
+	manager            *failover.Manager
+	streamHook         *failover.StreamHook
+	candidateProvider  string
+	candidateModel     string
+	defaultProvider    string
+	defaultModel       string
+	configured         []provider.ModelPreference
+	equivalentSpecs    []equivalentProviderSpec
+	eligible           map[provider.ModelPreference]bool
+	chain              []provider.ModelPreference
+	selectionErr       error
+	preparedRound      []provider.ModelPreference
+	selected           provider.ModelPreference
+	selectedModel      string
+	rotationOrder      []provider.ModelPreference
+	trackedProvider    string
+	trackedModel       string
+	receivedError      string
+	reloadedHealth     *failover.HealthManager
+	refreshSucceeded   bool
+	strictChain        []provider.ModelPreference
+	globalChain        []provider.ModelPreference
+	resolvedChain      []provider.ModelPreference
+	attemptedMu        sync.Mutex
 	attemptedProviders []string
-	lastContent       string
+	lastContent        string
 }
 
 type equivalentProviderSpec struct {

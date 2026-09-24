@@ -5,5 +5,7 @@
 // (FLOWSTATE_VOICE_STT / _TTS) so tests can substitute fake binaries
 // without audio hardware. The package is an input adapter only:
 // transcripts are handed to the existing dispatch.Dispatcher via the
-// App layer — no engine changes.
+// App layer — no engine changes. The package also turns turn event
+// streams into short speakable narration segments so listeners hear
+// intent rather than payloads.
 package voice

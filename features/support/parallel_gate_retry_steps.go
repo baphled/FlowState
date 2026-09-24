@@ -28,11 +28,11 @@ import (
 // parallel dispatch path, plus the hard "gate not registered" config
 // error contract.
 type parallelGateRetrySteps struct {
-	gateCalls    int32
-	memberCalls  int32
+	gateCalls     int32
+	memberCalls   int32
 	lastMemberMsg atomic.Value // string
-	swarmID      string
-	err          error
+	swarmID       string
+	err           error
 }
 
 // parallelGateRunner fails the first failFor post-member gate
