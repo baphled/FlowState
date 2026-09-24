@@ -17,9 +17,25 @@ import (
 
 	agentpkg "github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/api"
+	dispatchpkg "github.com/baphled/flowstate/internal/dispatch"
 	"github.com/baphled/flowstate/internal/voice"
 	"github.com/cucumber/godog"
 )
+
+// dispatchSpy records what the voice pipeline handed to the
+// dispatcher, standing in for the production *dispatch.Dispatcher.
+type dispatchSpy struct {
+	requests []dispatchpkg.DispatchRequest
+}
+
+// DispatchEphemeral records the request and returns an immediately
+// successful ephemeral handle.
+func (s *dispatchSpy) DispatchEphemeral(_ context.Context, req dispatchpkg.DispatchRequest, _ interface{}) (dispatchpkg.EphemeralHandle, error) {
+	s.requests = append(s.requests, req)
+	done := make(chan error, 1)
+	done <- nil
+	return dispatchpkg.EphemeralHandle{Done: done}, nil
+}
 
 // voiceFEState is the scenario-scoped state for the @fe voice steps.
 type voiceFEState struct {
@@ -240,7 +256,7 @@ func (v *voiceFEState) serverWithVoiceTurnPipeline() error {
 	if v.spy == nil {
 		v.spy = &dispatchSpy{}
 	}
-	pipeline := voice.NewPipeline("", "")
+	pipeline := voice.NewPipeline("")
 	adapter := &feTurnPipeline{pipeline: pipeline, spy: v.spy}
 	v.server = api.NewServer(nil, agentpkg.NewRegistry(), nil, nil, api.WithVoiceTurnPipeline(adapter))
 	return nil

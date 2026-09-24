@@ -12,16 +12,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
-	"sync"
-	"testing"
-	"time"
 
 	agentpkg "github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/api"
-	dispatchpkg "github.com/baphled/flowstate/internal/dispatch"
 	"github.com/baphled/flowstate/internal/voice"
 	"github.com/cucumber/godog"
 )
