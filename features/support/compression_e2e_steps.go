@@ -438,8 +438,10 @@ func (s *compressionE2EState) buildToolSchemaEngine(toolCount int, threshold flo
 	s.toolSchemaSummariser = &countingE2ESummariser{resp: resp}
 
 	tools := make([]tool.Tool, toolCount)
+	names := make([]string, toolCount)
 	for i := range tools {
 		tools[i] = &singleWordToolE2E{n: fmt.Sprintf("t%d", i)}
+		names[i] = tools[i].Name()
 	}
 
 	store, err := recall.NewFileContextStore(filepath.Join(s.tempDir, "ctx.json"), "test-model")
@@ -462,6 +464,7 @@ func (s *compressionE2EState) buildToolSchemaEngine(toolCount int, threshold flo
 			ID:                "tool-schema-agent",
 			Instructions:      agent.Instructions{SystemPrompt: "sys"},
 			ContextManagement: cm,
+			Capabilities:      agent.Capabilities{Tools: names},
 		},
 		Store:             s.toolSchemaStore,
 		TokenCounter:      wordE2ECounter{limit: limit},

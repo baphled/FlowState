@@ -309,7 +309,6 @@ func NewWithTurns(
 //
 // Side effects:
 //   - Cancellation of rootCtx cancels all live stream contexts.
-//
 func NewWithRootContext(
 	rootCtx context.Context,
 	streamer Streamer,
