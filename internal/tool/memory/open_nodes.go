@@ -7,8 +7,15 @@ import (
 	"strings"
 
 	"github.com/baphled/flowstate/internal/learning"
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool"
+	"github.com/baphled/flowstate/internal/tool/truncate"
 )
+
+// maxResultBytes caps the open_nodes output fed back to the model, mirroring
+// search_nodes: over-budget graphs slice to 8KB and spill the full original
+// to a session-scoped overflow file.
+const maxResultBytes = 8 * 1024
 
 // OpenNodesTool implements mcp_memory_open_nodes: retrieve specific entities and their relations by name.
 type OpenNodesTool struct {
@@ -99,7 +106,13 @@ func (t *OpenNodesTool) Execute(ctx context.Context, input tool.Input) (tool.Res
 			fmt.Fprintf(&sb, "  %s -[%s]-> %s\n", r.From, r.RelationType, r.To)
 		}
 	}
-	return tool.Result{Output: sb.String()}, nil
+	sessionID, _ := ctx.Value(session.IDKey{}).(string)
+	capped := truncate.Apply(sb.String(), truncate.Options{
+		SessionID: sessionID,
+		ToolName:  t.Name(),
+		MaxBytes:  maxResultBytes,
+	})
+	return tool.Result{Output: capped.Content}, nil
 }
 
 // toStringSlice coerces an interface{} to []string, accepting both

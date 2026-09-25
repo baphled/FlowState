@@ -7,7 +7,9 @@ import (
 	"strings"
 
 	"github.com/baphled/flowstate/internal/learning"
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool"
+	"github.com/baphled/flowstate/internal/tool/truncate"
 )
 
 const defaultSearchLimit = 10
@@ -100,5 +102,11 @@ func (t *SearchNodesTool) Execute(ctx context.Context, input tool.Input) (tool.R
 		}
 		sb.WriteString("---\n")
 	}
-	return tool.Result{Output: strings.TrimSuffix(sb.String(), "---\n")}, nil
+	sessionID, _ := ctx.Value(session.IDKey{}).(string)
+	r := truncate.Apply(strings.TrimSuffix(sb.String(), "---\n"), truncate.Options{
+		SessionID: sessionID,
+		ToolName:  t.Name(),
+		MaxBytes:  maxResultBytes,
+	})
+	return tool.Result{Output: r.Content}, nil
 }

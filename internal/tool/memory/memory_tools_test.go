@@ -3,6 +3,7 @@ package memory_test
 import (
 	"context"
 	"errors"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -52,6 +53,53 @@ func (s *stubMemoryClient) ReadGraph(_ context.Context) (learning.KnowledgeGraph
 func (s *stubMemoryClient) WriteLearningRecord(_ *learning.Record) error { return nil }
 
 var _ = Describe("mcp_memory_search_nodes", func() {
+	// R1 — memory search results must flow through the shared truncate
+	// envelope. A 100KB knowledge-graph dump previously landed raw in
+	// the messages array and ate context-window budget every turn.
+	Context("output truncation (R1)", func() {
+		It("truncates over-cap search results and writes a spill file", func() {
+			bigObs := make([]string, 800)
+			for i := range bigObs {
+				bigObs[i] = strings.Repeat("x", 80) + " observation detail line " + strings.Repeat("y", 20)
+			}
+			client := &stubMemoryClient{
+				searchResult: []learning.Entity{
+					{Name: "huge-entity", EntityType: "graph", Observations: bigObs},
+				},
+			}
+			t := toolmemory.NewSearchNodesTool(client)
+
+			result, err := t.Execute(context.Background(), tool.Input{
+				Name:      "mcp_memory_search_nodes",
+				Arguments: map[string]interface{}{"query": "everything"},
+			})
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result.Output)).To(BeNumerically("<", 100*1024),
+				"over-cap search_nodes output must be sliced, not delivered raw")
+			Expect(result.Output).To(ContainSubstring("truncated"))
+			Expect(result.Output).To(ContainSubstring("Full output saved to:"))
+		})
+
+		It("leaves small search results unchanged", func() {
+			client := &stubMemoryClient{
+				searchResult: []learning.Entity{
+					{Name: "small", EntityType: "graph", Observations: []string{"tiny"}},
+				},
+			}
+			t := toolmemory.NewSearchNodesTool(client)
+
+			result, err := t.Execute(context.Background(), tool.Input{
+				Name:      "mcp_memory_search_nodes",
+				Arguments: map[string]interface{}{"query": "small"},
+			})
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Output).To(ContainSubstring("small"))
+			Expect(result.Output).NotTo(ContainSubstring("truncated"))
+		})
+	})
+
 	It("returns formatted entity list for a matching query", func() {
 		client := &stubMemoryClient{
 			searchResult: []learning.Entity{

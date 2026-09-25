@@ -8,8 +8,10 @@ import (
 	"time"
 
 	store "github.com/baphled/flowstate/internal/coordination"
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tool"
+	"github.com/baphled/flowstate/internal/tool/truncate"
 )
 
 const (
@@ -31,6 +33,13 @@ const (
 	// large values or slow backends do not hit the engine's shell-tool
 	// default of 2 minutes.
 	toolTimeout = 2 * time.Minute
+
+	// maxResultBytes caps the coordination_store get result fed back to
+	// the model. Values up to 50KB can be stored, but a full-size get
+	// landing raw in the messages array eats context-window budget on
+	// every subsequent turn, so the envelope slices to 8KB and spills
+	// the full original to a session-scoped overflow file.
+	maxResultBytes = 8 * 1024
 )
 
 // Tool provides access to the coordination key-value store for cross-agent
@@ -160,7 +169,7 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 
 	switch operation {
 	case operationGet:
-		return t.executeGet(input)
+		return t.executeGet(ctx, input)
 	case operationSet:
 		return t.executeSet(ctx, input)
 	case operationList:
@@ -172,18 +181,24 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 	}
 }
 
-// executeGet returns the stored value for the requested key.
+// executeGet returns the stored value for the requested key, capped by
+// the shared truncate envelope so an over-budget get result spills to a
+// session-scoped overflow file instead of landing raw in the messages
+// array.
 //
 // Expected:
+//   - ctx may carry a session.IDKey value scoping the overflow spill directory.
 //   - input contains a non-empty "key" string argument.
 //
 // Returns:
-//   - A tool.Result containing the stored value.
+//   - A tool.Result containing the (possibly truncated) stored value.
 //   - An error if the key is missing or the store lookup fails.
 //
 // Side effects:
 //   - Reads from the backing coordination store.
-func (t *Tool) executeGet(input tool.Input) (tool.Result, error) {
+//   - On over-cap values, writes one spill file under the session-scoped
+//     overflow directory.
+func (t *Tool) executeGet(ctx context.Context, input tool.Input) (tool.Result, error) {
 	key, ok := input.Arguments["key"].(string)
 	if !ok || key == "" {
 		return tool.Result{}, errors.New("key argument is required for get")
@@ -194,7 +209,13 @@ func (t *Tool) executeGet(input tool.Input) (tool.Result, error) {
 		return tool.Result{}, fmt.Errorf("getting key %q: %w", key, err)
 	}
 
-	return tool.Result{Output: string(val)}, nil
+	sessionID, _ := ctx.Value(session.IDKey{}).(string)
+	r := truncate.Apply(string(val), truncate.Options{
+		SessionID: sessionID,
+		ToolName:  toolName,
+		MaxBytes:  maxResultBytes,
+	})
+	return tool.Result{Output: r.Content}, nil
 }
 
 // executeSet stores the requested value for the requested key.

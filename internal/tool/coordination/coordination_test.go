@@ -2,6 +2,7 @@ package coordination_test
 
 import (
 	"context"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -220,6 +221,65 @@ var _ = Describe("CoordinationTool", func() {
 				val, getErr := mem.Get("freeform/whatever-key")
 				Expect(getErr).NotTo(HaveOccurred())
 				Expect(string(val)).To(Equal("v"))
+			})
+		})
+
+		// R1 — coordination_store get results must flow through the
+		// shared truncate envelope. A >8K get result (the tool accepts
+		// set values up to 50KB) previously landed raw in the messages
+		// array and ate context-window budget on every subsequent turn.
+		Describe("output truncation (R1)", func() {
+			It("truncates over-cap get results and writes a spill file", func() {
+				bigValue := strings.Repeat("coordination-payload-line\n", 1900)
+				Expect(len(bigValue)).To(BeNumerically(">", 20*1024))
+
+				setResult, setErr := t.Execute(ctx, tool.Input{
+					Name: "coordination_store",
+					Arguments: map[string]interface{}{
+						"operation": "set",
+						"key":       "chain1/big",
+						"value":     bigValue,
+					},
+				})
+				Expect(setErr).NotTo(HaveOccurred())
+				Expect(setResult.IsError).To(BeFalse(),
+					"set must succeed; a payload above the value cap is silently rejected and downstream gets report 'key not found'")
+
+				result, err := t.Execute(ctx, tool.Input{
+					Name: "coordination_store",
+					Arguments: map[string]interface{}{
+						"operation": "get",
+						"key":       "chain1/big",
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(result.Output)).To(BeNumerically("<", len(bigValue)),
+					"coordination_store get above the truncation budget must be sliced, not delivered raw")
+				Expect(result.Output).To(ContainSubstring("truncated"))
+				Expect(result.Output).To(ContainSubstring("Full output saved to:"))
+			})
+
+			It("leaves small get results unchanged", func() {
+				const small = "compact coordination value"
+				_, setErr := t.Execute(ctx, tool.Input{
+					Name: "coordination_store",
+					Arguments: map[string]interface{}{
+						"operation": "set",
+						"key":       "chain1/small",
+						"value":     small,
+					},
+				})
+				Expect(setErr).NotTo(HaveOccurred())
+
+				result, err := t.Execute(ctx, tool.Input{
+					Name: "coordination_store",
+					Arguments: map[string]interface{}{
+						"operation": "get",
+						"key":       "chain1/small",
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).To(Equal(small))
 			})
 		})
 
