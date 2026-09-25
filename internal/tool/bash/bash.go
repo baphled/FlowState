@@ -16,7 +16,12 @@ import (
 	"github.com/baphled/flowstate/internal/tool/truncate"
 )
 
-const timeout = 30 * time.Second
+// DefaultTimeout is the per-command wall-clock budget applied when no
+// explicit override is configured. The historical 30s cap killed long
+// builds and test suites in delegated sessions, whose retries then
+// tripped the engine's identical-call detector; 300s accommodates
+// make-check-class commands without operator tuning.
+const DefaultTimeout = 300 * time.Second
 
 // pipeDrainGrace bounds how long the stdio pipes may keep being drained
 // after the command exits or its context fires. It stops a descendant that
@@ -24,12 +29,20 @@ const timeout = 30 * time.Second
 // descriptors from blocking the tool indefinitely.
 const pipeDrainGrace = 5 * time.Second
 
+// ErrDeadlineExceeded marks results whose command was killed by the
+// tool's own per-command timeout rather than by the parent context or by
+// the command exiting non-zero. The engine's tool-loop identical-call
+// detector uses errors.Is(result.Error, ErrDeadlineExceeded) to exempt
+// timeout-killed retries from the stuck-loop counters.
+var ErrDeadlineExceeded = errors.New("bash: command exceeded timeout")
+
 // Tool executes bash commands with a configurable timeout.
 type Tool struct {
-	guard *pathguard.Guard
+	guard   *pathguard.Guard
+	timeout time.Duration
 }
 
-// New creates a new bash execution tool.
+// New creates a new bash execution tool with DefaultTimeout.
 //
 // Returns:
 //   - A configured bash Tool instance.
@@ -37,7 +50,20 @@ type Tool struct {
 // Side effects:
 //   - None.
 func New() *Tool {
-	return &Tool{}
+	return &Tool{timeout: DefaultTimeout}
+}
+
+// NewWithTimeout creates a bash tool with an explicit per-command budget.
+// A non-positive duration falls back to DefaultTimeout.
+//
+// Expected: parameters for NewWithTimeout.
+// Returns: result of NewWithTimeout.
+// Side effects: None.
+func NewWithTimeout(d time.Duration) *Tool {
+	if d <= 0 {
+		d = DefaultTimeout
+	}
+	return &Tool{timeout: d}
 }
 
 // NewWithGuard creates a bash tool that denies commands referencing protected paths.
@@ -46,7 +72,21 @@ func New() *Tool {
 // Returns: result of NewWithGuard.
 // Side effects: None.
 func NewWithGuard(g *pathguard.Guard) *Tool {
-	return &Tool{guard: g}
+	return &Tool{guard: g, timeout: DefaultTimeout}
+}
+
+// NewWithGuardTimeout creates a bash tool with both a path guard and an
+// explicit per-command budget. A non-positive duration falls back to
+// DefaultTimeout.
+//
+// Expected: parameters for NewWithGuardTimeout.
+// Returns: result of NewWithGuardTimeout.
+// Side effects: None.
+func NewWithGuardTimeout(g *pathguard.Guard, d time.Duration) *Tool {
+	if d <= 0 {
+		d = DefaultTimeout
+	}
+	return &Tool{guard: g, timeout: d}
 }
 
 // Name returns the tool identifier.
@@ -72,7 +112,7 @@ func (t *Tool) Name() string {
 //
 // Expected: parameters for Description.
 func (t *Tool) Description() string {
-	return "Execute bash commands with a 30-second timeout. For writing file content, use the `write` tool instead — it handles path validation, directory creation, and proper file permissions automatically. Only use bash for commands that genuinely need a shell (build tools, git operations, process management)."
+	return "Execute bash commands with a configurable timeout (default 300s). For writing file content, use the `write` tool instead — it handles path validation, directory creation, and proper file permissions automatically. Only use bash for commands that genuinely need a shell (build tools, git operations, process management)."
 }
 
 // Schema returns the JSON schema for the bash tool arguments.
@@ -105,6 +145,32 @@ func (t *Tool) Schema() tool.Schema {
 // Side effects: None.
 func (t *Tool) IsStateModifying() bool { return true }
 
+// Guard returns the tool's path guard; nil when constructed unguarded.
+// Callers rebuilding the tool with a different timeout use this to
+// preserve the guard wiring.
+//
+// Expected: parameters for Guard.
+// Returns: result of Guard.
+// Side effects: None.
+func (t *Tool) Guard() *pathguard.Guard {
+	return t.guard
+}
+
+// Timeout returns the tool's per-command wall-clock budget. The engine
+// applies this via the tool.TimeoutOverrider contract so the engine-level
+// per-tool deadline matches the bash tool's own budget instead of firing
+// first and masking the deadline signal.
+//
+// Expected: parameters for Timeout.
+// Returns: result of Timeout.
+// Side effects: None.
+func (t *Tool) Timeout() time.Duration {
+	if t.timeout <= 0 {
+		return DefaultTimeout
+	}
+	return t.timeout
+}
+
 // Execute runs the specified bash command and returns its output.
 //
 // Expected:
@@ -132,10 +198,10 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	timeoutCtx, cancel := context.WithTimeout(ctx, t.Timeout())
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "bash", "-c", command)
+	cmd := exec.CommandContext(timeoutCtx, "bash", "-c", command)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
@@ -145,6 +211,12 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 	trimmed := strings.TrimSpace(string(out))
 	capped := capOutput(ctx, trimmed)
 	if err != nil {
+		if timeoutCtx.Err() != nil && errors.Is(timeoutCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+			return tool.Result{
+				Output: capped,
+				Error:  fmt.Errorf("command failed: %w: %w: %w", err, timeoutCtx.Err(), ErrDeadlineExceeded),
+			}, nil
+		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return tool.Result{
 				Output: capped,

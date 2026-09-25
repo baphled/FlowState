@@ -181,3 +181,79 @@ var _ = Describe("Bash Tool", func() {
 		})
 	})
 })
+
+var _ = Describe("Bash tool timeout configuration", func() {
+	Describe("DefaultTimeout", func() {
+		It("is 300 seconds", func() {
+			Expect(bash.DefaultTimeout).To(Equal(300 * time.Second))
+		})
+	})
+
+	Describe("constructors", func() {
+		It("New uses DefaultTimeout", func() {
+			Expect(bash.New().Timeout()).To(Equal(bash.DefaultTimeout))
+		})
+
+		It("NewWithGuard uses DefaultTimeout", func() {
+			Expect(bash.NewWithGuard(nil).Timeout()).To(Equal(bash.DefaultTimeout))
+		})
+
+		It("NewWithTimeout uses the supplied budget", func() {
+			Expect(bash.NewWithTimeout(90 * time.Second).Timeout()).To(Equal(90 * time.Second))
+		})
+
+		It("NewWithGuardTimeout uses the supplied budget and preserves the guard", func() {
+			t := bash.NewWithGuardTimeout(nil, 2*time.Second)
+			Expect(t.Timeout()).To(Equal(2 * time.Second))
+			Expect(t.Guard()).To(BeNil())
+		})
+
+		It("non-positive timeouts fall back to DefaultTimeout", func() {
+			Expect(bash.NewWithTimeout(0).Timeout()).To(Equal(bash.DefaultTimeout))
+			Expect(bash.NewWithTimeout(-time.Second).Timeout()).To(Equal(bash.DefaultTimeout))
+			Expect(bash.NewWithGuardTimeout(nil, 0).Timeout()).To(Equal(bash.DefaultTimeout))
+		})
+	})
+
+	Describe("Execute under a custom timeout", func() {
+		It("kills a command that exceeds the configured budget and tags the error", func() {
+			bashTool := bash.NewWithTimeout(500 * time.Millisecond)
+			input := tool.Input{
+				Name:      "bash",
+				Arguments: map[string]interface{}{"command": "sleep 30"},
+			}
+			start := time.Now()
+			result, err := bashTool.Execute(context.Background(), input)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Error).To(HaveOccurred())
+			Expect(errors.Is(result.Error, bash.ErrDeadlineExceeded)).To(BeTrue())
+			Expect(time.Since(start)).To(BeNumerically("<", 10*time.Second))
+		})
+
+		It("lets a short command finish under a tight budget", func() {
+			bashTool := bash.NewWithTimeout(5 * time.Second)
+			input := tool.Input{
+				Name:      "bash",
+				Arguments: map[string]interface{}{"command": "echo ok"},
+			}
+			result, err := bashTool.Execute(context.Background(), input)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Output).To(Equal("ok"))
+			Expect(result.Error).NotTo(HaveOccurred())
+		})
+
+		It("does not tag parent-context cancellation as a deadline kill", func() {
+			bashTool := bash.NewWithTimeout(30 * time.Second)
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			input := tool.Input{
+				Name:      "bash",
+				Arguments: map[string]interface{}{"command": "sleep 10"},
+			}
+			result, err := bashTool.Execute(ctx, input)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Error).To(HaveOccurred())
+			Expect(errors.Is(result.Error, context.Canceled)).To(BeTrue())
+		})
+	})
+})
