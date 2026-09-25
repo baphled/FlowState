@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool"
+	"github.com/baphled/flowstate/internal/tool/bash"
 	"github.com/baphled/flowstate/internal/tool/todo"
 )
 
@@ -1005,5 +1007,192 @@ var _ = Describe("delegate tool fallback child deadline", func() {
 
 		dt.WithDelegateTimeout(5 * time.Minute)
 		Expect(dt.DelegateTimeoutForTest()).To(Equal(5 * time.Minute))
+	})
+})
+
+// deadlineKilledStubTool returns a Result whose Error chains
+// bash.ErrDeadlineExceeded on every call — the shape the bash tool
+// produces when its per-command budget kills a long-running command.
+type deadlineKilledStubTool struct {
+	name  string
+	calls int
+}
+
+func (t *deadlineKilledStubTool) Name() string        { return t.name }
+func (t *deadlineKilledStubTool) Description() string { return "stub that dies on deadline" }
+func (t *deadlineKilledStubTool) Schema() tool.Schema { return tool.Schema{} }
+func (t *deadlineKilledStubTool) IsStateModifying() bool {
+	return false
+}
+
+func (t *deadlineKilledStubTool) Execute(_ context.Context, _ tool.Input) (tool.Result, error) {
+	t.calls++
+	return tool.Result{
+		Output: "partial output",
+		Error:  fmt.Errorf("command failed: %w: %w", context.DeadlineExceeded, bash.ErrDeadlineExceeded),
+	}, nil
+}
+
+// identicallyFailingStubTool returns a Result with a plain (non-deadline)
+// error — control fixture: identical retries of THIS shape must still
+// trip the loop guards.
+type identicallyFailingStubTool struct {
+	name  string
+	calls int
+}
+
+func (t *identicallyFailingStubTool) Name() string        { return t.name }
+func (t *identicallyFailingStubTool) Description() string { return "stub that fails plainly" }
+func (t *identicallyFailingStubTool) Schema() tool.Schema { return tool.Schema{} }
+func (t *identicallyFailingStubTool) IsStateModifying() bool {
+	return false
+}
+
+func (t *identicallyFailingStubTool) Execute(_ context.Context, _ tool.Input) (tool.Result, error) {
+	t.calls++
+	return tool.Result{Output: "", Error: errors.New("boom")}, nil
+}
+
+var _ = Describe("Tool-loop deadline-exempt repeat counters", func() {
+	drain := func(chunks <-chan provider.StreamChunk) ([]provider.StreamChunk, bool) {
+		var received []provider.StreamChunk
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for c := range chunks {
+				received = append(received, c)
+			}
+		}()
+		select {
+		case <-done:
+			return received, true
+		case <-time.After(10 * time.Second):
+			return received, false
+		}
+	}
+
+	terminalReason := func(received []provider.StreamChunk) (string, bool) {
+		for _, c := range received {
+			if c.Done {
+				return c.StopReason, true
+			}
+		}
+		return "", false
+	}
+
+	newEngine := func(t tool.Tool, prov provider.Provider, identical, samePattern int) *engine.Engine {
+		manifest := agent.Manifest{
+			ID:           "deadline-exempt-agent",
+			Name:         "Deadline Exempt Agent",
+			Instructions: agent.Instructions{SystemPrompt: "sys"},
+			Capabilities: agent.Capabilities{Tools: []string{t.Name()}},
+		}
+		registry := tool.NewRegistry()
+		registry.Register(t)
+		registry.SetPermission(t.Name(), tool.Allow)
+		eng := engine.New(engine.Config{
+			ChatProvider: prov,
+			Manifest:     manifest,
+			Tools:        []tool.Tool{t},
+			ToolRegistry: registry,
+		})
+		eng.SetMaxToolLoopIterationsForTest(0)
+		eng.SetMaxToolLoopDurationForTest(0)
+		eng.SetMaxIdenticalToolCallsForTest(identical)
+		eng.SetMaxSameToolPatternCallsForTest(samePattern)
+		return eng
+	}
+
+	// deadlineScript returns a script of n identical single-tool-call
+	// batches; the scriptedChunkProvider emits a content-only batch
+	// ("All done.") once the script is exhausted, so the turn must end
+	// via natural completion — not via any loop cap.
+	deadlineScript := func(n int, cmd string) []scriptedBatch {
+		script := make([]scriptedBatch, 0, n)
+		for i := 0; i < n; i++ {
+			script = append(script, scriptedBatch{
+				toolCalls: []*provider.ToolCall{{
+					ID:        fmt.Sprintf("call_%d", i),
+					Name:      "bashlike",
+					Arguments: map[string]any{"command": cmd},
+				}},
+			})
+		}
+		return script
+	}
+
+	It("does not count deadline-killed identical retries toward maxIdenticalToolCalls", func() {
+		stub := &deadlineKilledStubTool{name: "bashlike"}
+		prov := &scriptedChunkProvider{
+			name:   "deadline-retry-spin",
+			script: deadlineScript(5, "make check"),
+		}
+		eng := newEngine(stub, prov, 3, 3)
+
+		chunks, err := eng.Stream(context.Background(), "deadline-exempt-agent", "Run the suite")
+		Expect(err).NotTo(HaveOccurred())
+
+		received, closed := drain(chunks)
+		Expect(closed).To(BeTrue(), "the turn must terminate")
+		reason, sawDone := terminalReason(received)
+		Expect(sawDone).To(BeTrue(), "expected a terminal Done chunk")
+		var content string
+		for _, c := range received {
+			content += c.Content
+		}
+		Expect(content).NotTo(BeEmpty(), "the turn must complete naturally with assistant content")
+		Expect(reason).NotTo(Equal(session.StopReasonToolLoopExceeded),
+			"deadline-killed identical retries must be exempt from the identical-call cap")
+		Expect(stub.calls).To(BeNumerically(">=", 4),
+			"deadline-killed retries must exceed the identical-call cap (3) without tripping it")
+	})
+
+	It("does not count deadline-killed same-tool retries toward maxSameToolPatternCalls", func() {
+		stub := &deadlineKilledStubTool{name: "bashlike"}
+		prov := &scriptedChunkProvider{
+			name:   "deadline-pattern-spin",
+			script: deadlineScript(5, "go test ./..."),
+		}
+		eng := newEngine(stub, prov, 3, 3)
+
+		chunks, err := eng.Stream(context.Background(), "deadline-exempt-agent", "Run the suite")
+		Expect(err).NotTo(HaveOccurred())
+
+		received, closed := drain(chunks)
+		Expect(closed).To(BeTrue(), "the turn must terminate")
+		reason, sawDone := terminalReason(received)
+		Expect(sawDone).To(BeTrue(), "expected a terminal Done chunk")
+		var content string
+		for _, c := range received {
+			content += c.Content
+		}
+		Expect(content).NotTo(BeEmpty(), "the turn must complete naturally with assistant content")
+		Expect(reason).NotTo(Equal(session.StopReasonToolLoopExceeded),
+			"deadline-killed same-tool retries must be exempt from the same-tool-pattern cap")
+		Expect(stub.calls).To(BeNumerically(">=", 4),
+			"deadline-killed retries must exceed the pattern cap (3) without tripping it")
+	})
+
+	It("still trips on identical retries of a non-deadline failure", func() {
+		stub := &identicallyFailingStubTool{name: "bashlike"}
+		prov := &repeatingToolProvider{
+			name: "plain-fail-spin",
+			call: &provider.ToolCall{
+				ID:        "call_1",
+				Name:      "bashlike",
+				Arguments: map[string]any{"command": "make check"},
+			},
+		}
+		eng := newEngine(stub, prov, 3, 3)
+
+		chunks, err := eng.Stream(context.Background(), "deadline-exempt-agent", "Run the suite")
+		Expect(err).NotTo(HaveOccurred())
+
+		received, closed := drain(chunks)
+		Expect(closed).To(BeTrue(), "the turn must terminate")
+		reason, sawDone := terminalReason(received)
+		Expect(sawDone).To(BeTrue(), "expected a terminal Done chunk")
+		Expect(reason).To(Equal(session.StopReasonToolLoopExceeded),
+			"a genuinely stuck identical loop must still trip ToolLoopExceeded")
 	})
 })

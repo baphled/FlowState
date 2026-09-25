@@ -26,8 +26,30 @@ import (
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tool"
+	"github.com/baphled/flowstate/internal/tool/bash"
 	"github.com/baphled/flowstate/internal/tool/todo"
 )
+
+// batchDeadlineKilled reports whether any result in the just-executed
+// batch was killed by the bash tool's own per-command deadline (as
+// opposed to failing for a substantive reason). The tool-loop guards
+// exempt such batches from the identical-call and same-tool-pattern
+// counters: a deadline-killed command is legitimately retried by the
+// model (often identically), and counting those retries as "stuck"
+// trips ToolLoopExceeded on healthy sessions running long builds/tests.
+// This mirrors the TimeoutOverrider exemption on the duration backstop.
+//
+// Returns: true if any result carries bash.ErrDeadlineExceeded.
+// Expected: the executed batch's results slice.
+// Side effects: None.
+func batchDeadlineKilled(results []tool.Result) bool {
+	for _, r := range results {
+		if r.Error != nil && errors.Is(r.Error, bash.ErrDeadlineExceeded) {
+			return true
+		}
+	}
+	return false
+}
 
 // maxOverflowRetries bounds context-window overflow recovery to two
 // retries so a turn makes at most three provider calls (the initial
@@ -1702,14 +1724,25 @@ func (e *Engine) streamWithToolLoop(
 		// Zero/negative on any field disables its respective check.
 		iterations++
 		watchdog.recordIterations(iterations)
+		// Deadline-exemption (F2): when the previous batch's results
+		// contain a tool-deadline kill (bash.ErrDeadlineExceeded), the
+		// model re-issuing the same batch is a legitimate retry of a
+		// long-running command, not a stuck loop. Reset both repeat
+		// detectors so the retry run starts from a clean slate.
+		deadlineKilled := batchDeadlineKilled(toolResults)
 		fingerprint := fingerprintToolBatch(result.toolCalls)
 		if e.maxIdenticalToolCalls > 0 {
-			if fingerprint != "" && fingerprint == lastFingerprint {
+			if deadlineKilled {
+				identicalRun = 0
+				lastFingerprint = ""
+			} else if fingerprint != "" && fingerprint == lastFingerprint {
 				identicalRun++
 			} else {
 				identicalRun = 1
 			}
-			lastFingerprint = fingerprint
+			if !deadlineKilled {
+				lastFingerprint = fingerprint
+			}
 		}
 
 		if e.maxSameToolPatternCalls > 0 {
@@ -1720,12 +1753,17 @@ func (e *Engine) streamWithToolLoop(
 				}
 				sort.Strings(names)
 				currentNames := strings.Join(names, ",")
-				if currentNames == lastToolNames {
+				if deadlineKilled {
+					sameToolPatternRun = 0
+					lastToolNames = ""
+				} else if currentNames == lastToolNames {
 					sameToolPatternRun++
 				} else {
 					sameToolPatternRun = 1
 				}
-				lastToolNames = currentNames
+				if !deadlineKilled {
+					lastToolNames = currentNames
+				}
 			} else {
 				sameToolPatternRun = 0
 				lastToolNames = ""
