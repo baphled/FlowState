@@ -168,6 +168,13 @@ type AppConfig struct {
 	// tool already opts out of this via TimeoutOverrider, so raising it
 	// affects shell-style tools (bash, read, web) only.
 	ToolTimeout string `json:"tool_timeout,omitempty" yaml:"tool_timeout,omitempty"`
+	// BashTimeout overrides the bash tool's internal per-command wall-clock
+	// budget. Empty means inherit the bash package default (300s). The
+	// historical compiled-in 30s cap killed long builds and test suites in
+	// delegated sessions; the raised default plus this override lets
+	// operators tune the budget per deployment. Format: a Go duration
+	// string ("300s", "10m").
+	BashTimeout string `json:"bash_timeout,omitempty" yaml:"bash_timeout,omitempty"`
 	// BackgroundOutputTimeout overrides the default poll-until-complete
 	// budget on the background_output tool when the model does not pass
 	// an explicit `timeout` argument. Empty means inherit the compiled-in
@@ -340,6 +347,23 @@ func (c *AppConfig) ParsedToolTimeout() time.Duration {
 		return 0
 	}
 	return parseDurationField(c.ToolTimeout, "tool_timeout")
+}
+
+// ParsedBashTimeout returns the parsed value of BashTimeout (see
+// ParsedStreamTimeout for semantics, including nil-receiver behaviour).
+//
+// Returns:
+//   - The parsed BashTimeout duration, or 0 when unset/invalid/nil receiver.
+//
+// Side effects:
+//   - Logs a WARN once when the configured value fails to parse.
+//
+// Expected: parameters for ParsedBashTimeout.
+func (c *AppConfig) ParsedBashTimeout() time.Duration {
+	if c == nil {
+		return 0
+	}
+	return parseDurationField(c.BashTimeout, "bash_timeout")
 }
 
 // ParsedBackgroundOutputTimeout returns the parsed value of

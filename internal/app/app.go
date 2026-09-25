@@ -1406,6 +1406,7 @@ func buildToolPipeline(cfg *config.AppConfig, mcpClientFactory func() mcpclient.
 	// per-manifest delegate engines both call into the same Guard.
 	guard := buildPathGuardFromConfig(cfg)
 	appTools := toolset.BuildAppTools(skill.NewFileSkillLoader(cfg.SkillDir), todoStore, cfg.ResolvedPlanLocation(), guard)
+	applyBashTimeout(appTools, cfg)
 	allServers := appmcp.MergeServers(cfg.MCPServers, config.DiscoverMCPServers())
 	mcpTools, results, serverToolNames := ConnectMCPServers(context.Background(), mcpMgr, allServers)
 	appTools = append(appTools, mcpTools...)
@@ -2905,6 +2906,7 @@ func (a *App) buildToolsForManifestWithStore(manifest agent.Manifest, store coor
 		applypatch.NewWithGuard(guard),
 		web.New(),
 	}
+	applyBashTimeout(tools, a.Config)
 
 	var skillLoader *skill.FileSkillLoader
 	if a.Config != nil && a.Config.SkillDir != "" {
@@ -3596,6 +3598,8 @@ func (a *App) SetModel(modelID string) error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for ConstructionOptions.
 func (a *App) ConstructionOptions() NewOptions {
 	return a.construction
 }
@@ -3612,6 +3616,8 @@ func (a *App) ConstructionOptions() NewOptions {
 //   - Flushes the failover health manager's debounced state to disk.
 //   - Stops the session manager's debounce sweeper after a final flush.
 //   - Closes all MCP sessions managed by the client.
+//
+// Expected: parameters for Shutdown.
 func (a *App) Shutdown() error {
 	if a.plugins != nil && a.plugins.healthManager != nil {
 		_ = a.plugins.healthManager.Stop()
@@ -3687,10 +3693,7 @@ func (a *App) buildPathGuard() *pathguard.Guard {
 //     permissions.yaml matcher (when present), and the Plan-mode
 //     output-dir overlay (when configured).
 //
-// Side effects:
-//   - May emit slog.Warn on permissions.yaml load failure and
-//     slog.Info on Plan-mode bootstrap. Identical to the prior
-//     App.buildPathGuard side effects.
+// Side effects: None.
 func buildPathGuardFromConfig(cfg *config.AppConfig) *pathguard.Guard {
 	var denied []string
 	if cfg != nil && cfg.VaultPath != "" {
@@ -3735,6 +3738,33 @@ func buildPathGuardFromConfig(cfg *config.AppConfig) *pathguard.Guard {
 		g.SetMCPHint("mcp_vault-rag_query_vault")
 	}
 	return g
+}
+
+// applyBashTimeout re-arms the bash tool's per-command budget from the
+// parsed bash_timeout config knob. A zero parsed duration (unset or
+// invalid) leaves the bash package's 300s default in place, and any
+// non-bash tool in the slice is skipped.
+//
+// Expected:
+//   - tools: the seed tool slice; only *bash.Tool entries are mutated.
+//   - cfg: the app config; a nil cfg is a no-op.
+//
+// Returns: Nothing; the slice is mutated in place.
+//
+// Side effects: None.
+func applyBashTimeout(tools []tool.Tool, cfg *config.AppConfig) {
+	if cfg == nil {
+		return
+	}
+	d := cfg.ParsedBashTimeout()
+	if d <= 0 {
+		return
+	}
+	for i := range tools {
+		if bt, ok := tools[i].(*bash.Tool); ok {
+			tools[i] = bash.NewWithGuardTimeout(bt.Guard(), d)
+		}
+	}
 }
 
 // buildPermissionsWriter constructs the pathguard.Writer that handles
