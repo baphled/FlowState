@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -101,6 +102,16 @@ func Apply(text string, opts Options) Result {
 		return Result{Content: text, Truncated: false}
 	}
 
+	if trimmed, kept, total, ok := truncateJSONArray(text, maxBytes); ok {
+		outputPath := writeOverflow(text, opts)
+		marker := fmt.Sprintf("... [%d of %d elements truncated] ...", total-kept, total)
+		content := trimmed + "\n" + marker
+		if outputPath != "" {
+			content += "\nFull output saved to: " + outputPath
+		}
+		return Result{Content: content, Truncated: true, OutputPath: outputPath}
+	}
+
 	preview, hitBytes, removed, unit := slice(lines, maxLines, maxBytes, direction)
 
 	outputPath := writeOverflow(text, opts)
@@ -114,6 +125,47 @@ func Apply(text string, opts Options) Result {
 	}
 
 	return Result{Content: content, Truncated: true, OutputPath: outputPath}
+}
+
+// truncateJSONArray attempts a JSON-aware truncation pass for payloads
+// that parse as a JSON array. It keeps the longest prefix of elements
+// whose re-encoded form fits maxBytes (reserving room for the
+// truncation marker), closes the array, and returns the trimmed JSON
+// alongside the kept/total element counts. ok is false — and callers
+// fall back to line/byte slicing — when the input is not valid JSON,
+// is not an array, or already fits within the budget.
+//
+// Expected: parameters for truncateJSONArray.
+// Returns: result of truncateJSONArray.
+// Side effects: None.
+func truncateJSONArray(text string, maxBytes int) (trimmed string, kept, total int, ok bool) {
+	var arr []json.RawMessage
+	if err := json.Unmarshal([]byte(text), &arr); err != nil {
+		return "", 0, 0, false
+	}
+	if len(arr) == 0 {
+		return "", 0, 0, false
+	}
+	reserve := len(fmt.Sprintf("... [%d of %d elements truncated] ...", len(arr), len(arr)))
+	encoded := make([]string, len(arr))
+	for i, el := range arr {
+		b, err := json.Marshal(el)
+		if err != nil {
+			return "", 0, 0, false
+		}
+		encoded[i] = string(b)
+	}
+	for n := len(arr); n > 0; n-- {
+		size := 2 + (n - 1)
+		for i := 0; i < n; i++ {
+			size += len(encoded[i])
+		}
+		if size+reserve <= maxBytes {
+			payload := "[" + strings.Join(encoded[:n], ",") + "]"
+			return payload, n, len(arr), true
+		}
+	}
+	return "", 0, 0, false
 }
 
 // splitLines splits text on newlines without dropping the trailing

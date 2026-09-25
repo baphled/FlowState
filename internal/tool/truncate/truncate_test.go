@@ -2,6 +2,8 @@ package truncate_test
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -292,5 +294,83 @@ var _ = Describe("Tool Output Truncation", func() {
 				stop()
 			}).NotTo(Panic())
 		})
+	})
+})
+
+var _ = Describe("JSON element-boundary truncation", func() {
+	var (
+		tmpDir string
+	)
+
+	BeforeEach(func() {
+		var err error
+		tmpDir, err = os.MkdirTemp("", "truncate-json-*")
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		_ = os.RemoveAll(tmpDir)
+	})
+
+	buildArray := func(n int) string {
+		elems := make([]string, n)
+		for i := 0; i < n; i++ {
+			elems[i] = fmt.Sprintf(`{"id":%d,"data":"%s"}`, i, strings.Repeat("x", 200))
+		}
+		return "[" + strings.Join(elems, ",") + "]"
+	}
+
+	It("truncates JSON arrays at element boundaries and keeps valid JSON", func() {
+		text := buildArray(200)
+		result := truncate.Apply(text, truncate.Options{Dir: tmpDir, SessionID: "json-1"})
+		Expect(result.Truncated).To(BeTrue())
+		lines := strings.Split(result.Content, "\n")
+		Expect(lines).NotTo(BeEmpty())
+		Expect(json.Valid([]byte(lines[0]))).To(BeTrue())
+		Expect(lines[0]).To(HavePrefix("["))
+		Expect(lines[0]).To(HaveSuffix("]"))
+		Expect(result.Content).To(ContainSubstring("elements truncated] ..."))
+	})
+
+	It("reports the kept and total element counts in the marker", func() {
+		text := buildArray(300)
+		result := truncate.Apply(text, truncate.Options{Dir: tmpDir, SessionID: "json-2"})
+		Expect(result.Truncated).To(BeTrue())
+		Expect(result.Content).To(MatchRegexp(`\[\d+ of 300 elements truncated\] \.\.\.`))
+	})
+
+	It("preserves the first N elements intact", func() {
+		text := buildArray(200)
+		result := truncate.Apply(text, truncate.Options{Dir: tmpDir, SessionID: "json-3"})
+		Expect(result.Truncated).To(BeTrue())
+		var kept []map[string]any
+		firstLine := strings.SplitN(result.Content, "\n", 2)[0]
+		Expect(json.Unmarshal([]byte(firstLine), &kept)).To(Succeed())
+		Expect(kept).NotTo(BeEmpty())
+		Expect(kept[0]["id"]).To(Equal(float64(0)))
+	})
+
+	It("falls back to line slicing for non-JSON input", func() {
+		big := strings.Repeat("not json\n", 3000)
+		result := truncate.Apply(big, truncate.Options{Dir: tmpDir, SessionID: "json-4"})
+		Expect(result.Truncated).To(BeTrue())
+		Expect(result.Content).NotTo(ContainSubstring("elements truncated]"))
+		Expect(result.Content).To(ContainSubstring("truncated"))
+	})
+
+	It("keeps the spill file with the full original array", func() {
+		text := buildArray(200)
+		result := truncate.Apply(text, truncate.Options{Dir: tmpDir, SessionID: "json-5"})
+		Expect(result.OutputPath).NotTo(BeEmpty())
+		data, err := os.ReadFile(result.OutputPath)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(data)).To(Equal(text))
+	})
+
+	It("does not truncate a JSON array under the byte budget", func() {
+		text := buildArray(10)
+		result := truncate.Apply(text, truncate.Options{Dir: tmpDir, SessionID: "json-6"})
+		Expect(result.Truncated).To(BeFalse())
+		Expect(result.Content).To(Equal(text))
 	})
 })
