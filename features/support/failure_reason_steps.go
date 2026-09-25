@@ -160,7 +160,8 @@ func stopReasonWireValue(reason string) (string, error) {
 		session.StopReasonToolUseNoCalls,
 		session.StopReasonAbandonedTool,
 		session.StopReasonToolLoopExceeded,
-		session.StopReasonUserCancelled:
+		session.StopReasonUserCancelled,
+		session.StopReasonContextWindowExceeded:
 		return reason, nil
 	case "StopReasonStreamTruncated":
 		return session.StopReasonStreamTruncated, nil
@@ -170,6 +171,8 @@ func stopReasonWireValue(reason string) (string, error) {
 		return session.StopReasonAbandonedTool, nil
 	case "StopReasonToolLoopExceeded":
 		return session.StopReasonToolLoopExceeded, nil
+	case "StopReasonContextWindowExceeded":
+		return session.StopReasonContextWindowExceeded, nil
 	}
 	return "", fmt.Errorf("unknown stop reason %q", reason)
 }

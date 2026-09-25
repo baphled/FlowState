@@ -1493,6 +1493,20 @@ const StopReasonUserCancelled = "user_cancelled"
 // indistinguishable-from-success path.
 const StopReasonToolLoopExceeded = "tool_loop_exceeded"
 
+// StopReasonContextWindowExceeded is the stop reason stamped on the
+// terminal assistant message when the Anthropic upstream aborts the
+// stream with stop_reason `model_context_window_exceeded`. The raw
+// value flows through handleMessageDelta unmodified, so this sentinel
+// simply names the pass-through wire value for the session manager's
+// status-flip comparisons and the persisted failure_reason.
+//
+// Wire-format-stable and non-empty: the Vue `MessageBubble` soft-error
+// render branch keys on `stopReason !== ""`, and the session manager's
+// failure status-flip path compares against this exact spelling. The
+// value must not be renamed — persisted meta.json failure_reason
+// entries and the frontend both consume it verbatim.
+const StopReasonContextWindowExceeded = "context_window_exceeded"
+
 // synthesizePlaceholderAssistant emits an empty-content assistant message
 // carrying the accumulated thinking blocks when a turn produced reasoning
 // without an enclosing assistant artefact.

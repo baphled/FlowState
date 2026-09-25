@@ -15,6 +15,18 @@ Feature: Session failure reason capture with provider health CLI (S5)
     Then the session status is "failed"
     And the meta.json contains "failure_reason" set to "StopReasonStreamTruncated"
 
+  Scenario: Failed session records context-window failure_reason in meta.json
+    Given a session is in "active" status
+    When an assistant message arrives with StopReason "StopReasonContextWindowExceeded"
+    Then the session status is "failed"
+    And the meta.json contains "failure_reason" set to "StopReasonContextWindowExceeded"
+
+  Scenario: Recovery demotion clears context-window failure_reason
+    Given a session has status "failed" and failure_reason "StopReasonContextWindowExceeded"
+    When a healthy assistant message arrives
+    Then the session status is demoted to "active"
+    And failure_reason is cleared
+
   Scenario: User-cancelled turn stamps failure_reason user_cancelled
     Given a session is in "active" status with an in-flight turn
     When the user cancels the in-flight turn
