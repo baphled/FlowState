@@ -113,6 +113,22 @@ var _ = Describe("ZAI Provider", func() {
 					"%s OutputLimit must match the upstream-published max-output", tc.id)
 			}
 		})
+
+		// R6 — per-model context-length lookup. contextLengthFor must
+		// resolve pinned IDs from modelContextLengths and fall back to
+		// defaultContextLength for anything unknown so a new upstream
+		// model cannot silently degrade to a zero window.
+		It("resolves per-model context lengths with fallback", func() {
+			known := []string{"glm-5.3", "glm-5.2", "glm-5", "glm-4.7", "glm-4.7-flash", "glm-4.6"}
+			for _, id := range known {
+				Expect(zai.ContextLengthFor(id)).To(Equal(128000),
+					"%s must resolve via the pinned map", id)
+			}
+			Expect(zai.ContextLengthFor("glm-future-9")).To(Equal(128000),
+				"unknown IDs must fall back to defaultContextLength")
+			Expect(zai.ContextLengthFor("")).To(Equal(128000),
+				"empty ID must fall back to defaultContextLength")
+		})
 	})
 
 	Describe("Chat", func() {

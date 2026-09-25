@@ -44,6 +44,39 @@ const (
 	defaultEmbedModel  = "embedding-3"
 )
 
+// modelContextLengths pins per-model context-window sizes for known
+// Z.AI model IDs. Values are sourced from the repo's limit-registry
+// corrections; every glm model currently carries the shared 128000
+// window, so unknown IDs fall back to defaultContextLength via
+// contextLengthFor.
+var modelContextLengths = map[string]int{
+	"glm-5.3":       defaultContextLength,
+	"glm-5.2":       defaultContextLength,
+	"glm-5":         defaultContextLength,
+	"glm-4.7":       defaultContextLength,
+	"glm-4.7-flash": defaultContextLength,
+	"glm-4.6":       defaultContextLength,
+}
+
+// ContextLengthFor returns the pinned context-window size for a model
+// ID, falling back to defaultContextLength for unknown IDs.
+//
+// Expected:
+//   - id is a Z.AI model ID string; empty or unknown IDs are permitted.
+//
+// Returns:
+//   - The pinned context length for known IDs.
+//   - defaultContextLength for unknown or empty IDs.
+//
+// Side effects:
+//   - None.
+func ContextLengthFor(id string) int {
+	if n, ok := modelContextLengths[id]; ok {
+		return n
+	}
+	return defaultContextLength
+}
+
 // BaseURLForPlan returns the Z.AI base URL for the named plan.
 //
 // Expected:
@@ -338,7 +371,7 @@ func (p *Provider) fetchModels() ([]provider.Model, error) {
 		models = append(models, provider.Model{
 			ID:            modelsPage.Data[i].ID,
 			Provider:      providerName,
-			ContextLength: defaultContextLength,
+			ContextLength: ContextLengthFor(modelsPage.Data[i].ID),
 			OutputLimit:   defaultOutputLimit,
 		})
 	}
@@ -363,12 +396,12 @@ func (p *Provider) fetchModels() ([]provider.Model, error) {
 //   - None.
 func fallbackModels() []provider.Model {
 	return []provider.Model{
-		{ID: "glm-5.3", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
-		{ID: "glm-5.2", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
-		{ID: "glm-5", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
-		{ID: "glm-4.7", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
-		{ID: "glm-4.7-flash", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
-		{ID: "glm-4.6", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
+		{ID: "glm-5.3", Provider: providerName, ContextLength: ContextLengthFor("glm-5.3"), OutputLimit: defaultOutputLimit},
+		{ID: "glm-5.2", Provider: providerName, ContextLength: ContextLengthFor("glm-5.2"), OutputLimit: defaultOutputLimit},
+		{ID: "glm-5", Provider: providerName, ContextLength: ContextLengthFor("glm-5"), OutputLimit: defaultOutputLimit},
+		{ID: "glm-4.7", Provider: providerName, ContextLength: ContextLengthFor("glm-4.7"), OutputLimit: defaultOutputLimit},
+		{ID: "glm-4.7-flash", Provider: providerName, ContextLength: ContextLengthFor("glm-4.7-flash"), OutputLimit: defaultOutputLimit},
+		{ID: "glm-4.6", Provider: providerName, ContextLength: ContextLengthFor("glm-4.6"), OutputLimit: defaultOutputLimit},
 	}
 }
 
