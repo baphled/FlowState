@@ -577,6 +577,11 @@ type retryState struct {
 	// in any round. These are excluded from retry rounds after their first failure.
 	// Map key is "provider:model" for O(1) lookup.
 	permanentlyFailed map[string]provider.ModelPreference
+	// trimmedForSize records that the request messages were already trimmed
+	// once because of a context-size failure. Trimming is capped at one shot
+	// per Execute so a chain of size-limited candidates cannot repeatedly
+	// shrink the conversation into an unusable sliver.
+	trimmedForSize bool
 }
 
 // attemptDebugMeta records per-attempt metadata used for debug logging.
@@ -643,6 +648,13 @@ func (sh *StreamHook) runCandidateRound(
 					reason:   classifyFailoverReason(err),
 				}
 			}
+			if !state.trimmedForSize {
+				var provErr *provider.Error
+				if errors.As(err, &provErr) && provErr.ErrorType == provider.ErrorTypeContextWindowExceeded {
+					state.trimmedForSize = true
+					req.Messages = trimForSizeError(req.Messages)
+				}
+			}
 			continue
 		}
 		outcome.winner = candidate
@@ -664,6 +676,35 @@ func (sh *StreamHook) selectAttemptCandidate(candidate provider.ModelPreference)
 		return true
 	}
 	return !health.IsRateLimited(candidate.Provider, candidate.Model)
+}
+
+// trimForSizeError shrinks the message window after a context-size failure so
+// the next failover candidate receives a conversation that can plausibly fit a
+// smaller context budget. It keeps the leading run of system-role messages
+// (the assembled prompt prefix, mirroring the engine's fixed-head semantics)
+// plus the trailing four non-system messages, dropping everything in between.
+// When nothing is droppable the input is returned unchanged.
+//
+// Expected:
+//   - msgs is the current request message window (possibly empty).
+//
+// Returns:
+//   - A window sharing the input's backing array when trimming occurred,
+//     otherwise the input unchanged.
+//
+// Side effects:
+//   - None.
+func trimForSizeError(msgs []provider.Message) []provider.Message {
+	fixed := 0
+	for fixed < len(msgs) && msgs[fixed].Role == "system" {
+		fixed++
+	}
+	tail := msgs[fixed:]
+	if len(tail) <= 4 {
+		return msgs
+	}
+	kept := append([]provider.Message{}, msgs[:fixed]...)
+	return append(kept, tail[len(tail)-4:]...)
 }
 
 // stripAssistantTail removes trailing assistant messages that have no tool calls

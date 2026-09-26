@@ -100,6 +100,119 @@ func (m *FailoverMockStreamProvider) RefreshNow(_ context.Context) error {
 	return nil
 }
 
+// candidateReturnsContextWindowExceeded registers a mock provider that
+// returns an ErrorTypeContextWindowExceeded from Stream.
+//
+// Expected: providerName and model name the failing candidate.
+// Returns: None.
+// Side effects: registers a provider with the registry.
+func (fs *FailoverSteps) candidateReturnsContextWindowExceeded(providerName, model string) error {
+	fs.candidateProvider = providerName
+	fs.candidateModel = model
+	sizeErr := &provider.Error{
+		ErrorType: provider.ErrorTypeContextWindowExceeded,
+		Provider:  providerName,
+		Message:   "context window exceeded",
+	}
+	fs.registry.Register(&FailoverMockStreamProvider{
+		name: providerName,
+		streamFn: func(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+			return nil, sizeErr
+		},
+	})
+	return nil
+}
+
+// candidateSucceeds registers a mock provider that streams a successful
+// terminal chunk, recording how many messages each request carried.
+//
+// Expected: providerName and model name the succeeding candidate.
+// Returns: None.
+// Side effects: registers a provider with the registry.
+func (fs *FailoverSteps) candidateSucceeds(providerName, model string) error {
+	fs.succeededCandidate = providerName
+	if fs.receivedMsgCounts == nil {
+		fs.receivedMsgCounts = make(map[string]int)
+	}
+	fs.receivedMsgCounts[providerName] = 0
+	fs.registry.Register(&FailoverMockStreamProvider{
+		name: providerName,
+		streamFn: func(_ context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+			fs.attemptedMu.Lock()
+			fs.receivedMsgCounts[providerName] = len(req.Messages)
+			fs.attemptedMu.Unlock()
+			ch := make(chan provider.StreamChunk, 1)
+			ch <- provider.StreamChunk{Content: providerName + "-reply", Done: true}
+			close(ch)
+			return ch, nil
+		},
+	})
+	return nil
+}
+
+// theFailoverChainIsTwo arms the manager with a two-candidate chain.
+//
+// Expected: the pinned pair followed by the fallback pair.
+// Returns: None.
+// Side effects: replaces the manager's base preferences.
+func (fs *FailoverSteps) theFailoverChainIsTwo(p1, m1, p2, m2 string) error {
+	fs.manager.SetBasePreferences([]provider.ModelPreference{
+		{Provider: p1, Model: m1},
+		{Provider: p2, Model: m2},
+	})
+	return nil
+}
+
+// failoverHookExecutesChatRequestWithLongHistory drives one chat
+// request carrying a system message plus ten user messages through the
+// failover hook.
+//
+// Expected: None.
+// Returns: None.
+// Side effects: records the terminal content or the selection error.
+func (fs *FailoverSteps) failoverHookExecutesChatRequestWithLongHistory() error {
+	req := &provider.ChatRequest{Provider: fs.candidateProvider, Model: fs.candidateModel}
+	req.Messages = append(req.Messages, provider.Message{Role: "system", Content: "You are a helpful assistant."})
+	for i := 1; i <= 10; i++ {
+		req.Messages = append(req.Messages, provider.Message{
+			Role:    "user",
+			Content: fmt.Sprintf("message number %d with some padding text to grow the window", i),
+		})
+	}
+	handler := fs.streamHook.Execute(failoverBaseHandler(fs.registry))
+	ch, err := handler(context.Background(), req)
+	if err != nil {
+		fs.selectionErr = err
+		return nil
+	}
+	for raw := range ch {
+		if raw.Done {
+			fs.lastContent = raw.Content
+		}
+	}
+	return nil
+}
+
+// succeedingCandidateReceivesFewerMessages asserts the second candidate
+// was redispatched with a trimmed history of fewer than ten messages.
+//
+// Expected: a succeeded candidate armed via candidateSucceeds.
+// Returns: an error when the candidate was never attempted or the
+// history was not trimmed.
+// Side effects: None.
+func (fs *FailoverSteps) succeedingCandidateReceivesFewerMessages() error {
+	fs.attemptedMu.Lock()
+	defer fs.attemptedMu.Unlock()
+	count, ok := fs.receivedMsgCounts[fs.succeededCandidate]
+	if !ok {
+		return fmt.Errorf("candidate %q never received a request", fs.succeededCandidate)
+	}
+	if count >= 10 {
+		return fmt.Errorf("expected fewer than 10 messages after trimming, got %d", count)
+	}
+	return nil
+}
+
 // RefreshStatus returns a recent successful refresh, used in S2 reactive refresh tests.
 //
 // Returns: result of RefreshStatus.
@@ -134,6 +247,8 @@ type FailoverSteps struct {
 	receivedError      string
 	reloadedHealth     *failover.HealthManager
 	refreshSucceeded   bool
+	succeededCandidate string
+	receivedMsgCounts  map[string]int
 	strictChain        []provider.ModelPreference
 	globalChain        []provider.ModelPreference
 	resolvedChain      []provider.ModelPreference
@@ -245,6 +360,11 @@ func RegisterFailoverSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the pair should not be hard-down$`, fs.thePairShouldNotBeHardDown)
 	ctx.Step(`^the pair should be hard-down after a restart$`, fs.thePairShouldBeHardDownAfterRestart)
 	ctx.Step(`^the health manager resets the pair$`, fs.theHealthManagerResetsThePair)
+	ctx.Step(`^the candidate "([^"]*)" / "([^"]*)" returns a context window exceeded error$`, fs.candidateReturnsContextWindowExceeded)
+	ctx.Step(`^the candidate "([^"]*)" / "([^"]*)" succeeds$`, fs.candidateSucceeds)
+	ctx.Step(`^the failover chain is "([^"]*)" / "([^"]*)" then "([^"]*)" / "([^"]*)"$`, fs.theFailoverChainIsTwo)
+	ctx.Step(`^the failover hook executes a chat request with a long message history$`, fs.failoverHookExecutesChatRequestWithLongHistory)
+	ctx.Step(`^the succeeding candidate should receive fewer messages than the failed candidate$`, fs.succeedingCandidateReceivesFewerMessages)
 }
 
 // aFailoverHookWithSingleCandidate sets up the failover infrastructure
@@ -1844,8 +1964,12 @@ func (fs *FailoverSteps) theTurnShouldCompleteOn(providerName string) error {
 	if fs.selectionErr != nil {
 		return fmt.Errorf("the turn failed instead of completing: %v", fs.selectionErr)
 	}
-	if fs.lastContent != providerName+"-fallback-reply" {
-		return fmt.Errorf("expected the turn to complete on %q, got %q", providerName, fs.lastContent)
+	winner := fs.succeededCandidate
+	if winner == "" {
+		winner = strings.TrimSuffix(fs.lastContent, "-fallback-reply")
+	}
+	if winner != providerName {
+		return fmt.Errorf("expected the turn to complete on %q, got %q", providerName, winner)
 	}
 	return nil
 }

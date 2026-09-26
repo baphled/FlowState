@@ -232,6 +232,10 @@ func classifyProviderHealthCooldown(err error) (time.Duration, bool) {
 func classifyProviderHealthCooldownText(message string) (time.Duration, bool) {
 	msg := strings.ToLower(message)
 
+	if classifyContextSizeText(msg) {
+		return 0, false
+	}
+
 	if containsAny(msg,
 		"rate_limit",
 		"rate limit",
@@ -241,6 +245,41 @@ func classifyProviderHealthCooldownText(message string) (time.Duration, bool) {
 		return time.Hour, true
 	}
 
+	return classifyProviderHealthAuthText(msg)
+}
+
+// classifyContextSizeText reports whether the lower-cased provider error
+// message describes a context or request size limit. Size failures are
+// request-shaped rather than provider-shaped, so they must not penalise
+// provider health or trigger a cooldown.
+//
+// Expected: msg, a lower-cased error message.
+//
+// Returns: true when the message indicates a context or size limit.
+//
+// Side effects: None.
+func classifyContextSizeText(msg string) bool {
+	return containsAny(msg,
+		"context_length_exceeded",
+		"context window exceeded",
+		"maximum context length",
+		"request too large",
+		"prompt is too long",
+		"context length",
+	)
+}
+
+// classifyProviderHealthAuthText classifies authentication, authorisation,
+// quota and billing failures from an already lower-cased provider error
+// message. Such failures are user-correctable or account-level, so they
+// warrant a long cooldown rather than a provider health penalty.
+//
+// Expected: msg, a lower-cased error message.
+//
+// Returns: the cooldown duration and whether any classifier matched.
+//
+// Side effects: None.
+func classifyProviderHealthAuthText(msg string) (time.Duration, bool) {
 	if containsAny(msg,
 		"401",
 		"unauthorized",
@@ -262,14 +301,6 @@ func classifyProviderHealthCooldownText(message string) (time.Duration, bool) {
 		"billing",
 	) {
 		return 24 * time.Hour, true
-	}
-
-	if containsAny(msg,
-		"invalid request",
-		"malformed request",
-		"context window exceeded",
-	) {
-		return 0, false
 	}
 
 	return 0, false
