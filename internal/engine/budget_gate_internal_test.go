@@ -78,6 +78,28 @@ func TestBudgetGateTinyLimitForcesTrim(t *testing.T) {
 	}
 }
 
+func TestBudgetGatePreservesFinalUserUnderTightBudget(t *testing.T) {
+	big := make([]byte, 4000)
+	for i := range big {
+		big[i] = 'a'
+	}
+	msgs := []provider.Message{
+		msg("system", string(big)),
+		msg("user", string(big)+"-old"),
+		msg("user", "final pending turn"),
+	}
+	got, trimmed := TrimForDispatchBudget(context.Background(), msgs, stubCounter{}, 1000, 0)
+	if !trimmed {
+		t.Fatalf("tight budget should force trimming")
+	}
+	if got[0].Role != "system" {
+		t.Fatalf("system head must be preserved")
+	}
+	if len(got) != 2 || got[len(got)-1].Content != "final pending turn" {
+		t.Fatalf("final user message must survive the floor, got %+v", got)
+	}
+}
+
 func TestBudgetGateNilCounterOrEmpty(t *testing.T) {
 	msgs := []provider.Message{msg("user", "hi")}
 	if _, trimmed := TrimForDispatchBudget(nil, msgs, nil, 100, 0); trimmed {

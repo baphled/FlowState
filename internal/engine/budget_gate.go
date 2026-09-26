@@ -15,7 +15,11 @@ import (
 // drops the oldest non-system messages until the remaining window fits.
 // The leading run of system messages (the assembled prompt prefix) is
 // always preserved, mirroring the fixed-head semantics used elsewhere in
-// the engine. When the counter is nil, the limit is non-positive, or the
+// the engine. Even under the tightest budgets the gate never trims
+// below a minimum viable window: the system head plus at least the
+// final non-system message (the pending user turn) is always preserved;
+// if that floor alone exceeds the budget it is kept regardless rather
+// than collapsing the window to the system head alone. When the counter is nil, the limit is non-positive, or the
 // window already fits, the input is returned unchanged.
 //
 // Expected:
@@ -79,6 +83,9 @@ func TrimForDispatchBudget(ctx context.Context, msgs []provider.Message, counter
 			drop = i
 			break
 		}
+	}
+	if drop < 0 {
+		drop = len(tail) - 1
 	}
 	if drop <= 0 {
 		return msgs, false
