@@ -197,7 +197,7 @@ type AppConfig struct {
 	// ToolLoopIterations overrides the absolute ceiling on tool-loop
 	// continuations for a single turn (the iteration backstop that
 	// terminates a turn regardless of wall-clock duration). Zero means
-	// inherit the compiled-in default (200). Complex multi-wave swarm
+	// inherit the compiled-in default (50). Complex multi-wave swarm
 	// sessions are the typical reason to raise this.
 	ToolLoopIterations int `json:"tool_loop_iterations,omitempty" yaml:"tool_loop_iterations,omitempty"`
 
