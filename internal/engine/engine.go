@@ -421,6 +421,10 @@ type Engine struct {
 	// beyond which older tool results are compacted to placeholders.
 	toolMessageCompactionThreshold int
 
+	// toolReadOversizeThreshold is the byte threshold above which
+	// oversized tool results trigger a WARN log. Zero disables it.
+	toolReadOversizeThreshold int
+
 	// toolMessageCompactionKeepRecent is the number of most-recent tool
 	// results kept intact when compaction runs.
 	toolMessageCompactionKeepRecent int
@@ -727,6 +731,11 @@ type Config struct {
 	// results kept intact when compaction runs. Zero falls back to the
 	// compiled-in default (10).
 	ToolMessageCompactionKeepRecent int
+
+	// ToolReadOversizeThreshold is the byte threshold above which a tool
+	// result triggers a WARN log advising offset/limit reads. Zero falls
+	// back to the compiled-in default (10240); negative disables it.
+	ToolReadOversizeThreshold int
 
 	// MaxSessionTurns bounds the number of streamed turns a single
 	// session may consume before the engine refuses further turns with
@@ -1159,6 +1168,10 @@ func resolveMaxToolLoopWatchdog(cfg Config) time.Duration {
 // tool messages beyond which older tool results are compacted.
 const engineToolMessageCompactionThreshold = 50
 
+// engineToolReadOversizeThreshold is the compiled-in default byte
+// threshold above which oversized tool results trigger a WARN log.
+const engineToolReadOversizeThreshold = 10240
+
 // engineToolMessageCompactionKeepRecent is the compiled-in default number of
 // recent tool results kept intact when compaction runs.
 const engineToolMessageCompactionKeepRecent = 10
@@ -1180,6 +1193,41 @@ func resolveToolMessageCompactionThreshold(cfg Config) int {
 		return cfg.ToolMessageCompactionThreshold
 	}
 	return engineToolMessageCompactionThreshold
+}
+
+// resolveToolReadOversizeThreshold returns the configured tool-read
+// oversize warning threshold, falling back to the compiled-in default
+// when zero. Negative values resolve to the default as well.
+//
+// Expected:
+//   - cfg carries the configured threshold (zero means unset).
+//
+// Returns:
+//   - The resolved threshold in bytes.
+//
+// Side effects:
+//   - None.
+func resolveToolReadOversizeThreshold(cfg Config) int {
+	if cfg.ToolReadOversizeThreshold > 0 {
+		return cfg.ToolReadOversizeThreshold
+	}
+	return engineToolReadOversizeThreshold
+}
+
+// warnOversizedToolResult emits the WARN log for a tool result whose
+// output exceeded the resolved oversize threshold, hinting the model at
+// offset/limit reads. Results at or below the threshold — and engines
+// with the threshold disabled — log nothing.
+//
+// Expected:
+//   - e.toolReadOversizeThreshold holds the resolved byte threshold.
+//
+// Side effects:
+//   - Emits a WARN-level structured log record when output exceeds it.
+func (e *Engine) warnOversizedToolResult(toolName, output string) {
+	if e.toolReadOversizeThreshold > 0 && len(output) > e.toolReadOversizeThreshold {
+		slog.Warn("tool result exceeded large-result threshold", "tool", toolName, "bytes", len(output), "hint", "use offset/limit reads")
+	}
 }
 
 // resolveToolMessageCompactionKeepRecent returns the configured number of
@@ -1313,6 +1361,7 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		maxToolLoopIterations:            resolveMaxToolLoopIterations(cfg),
 		toolMessageCompactionThreshold:   resolveToolMessageCompactionThreshold(cfg),
 		toolMessageCompactionKeepRecent:  resolveToolMessageCompactionKeepRecent(cfg),
+		toolReadOversizeThreshold:        resolveToolReadOversizeThreshold(cfg),
 		maxToolLoopDuration:              resolveMaxToolLoopDuration(cfg),
 		toolLoopWatchdog:                 resolveMaxToolLoopWatchdog(cfg),
 		maxIdenticalToolCalls:            engineMaxIdenticalToolCalls,
@@ -3200,6 +3249,7 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 		if err == nil && result.Error == nil {
 			e.markDeliveryToolCalledCtx(ctx, sessionID, toolCall.Name, toolCall.Arguments)
 		}
+		e.warnOversizedToolResult(toolCall.Name, result.Output)
 		// publishToolAfterEvent receives the effective error so observability
 		// bus events tag failures regardless of which shape the tool used.
 		effectiveErr := err

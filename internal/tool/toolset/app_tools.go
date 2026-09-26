@@ -40,6 +40,9 @@ const DefaultVaultCollection = vaultindex.VaultCollectionPrefix
 // the canonical seed for an engine's tool registry; callers compose
 // conditional tools on top of it via the Append* helpers below.
 //
+// The bash tool inherits the compiled-in 300s default budget; operators
+// override it via the config's bash_timeout knob.
+//
 // All five todo tools share a single todoStore so per-item patches, appends,
 // inserts, and clears all mutate the same per-session list that todowrite
 // creates.
@@ -47,7 +50,12 @@ const DefaultVaultCollection = vaultindex.VaultCollectionPrefix
 // When guard is non-nil, the three mutating-filesystem tools in this
 // base slice (bash, read, write) are constructed via NewWithGuard so
 // the main engine's per-call dispatch routes through
-// pathguard.Guard.CheckForTool. Without this wiring the main engine
+// pathguard.Guard.CheckForTool. The read tool additionally uses
+// NewWithGuardAndLimits so a positive readOversizeThreshold enables
+// the head-cap on unbounded reads (returning the leading
+// readHeadLines lines instead of the whole file); a threshold of zero
+// disables the cap, and the nil-guard branch always uses read.New so
+// the head-cap is strictly opt-in. Without this wiring the main engine
 // dispatched guard-less tool instances and silently bypassed the
 // permissions.yaml overlay (Slices A+B+C) AND the Plan-mode
 // output-dir overlay (Slice 1, cbe4464e) — the engine schema filter
@@ -67,6 +75,10 @@ const DefaultVaultCollection = vaultindex.VaultCollectionPrefix
 //     permitted for tests that do not exercise the plan tools.
 //   - guard, when non-nil, is wired into bash/read/write so
 //     CheckForTool fires on every Execute. May be nil.
+//   - readOversizeThreshold is the read tool's oversize threshold in
+//     bytes; zero disables the head-cap.
+//   - readHeadLines is the number of leading lines the read tool
+//     returns for an oversize read when the head-cap is enabled.
 //
 // Returns:
 //   - The base tool slice; the caller appends domain tools and registers
@@ -74,7 +86,7 @@ const DefaultVaultCollection = vaultindex.VaultCollectionPrefix
 //
 // Side effects:
 //   - None.
-func BuildAppTools(skillLoader *skill.FileSkillLoader, todoStore todotool.Store, plansDir string, guard *pathguard.Guard) []tool.Tool {
+func BuildAppTools(skillLoader *skill.FileSkillLoader, todoStore todotool.Store, plansDir string, guard *pathguard.Guard, readOversizeThreshold, readHeadLines int) []tool.Tool {
 	var (
 		bashTool  tool.Tool
 		readTool  tool.Tool
@@ -82,7 +94,7 @@ func BuildAppTools(skillLoader *skill.FileSkillLoader, todoStore todotool.Store,
 	)
 	if guard != nil {
 		bashTool = bash.NewWithGuard(guard)
-		readTool = read.NewWithGuard(guard)
+		readTool = read.NewWithGuardAndLimits(guard, readOversizeThreshold, readHeadLines)
 		writeTool = write.NewWithGuard(guard)
 	} else {
 		bashTool = bash.New()

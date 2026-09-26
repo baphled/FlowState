@@ -210,6 +210,15 @@ type AppConfig struct {
 	// compiled-in default (10).
 	ToolMessageCompactionKeepRecent int `json:"tool_message_compaction_keep_recent,omitempty" yaml:"tool_message_compaction_keep_recent,omitempty"`
 
+	// ToolReadOversizeThreshold is the byte threshold above which an
+	// unbounded read-tool result triggers the head-cap behaviour.
+	// Zero means inherit the compiled-in default (10240).
+	ToolReadOversizeThreshold int `json:"tool_read_oversize_threshold,omitempty" yaml:"tool_read_oversize_threshold,omitempty"`
+	// ToolReadHeadLines is the number of leading lines returned when the
+	// head-cap truncates an oversized unbounded read. Zero means inherit
+	// the compiled-in default (200).
+	ToolReadHeadLines int `json:"tool_read_head_lines,omitempty" yaml:"tool_read_head_lines,omitempty"`
+
 	// SessionLimits bounds a single session's lifetime: streamed turns,
 	// persisted messages, and wall-clock age. Whichever bound trips
 	// first refuses further turns on the session with an honest terminal
@@ -551,6 +560,48 @@ func (c *AppConfig) ParsedToolMessageCompactionKeepRecent() int {
 		return 10
 	}
 	return c.ToolMessageCompactionKeepRecent
+}
+
+// ParsedToolReadOversizeThreshold returns the configured read-tool
+// oversize threshold with nil-receiver safety. Zero or negative inherits
+// the default (10240).
+//
+// Returns:
+//   - The configured threshold, or the default 10240 when unset or nil receiver.
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for ParsedToolReadOversizeThreshold.
+func (c *AppConfig) ParsedToolReadOversizeThreshold() int {
+	if c == nil {
+		return 10240
+	}
+	if c.ToolReadOversizeThreshold <= 0 {
+		return 10240
+	}
+	return c.ToolReadOversizeThreshold
+}
+
+// ParsedToolReadHeadLines returns the configured number of leading lines
+// returned by the read-tool head-cap with nil-receiver safety. Zero or
+// negative inherits the default (200).
+//
+// Returns:
+//   - The configured line count, or the default 200 when unset or nil receiver.
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for ParsedToolReadHeadLines.
+func (c *AppConfig) ParsedToolReadHeadLines() int {
+	if c == nil {
+		return 200
+	}
+	if c.ToolReadHeadLines <= 0 {
+		return 200
+	}
+	return c.ToolReadHeadLines
 }
 
 // TodoStrictModeEnabled reports whether the D9 hard-gate todo_strict_mode

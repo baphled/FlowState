@@ -1364,3 +1364,53 @@ var _ = Describe("ToolMessageCompaction accessors", func() {
 		})
 	})
 })
+
+var _ = Describe("ToolRead head-cap accessors", func() {
+	Describe("ParsedToolReadOversizeThreshold", func() {
+		It("returns the default 10240 when unset", func() {
+			cfg := config.DefaultConfig()
+			Expect(cfg.ParsedToolReadOversizeThreshold()).To(Equal(10240))
+		})
+
+		It("returns the default 10240 for zero and negative values", func() {
+			Expect((&config.AppConfig{}).
+				ParsedToolReadOversizeThreshold()).To(Equal(10240))
+			Expect((&config.AppConfig{ToolReadOversizeThreshold: -1}).
+				ParsedToolReadOversizeThreshold()).To(Equal(10240))
+		})
+
+		It("returns the configured value when positive", func() {
+			cfg := &config.AppConfig{ToolReadOversizeThreshold: 4096}
+			Expect(cfg.ParsedToolReadOversizeThreshold()).To(Equal(4096))
+		})
+
+		It("is nil-receiver safe", func() {
+			var cfg *config.AppConfig
+			Expect(cfg.ParsedToolReadOversizeThreshold()).To(Equal(10240))
+		})
+	})
+
+	Describe("ParsedToolReadHeadLines", func() {
+		It("returns the default 200 when unset", func() {
+			cfg := config.DefaultConfig()
+			Expect(cfg.ParsedToolReadHeadLines()).To(Equal(200))
+		})
+
+		It("returns the default 200 for zero and negative values", func() {
+			Expect((&config.AppConfig{}).
+				ParsedToolReadHeadLines()).To(Equal(200))
+			Expect((&config.AppConfig{ToolReadHeadLines: -5}).
+				ParsedToolReadHeadLines()).To(Equal(200))
+		})
+
+		It("returns the configured value when positive", func() {
+			cfg := &config.AppConfig{ToolReadHeadLines: 42}
+			Expect(cfg.ParsedToolReadHeadLines()).To(Equal(42))
+		})
+
+		It("is nil-receiver safe", func() {
+			var cfg *config.AppConfig
+			Expect(cfg.ParsedToolReadHeadLines()).To(Equal(200))
+		})
+	})
+})

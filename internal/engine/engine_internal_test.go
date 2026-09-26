@@ -1,6 +1,9 @@
 package engine
 
 import (
+	"bytes"
+	"log/slog"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -142,5 +145,34 @@ var _ = Describe("Engine reseed preference cache", func() {
 
 		Expect(eng.ReseedCount()).To(Equal(int64(2)),
 			"identical selection is cached; a changed selection rebuilds")
+	})
+})
+
+var _ = Describe("resolveToolReadOversizeThreshold", func() {
+	It("falls back to the compiled-in default for zero and negative values", func() {
+		Expect(resolveToolReadOversizeThreshold(Config{})).To(Equal(engineToolReadOversizeThreshold))
+		Expect(resolveToolReadOversizeThreshold(Config{ToolReadOversizeThreshold: -1})).To(Equal(engineToolReadOversizeThreshold))
+	})
+
+	It("returns the configured threshold when positive", func() {
+		Expect(resolveToolReadOversizeThreshold(Config{ToolReadOversizeThreshold: 512})).
+			To(Equal(512))
+	})
+})
+
+var _ = Describe("tool result oversize WARN", func() {
+	It("warns when output exceeds the resolved threshold and stays quiet below it", func() {
+		origLogger := slog.Default()
+		buf := &bytes.Buffer{}
+		defer slog.SetDefault(origLogger)
+		slog.SetDefault(slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+		eng := &Engine{toolReadOversizeThreshold: 16}
+		eng.warnOversizedToolResult("read", strings.Repeat("x", 32))
+		Expect(buf.String()).To(ContainSubstring("tool result exceeded large-result threshold"))
+
+		buf.Reset()
+		eng.warnOversizedToolResult("read", "short")
+		Expect(buf.String()).To(BeEmpty())
 	})
 })
