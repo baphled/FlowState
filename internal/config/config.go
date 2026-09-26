@@ -201,6 +201,15 @@ type AppConfig struct {
 	// sessions are the typical reason to raise this.
 	ToolLoopIterations int `json:"tool_loop_iterations,omitempty" yaml:"tool_loop_iterations,omitempty"`
 
+	// ToolMessageCompactionThreshold is the number of tool messages
+	// beyond which older tool results are compacted to placeholders.
+	// Zero means inherit the compiled-in default (50).
+	ToolMessageCompactionThreshold int `json:"tool_message_compaction_threshold,omitempty" yaml:"tool_message_compaction_threshold,omitempty"`
+	// ToolMessageCompactionKeepRecent is the number of most-recent tool
+	// results kept intact when compaction runs. Zero means inherit the
+	// compiled-in default (10).
+	ToolMessageCompactionKeepRecent int `json:"tool_message_compaction_keep_recent,omitempty" yaml:"tool_message_compaction_keep_recent,omitempty"`
+
 	// SessionLimits bounds a single session's lifetime: streamed turns,
 	// persisted messages, and wall-clock age. Whichever bound trips
 	// first refuses further turns on the session with an honest terminal
@@ -500,6 +509,48 @@ func (c *AppConfig) ParsedToolLoopIterations() int {
 		return 0
 	}
 	return c.ToolLoopIterations
+}
+
+// ParsedToolMessageCompactionThreshold returns the configured tool-message
+// compaction threshold with nil-receiver safety. Zero or negative inherits
+// the default (50).
+//
+// Returns:
+//   - The configured threshold, or the default 50 when unset or nil receiver.
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for ParsedToolMessageCompactionThreshold.
+func (c *AppConfig) ParsedToolMessageCompactionThreshold() int {
+	if c == nil {
+		return 50
+	}
+	if c.ToolMessageCompactionThreshold <= 0 {
+		return 50
+	}
+	return c.ToolMessageCompactionThreshold
+}
+
+// ParsedToolMessageCompactionKeepRecent returns the configured number of
+// recent tool results kept intact by compaction with nil-receiver safety.
+// Zero or negative inherits the default (10).
+//
+// Returns:
+//   - The configured keep-recent count, or the default 10 when unset or nil receiver.
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for ParsedToolMessageCompactionKeepRecent.
+func (c *AppConfig) ParsedToolMessageCompactionKeepRecent() int {
+	if c == nil {
+		return 10
+	}
+	if c.ToolMessageCompactionKeepRecent <= 0 {
+		return 10
+	}
+	return c.ToolMessageCompactionKeepRecent
 }
 
 // TodoStrictModeEnabled reports whether the D9 hard-gate todo_strict_mode

@@ -417,6 +417,14 @@ type Engine struct {
 	// field itself is the shared, read-only ceiling.
 	maxToolLoopIterations int
 
+	// toolMessageCompactionThreshold is the number of tool messages
+	// beyond which older tool results are compacted to placeholders.
+	toolMessageCompactionThreshold int
+
+	// toolMessageCompactionKeepRecent is the number of most-recent tool
+	// results kept intact when compaction runs.
+	toolMessageCompactionKeepRecent int
+
 	// maxIdenticalToolCalls is the consecutive-identical-batch threshold
 	// for the primary repeat-call detector in streamWithToolLoop.
 	// Defaults to engineMaxIdenticalToolCalls via Engine.New; overridable
@@ -709,6 +717,16 @@ type Config struct {
 	// iterations, the turn terminates regardless of wall-clock duration.
 	// Zero falls back to the compiled-in default (200).
 	MaxToolLoopIterations int
+
+	// ToolMessageCompactionThreshold is the number of tool messages
+	// beyond which older tool results are compacted to placeholders.
+	// Zero falls back to the compiled-in default (50).
+	ToolMessageCompactionThreshold int
+
+	// ToolMessageCompactionKeepRecent is the number of most-recent tool
+	// results kept intact when compaction runs. Zero falls back to the
+	// compiled-in default (10).
+	ToolMessageCompactionKeepRecent int
 
 	// MaxSessionTurns bounds the number of streamed turns a single
 	// session may consume before the engine refuses further turns with
@@ -1136,6 +1154,65 @@ func resolveMaxToolLoopWatchdog(cfg Config) time.Duration {
 //
 // Side effects:
 //   - None.
+//
+// engineToolMessageCompactionThreshold is the compiled-in default number of
+// tool messages beyond which older tool results are compacted.
+const engineToolMessageCompactionThreshold = 50
+
+// engineToolMessageCompactionKeepRecent is the compiled-in default number of
+// recent tool results kept intact when compaction runs.
+const engineToolMessageCompactionKeepRecent = 10
+
+// resolveToolMessageCompactionThreshold returns the configured tool-message
+// compaction threshold, falling back to the compiled-in default when zero or
+// negative.
+//
+// Returns:
+//   - The resolved threshold in tool messages.
+//
+// Expected:
+//   - cfg carries the configured threshold (zero means unset).
+//
+// Side effects:
+//   - None.
+func resolveToolMessageCompactionThreshold(cfg Config) int {
+	if cfg.ToolMessageCompactionThreshold > 0 {
+		return cfg.ToolMessageCompactionThreshold
+	}
+	return engineToolMessageCompactionThreshold
+}
+
+// resolveToolMessageCompactionKeepRecent returns the configured number of
+// recent tool results kept intact, falling back to the compiled-in default
+// when zero or negative.
+//
+// Returns:
+//   - The resolved number of recent tool results kept intact.
+//
+// Expected:
+//   - cfg carries the configured keep-recent count (zero means unset).
+//
+// Side effects:
+//   - None.
+func resolveToolMessageCompactionKeepRecent(cfg Config) int {
+	if cfg.ToolMessageCompactionKeepRecent > 0 {
+		return cfg.ToolMessageCompactionKeepRecent
+	}
+	return engineToolMessageCompactionKeepRecent
+}
+
+// resolveMaxToolLoopIterations returns the configured maximum tool-loop
+// iteration count, falling back to the compiled-in default when zero or
+// negative.
+//
+// Returns:
+//   - The resolved maximum number of tool-loop iterations.
+//
+// Expected:
+//   - cfg carries the configured maximum (zero means unset).
+//
+// Side effects:
+//   - None.
 func resolveMaxToolLoopIterations(cfg Config) int {
 	if cfg.MaxToolLoopIterations > 0 {
 		return cfg.MaxToolLoopIterations
@@ -1234,6 +1311,8 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		heartbeatInterval:                defaultStreamingHeartbeatInterval,
 		streamIdleTimeout:                engineStreamIdleTimeout,
 		maxToolLoopIterations:            resolveMaxToolLoopIterations(cfg),
+		toolMessageCompactionThreshold:   resolveToolMessageCompactionThreshold(cfg),
+		toolMessageCompactionKeepRecent:  resolveToolMessageCompactionKeepRecent(cfg),
 		maxToolLoopDuration:              resolveMaxToolLoopDuration(cfg),
 		toolLoopWatchdog:                 resolveMaxToolLoopWatchdog(cfg),
 		maxIdenticalToolCalls:            engineMaxIdenticalToolCalls,
@@ -3720,6 +3799,9 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 		messages = e.maybeRehydrate(sessionID, messages)
 		messages = e.applyFactRecall(ctx, sessionID, userMessage, messages)
 		messages = e.applyMicroCompaction(ctx, sessionID, messages)
+		messages = compactOldToolResults(messages,
+			e.toolMessageCompactionThreshold,
+			e.toolMessageCompactionKeepRecent)
 
 		slog.Info("engine context window",
 			"source", "session-scoped",
@@ -3823,6 +3905,9 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 	// persisted Store is untouched: only the provider request gets
 	// the rewritten view.
 	result.Messages = e.applyMicroCompaction(ctx, sessionID, result.Messages)
+	result.Messages = compactOldToolResults(result.Messages,
+		e.toolMessageCompactionThreshold,
+		e.toolMessageCompactionKeepRecent)
 
 	result.Messages = e.appendTodoContext(result.Messages, sessionID)
 

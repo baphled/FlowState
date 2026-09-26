@@ -1314,3 +1314,53 @@ voice:
 	})
 
 })
+
+var _ = Describe("ToolMessageCompaction accessors", func() {
+	Describe("ParsedToolMessageCompactionThreshold", func() {
+		It("returns the default 50 when unset", func() {
+			cfg := config.DefaultConfig()
+			Expect(cfg.ParsedToolMessageCompactionThreshold()).To(Equal(50))
+		})
+
+		It("returns the default 50 for zero and negative values", func() {
+			Expect((&config.AppConfig{}).
+				ParsedToolMessageCompactionThreshold()).To(Equal(50))
+			Expect((&config.AppConfig{ToolMessageCompactionThreshold: -3}).
+				ParsedToolMessageCompactionThreshold()).To(Equal(50))
+		})
+
+		It("returns the configured value when positive", func() {
+			cfg := &config.AppConfig{ToolMessageCompactionThreshold: 25}
+			Expect(cfg.ParsedToolMessageCompactionThreshold()).To(Equal(25))
+		})
+
+		It("is nil-receiver safe", func() {
+			var cfg *config.AppConfig
+			Expect(cfg.ParsedToolMessageCompactionThreshold()).To(Equal(50))
+		})
+	})
+
+	Describe("ParsedToolMessageCompactionKeepRecent", func() {
+		It("returns the default 10 when unset", func() {
+			cfg := config.DefaultConfig()
+			Expect(cfg.ParsedToolMessageCompactionKeepRecent()).To(Equal(10))
+		})
+
+		It("returns the default 10 for zero and negative values", func() {
+			Expect((&config.AppConfig{}).
+				ParsedToolMessageCompactionKeepRecent()).To(Equal(10))
+			Expect((&config.AppConfig{ToolMessageCompactionKeepRecent: -1}).
+				ParsedToolMessageCompactionKeepRecent()).To(Equal(10))
+		})
+
+		It("returns the configured value when positive", func() {
+			cfg := &config.AppConfig{ToolMessageCompactionKeepRecent: 4}
+			Expect(cfg.ParsedToolMessageCompactionKeepRecent()).To(Equal(4))
+		})
+
+		It("is nil-receiver safe", func() {
+			var cfg *config.AppConfig
+			Expect(cfg.ParsedToolMessageCompactionKeepRecent()).To(Equal(10))
+		})
+	})
+})
