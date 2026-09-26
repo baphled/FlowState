@@ -3853,6 +3853,10 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 			e.toolMessageCompactionThreshold,
 			e.toolMessageCompactionKeepRecent)
 
+		if trimmed, didTrim := TrimForDispatchBudget(ctx, messages, e.tokenCounter, tokenBudget, 0); didTrim {
+			messages = trimmed
+		}
+
 		slog.Info("engine context window",
 			"source", "session-scoped",
 			"compacted", compactedSummary != "",
