@@ -1415,7 +1415,7 @@ func buildToolPipeline(cfg *config.AppConfig, mcpClientFactory func() mcpclient.
 	// BuildAppTools closes the gap so the main engine and the
 	// per-manifest delegate engines both call into the same Guard.
 	guard := buildPathGuardFromConfig(cfg)
-	appTools := toolset.BuildAppTools(skill.NewFileSkillLoader(cfg.SkillDir), todoStore, cfg.ResolvedPlanLocation(), guard)
+	appTools := toolset.BuildAppTools(skill.NewFileSkillLoader(cfg.SkillDir), todoStore, cfg.ResolvedPlanLocation(), guard, cfg.ParsedToolReadOversizeThreshold(), cfg.ParsedToolReadHeadLines())
 	applyBashTimeout(appTools, cfg)
 	allServers := appmcp.MergeServers(cfg.MCPServers, config.DiscoverMCPServers())
 	mcpTools, results, serverToolNames := ConnectMCPServers(context.Background(), mcpMgr, allServers)
@@ -2913,7 +2913,7 @@ func (a *App) buildToolsForManifestWithStore(manifest agent.Manifest, store coor
 	// not the asymmetry the guard exists to close.
 	tools := []tool.Tool{
 		bash.NewWithGuard(guard),
-		read.NewWithGuard(guard),
+		read.NewWithGuardAndLimits(guard, a.Config.ParsedToolReadOversizeThreshold(), a.Config.ParsedToolReadHeadLines()),
 		write.NewWithGuard(guard),
 		edit.NewWithGuard(guard),
 		multiedit.NewWithGuard(guard),

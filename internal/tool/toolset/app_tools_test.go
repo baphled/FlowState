@@ -22,7 +22,7 @@ var _ = Describe("BuildAppTools", func() {
 		loader := skill.NewFileSkillLoader("")
 		todos := todotool.NewMemoryStore()
 
-		tools := toolset.BuildAppTools(loader, todos, "/tmp/plans", nil)
+		tools := toolset.BuildAppTools(loader, todos, "/tmp/plans", nil, 0, 0)
 
 		Expect(tools).To(HaveLen(13))
 		names := make([]string, 0, len(tools))
@@ -56,7 +56,7 @@ var _ = Describe("BuildAppTools", func() {
 		loader := skill.NewFileSkillLoader("")
 		todos := todotool.NewMemoryStore()
 
-		tools := toolset.BuildAppTools(loader, todos, "/tmp/plans", nil)
+		tools := toolset.BuildAppTools(loader, todos, "/tmp/plans", nil, 0, 0)
 
 		names := make([]string, 0, len(tools))
 		for _, t := range tools {
@@ -95,7 +95,7 @@ var _ = Describe("BuildAppTools", func() {
 			todos := todotool.NewMemoryStore()
 			guard := pathguard.New([]string{deniedRoot})
 
-			tools := toolset.BuildAppTools(loader, todos, "/tmp/plans", guard)
+			tools := toolset.BuildAppTools(loader, todos, "/tmp/plans", guard, 0, 0)
 
 			var writeTool tool.Tool
 			for _, t := range tools {
@@ -129,7 +129,7 @@ var _ = Describe("BuildAppTools", func() {
 			todos := todotool.NewMemoryStore()
 			guard := pathguard.New([]string{deniedRoot})
 
-			tools := toolset.BuildAppTools(loader, todos, "/tmp/plans", guard)
+			tools := toolset.BuildAppTools(loader, todos, "/tmp/plans", guard, 0, 0)
 
 			var readTool tool.Tool
 			for _, t := range tools {
@@ -155,7 +155,7 @@ var _ = Describe("BuildAppTools", func() {
 			todos := todotool.NewMemoryStore()
 			guard := pathguard.New([]string{deniedRoot})
 
-			tools := toolset.BuildAppTools(loader, todos, "/tmp/plans", guard)
+			tools := toolset.BuildAppTools(loader, todos, "/tmp/plans", guard, 0, 0)
 
 			var bashTool tool.Tool
 			for _, t := range tools {

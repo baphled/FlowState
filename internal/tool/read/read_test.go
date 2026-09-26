@@ -265,10 +265,117 @@ var _ = Describe("Read Tool", func() {
 				}
 				result, err := readTool.Execute(ctx, input)
 				Expect(err).NotTo(HaveOccurred())
+				// The default constructor has no head-cap, so this
+				// oversized unbounded read falls through to the generic
+				// truncation envelope (offset hint + grep alternative).
 				Expect(result.Output).To(ContainSubstring("truncated"))
 				Expect(result.Output).To(ContainSubstring("offset"))
 				Expect(result.Output).To(ContainSubstring("grep"))
 			})
+		})
+	})
+
+	Context("head-cap on unbounded reads (NewWithGuardAndLimits)", func() {
+		var tempDir string
+
+		BeforeEach(func() {
+			var err error
+			tempDir, err = os.MkdirTemp("", "read-headcap-test-*")
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			os.RemoveAll(tempDir)
+		})
+
+		It("returns head lines plus trailer for an oversized unbounded read", func() {
+			capped := read.NewWithGuardAndLimits(nil, 512, 5)
+			bigPath := filepath.Join(tempDir, "oversize.txt")
+			lines := make([]string, 0, 300)
+			for i := 0; i < 300; i++ {
+				lines = append(lines, "row-"+intToString(i+1))
+			}
+			Expect(os.WriteFile(bigPath, []byte(strings.Join(lines, "\n")), 0o600)).To(Succeed())
+
+			result, err := capped.Execute(ctx, tool.Input{
+				Name:      "read",
+				Arguments: map[string]interface{}{"path": bigPath},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Error).NotTo(HaveOccurred())
+			Expect(result.Output).To(ContainSubstring("row-1\n"))
+			Expect(result.Output).To(ContainSubstring("row-5\n"))
+			Expect(result.Output).NotTo(ContainSubstring("row-6"))
+			Expect(result.Output).To(ContainSubstring("truncated"))
+			Expect(result.Output).To(ContainSubstring("300 lines"))
+			Expect(result.Output).To(ContainSubstring("offset/limit"))
+		})
+
+		It("does not head-cap a bounded read of the same file", func() {
+			capped := read.NewWithGuardAndLimits(nil, 512, 5)
+			bigPath := filepath.Join(tempDir, "oversize2.txt")
+			lines := make([]string, 0, 300)
+			for i := 0; i < 300; i++ {
+				lines = append(lines, "row-"+intToString(i+1))
+			}
+			Expect(os.WriteFile(bigPath, []byte(strings.Join(lines, "\n")), 0o600)).To(Succeed())
+
+			result, err := capped.Execute(ctx, tool.Input{
+				Name: "read",
+				Arguments: map[string]interface{}{
+					"path":   bigPath,
+					"offset": 10,
+					"limit":  2,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Output).To(Equal("row-10\nrow-11"))
+		})
+
+		It("does not head-cap small files", func() {
+			capped := read.NewWithGuardAndLimits(nil, 10240, 200)
+			smallPath := filepath.Join(tempDir, "small.txt")
+			Expect(os.WriteFile(smallPath, []byte("tiny"), 0o600)).To(Succeed())
+
+			result, err := capped.Execute(ctx, tool.Input{
+				Name:      "read",
+				Arguments: map[string]interface{}{"path": smallPath},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Output).To(Equal("tiny"))
+		})
+
+		It("defaults threshold/head lines to 10240/200 on zero values", func() {
+			capped := read.NewWithGuardAndLimits(nil, 0, 0)
+			// 200 lines × 100 bytes = 20000 bytes > 10240 default threshold.
+			bigPath := filepath.Join(tempDir, "defaultcap.txt")
+			lines := make([]string, 0, 200)
+			for i := 0; i < 200; i++ {
+				lines = append(lines, strings.Repeat("y", 99)+"-"+intToString(i+1))
+			}
+			Expect(os.WriteFile(bigPath, []byte(strings.Join(lines, "\n")), 0o600)).To(Succeed())
+
+			result, err := capped.Execute(ctx, tool.Input{
+				Name:      "read",
+				Arguments: map[string]interface{}{"path": bigPath},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Output).To(ContainSubstring("truncated"))
+			Expect(result.Output).To(ContainSubstring("200 lines"))
+		})
+
+		It("plain New stays unbounded for small files and head-caps nothing below threshold", func() {
+			// read.New() has no head-cap configured; the existing
+			// truncation envelope path remains its only bound.
+			plain := read.New()
+			smallPath := filepath.Join(tempDir, "plain.txt")
+			Expect(os.WriteFile(smallPath, []byte("ok"), 0o600)).To(Succeed())
+			result, err := plain.Execute(ctx, tool.Input{
+				Name:      "read",
+				Arguments: map[string]interface{}{"path": smallPath},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Output).To(Equal("ok"))
 		})
 	})
 })

@@ -16,7 +16,9 @@ import (
 
 // Tool implements file read operations with path validation.
 type Tool struct {
-	guard *pathguard.Guard
+	guard             *pathguard.Guard
+	oversizeThreshold int
+	headLines         int
 }
 
 // New creates a new read tool instance.
@@ -34,6 +36,30 @@ func New() *Tool {
 // Side effects: None.
 func NewWithGuard(g *pathguard.Guard) *Tool {
 	return &Tool{guard: g}
+}
+
+// NewWithGuardAndLimits creates a read tool that denies access to
+// protected paths and head-caps unbounded reads of oversized files.
+// Zero or negative values fall back to the compiled-in defaults
+// (threshold 10240 bytes, 200 head lines).
+//
+// Expected:
+//   - g is the pathguard; may be nil.
+//   - threshold is the byte threshold above which an unbounded read
+//     triggers the head-cap. Zero/negative → 10240.
+//   - headLines is the number of leading lines the head-cap returns.
+//     Zero/negative → 200.
+//
+// Returns: result of NewWithGuardAndLimits.
+// Side effects: None.
+func NewWithGuardAndLimits(g *pathguard.Guard, threshold, headLines int) *Tool {
+	if threshold <= 0 {
+		threshold = 10240
+	}
+	if headLines <= 0 {
+		headLines = 200
+	}
+	return &Tool{guard: g, oversizeThreshold: threshold, headLines: headLines}
 }
 
 // Name returns the tool identifier.
@@ -147,10 +173,44 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 		return tool.Result{Error: fmt.Errorf("read failed: %w", err)}, nil
 	}
 
+	// Head-cap: an unbounded read (offset<=1, limit<=0) of an oversized
+	// file returns only the leading lines plus a trailer naming the
+	// total line count, steering the model toward offset/limit re-reads
+	// instead of flooding the context with the whole file. Runs before
+	// the generic truncation envelope, which never sees the full body.
+	// Head-cap fires ONLY for tools constructed with explicit limits
+	// (NewWithGuardAndLimits). New()/NewWithGuard() keep their historic
+	// unbounded behaviour and fall through to the generic truncation
+	// envelope below, so a zero oversizeThreshold disables the cap.
+	if t.oversizeThreshold > 0 && offset <= 1 && limit <= 0 && len(data) > t.oversizeThreshold {
+		return tool.Result{Output: headCap(string(data), t.headLines)}, nil
+	}
+
 	output := sliceLines(string(data), offset, limit)
 	output = applyTruncation(ctx, output, "read")
 
 	return tool.Result{Output: output}, nil
+}
+
+// headCap returns the first headLines lines of text followed by a
+// trailer stating the total line count and instructing a ranged
+// re-read with offset/limit.
+//
+// Expected: parameters for headCap.
+// Returns: result of headCap.
+// Side effects: None.
+func headCap(text string, headLines int) string {
+	lines := strings.Split(text, "\n")
+	total := len(lines)
+	if total > 0 && lines[total-1] == "" {
+		total--
+	}
+	if headLines > len(lines) {
+		headLines = len(lines)
+	}
+	head := strings.Join(lines[:headLines], "\n")
+	return fmt.Sprintf("%s\n[truncated: showing first %d of %d lines; re-read with offset/limit for the rest]",
+		head, headLines, total)
 }
 
 // sliceLines returns a 1-indexed [offset, offset+limit) slice of text.
