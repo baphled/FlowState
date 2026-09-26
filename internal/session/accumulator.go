@@ -1090,6 +1090,27 @@ func flushContent(appender MessageAppender, s *streamAccumState) {
 	// tool_use finish is NOT trustworthy (zai/glm, which announce a tool
 	// then emit zero calls — sessions 8169ca2d, 32ab2e60) the per-message
 	// wire contract still holds and the genuine Bug-G detection is preserved.
+	// Truncation-before-tool-call guard (ctx-loss diagnosis, Sep 2026).
+	// The upstream "max_tokens" stop signal (Anthropic vocabulary;
+	// openaicompat maps finish_reason "length" to it; the raw "length"
+	// vocabulary is also accepted defensively since non-openaicompat
+	// providers may pass it through unmapped) means WE capped
+	// the output mid-stream — most likely before an announced tool call
+	// could be emitted. The 42 observed tool_use_no_calls sidecar
+	// failures were predominantly this shape: the provider never got
+	// the chance to emit the call, so blaming its wire contract hides
+	// the recoverable action (raise the output cap or continue the
+	// turn). Reclaim the turn as StopReasonStreamTruncated so the
+	// session manager's existing sentinel wiring surfaces the true
+	// cause. Ordering: placed BEFORE the ToolUseNoCalls guard below so
+	// truncation claims ownership; it cannot fire alongside
+	// FabricatedCompletion or AbandonedTool because those stamp a
+	// non-"max_tokens" StopReason first. The StreamTruncated detector
+	// further down stays exclusive via its `msg.StopReason == ""`
+	// precondition.
+	if msg.StopReason == "max_tokens" || msg.StopReason == "length" {
+		msg.StopReason = StopReasonStreamTruncated
+	}
 	if msg.StopReason == "tool_use" && !providerToolUseFinishIsTrustworthy(s.lastProviderID) {
 		msg.StopReason = StopReasonToolUseNoCalls
 	}

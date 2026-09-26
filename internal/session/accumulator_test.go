@@ -3131,3 +3131,67 @@ func (f *fakeAppender) lastUpdatedFor(chainID string) session.Message {
 	}
 	return session.Message{}
 }
+
+// Forty-two sidecars failed with failure_reason=tool_use_no_calls while
+// the runtime evidence (ctx-loss/diagnosis) showed the dominant cause
+// was max_tokens truncation mid-output before the announced tool call
+// could be emitted. A "max_tokens"/"length" upstream stop signal means
+// WE capped the output — the provider never got the chance to emit the
+// tool call — so stamping tool_use_no_calls blames the wrong party and
+// hides the recoverable action (raise the output cap or continue the
+// turn). The truncation guards below reclaim those turns as
+// StopReasonStreamTruncated, reusing the existing sentinel wiring in
+// the session manager's failure-flip path.
+var _ = Describe("truncation-aware stop-reason classification (Slice 2, Sep 2026)", func() {
+	var appender *fakeAppender
+
+	BeforeEach(func() {
+		appender = &fakeAppender{}
+	})
+
+	flushTurnWithStopReason := func(stopReason string) []session.Message {
+		rawCh := make(chan provider.StreamChunk, 3)
+		rawCh <- provider.StreamChunk{
+			Content:    "Now I'll generate the full plan document via the write tool:",
+			ProviderID: "zai",
+			ModelID:    "glm-5.2",
+		}
+		rawCh <- provider.StreamChunk{
+			EventType:  "stop_reason",
+			StopReason: stopReason,
+			ProviderID: "zai",
+			ModelID:    "glm-5.2",
+		}
+		rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai", ModelID: "glm-5.2"}
+		close(rawCh)
+		out := session.AccumulateStream(context.Background(), appender, "sess-t", "agent-t", rawCh)
+		drainChannel(out)
+		var assistantMsgs []session.Message
+		for _, m := range appender.messages {
+			if m.Role == "assistant" {
+				assistantMsgs = append(assistantMsgs, m)
+			}
+		}
+		return assistantMsgs
+	}
+
+	DescribeTable("max_tokens-class truncation is never classified as tool_use_no_calls",
+		func(stopReason string) {
+			assistantMsgs := flushTurnWithStopReason(stopReason)
+			Expect(assistantMsgs).To(HaveLen(1))
+			Expect(assistantMsgs[0].StopReason).To(Equal(session.StopReasonStreamTruncated),
+				"an upstream "+stopReason+" stop signal means the output was capped before the "+
+					"announced tool call could be emitted — the turn is a truncation, not a wire-contract violation")
+		},
+		Entry("anthropic vocabulary max_tokens", "max_tokens"),
+		Entry("openai vocabulary length", "length"),
+	)
+
+	It("a genuine tool_use finish with zero tool calls remains tool_use_no_calls", func() {
+		assistantMsgs := flushTurnWithStopReason("tool_use")
+		Expect(assistantMsgs).To(HaveLen(1))
+		Expect(assistantMsgs[0].StopReason).To(Equal(session.StopReasonToolUseNoCalls),
+			"a tool_use finish with zero tool_call blocks on an untrusted provider is still a genuine "+
+				"wire-contract violation — the truncation guard must not swallow Bug G detection")
+	})
+})
