@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -419,6 +421,180 @@ var _ = Describe("ZAI Provider", func() {
 				last = chunk
 			}
 			Expect(last.Error).To(HaveOccurred())
+		})
+	})
+
+	Describe("StreamTruncationResume", func() {
+		var server *httptest.Server
+
+		AfterEach(func() {
+			if server != nil {
+				server.Close()
+			}
+		})
+
+		// Backlog-5: zai/glm streams occasionally close with an empty
+		// finish_reason mid-generation (session accumulator stamps
+		// StopReasonStreamTruncated downstream). The provider must
+		// transparently resume by appending the accumulated assistant
+		// content to the messages and re-issuing the request, bounded
+		// to maxTruncationResumes attempts.
+		It("resumes a truncated stream by appending accumulated assistant content", func() {
+			var requests []map[string]any
+			var mu sync.Mutex
+
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				Expect(err).NotTo(HaveOccurred())
+				var req map[string]any
+				Expect(json.Unmarshal(body, &req)).To(Succeed())
+				mu.Lock()
+				requests = append(requests, req)
+				n := len(requests)
+				mu.Unlock()
+
+				w.Header().Set("Content-Type", "text/event-stream")
+				if n == 1 {
+					// Truncated: content flows but finish_reason never
+					// arrives before the stream closes.
+					fmt.Fprintf(w, "data: %s\n\n", `{"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}`)
+					fmt.Fprint(w, "data: [DONE]\n\n")
+					return
+				}
+				fmt.Fprintf(w, "data: %s\n\n", `{"choices":[{"delta":{"content":" world"},"finish_reason":null}]}`)
+				fmt.Fprintf(w, "data: %s\n\n", `{"choices":[{"delta":{},"finish_reason":"stop"}]}`)
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+
+			p, err := zai.NewWithOptions("test-api-key",
+				option.WithBaseURL(server.URL),
+				option.WithMaxRetries(0),
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			ch, err := p.Stream(context.Background(), providerPkg.ChatRequest{
+				Model:    "glm-5",
+				Messages: []providerPkg.Message{{Role: "user", Content: "hi"}},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var content string
+			var gotStopReason string
+			var done bool
+			for chunk := range ch {
+				if chunk.Error != nil {
+					Fail(fmt.Sprintf("unexpected stream error: %v", chunk.Error))
+				}
+				content += chunk.Content
+				if chunk.EventType == "stop_reason" {
+					gotStopReason = chunk.StopReason
+				}
+				done = done || chunk.Done
+			}
+
+			Expect(len(requests)).To(Equal(2), "truncated stream must be resumed exactly once")
+			// The resume request must append the accumulated assistant
+			// content as an assistant message after the original user
+			// turn (append-style continuation).
+			msgs, ok := requests[1]["messages"].([]any)
+			Expect(ok).To(BeTrue())
+			Expect(msgs).To(HaveLen(2), "resume request must carry user + accumulated assistant messages")
+			last, ok := msgs[len(msgs)-1].(map[string]any)
+			Expect(ok).To(BeTrue())
+			Expect(last["role"]).To(Equal("assistant"))
+			Expect(last["content"]).To(Equal("Hello"))
+
+			Expect(content).To(Equal("Hello world"))
+			Expect(gotStopReason).To(Equal("end_turn"))
+			Expect(done).To(BeTrue())
+		})
+
+		It("bounds resume attempts and falls through to truncated close", func() {
+			var count int32
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				atomic.AddInt32(&count, 1)
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprintf(w, "data: %s\n\n", `{"choices":[{"delta":{"content":"x"},"finish_reason":null}]}`)
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+
+			p, err := zai.NewWithOptions("test-api-key",
+				option.WithBaseURL(server.URL),
+				option.WithMaxRetries(0),
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			ch, err := p.Stream(context.Background(), providerPkg.ChatRequest{
+				Model:    "glm-5",
+				Messages: []providerPkg.Message{{Role: "user", Content: "hi"}},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var content string
+			var done, gotErr bool
+			for chunk := range ch {
+				gotErr = gotErr || chunk.Error != nil
+				content += chunk.Content
+				done = done || chunk.Done
+			}
+
+			// 1 original + max 2 resume attempts.
+			Expect(atomic.LoadInt32(&count)).To(Equal(int32(3)))
+			Expect(gotErr).To(BeFalse(), "bounded truncation must not surface an error; failover owns it downstream")
+			Expect(done).To(BeFalse(), "no finish_reason arrived, so no Done chunk")
+			Expect(content).To(Equal("xxx"))
+		})
+
+		It("does not resume when the stream finished normally", func() {
+			var count int32
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				atomic.AddInt32(&count, 1)
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprintf(w, "data: %s\n\n", `{"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}`)
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+
+			p, err := zai.NewWithOptions("test-api-key",
+				option.WithBaseURL(server.URL),
+				option.WithMaxRetries(0),
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			ch, err := p.Stream(context.Background(), providerPkg.ChatRequest{
+				Model:    "glm-5",
+				Messages: []providerPkg.Message{{Role: "user", Content: "hi"}},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			for range ch {
+			}
+			Expect(atomic.LoadInt32(&count)).To(Equal(int32(1)))
+		})
+
+		It("does not resume an empty truncated stream", func() {
+			var count int32
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				atomic.AddInt32(&count, 1)
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+
+			p, err := zai.NewWithOptions("test-api-key",
+				option.WithBaseURL(server.URL),
+				option.WithMaxRetries(0),
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			ch, err := p.Stream(context.Background(), providerPkg.ChatRequest{
+				Model:    "glm-5",
+				Messages: []providerPkg.Message{{Role: "user", Content: "hi"}},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			for range ch {
+			}
+			Expect(atomic.LoadInt32(&count)).To(Equal(int32(1)),
+				"an empty-content truncated stream has nothing to append; resume would loop uselessly")
 		})
 	})
 

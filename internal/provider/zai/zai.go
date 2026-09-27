@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/openaicompat"
@@ -215,7 +216,53 @@ func (p *Provider) Name() string {
 	return providerName
 }
 
+// maxTruncationResumes bounds the number of append-style continuation
+// requests the provider issues after a truncated stream before giving
+// up and letting the session accumulator's StopReasonStreamTruncated
+// failover own the turn (backlog-5).
+const maxTruncationResumes = 2
+
+// zaiParams builds the openai-compat chat params for a Z.AI request.
+// Z.AI GLM-5.x family routes ALL response text through the
+// reasoning_content channel while leaving content="" — this causes
+// content-starvation when the model produces a structured tool call:
+// the visible text never arrives as delta.Content and the stream
+// appears to stall. Sending thinking: { type: "disabled" } tells the
+// Z.AI API to use the standard content field instead, so visible
+// text and tool_calls deltas flow through the normal OpenAI-compat
+// path. The reasoning→content routing at openaicompat.RunStream is
+// retained as a fallback for models that ignore this parameter.
+//
+// Expected:
+//   - req is the caller's chat request (model, messages, tools).
+//
+// Returns:
+//   - OpenAI-compat chat completion params with the thinking:disabled
+//     extra field applied.
+//
+// Side effects:
+//   - None.
+func zaiParams(req provider.ChatRequest) openaiAPI.ChatCompletionNewParams {
+	params := openaicompat.BuildParams(req)
+	params.SetExtraFields(map[string]any{
+		"thinking": map[string]any{"type": "disabled"},
+	})
+	return params
+}
+
 // Stream sends a streaming chat request to the Z.AI API.
+//
+// Truncation resume (backlog-5): zai/glm streams occasionally close
+// cleanly mid-generation with an empty finish_reason — the session
+// accumulator stamps StopReasonStreamTruncated and the turn is lost.
+// Stream wraps openaicompat.RunStreamWithObserver with a bounded
+// append-style continuation: content deltas are accumulated, and when
+// the upstream closes with no finish_reason, no error, and non-empty
+// accumulated content, the request is re-issued with the assistant
+// text-so-far appended to the messages so the model continues where
+// it left off. At most maxTruncationResumes attempts are made; after
+// that the channel simply closes with no Done chunk and the existing
+// StopReasonStreamTruncated failover path applies.
 //
 // Expected:
 //   - ctx is a valid context for the request.
@@ -226,7 +273,8 @@ func (p *Provider) Name() string {
 //   - An error if the request cannot be created.
 //
 // Side effects:
-//   - Starts a goroutine and performs network I/O against the Z.AI API.
+//   - Starts a goroutine and performs network I/O against the Z.AI API
+//     (up to 1 + maxTruncationResumes requests on truncated streams).
 func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	// Attachment-size pre-flight gate (plan §6 task-13 — Zai inherits
 	// the openaicompat image-threading path, so it rides the same
@@ -236,23 +284,53 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 	if err := openaicompat.GateAttachmentRequestSize(req); err != nil {
 		return nil, err
 	}
-	params := openaicompat.BuildParams(req)
-	// Z.AI GLM-5.x family routes ALL response text through the
-	// reasoning_content channel while leaving content="" — this causes
-	// content-starvation when the model produces a structured tool call:
-	// the visible text never arrives as delta.Content and the stream
-	// appears to stall. Sending thinking: { type: "disabled" } tells the
-	// Z.AI API to use the standard content field instead, so visible
-	// text and tool_calls deltas flow through the normal OpenAI-compat
-	// path. The reasoning→content routing at openaicompat.RunStream is
-	// retained as a fallback for models that ignore this parameter.
-	params.SetExtraFields(map[string]any{
-		"thinking": map[string]any{"type": "disabled"},
-	})
-	// PR3 success-path lift — observer is nil-safe; classifyStreamErrors
-	// still wraps the channel for Z.AI's error-code-1001/1112 refinement.
-	rawCh := openaicompat.RunStreamWithObserver(ctx, p.client, params, p.Name(), p.responseObserver)
-	return classifyStreamErrors(ctx, rawCh), nil
+	out := make(chan provider.StreamChunk, 16)
+	go func() {
+		defer close(out)
+		// messages is mutated between attempts to append the
+		// accumulated assistant content (append-style resume).
+		messages := req.Messages
+		var assistant strings.Builder
+		for attempt := 0; ; attempt++ {
+			resumed := req
+			resumed.Messages = messages
+			// PR3 success-path lift — observer is nil-safe;
+			// classifyStreamErrors still wraps the channel for
+			// Z.AI's error-code-1001/1112 refinement.
+			rawCh := openaicompat.RunStreamWithObserver(ctx, p.client, zaiParams(resumed), p.Name(), p.responseObserver)
+			sawFinish := false
+			for chunk := range classifyStreamErrors(ctx, rawCh) {
+				if chunk.Error != nil {
+					// Terminal error — forward and abandon resume;
+					// error paths own the turn from here.
+					shared.SendChunk(ctx, out, chunk)
+					return
+				}
+				if chunk.Content != "" {
+					assistant.WriteString(chunk.Content)
+				}
+				// RunStreamWithObserver only emits Done after an
+				// in-stream finish_reason, so Done ⇒ finished turn.
+				if chunk.Done {
+					sawFinish = true
+				}
+				shared.SendChunk(ctx, out, chunk)
+			}
+			// Resume only when the stream closed cleanly (no error
+			// above), never reached a finish_reason, and produced
+			// content worth continuing from — and only within the
+			// attempt budget. Otherwise fall through: the truncated
+			// close (no Done chunk) reaches the session accumulator,
+			// which stamps StopReasonStreamTruncated and applies the
+			// existing failover.
+			if sawFinish || assistant.Len() == 0 || attempt >= maxTruncationResumes {
+				return
+			}
+			messages = append(append([]provider.Message{}, messages...),
+				provider.Message{Role: "assistant", Content: assistant.String()})
+		}
+	}()
+	return out, nil
 }
 
 // Chat sends a non-streaming chat request to the Z.AI API.
