@@ -59,6 +59,27 @@ var _ = Describe("Session persistence", func() {
 				Expect(string(data)).To(ContainSubstring(`"status":"completed"`))
 			})
 
+			It("writes a durationMs field derived from session wall-clock", func() {
+				sess := &session.Session{
+					ID:        "duration-sess",
+					AgentID:   "agent-x",
+					Status:    "active",
+					CreatedAt: time.Now().Add(-2 * time.Second),
+				}
+
+				Expect(session.PersistSession(sessionsDir, sess)).To(Succeed())
+
+				data, err := os.ReadFile(filepath.Join(sessionsDir, "duration-sess.meta.json"))
+				Expect(err).NotTo(HaveOccurred())
+				var decoded map[string]any
+				Expect(json.Unmarshal(data, &decoded)).To(Succeed())
+				duration, ok := decoded["durationMs"]
+				Expect(ok).To(BeTrue(),
+					"the sidecar must carry durationMs so session analytics can show wall-clock length")
+				Expect(duration.(float64)).To(BeNumerically(">=", 1000),
+					"a session created two seconds ago must persist a duration of at least one second")
+			})
+
 			It("creates the directory when it does not exist", func() {
 				nestedDir := filepath.Join(sessionsDir, "nested", "path")
 				sess := &session.Session{ID: "new-sess", AgentID: "agent-x", Status: "active"}

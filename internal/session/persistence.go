@@ -60,6 +60,12 @@ type Metadata struct {
 	// missing key on load reads as "no terminal failure recorded". See
 	// Session.FailureReason for the write-once contract.
 	FailureReason string `json:"failure_reason,omitempty"`
+	// DurationMs records the session's wall-clock age — from CreatedAt to
+	// the moment of this persist — in milliseconds. Recomputed on every
+	// persist so live sessions track elapsed time and the final persist
+	// after a terminal flip captures the full session length. Follows the
+	// camelCase durationMs naming established by Message.DurationMs.
+	DurationMs int64 `json:"durationMs,omitempty"`
 	// ModelPinned mirrors Session.ModelPinned and surfaces in the
 	// .meta.json sidecar as "model_pinned". Omitted when false so legacy
 	// sidecars stay byte-identical; a missing key on load reads as unpinned.
@@ -102,6 +108,7 @@ func PersistSession(sessionsDir string, sess *Session) error {
 		ChainID:           sess.ChainID,
 		PermissionMode:    sess.PermissionMode,
 		FailureReason:     sess.FailureReason,
+		DurationMs:        time.Since(sess.CreatedAt).Milliseconds(),
 		ModelPinned:       sess.ModelPinned,
 		Messages:          sess.Messages,
 	}
