@@ -6,6 +6,8 @@ import (
 	"context"
 	"strings"
 	"time"
+
+	"github.com/baphled/flowstate/internal/vaultindex"
 )
 
 // ChatRequest represents a chat completion request for BDD testing.
@@ -101,7 +103,7 @@ func NewMockProvider() *MockProvider {
 	return &MockProvider{
 		name:       "mock",
 		responses:  []string{"Hello! How can I help you today?"},
-		embeddings: make([]float64, 384),
+		embeddings: make([]float64, vaultindex.DefaultEmbeddingDim),
 		models: []Model{
 			{ID: "mock-model", Provider: "mock", ContextLength: 4096},
 		},
