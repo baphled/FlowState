@@ -39,12 +39,6 @@ var _ = Describe("compactOldToolResultsForBudget", func() {
 		Expect(out).To(Equal(msgs))
 	})
 
-	It("returns the input unchanged when the counter or limit is unset", func() {
-		msgs := fatMsgs(3)
-		Expect(compactOldToolResultsForBudget(msgs, 5, 1, nil, 10_000)).To(Equal(msgs))
-		Expect(compactOldToolResultsForBudget(msgs, 5, 1, &stubTokenCounter{}, 0)).To(Equal(msgs))
-	})
-
 	It("is idempotent under the token floor", func() {
 		msgs := fatMsgs(3)
 		once := compactOldToolResultsForBudget(msgs, 5, 1, &stubTokenCounter{}, 3_000)

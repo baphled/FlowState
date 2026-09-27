@@ -3872,7 +3872,7 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 			e.tokenCounter,
 			e.ModelContextLimit())
 
-		if trimmed, didTrim := TrimForDispatchBudget(ctx, messages, e.tokenCounter, tokenBudget, 0); didTrim {
+		if trimmed, didTrim := TrimForDispatchBudget(ctx, messages, e.tokenCounter, tokenBudget, e.modelOutputLimit()); didTrim {
 			messages = trimmed
 		}
 
@@ -4867,6 +4867,40 @@ func (e *Engine) ModelContextLimit() int {
 		return e.tokenCounter.ModelLimit(e.LastModel())
 	}
 	return e.resolvedSystemPromptBudget()
+}
+
+// modelOutputLimit returns the configured per-response output cap for
+// the provider/model the next stream will target. Resolution follows
+// the same chain as ModelContextLimit: an explicit user override wins,
+// then the failover winner (LastProvider/LastModel), then the first
+// configured preference. Returns zero when no pair advertises a
+// positive OutputLimit; callers treat zero as "unset" and apply their
+// own fallback.
+//
+// Returns:
+//   - The output limit of the best provider/model pair, or 0 when unset.
+//
+// Side effects:
+//   - None.
+func (e *Engine) modelOutputLimit() int {
+	if e.failoverManager == nil {
+		return 0
+	}
+	if pref, ok := e.failoverManager.Override(); ok {
+		if limit := e.failoverManager.ResolveOutputLimit(pref.Provider, pref.Model); limit > 0 {
+			return limit
+		}
+	}
+	if p, m := e.failoverManager.LastProvider(), e.failoverManager.LastModel(); p != "" && m != "" {
+		if limit := e.failoverManager.ResolveOutputLimit(p, m); limit > 0 {
+			return limit
+		}
+	}
+	prefs := e.failoverManager.Preferences()
+	if len(prefs) > 0 {
+		return e.failoverManager.ResolveOutputLimit(prefs[0].Provider, prefs[0].Model)
+	}
+	return 0
 }
 
 // ResolveContextLength returns the context window limit for the given provider/model.

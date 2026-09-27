@@ -271,6 +271,32 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 		}
 		return nil, err
 	}
+	hbCtx, hbCancel := context.WithCancel(streamCtx)
+	if e.heartbeatInterval > 0 && e.bus != nil {
+		go e.runStreamingHeartbeat(hbCtx, sessionID, streamManifest.ID)
+	}
+	loopCtx := streamCtx
+	firstChunk, hasFirst := <-providerChunks
+	overflowed := false
+	if hasFirst && firstChunk.Error != nil {
+		var pErr *provider.Error
+		if errors.As(firstChunk.Error, &pErr) && pErr.ErrorType == provider.ErrorTypeContextWindowExceeded {
+			overflowed = true
+		}
+	}
+	if overflowed && (e.tokenCounter == nil || e.ModelContextLimit() <= 0 || e.checkContextWindowOverflow(&req) == nil) {
+		req.Messages = compactOldToolResultsForBudget(req.Messages, e.toolMessageCompactionThreshold, e.toolMessageCompactionKeepRecent, e.tokenCounter, e.ModelContextLimit())
+		loopCtx = withPendingNaiveOverflow(withPendingOverflowRecovery(streamCtx))
+		retryChunks, retryErr := e.streamFromProvider(session.WithSkipContextWindowOverflowCheck(initialCtx), &req)
+		e.publishProviderRequestEventCtx(streamCtx, sessionID, req)
+		if retryErr == nil {
+			providerChunks = retryChunks
+		} else {
+			providerChunks = prependStreamChunk(firstChunk, nil)
+		}
+	} else if hasFirst {
+		providerChunks = prependStreamChunk(firstChunk, providerChunks)
+	}
 
 	outChan := make(chan provider.StreamChunk, streamBufferSize)
 
@@ -282,11 +308,6 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 	// cancels when the parent does; defer hbCancel in the chunk-pump
 	// goroutine ensures we also stop emitting when the stream completes
 	// successfully (streamCtx may outlive the turn).
-	hbCtx, hbCancel := context.WithCancel(streamCtx)
-	if e.heartbeatInterval > 0 && e.bus != nil {
-		go e.runStreamingHeartbeat(hbCtx, sessionID, streamManifest.ID)
-	}
-
 	go func() {
 		defer close(outChan)
 		defer hbCancel()
@@ -309,7 +330,7 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 		if hasQuota {
 			e.tryEmitProviderQuotaInline(sessionID, quotaChunk, outChan)
 		}
-		e.streamWithToolLoop(streamCtx, sessionID, messages, providerChunks, outChan, postTurnEmitter)
+		e.streamWithToolLoop(loopCtx, sessionID, messages, providerChunks, outChan, postTurnEmitter)
 		// Post-turn provider_quota emit — fires once after the
 		// stream completes (terminal Done forwarded inside
 		// streamWithToolLoop). Mirrors the context_usage post-
@@ -724,6 +745,56 @@ func runKnowledgeExtraction(parent context.Context, extractor *recall.KnowledgeE
 //     and DOES NOT call the upstream provider. The synthetic-channel
 //     path is what surfaces the saturation as a stream_critical SSE
 //     event the Vue chat banner can render.
+//
+// If the FIRST dispatched stream's opening chunk carries a
+// context-window-overflow error, the request messages are compacted via
+// compactOldToolResultsForBudget and the stream is re-dispatched exactly
+// once with the skip-context-window-check context. A second consecutive
+// overflow on the retry stream is terminal: no third dispatch occurs, and
+// a terminal Done chunk wrapping ErrCompactionInsufficient is emitted
+// instead of entering the tool loop.
+
+// prependStreamChunk returns a channel that first yields the given chunk and
+// then drains rest. A nil rest yields only the chunk, allowing a peeked chunk
+// to be re-buffered non-destructively onto the front of a stream.
+//
+// Expected:
+//   - chunk is the peeked first StreamChunk to replay; rest is the remaining
+//     provider stream (may be nil).
+//
+// Returns:
+//   - A channel yielding chunk followed by the contents of rest.
+//
+// Side effects:
+//   - Spawns a goroutine that forwards chunks from rest to the returned
+//     channel until rest is closed.
+func prependStreamChunk(chunk provider.StreamChunk, rest <-chan provider.StreamChunk) <-chan provider.StreamChunk {
+	out := make(chan provider.StreamChunk, 1)
+	go func() {
+		defer close(out)
+		out <- chunk
+		if rest == nil {
+			return
+		}
+		for c := range rest {
+			out <- c
+		}
+	}()
+	return out
+}
+
+// streamFromProvider dispatches req to the resolved provider and returns
+// its chunk stream.
+//
+// Returns:
+//   - A channel of StreamChunk values from the provider.
+//   - An error if the stream fails to initialise.
+//
+// Expected:
+//   - req is a pointer to a chat request with messages and tools.
+//
+// Side effects:
+//   - Executes hook chain if configured. Hooks may mutate req.
 func (e *Engine) streamFromProvider(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	if ctx.Err() != nil {
 		return nil, fmt.Errorf("stream from provider: %w", ctx.Err())

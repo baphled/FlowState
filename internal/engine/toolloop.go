@@ -150,6 +150,78 @@ type turnWatchdogKeyType struct{}
 
 var turnWatchdogKey turnWatchdogKeyType
 
+// pendingOverflowRecoveryKey is the context key flagging a pending
+// context-window-overflow recovery retry.
+type pendingOverflowRecoveryKey struct{}
+
+// withPendingOverflowRecovery returns a child context flagged as
+// performing a context-window-overflow recovery retry.
+//
+// Expected:
+//   - ctx is a valid context to extend.
+//
+// Returns:
+//   - A child context carrying the pending-overflow-recovery flag.
+//
+// Side effects:
+//   - Stores the flag in the returned context for later retrieval.
+func withPendingOverflowRecovery(ctx context.Context) context.Context {
+	return context.WithValue(ctx, pendingOverflowRecoveryKey{}, true)
+}
+
+// pendingOverflowRecoveryFromContext reports whether the context was
+// flagged by withPendingOverflowRecovery.
+//
+// Expected:
+//   - ctx may carry the pending-overflow-recovery flag.
+//
+// Returns:
+//   - True when the flag is present, false otherwise.
+//
+// Side effects:
+//   - None.
+func pendingOverflowRecoveryFromContext(ctx context.Context) bool {
+	v, _ := ctx.Value(pendingOverflowRecoveryKey{}).(bool)
+	return v
+}
+
+// pendingNaiveOverflowKey is the context key for the naive-truncation
+// overflow recovery taint.
+type pendingNaiveOverflowKey struct{}
+
+// withPendingNaiveOverflow returns a child context flagged as tainted by
+// a naive-truncation overflow recovery retry. Per the BDD contract, this
+// taint must survive a clean retry turn; continuation resumes only after
+// proven compaction.
+//
+// Expected:
+//   - ctx is a valid context to extend.
+//
+// Returns:
+//   - A child context carrying the naive-overflow taint flag.
+//
+// Side effects:
+//   - Stores the flag in the returned context for later retrieval.
+func withPendingNaiveOverflow(ctx context.Context) context.Context {
+	return context.WithValue(ctx, pendingNaiveOverflowKey{}, true)
+}
+
+// pendingNaiveOverflowFromContext reports whether the context was
+// flagged by withPendingNaiveOverflow.
+//
+// Expected:
+//   - ctx may carry the naive-overflow taint flag.
+//
+// Returns:
+//   - True when the flag is present, false otherwise.
+//
+// Side effects:
+//   - None.
+func pendingNaiveOverflowFromContext(ctx context.Context) bool {
+	v, _ := ctx.Value(pendingNaiveOverflowKey{}).(bool)
+	return v
+}
+
 // withTurnWatchdog returns a child context carrying the given turn
 // watchdog.
 //
@@ -670,7 +742,8 @@ func (e *Engine) streamWithToolLoop(
 	const maxToolUseNoCallsRetries = 3
 	var toolUseNoCallsAttempts int
 	sawContextOverflow := false
-	pendingOverflowRecovery := false
+	pendingOverflowRecovery := pendingOverflowRecoveryFromContext(ctx)
+	naiveOverflow := pendingNaiveOverflowFromContext(ctx)
 	pendingSkipOverflow := false
 	overflowRetries := 0
 	const maxDeliveryRetries = 3
@@ -712,7 +785,7 @@ func (e *Engine) streamWithToolLoop(
 		maxTodoContinuations int,
 		logReason string,
 	) (bool, provider.Message) {
-		if e.todoStore == nil || sawContextOverflow {
+		if e.todoStore == nil || sawContextOverflow || naiveOverflow {
 			return false, provider.Message{}
 		}
 
@@ -1081,7 +1154,7 @@ func (e *Engine) streamWithToolLoop(
 		responseContent = result.responseContent
 		thinkingContent = result.thinkingContent
 		if result.done {
-			if pendingOverflowRecovery && !result.contextOverflow {
+			if pendingOverflowRecovery && !result.contextOverflow && !naiveOverflow {
 				sawContextOverflow = false
 				pendingOverflowRecovery = false
 			}
@@ -1144,6 +1217,7 @@ func (e *Engine) streamWithToolLoop(
 						"overflow_retries", overflowRetries,
 					)
 					recoveryChunk := e.terminalRecoveryChunk(watchdog, ctx, fmt.Errorf("%w", ErrCompactionInsufficient))
+					recoveryChunk.Content = ErrCompactionInsufficient.Error()
 					if e.maxToolLoopDuration > 0 && (time.Since(loopStart)-toolExecDuration >= e.maxToolLoopDuration || nonDelegatedToolExecDuration >= e.maxToolLoopDuration) {
 						recoveryChunk.StopReason = session.StopReasonToolLoopExceeded
 					}
@@ -1255,6 +1329,12 @@ func (e *Engine) streamWithToolLoop(
 						var retryErr error
 						providerChunks, retryErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
 						if retryErr == nil {
+							// Naive truncation does not guarantee the
+							// overflow is recovered: keep the taint set
+							// so todo-continuation stays suppressed and
+							// a second overflow terminates the loop.
+							naiveOverflow = true
+							pendingOverflowRecovery = true
 							attempt++
 							e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 							continue
@@ -1294,7 +1374,7 @@ func (e *Engine) streamWithToolLoop(
 				e.completeResponse(ctx, sessionID, responseContent, thinkingContent)
 				return
 			}
-			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore {
+			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore && !sawContextOverflow && !naiveOverflow {
 				deliveryStopped := false
 				switch maybeRetryDelivery(func() {
 					deliveryStopped = true
@@ -1419,7 +1499,7 @@ func (e *Engine) streamWithToolLoop(
 		}
 
 		if len(result.toolCalls) == 0 {
-			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore {
+			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore && !sawContextOverflow && !naiveOverflow {
 				deliveryStopped := false
 				switch maybeRetryDelivery(func() {
 					deliveryStopped = true
@@ -1884,7 +1964,7 @@ func (e *Engine) streamWithToolLoop(
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
 			}
-			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore {
+			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore && !sawContextOverflow && !naiveOverflow {
 				deliveryStopped := false
 				switch maybeRetryDelivery(func() {
 					deliveryStopped = true

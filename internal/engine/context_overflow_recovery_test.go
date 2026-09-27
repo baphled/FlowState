@@ -620,6 +620,74 @@ func buildP3RefusalEngine(script []overflowProviderTurn) (*engine.Engine, contex
 	return eng, ctx, summariser
 }
 
+var _ = Describe("Engine initial-dispatch compact-then-retry-once", func() {
+	It("compacts and retries exactly once when the first dispatch overflows, delivering the retry content", func() {
+		prov := &overflowScriptedProvider{
+			name: "initial-overflow-retry-prov",
+			script: []overflowProviderTurn{
+				{contextOverflow: true},
+				{content: "Recovered after initial-dispatch compaction."},
+			},
+		}
+
+		eng := engine.New(engine.Config{
+			ChatProvider: prov,
+			Manifest: agent.Manifest{
+				ID:   "initial-overflow-agent",
+				Name: "Initial Overflow Agent",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"echo", "todowrite"},
+				},
+			},
+			Tools: []tool.Tool{},
+		})
+
+		ctx := context.WithValue(context.Background(), session.IDKey{}, "test-session-initial-overflow")
+		chunks, err := eng.Stream(ctx, "test-session-initial-overflow", "Go")
+		Expect(err).NotTo(HaveOccurred())
+
+		received, closed := drain(chunks)
+		Expect(closed).To(BeTrue(), "channel must close after the compaction retry")
+		Expect(hasContentContaining(received, "Recovered after initial-dispatch compaction.")).To(BeTrue(),
+			"the retry stream's content must be delivered to the caller")
+		Expect(prov.callCount()).To(Equal(2),
+			"engine must compact and re-dispatch exactly once after the initial overflow")
+	})
+
+	It("treats a second consecutive overflow as terminal after the single retry", func() {
+		prov := &overflowScriptedProvider{
+			name: "initial-overflow-terminal-prov",
+			script: []overflowProviderTurn{
+				{contextOverflow: true},
+				{contextOverflow: true},
+			},
+		}
+
+		eng := engine.New(engine.Config{
+			ChatProvider: prov,
+			Manifest: agent.Manifest{
+				ID:   "initial-overflow-terminal-agent",
+				Name: "Initial Overflow Terminal Agent",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"echo", "todowrite"},
+				},
+			},
+			Tools: []tool.Tool{},
+		})
+
+		ctx := context.WithValue(context.Background(), session.IDKey{}, "test-session-initial-overflow-terminal")
+		chunks, err := eng.Stream(ctx, "test-session-initial-overflow-terminal", "Go")
+		Expect(err).NotTo(HaveOccurred())
+
+		received, closed := drain(chunks)
+		Expect(closed).To(BeTrue(), "channel must close after the terminal overflow")
+		Expect(prov.callCount()).To(Equal(2),
+			"no third provider call may happen: the second overflow is terminal")
+		Expect(hasContentContaining(received, engine.ErrCompactionInsufficient.Error())).To(BeTrue(),
+			"the terminal chunk must surface the ErrCompactionInsufficient cause")
+	})
+})
+
 var _ = Describe("Engine compaction on proactive overflow refusal", func() {
 	It("compacts and continues the turn when the proactive gate refuses the first send", func() {
 		// The proactive gate refusal is engine-side (synthetic

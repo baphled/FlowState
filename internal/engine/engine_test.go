@@ -3056,6 +3056,64 @@ var _ = Describe("Engine", func() {
 		})
 	})
 
+	Describe("modelOutputLimit", func() {
+		It("returns the first preference's OutputLimit when set", func() {
+			registry := provider.NewRegistry()
+			testProvider := &mockProvider{
+				name: "anthropic",
+				streamChunks: []provider.StreamChunk{
+					{Content: "response", Done: true},
+				},
+				models: []provider.Model{
+					{ID: "claude-sonnet-4-6", Provider: "anthropic", ContextLength: 200000, OutputLimit: 16384},
+				},
+			}
+			registry.Register(testProvider)
+
+			health := failover.NewHealthManager()
+			manager := failover.NewManager(registry, health, 5*time.Minute)
+			manager.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+			})
+
+			eng := engine.New(engine.Config{
+				Registry:        registry,
+				FailoverManager: manager,
+				Manifest:        manifest,
+			})
+
+			Expect(eng.ResolveOutputLimit("anthropic", "claude-sonnet-4-6")).To(Equal(16384))
+		})
+
+		It("returns zero when no model advertises an OutputLimit", func() {
+			registry := provider.NewRegistry()
+			testProvider := &mockProvider{
+				name: "ollama",
+				streamChunks: []provider.StreamChunk{
+					{Content: "response", Done: true},
+				},
+				models: []provider.Model{
+					{ID: "llama3.2", Provider: "ollama", ContextLength: 4096},
+				},
+			}
+			registry.Register(testProvider)
+
+			health := failover.NewHealthManager()
+			manager := failover.NewManager(registry, health, 5*time.Minute)
+			manager.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "ollama", Model: "llama3.2"},
+			})
+
+			eng := engine.New(engine.Config{
+				Registry:        registry,
+				FailoverManager: manager,
+				Manifest:        manifest,
+			})
+
+			Expect(eng.ResolveOutputLimit("ollama", "llama3.2")).To(Equal(0))
+		})
+	})
+
 	Describe("HasTool", func() {
 		It("returns false when no tools are configured", func() {
 			eng := engine.New(engine.Config{
