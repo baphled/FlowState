@@ -3866,9 +3866,11 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 		messages = e.maybeRehydrate(sessionID, messages)
 		messages = e.applyFactRecall(ctx, sessionID, userMessage, messages)
 		messages = e.applyMicroCompaction(ctx, sessionID, messages)
-		messages = compactOldToolResults(messages,
+		messages = compactOldToolResultsForBudget(messages,
 			e.toolMessageCompactionThreshold,
-			e.toolMessageCompactionKeepRecent)
+			e.toolMessageCompactionKeepRecent,
+			e.tokenCounter,
+			e.ModelContextLimit())
 
 		if trimmed, didTrim := TrimForDispatchBudget(ctx, messages, e.tokenCounter, tokenBudget, 0); didTrim {
 			messages = trimmed
@@ -3976,9 +3978,11 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 	// persisted Store is untouched: only the provider request gets
 	// the rewritten view.
 	result.Messages = e.applyMicroCompaction(ctx, sessionID, result.Messages)
-	result.Messages = compactOldToolResults(result.Messages,
+	result.Messages = compactOldToolResultsForBudget(result.Messages,
 		e.toolMessageCompactionThreshold,
-		e.toolMessageCompactionKeepRecent)
+		e.toolMessageCompactionKeepRecent,
+		e.tokenCounter,
+		e.ModelContextLimit())
 
 	result.Messages = e.appendTodoContext(result.Messages, sessionID)
 
