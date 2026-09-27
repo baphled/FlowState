@@ -76,7 +76,7 @@ install-coverage-tools: ## Install go-test-coverage tool
 
 coverage-check: ## Check test coverage against thresholds (excluding BDD features)
 	@echo "Running coverage check..."
-	@$(GOTEST) $(shell go list ./... | grep -v '/features/') -coverprofile=./coverage.out -covermode=atomic -coverpkg=./... 2>/dev/null
+	@$(GOTEST) $(shell go list ./... | grep -v '/features/' | grep -v '/tools/smoke/') -coverprofile=./coverage.out -covermode=atomic -coverpkg=./... 2>/dev/null
 	@$(GOBIN)/go-test-coverage --config=./.testcoverage.yml
 
 #

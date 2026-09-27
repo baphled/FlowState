@@ -192,6 +192,7 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 	start := time.Now()
 	priorSummary := e.getPriorCompactionSummary(sessionID)
 	var summary ctxstore.CompactionSummary
+
 	var err error
 	if priorSummary != nil {
 		slog.Debug("engine auto-compaction: using anchored iterative extend",

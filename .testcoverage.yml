@@ -65,6 +65,16 @@ override:
   - threshold: 0
     path: ^github\.com/baphled/flowstate/cmd/flowstate$
 
+  # New tools without tests (bootstrap thresholds)
+  - threshold: 0
+    path: ^github\.com/baphled/flowstate/tools/smoke/auto_persist$
+  - threshold: 0
+    path: ^github\.com/baphled/flowstate/tools/smoke/ext_gate_subprocess$
+  - threshold: 0
+    path: ^github\.com/baphled/flowstate/tools/smoke/rlm_verify$
+  - threshold: 0
+    path: ^github\.com/baphled/flowstate/tools/smoke/swarm_validate$
+
   # Vendored UIKit packages (from KaRiya, no tests required)
   - threshold: 0
     path: ^github\.com/baphled/flowstate/internal/tui/uikit/

@@ -102,10 +102,10 @@ func TestBudgetGatePreservesFinalUserUnderTightBudget(t *testing.T) {
 
 func TestBudgetGateNilCounterOrEmpty(t *testing.T) {
 	msgs := []provider.Message{msg("user", "hi")}
-	if _, trimmed := TrimForDispatchBudget(nil, msgs, nil, 100, 0); trimmed {
+	if _, trimmed := TrimForDispatchBudget(context.TODO(), msgs, nil, 100, 0); trimmed {
 		t.Fatalf("nil counter disables gate")
 	}
-	if _, trimmed := TrimForDispatchBudget(nil, nil, stubCounter{}, 100, 0); trimmed {
+	if _, trimmed := TrimForDispatchBudget(context.TODO(), nil, stubCounter{}, 100, 0); trimmed {
 		t.Fatalf("empty window is never trimmed")
 	}
 }
