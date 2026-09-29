@@ -75,24 +75,12 @@ orchestrator_meta:
   triggers:
     - domain: Explore
       trigger: Find existing codebase structure, patterns and styles
-# Permissive policy so the evidence-led failover chain below can cascade
-# across providers without being rejected.
-model_policy: "permissive"
-# Evidence-led multi-provider failover chain (May 2026 model-selection
-# probe, commit 592c8c20). anthropic FIRST — best instruction following
-# when reachable, and auto-recovers the moment the provider is back up.
-# openai/gpt-4o SECOND — proven reachable + reliable (0/3 synthesis-hangs)
-# when anthropic was unreachable tonight. zai/glm-4.6 TERMINAL — also
-# proven reliable (0/3 hangs) and always reachable, so the chain never
-# cascades down to ollama. Supersedes the stale 2-entry chain whose head
-# `claude-sonnet-4-20250514` is no longer in the catalogue.
-preferred_models:
-  - provider: anthropic
-    model: claude-sonnet-4-6
-  - provider: openai
-    model: gpt-4o
-  - provider: zai
-    model: glm-4.6
+# Provider order comes from config (providers.default) since the April 2026
+# ModelPreferences/model_preferences removal. The former evidence-led
+# failover chain here (anthropic/claude-sonnet-4-6 → openai/gpt-4o →
+# zai/glm-4.6) is removed: stale entries caused silent failback and
+# repeated _engine_fallback/<id>/delivery_failure entries in the
+# coordination store.
 ---
 
 # Role: Codebase Explorer
