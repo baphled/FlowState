@@ -2,7 +2,10 @@ package engine_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
+	"unicode/utf8"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -336,6 +339,15 @@ var _ = Describe("DeliveryToolGate", func() {
 			Expect(value).To(ContainSubstring(`"provider":"test-delivery-provider"`))
 			Expect(value).To(ContainSubstring(`"last_error":"all providers failed:`))
 			Expect(value).To(ContainSubstring(`"timestamp":"`))
+			var envelope map[string]interface{}
+			Expect(json.Unmarshal([]byte(value), &envelope)).To(Succeed())
+			detail, ok := envelope["failure_detail"].(map[string]interface{})
+			Expect(ok).To(BeTrue())
+			Expect(detail["timestamp"]).To(Equal(envelope["timestamp"]))
+			truncated := engine.TruncateFailureTextForTest(strings.Repeat("誤", 200))
+			Expect(len(truncated)).To(BeNumerically("<=", 256))
+			Expect(utf8.ValidString(truncated)).To(BeTrue())
+			Expect(truncated).NotTo(ContainSubstring("\uFFFD"))
 		})
 	})
 

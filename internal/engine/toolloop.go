@@ -19,6 +19,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
@@ -2237,12 +2238,11 @@ type deliveryFailureEnvelope struct {
 // failureSummaryDetail captures structured diagnostic context for a delivery
 // failure, complementing the free-form failure_summary field.
 type failureSummaryDetail struct {
-	Step       string `json:"step,omitempty"`
-	Provider   string `json:"provider,omitempty"`
-	Model      string `json:"model,omitempty"`
-	StopReason string `json:"stop_reason,omitempty"`
-	LastError  string `json:"last_error,omitempty"`
-	Timestamp  string `json:"timestamp,omitempty"`
+	Step      string `json:"step,omitempty"`
+	Provider  string `json:"provider,omitempty"`
+	Model     string `json:"model,omitempty"`
+	LastError string `json:"last_error,omitempty"`
+	Timestamp string `json:"timestamp,omitempty"`
 }
 
 // truncateFailureText clips a diagnostic string to a bounded length so the
@@ -2256,7 +2256,11 @@ type failureSummaryDetail struct {
 // Side effects: None.
 func truncateFailureText(s string) string {
 	if len(s) > 256 {
-		return s[:256]
+		cut := 256
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		return s[:cut]
 	}
 	return s
 }
@@ -2291,6 +2295,7 @@ func (e *Engine) persistDeliveryFailureFallback(ctx context.Context, sessionID s
 		return
 	}
 	reservedKey := scope + "/_engine_fallback/" + agentID + "/delivery_failure"
+	now := time.Now().UTC().Format(time.RFC3339)
 	envelope := deliveryFailureEnvelope{
 		Status:                  "delivery_failed_engine_fallback",
 		SessionID:               sessionID,
@@ -2302,13 +2307,13 @@ func (e *Engine) persistDeliveryFailureFallback(ctx context.Context, sessionID s
 		MessageCount:            len(messages),
 		RequestBytes:            estimateMessageBytes(messages),
 		LastAssistantText:       lastAssistantText(messages),
-		Timestamp:               time.Now().UTC().Format(time.RFC3339),
+		Timestamp:               now,
 		FailureDetail: &failureSummaryDetail{
 			Step:      "delivery",
 			Provider:  e.lastProviderCtx(ctx),
 			Model:     e.lastModelCtx(ctx),
 			LastError: truncateFailureText(cause.Error()),
-			Timestamp: time.Now().UTC().Format(time.RFC3339),
+			Timestamp: now,
 		},
 	}
 	payload, err := json.Marshal(envelope)

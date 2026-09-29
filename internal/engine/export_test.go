@@ -526,6 +526,12 @@ func SkillGuardRejectionCountForTest(e *Engine, sessionID string) int {
 	return e.skillGuardRejectionCount(sessionID)
 }
 
+// TruncateFailureTextForTest exposes truncateFailureText so external test
+// packages can pin the rune-safe failure-text truncation contract.
+func TruncateFailureTextForTest(s string) string {
+	return truncateFailureText(s)
+}
+
 // CapPersistedToolResultForTest exposes capPersistedToolResult so the
 // P2 persistence-cap specs can pin the truncation contract.
 func CapPersistedToolResultForTest(content string) string {
