@@ -72,13 +72,6 @@ model_policy: "permissive"
 # openai/gpt-4o SECOND — proven reachable + reliable (0/3 synthesis-hangs)
 # when anthropic was unreachable. zai/glm-4.6 TERMINAL — also proven
 # reliable and always reachable, so the chain never cascades to ollama.
-preferred_models:
-  - provider: anthropic
-    model: claude-sonnet-4-6
-  - provider: openai
-    model: gpt-4o
-  - provider: zai
-    model: glm-4.6
 ---
 
 # Security Engineer Agent

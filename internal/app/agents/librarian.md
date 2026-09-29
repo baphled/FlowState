@@ -61,13 +61,6 @@ model_policy: "permissive"
 # proven reliable (0/3 hangs) and always reachable, so the chain never
 # cascades down to ollama. Supersedes the stale 2-entry chain whose head
 # `claude-sonnet-4-20250514` is no longer in the catalogue.
-preferred_models:
-  - provider: anthropic
-    model: claude-sonnet-4-6
-  - provider: openai
-    model: gpt-4o
-  - provider: zai
-    model: glm-4.6
 ---
 
 # Reference Librarian

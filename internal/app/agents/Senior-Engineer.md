@@ -77,11 +77,6 @@ harness_enabled: false
 # but is not locked to it — operators may pick anything when they
 # want to trade quality for cost.
 model_policy: "permissive"
-preferred_models:
-  - provider: anthropic
-    model: claude-opus-4-7
-  - provider: anthropic
-    model: claude-sonnet-4-7
 instructions:
   system_prompt: ""
   structured_prompt_file: ""

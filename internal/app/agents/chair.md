@@ -55,11 +55,6 @@ orchestrator_meta:
   category: domain
 harness_enabled: false
 model_policy: "permissive"
-preferred_models:
-  - provider: anthropic
-    model: claude-opus-4-7
-  - provider: anthropic
-    model: claude-sonnet-4-7
 instructions:
   system_prompt: ""
   structured_prompt_file: ""

@@ -62,11 +62,6 @@ harness_enabled: false
 # overkill and wasteful. Strict policy keeps the operator from
 # accidentally burning the deepest model on routine work.
 model_policy: "strict"
-preferred_models:
-  - provider: anthropic
-    model: claude-sonnet-4-6
-  - provider: anthropic
-    model: claude-sonnet-4-7
 instructions:
   system_prompt: ""
   structured_prompt_file: ""

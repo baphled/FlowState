@@ -118,13 +118,6 @@ model_policy: "permissive"
 # `claude-sonnet-4-20250514` is no longer in the catalogue; the current
 # anthropic ids are claude-sonnet-4-6 / claude-opus-4-6. Permissive policy
 # (above) lets the chain cross provider boundaries without rejection.
-preferred_models:
-  - provider: anthropic
-    model: claude-sonnet-4-6
-  - provider: openai
-    model: gpt-4o
-  - provider: zai
-    model: glm-4.6
 ---
 
 # FlowState Planner
