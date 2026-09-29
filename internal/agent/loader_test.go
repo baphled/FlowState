@@ -1,6 +1,7 @@
 package agent_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 
@@ -141,11 +142,10 @@ var _ = Describe("Loader", func() {
 		})
 
 		Context("when the manifest parses but fails Validate", func() {
-			It("returns a ValidationError so the caller can record manifest-validate-failed", func() {
-				// JSON loader runs validateContextManagement and applyDefaults
-				// before returning, but Manifest.Validate still rejects on the
-				// required-id contract because the JSON loader does not derive
-				// an id from the file name (only the markdown loader does).
+			It("rejects a missing id at load time with a manifest id error", func() {
+				// validateManifestID runs before Validate, so an empty id is
+				// now a load error naming the manifest id contract rather
+				// than a ValidationError from Manifest.Validate.
 				jsonPath := filepath.Join(tempDir, "no-id.json")
 				jsonContent := `{
 					"schema_version": "1",
@@ -159,9 +159,7 @@ var _ = Describe("Loader", func() {
 
 				Expect(err).To(HaveOccurred())
 				Expect(m).To(BeNil())
-				var validationErr *agent.ValidationError
-				Expect(err).To(BeAssignableToTypeOf(validationErr))
-				Expect(err.Error()).To(ContainSubstring("id"))
+				Expect(err.Error()).To(ContainSubstring("manifest id must not be empty"))
 			})
 
 			It("returns a ValidationError when colour is malformed", func() {
@@ -184,6 +182,48 @@ var _ = Describe("Loader", func() {
 				Expect(err).To(BeAssignableToTypeOf(validationErr))
 				Expect(err.Error()).To(ContainSubstring("color"))
 			})
+		})
+
+		Context("when the manifest ID fails path-traversal validation", func() {
+			manifestWithID := func(id string) string {
+				idJSON, err := json.Marshal(id)
+				Expect(err).NotTo(HaveOccurred())
+				return `{
+					"schema_version": "1",
+					"id": ` + string(idJSON) + `,
+					"name": "Traversal Agent",
+					"complexity": "standard",
+					"metadata": {"role": "x"}
+				}`
+			}
+
+			It("accepts a plain non-traversing ID", func() {
+				jsonPath := filepath.Join(tempDir, "safe-id.json")
+				Expect(os.WriteFile(jsonPath, []byte(manifestWithID("safe-agent")), 0o600)).To(Succeed())
+
+				m, err := agent.LoadAndValidateManifest(jsonPath)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(m).NotTo(BeNil())
+				Expect(m.ID).To(Equal("safe-agent"))
+			})
+
+			DescribeTable("rejects IDs that could escape the storage directory",
+				func(id string) {
+					jsonPath := filepath.Join(tempDir, "traversal.json")
+					Expect(os.WriteFile(jsonPath, []byte(manifestWithID(id)), 0o600)).To(Succeed())
+
+					m, err := agent.LoadAndValidateManifest(jsonPath)
+
+					Expect(err).To(HaveOccurred())
+					Expect(m).To(BeNil())
+					Expect(err.Error()).To(ContainSubstring("manifest id"))
+				},
+				Entry("forward-slash path", "a/b"),
+				Entry("windows parent traversal", `..\`),
+				Entry("posix parent traversal", "../x"),
+				Entry("empty ID", ""),
+			)
 		})
 
 		Context("when the file extension is unsupported", func() {

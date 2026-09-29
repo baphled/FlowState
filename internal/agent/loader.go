@@ -107,6 +107,9 @@ func LoadManifestJSON(path string) (*Manifest, error) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("parsing JSON: %w", err)
 	}
+	if err := validateManifestID(m.ID); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	if err := validateContextManagement(&m); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
@@ -160,6 +163,9 @@ func LoadManifestMarkdown(path string) (*Manifest, error) {
 		m.Name = derivedID
 	}
 
+	if err := validateManifestID(m.ID); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	if err := validateContextManagement(&m); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
@@ -236,6 +242,35 @@ func extractFrontmatter(content string) (string, string, error) {
 		return "", content, errors.New("invalid frontmatter format")
 	}
 	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), nil
+}
+
+// validateManifestID rejects manifest IDs that could escape their storage
+// directory when used in path construction. Frontmatter IDs flow into the
+// registry and are used to build filesystem paths downstream, so values
+// containing path separators or parent-directory traversal sequences are
+// rejected at load time rather than allowed to produce panic-prone or
+// traversal-vulnerable paths.
+//
+// Expected:
+//   - id is the raw, unnormalised ID from the manifest frontmatter or JSON.
+//
+// Returns:
+//   - nil when id is non-empty and contains no path traversal sequences.
+//   - A descriptive error naming the rejected ID and the reason.
+//
+// Side effects:
+//   - None.
+func validateManifestID(id string) error {
+	if id == "" {
+		return errors.New("manifest id must not be empty")
+	}
+	if strings.Contains(id, "..") {
+		return fmt.Errorf("manifest id %q must not contain path traversal sequences", id)
+	}
+	if strings.ContainsAny(id, `/\`) {
+		return fmt.Errorf("manifest id %q must not contain path separators", id)
+	}
+	return nil
 }
 
 // validateContextManagement enforces the H3 range contract on
