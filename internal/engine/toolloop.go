@@ -2220,17 +2220,45 @@ func (e *Engine) streamWithToolLoop(
 
 // deliveryFailureEnvelope is the JSON shape for a delivery failure event payload.
 type deliveryFailureEnvelope struct {
-	Status                  string   `json:"status"`
-	SessionID               string   `json:"session_id"`
-	AgentID                 string   `json:"agent_id"`
-	ChainID                 string   `json:"chain_id,omitempty"`
-	RequiredDeliveryTools   []string `json:"required_delivery_tools,omitempty"`
-	ExpectedCoordinationKey string   `json:"expected_coordination_key,omitempty"`
-	FailureSummary          string   `json:"failure_summary"`
-	MessageCount            int      `json:"message_count"`
-	RequestBytes            int      `json:"request_bytes"`
-	LastAssistantText       string   `json:"last_assistant_text,omitempty"`
-	Timestamp               string   `json:"timestamp"`
+	Status                  string                `json:"status"`
+	SessionID               string                `json:"session_id"`
+	AgentID                 string                `json:"agent_id"`
+	ChainID                 string                `json:"chain_id,omitempty"`
+	RequiredDeliveryTools   []string              `json:"required_delivery_tools,omitempty"`
+	ExpectedCoordinationKey string                `json:"expected_coordination_key,omitempty"`
+	FailureSummary          string                `json:"failure_summary"`
+	MessageCount            int                   `json:"message_count"`
+	RequestBytes            int                   `json:"request_bytes"`
+	LastAssistantText       string                `json:"last_assistant_text,omitempty"`
+	Timestamp               string                `json:"timestamp"`
+	FailureDetail           *failureSummaryDetail `json:"failure_detail,omitempty"`
+}
+
+// failureSummaryDetail captures structured diagnostic context for a delivery
+// failure, complementing the free-form failure_summary field.
+type failureSummaryDetail struct {
+	Step       string `json:"step,omitempty"`
+	Provider   string `json:"provider,omitempty"`
+	Model      string `json:"model,omitempty"`
+	StopReason string `json:"stop_reason,omitempty"`
+	LastError  string `json:"last_error,omitempty"`
+	Timestamp  string `json:"timestamp,omitempty"`
+}
+
+// truncateFailureText clips a diagnostic string to a bounded length so the
+// persisted envelope stays compact.
+//
+// Expected: a diagnostic string to clip.
+//
+// Returns: the input string clipped to 256 bytes if it exceeds that length,
+// otherwise the input unchanged.
+//
+// Side effects: None.
+func truncateFailureText(s string) string {
+	if len(s) > 256 {
+		return s[:256]
+	}
+	return s
 }
 
 // persistDeliveryFailureFallback ...
@@ -2275,6 +2303,13 @@ func (e *Engine) persistDeliveryFailureFallback(ctx context.Context, sessionID s
 		RequestBytes:            estimateMessageBytes(messages),
 		LastAssistantText:       lastAssistantText(messages),
 		Timestamp:               time.Now().UTC().Format(time.RFC3339),
+		FailureDetail: &failureSummaryDetail{
+			Step:      "delivery",
+			Provider:  e.lastProviderCtx(ctx),
+			Model:     e.lastModelCtx(ctx),
+			LastError: truncateFailureText(cause.Error()),
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		},
 	}
 	payload, err := json.Marshal(envelope)
 	if err != nil {

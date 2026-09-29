@@ -331,6 +331,11 @@ var _ = Describe("DeliveryToolGate", func() {
 			Expect(ok).To(BeTrue())
 			Expect(value).To(ContainSubstring(`"status":"delivery_failed_engine_fallback"`))
 			Expect(value).To(ContainSubstring(`"failure_summary":"all providers failed:`))
+			Expect(value).To(ContainSubstring(`"failure_detail":{`))
+			Expect(value).To(ContainSubstring(`"step":"delivery"`))
+			Expect(value).To(ContainSubstring(`"provider":"test-delivery-provider"`))
+			Expect(value).To(ContainSubstring(`"last_error":"all providers failed:`))
+			Expect(value).To(ContainSubstring(`"timestamp":"`))
 		})
 	})
 
