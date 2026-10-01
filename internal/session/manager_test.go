@@ -870,6 +870,36 @@ var _ = Describe("Manager", func() {
 					"the session must escalate to failed once the streak reaches the cap")
 		})
 
+		It("keeps the session active at streak 1 and escalates to failed at streak 2 (failover threshold)", func() {
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:       "assistant",
+				StopReason: session.StopReasonToolUseNoCalls,
+			})
+
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusActive)),
+				"streak of 1 stays under ToolAnomalyFailoverThreshold — a single "+
+					"tool-use-anomaly turn is a tolerable false positive, the session "+
+					"remains active for a corrective continuation")
+
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:       "assistant",
+				StopReason: session.StopReasonToolUseNoCalls,
+			})
+
+			loaded, err = mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusFailed)),
+				"streak of 2 reaches ToolAnomalyFailoverThreshold — the session "+
+					"must fail so the engine's failover chain routes to the next "+
+					"capable candidate")
+			Expect(loaded.FailureReason).To(Equal(session.StopReasonToolUseNoCalls))
+		})
+
 		It("does not downgrade a previously-completed session to failed (escalates instead)", func() {
 			sess, err := mgr.CreateSession("agent-x")
 			Expect(err).NotTo(HaveOccurred())

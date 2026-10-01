@@ -57,6 +57,15 @@ const DefaultOrphanGrace = 30 * time.Minute
 // a sustained streak indicates a genuine model pathology.
 const DefaultToolAnomalyStreakCap = 3
 
+// ToolAnomalyFailoverThreshold is the escalation point at which a
+// sustained tool-anomaly streak marks the provider/model pair as
+// pathological. At two consecutive tool-use-anomaly assistant messages
+// the session fails and the engine's failover chain routes to the next
+// capable candidate, closing the in-session retry loop that otherwise
+// burns tool-loop budget on a model that keeps announcing tool use
+// without emitting any tool calls.
+const ToolAnomalyFailoverThreshold = 2
+
 // PersistMutationLimit is the number of deferred session mutations
 // (message appends and other sidecar-worthy changes) buffered before
 // the batched persistence path forces a synchronous sidecar write.
@@ -1524,7 +1533,7 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 			msg.StopReason == StopReasonAbandonedTool
 		if toolAnomaly {
 			m.toolAnomalyStreaks[sessionID]++
-			if m.toolAnomalyStreaks[sessionID] < DefaultToolAnomalyStreakCap {
+			if m.toolAnomalyStreaks[sessionID] < ToolAnomalyFailoverThreshold {
 				if sess.Status != string(StatusActive) {
 					sess.Status = string(StatusActive)
 					mustPersist = true
