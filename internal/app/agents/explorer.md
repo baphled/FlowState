@@ -75,12 +75,6 @@ orchestrator_meta:
   triggers:
     - domain: Explore
       trigger: Find existing codebase structure, patterns and styles
-# Provider order comes from config (providers.default) since the April 2026
-# ModelPreferences/model_preferences removal. The former evidence-led
-# failover chain here (anthropic/claude-sonnet-4-6 → openai/gpt-4o →
-# zai/glm-4.6) is removed: stale entries caused silent failback and
-# repeated _engine_fallback/<id>/delivery_failure entries in the
-# coordination store.
 ---
 
 # Role: Codebase Explorer

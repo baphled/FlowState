@@ -64,19 +64,7 @@ orchestrator_meta:
   triggers:
     - domain: Review
       trigger: Validate plans for feasibility, completeness, risks, and quality before execution
-# Permissive policy so the evidence-led failover chain below can cascade
-# across providers without being rejected.
 model_policy: "permissive"
-# Evidence-led multi-provider failover chain (May 2026 model-selection
-# probe, commit 592c8c20). This is a REASONING-CRITICAL agent — the
-# independent quality gate on a generated plan — so the top tier is opus
-# rather than sonnet. anthropic FIRST (claude-opus-4-6) — best reasoning
-# when reachable, auto-recovers the moment the provider is back up.
-# openai/gpt-4o SECOND — proven reachable + reliable (0/3 synthesis-hangs)
-# when anthropic was unreachable tonight. zai/glm-4.6 TERMINAL — also
-# proven reliable (0/3 hangs) and always reachable, so the chain never
-# cascades down to ollama. Supersedes the stale 2-entry chain whose head
-# `claude-sonnet-4-20250514` is no longer in the catalogue.
 ---
 
 # Plan Reviewer

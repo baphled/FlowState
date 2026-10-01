@@ -639,7 +639,7 @@ var _ = Describe("Engine capped-turn terminal persistence", func() {
 			{Content: "never done", Status: "pending", Priority: "high"},
 		})).NotTo(HaveOccurred())
 
-		spinner := &executableMockTool{name: "spinner", execResult: tool.Result{Output: "spun"}}
+		spinner := &executableMockTool{name: "spinner", execResult: tool.Result{Output: "spun", IsError: true}}
 		registry := tool.NewRegistry()
 		registry.Register(spinner)
 		registry.SetPermission(spinner.Name(), tool.Allow)

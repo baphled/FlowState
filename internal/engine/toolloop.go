@@ -101,19 +101,16 @@ func (e *Engine) contextEstimateDropped(before, after []provider.Message) bool {
 }
 
 // contextEstimateOverBudget reports whether the supplied message slice
-// is already over the raw context limit for the active provider/model,
-// so the meaningful-reduction check only fires on genuinely
-// overflowing windows. The raw limit (not the reserve-adjusted usable
-// budget) is deliberate: the gate's usable estimate is conservative and
-// the post-compaction retry skips that gate so the real provider has
-// the final say — only a window over the raw limit is unrecoverable.
+// exceeds the usable context budget for the active provider/model,
+// including tool schemas and the response reserve. Recovery must use
+// the same limit as dispatch before clearing the overflow state.
 //
 // Expected:
 //   - ctx carries the provider/model resolution keys.
 //   - messages is the live tool-loop slice.
 //
 // Returns:
-//   - true when the estimated request tokens exceed the raw limit.
+//   - true when the estimated request tokens exceed the usable budget.
 //
 // Side effects: None.
 func (e *Engine) contextEstimateOverBudget(ctx context.Context, messages []provider.Message) bool {
@@ -132,7 +129,7 @@ func (e *Engine) contextEstimateOverBudget(ctx context.Context, messages []provi
 		Messages: messages,
 		Tools:    e.buildToolSchemasCtx(ctx),
 	}
-	return e.estimateRequestTokens(req) > limit
+	return e.checkContextWindowOverflow(req) != nil
 }
 
 // watchdogChunkMarkInterval bounds how often flowing stream chunks may
@@ -724,16 +721,6 @@ func (e *Engine) streamWithToolLoop(
 	// (about-to-re-request passes); lastFingerprint / identicalRun track the
 	// primary repeat-call detector — when the same canonicalised tool batch
 	// recurs maxIdenticalToolCalls consecutive times the loop is stuck.
-	// sameToolPatternRun counts consecutive continuations where the SAME set
-	// of tool-call names (sorted, comma-joined) recurs, regardless of
-	// response text content; when it reaches maxSameToolPatternCalls the loop
-	// is stuck and is tripped. lastToolNames holds the sorted, joined
-	// tool-call names from the previous iteration so the detector only
-	// counts runs where the SAME tool pattern repeats; varied tool names
-	// indicate the model is making progress and must not trip. All guards
-	// trip the turn with StopReasonToolLoopExceeded. See
-	// engineMaxToolLoopIterations / engineMaxIdenticalToolCalls /
-	// engineMaxSameToolPatternCalls.
 	iterations := 0
 	softTripContinuations := 0
 	lastFingerprint := ""
@@ -1244,6 +1231,7 @@ func (e *Engine) streamWithToolLoop(
 					// clear the gate, so short-circuit to the terminal
 					// error instead of re-entering the loop.
 					summary := ""
+					compactionReduced := false
 					if compacted != "" {
 						summary = e.lastCompactionSummaryText()
 						if rebuilt := e.rebuildContextWindowTokenBounded(ctx, sessionID, messages, summary); rebuilt != nil {
@@ -1260,6 +1248,7 @@ func (e *Engine) streamWithToolLoop(
 								emitTerminalStreamChunk(ctx, outChan, recoveryChunk)
 								return
 							}
+							compactionReduced = len(rebuilt) > 0 && e.contextEstimateDropped(messages, rebuilt)
 							messages = rebuilt
 						}
 					}
@@ -1287,7 +1276,19 @@ func (e *Engine) streamWithToolLoop(
 						// estimated over budget — an over-budget
 						// rebuild must keep the gate armed.
 						var retryCtx context.Context = ctx
-						if !e.contextEstimateOverBudget(ctx, messages) {
+						// A compaction that genuinely reduced the window
+						// (contextEstimateDropped, verified above when a
+						// rebuild occurred) earns exactly one skip-gate
+						// retry so the real provider — whose limit may
+						// differ from the engine's reserve-inflated
+						// estimate — gets the final say. The output
+						// reserve can collapse usable (limit - reserve)
+						// below even a tiny post-compaction request, so
+						// an estimate-only check here would strand a
+						// legitimately compacted turn at the gate. When
+						// compaction did NOT reduce the window, keep the
+						// gate armed.
+						if compactionReduced || !e.contextEstimateOverBudget(ctx, messages) {
 							retryCtx = session.WithSkipContextWindowOverflowCheck(ctx)
 						}
 						var retryErr error
@@ -1827,7 +1828,7 @@ func (e *Engine) streamWithToolLoop(
 		}
 
 		if e.maxSameToolPatternCalls > 0 {
-			if len(result.toolCalls) > 0 {
+			if len(result.toolCalls) > 0 && batchAllFailed(toolResults) {
 				names := make([]string, len(result.toolCalls))
 				for i, tc := range result.toolCalls {
 					names[i] = tc.Name
@@ -2217,6 +2218,24 @@ func (e *Engine) streamWithToolLoop(
 		// last emission for this session.
 		e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 	}
+}
+
+// batchAllFailed reports whether every result in the batch represents a failed
+// tool execution, i.e. no result succeeded.
+//
+// Returns: true when all results are errors.
+// Expected: the executed batch's results slice.
+// Side effects: None.
+func batchAllFailed(results []tool.Result) bool {
+	if len(results) == 0 {
+		return false
+	}
+	for _, result := range results {
+		if result.Error == nil && !result.IsError {
+			return false
+		}
+	}
+	return true
 }
 
 // deliveryFailureEnvelope is the JSON shape for a delivery failure event payload.

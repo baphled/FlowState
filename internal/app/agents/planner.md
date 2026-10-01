@@ -99,25 +99,7 @@ harness:
   # resilience backstop the wave retry floor used to provide. Re-declaring
   # `waves:` here re-arms the (still-present, dormant) validator — do not,
   # unless the swarm-scope context-propagation defect is fixed first.
-# Planning is the deepest reasoning workload in the system — wave fan-in,
-# critic re-prompting, and review-cycle gates all benefit from Sonnet-tier
-# instruction following. Permissive policy keeps the operator free to
-# downshift to Haiku for cheap iterations or up-shift to Opus for heavy
-# work; the manifest seeds the default so a fresh planner session never
-# silently lands on whichever provider config.yaml's global default points
-# at (z.ai today, something else tomorrow). See the May 2026 bug fix
-# "Agent Provider Cascade" for the cascade rule (UI > manifest > global).
 model_policy: "permissive"
-# Evidence-led multi-provider failover chain (May 2026 model-selection
-# probe, commit 592c8c20). anthropic FIRST — best instruction following
-# when reachable, and auto-recovers the moment the provider is back up.
-# openai/gpt-4o SECOND — proven reachable + reliable (0/3 synthesis-hangs)
-# when anthropic was unreachable tonight. zai/glm-4.6 TERMINAL — also
-# proven reliable (0/3 hangs) and always reachable, so the chain never
-# cascades down to ollama. Supersedes the stale 2-entry chain whose head
-# `claude-sonnet-4-20250514` is no longer in the catalogue; the current
-# anthropic ids are claude-sonnet-4-6 / claude-opus-4-6. Permissive policy
-# (above) lets the chain cross provider boundaries without rejection.
 ---
 
 # FlowState Planner

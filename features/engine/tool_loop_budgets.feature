@@ -1,6 +1,12 @@
 @engine
 Feature: Tool-loop budgets count tool execution time
 
+  Scenario: Successful calls with different arguments are progress
+    Given an engine with a tool loop duration cap of 200ms
+    And a tool completes five successful calls with different arguments
+    When the successful same-tool sequence completes
+    Then all five tool calls reach the provider's final response
+
   Scenario: Non-delegation tool time counts toward the duration cap
     Given an engine with a tool loop duration cap of 200ms
     And a tool that sleeps 50ms per call and never finishes the task

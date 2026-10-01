@@ -24,7 +24,7 @@ func newEngineWithManifestThreshold(
 	store, err := recall.NewFileContextStore(tempDir+"/ctx.json", "test-model")
 	Expect(err).NotTo(HaveOccurred())
 
-	counter := &wordTokenCounter{limit: 100}
+	counter := &wordTokenCounter{limit: 200}
 	compactor := ctxstore.NewAutoCompactor(summariser)
 	cfg := ctxstore.DefaultCompressionConfig()
 	cfg.AutoCompaction.Enabled = true

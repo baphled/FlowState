@@ -800,25 +800,12 @@ func (e *Engine) streamFromProvider(ctx context.Context, req *provider.ChatReque
 		return nil, fmt.Errorf("stream from provider: %w", ctx.Err())
 	}
 	slog.Info("engine stream request", "provider", req.Provider, "model", req.Model, "messages", len(req.Messages))
-	if session.SkipContextWindowOverflowCheckFromContext(ctx) {
-		slog.Info("engine stream request skipping proactive overflow gate after compaction",
-			"provider", req.Provider, "model", req.Model, "messages", len(req.Messages))
-		// Direct dispatch, bypassing the failover hook chain. The skip
-		// flag is only stamped on the single post-compaction retry, and
-		// that retry is pinned to the intended provider with a rebuilt
-		// token-bounded window. Sending it through failover is actively
-		// harmful: a genuine upstream context-window error on the first
-		// chunk is classified PERMANENT (isUserCorrectableError) and the
-		// hook fails the whole call with "all providers failed",
-		// converting the engine's bounded-retry recovery loop into a
-		// single attempt. Direct dispatch lets streamWithToolLoop's
-		// max_overflow_retries budget own the retry decision.
-		return e.baseStreamHandler()(ctx, req)
-	}
-	if pErr := e.checkContextWindowOverflow(req); pErr != nil {
-		slog.Warn("engine refused over-budget request",
-			"provider", req.Provider, "model", req.Model, "estimated_input_tokens", pErr.EstimatedInputTokens, "limit", pErr.ContextLimit)
-		return e.overflowRefusalChannel(pErr), nil
+	if !session.SkipContextWindowOverflowCheckFromContext(ctx) {
+		if pErr := e.checkContextWindowOverflow(req); pErr != nil {
+			slog.Warn("engine refused over-budget request",
+				"provider", req.Provider, "model", req.Model, "estimated_input_tokens", pErr.EstimatedInputTokens, "limit", pErr.ContextLimit)
+			return e.overflowRefusalChannel(pErr), nil
+		}
 	}
 	handler := e.baseStreamHandler()
 	if e.hookChain != nil {
@@ -1149,8 +1136,8 @@ func (e *Engine) ContextUsageJSONForSession(providerID, modelID string, messages
 
 // estimateRequestTokens approximates the prompt-token count for req
 // using the engine's configured tokenCounter. The estimate sums every
-// message's Content + Thinking and adds a small fixed budget for tool-
-// schema overhead per Tool. It is intentionally conservative; the gate
+// message's Content + Thinking, serialised tool arguments and schemas,
+// and fixed message and tool framing overhead. The gate
 // is allowed to over-fire (refuse a marginally-fitting request) but
 // must not under-fire (let an over-budget request through).
 //
@@ -1167,24 +1154,29 @@ func (e *Engine) estimateRequestTokens(req *provider.ChatRequest) int {
 	const perToolOverhead = 32
 	total := 0
 	for _, m := range req.Messages {
+		total += 8
 		if m.Content != "" {
 			total += e.tokenCounter.Count(m.Content)
 		}
-		if m.Thinking != "" {
+		if len(m.ThinkingBlocks) > 0 {
+			if blocks, err := json.Marshal(m.ThinkingBlocks); err == nil {
+				total += e.tokenCounter.Count(string(blocks))
+			}
+		} else if m.Thinking != "" {
 			total += e.tokenCounter.Count(m.Thinking)
 		}
 		for _, tc := range m.ToolCalls {
 			total += e.tokenCounter.Count(tc.Name)
-			for k, v := range tc.Arguments {
-				total += e.tokenCounter.Count(k)
-				if s, ok := v.(string); ok {
-					total += e.tokenCounter.Count(s)
-				}
+			if arguments, err := json.Marshal(tc.Arguments); err == nil {
+				total += e.tokenCounter.Count(string(arguments))
 			}
 		}
 	}
 	for _, t := range req.Tools {
 		total += e.tokenCounter.Count(t.Name) + e.tokenCounter.Count(t.Description) + perToolOverhead
+		if schema, err := json.Marshal(t.Schema); err == nil {
+			total += e.tokenCounter.Count(string(schema))
+		}
 	}
 	return total
 }
@@ -1226,6 +1218,15 @@ func (e *Engine) overflowRefusalChannel(pErr *provider.Error) <-chan provider.St
 // Expected: parameters for baseStreamHandler.
 func (e *Engine) baseStreamHandler() hook.HandlerFunc {
 	return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+		// Re-check the gate on the mutated request, mirroring
+		// streamFromProvider — hooks may grow the payload past usable.
+		// Honours the post-compaction skip flag so the skip-gate retry
+		// reaches the real provider.
+		if !session.SkipContextWindowOverflowCheckFromContext(ctx) {
+			if pErr := e.checkContextWindowOverflow(req); pErr != nil {
+				return e.overflowRefusalChannel(pErr), nil
+			}
+		}
 		if req.Provider != "" && e.providerRegistry != nil {
 			p, err := e.providerRegistry.Get(req.Provider)
 			if err == nil {

@@ -282,6 +282,27 @@ func (s *toolLoopBudgetSteps) runTurn(sessionID, prompt string, watchdog time.Du
 // the godog scenario context.
 func RegisterToolLoopBudgetSteps(ctx *godog.ScenarioContext) {
 	s := &toolLoopBudgetSteps{}
+	ctx.Step(`^a tool completes five successful calls with different arguments$`, func() error {
+		s.tools = []tool.Tool{&budgetSleepTool{name: "spinner"}}
+		s.provider.turns = []toolBudgetTurn{
+			{toolName: "spinner"},
+			{toolName: "spinner"},
+			{toolName: "spinner"},
+			{toolName: "spinner"},
+			{toolName: "spinner"},
+			{content: "All done."},
+		}
+		return nil
+	})
+	ctx.Step(`^the successful same-tool sequence completes$`, func() error {
+		return s.runTurn("successful-tool-budget-session", "Go", 8*time.Second)
+	})
+	ctx.Step(`^all five tool calls reach the provider's final response$`, func() error {
+		if s.provider.callCount() != 6 || s.capturer.hasTrip("same_tool_pattern") || s.observedStopReason(session.StopReasonToolLoopExceeded) {
+			return fmt.Errorf("successful same-tool work was capped after %d provider calls", s.provider.callCount())
+		}
+		return nil
+	})
 	ctx.Step(`^an engine with a tool loop duration cap of 200ms$`, s.engineWithToolLoopDurationCap)
 	ctx.Step(`^a tool that sleeps 50ms per call and never finishes the task$`, s.toolSleepsPerCallNeverFinishing)
 	ctx.Step(`^a delegation tool whose child engine runs for (\d+)ms$`, s.delegationToolRunningChildEngine)

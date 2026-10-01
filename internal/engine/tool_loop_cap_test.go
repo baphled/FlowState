@@ -566,8 +566,8 @@ var _ = Describe("Engine tool-loop cap", func() {
 	})
 
 	Context("same-tool-pattern detector", func() {
-		It("trips after 3 consecutive empty-text same-tool responses", func() {
-			alpha := &executableMockTool{name: "alpha", execResult: tool.Result{Output: "a"}}
+		It("trips after 3 consecutive empty-text failed same-tool responses", func() {
+			alpha := &executableMockTool{name: "alpha", execResult: tool.Result{Output: "a", IsError: true}}
 
 			registry := tool.NewRegistry()
 			registry.Register(alpha)
@@ -603,11 +603,11 @@ var _ = Describe("Engine tool-loop cap", func() {
 				}
 			}
 			Expect(tripped).To(BeTrue(),
-				"3 consecutive empty-text same-tool-name turns must trip the detector")
+				"3 consecutive empty-text failed same-tool-name turns must trip the detector")
 		})
 
-		It("trips after 3 consecutive narrated same-tool responses", func() {
-			alpha := &executableMockTool{name: "alpha", execResult: tool.Result{Output: "a"}}
+		It("trips after 3 consecutive narrated failed same-tool responses", func() {
+			alpha := &executableMockTool{name: "alpha", execResult: tool.Result{Output: "a", IsError: true}}
 
 			registry := tool.NewRegistry()
 			registry.Register(alpha)
@@ -648,12 +648,12 @@ var _ = Describe("Engine tool-loop cap", func() {
 				}
 			}
 			Expect(tripped).To(BeTrue(),
-				"3 consecutive narrated same-tool-name turns must trip the detector — narration is not progress")
+				"3 consecutive narrated failed same-tool-name turns must trip the detector — narration is not progress")
 		})
 
 		It("does NOT trip on 2 consecutive varied-tool turns", func() {
-			alpha := &executableMockTool{name: "alpha", execResult: tool.Result{Output: "a"}}
-			beta := &executableMockTool{name: "beta", execResult: tool.Result{Output: "b"}}
+			alpha := &executableMockTool{name: "alpha", execResult: tool.Result{Output: "a", IsError: true}}
+			beta := &executableMockTool{name: "beta", execResult: tool.Result{Output: "b", IsError: true}}
 
 			registry := tool.NewRegistry()
 			for _, t := range []tool.Tool{alpha, beta} {
@@ -693,9 +693,9 @@ var _ = Describe("Engine tool-loop cap", func() {
 		})
 
 		It("does NOT trip when turns carry varied tool calls", func() {
-			alpha := &executableMockTool{name: "alpha", execResult: tool.Result{Output: "a"}}
-			beta := &executableMockTool{name: "beta", execResult: tool.Result{Output: "b"}}
-			gamma := &executableMockTool{name: "gamma", execResult: tool.Result{Output: "c"}}
+			alpha := &executableMockTool{name: "alpha", execResult: tool.Result{Output: "a", IsError: true}}
+			beta := &executableMockTool{name: "beta", execResult: tool.Result{Output: "b", IsError: true}}
+			gamma := &executableMockTool{name: "gamma", execResult: tool.Result{Output: "c", IsError: true}}
 
 			registry := tool.NewRegistry()
 			for _, t := range []tool.Tool{alpha, beta, gamma} {
@@ -736,8 +736,8 @@ var _ = Describe("Engine tool-loop cap", func() {
 		})
 
 		It("resets when tool pattern changes", func() {
-			alpha := &executableMockTool{name: "alpha", execResult: tool.Result{Output: "a"}}
-			beta := &executableMockTool{name: "beta", execResult: tool.Result{Output: "b"}}
+			alpha := &executableMockTool{name: "alpha", execResult: tool.Result{Output: "a", IsError: true}}
+			beta := &executableMockTool{name: "beta", execResult: tool.Result{Output: "b", IsError: true}}
 
 			registry := tool.NewRegistry()
 			for _, t := range []tool.Tool{alpha, beta} {
@@ -790,7 +790,7 @@ var _ = Describe("Engine tool-loop cap", func() {
 		})
 
 		It("stamps the tool_loop_exceeded StopReason on the terminal chunk", func() {
-			alpha := &executableMockTool{name: "alpha", execResult: tool.Result{Output: "a"}}
+			alpha := &executableMockTool{name: "alpha", execResult: tool.Result{Output: "a", IsError: true}}
 
 			registry := tool.NewRegistry()
 			registry.Register(alpha)

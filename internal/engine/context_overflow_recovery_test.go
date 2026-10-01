@@ -581,12 +581,12 @@ func buildP3RefusalEngine(script []overflowProviderTurn) (*engine.Engine, contex
 
 	// Pad the store so the word-counting counter pushes the
 	// assembled request over the usable window (limit 4000,
-	// reserve floor 1024 → usable ≈ 2776). 12 messages of 300
-	// words ≈ 3600 tokens, so the proactive gate refuses via the
+	// reserve floor 1024 → usable ≈ 2776). 10 messages of 300
+	// words ≈ 3000 tokens (plus per-message overhead → 3080), so the proactive gate refuses via the
 	// synthetic channel AND the gate-proximity tier agrees the
 	// window is compactable.
 	content := strings.TrimSpace(strings.Repeat("w ", 299) + "w")
-	for range 12 {
+	for range 10 {
 		store.Append(provider.Message{Role: "assistant", Content: content})
 	}
 

@@ -163,7 +163,7 @@ func newTestEngineWithCompactorOptions(
 	// Stub counter that attributes a predictable token count per string:
 	// one token per whitespace-separated word. This lets tests control
 	// whether the ratio crosses the threshold by choosing word counts.
-	counter := &wordTokenCounter{limit: 100}
+	counter := &wordTokenCounter{limit: 200}
 
 	compactor := ctxstore.NewAutoCompactor(summariser)
 

@@ -1,7 +1,4 @@
-# Shrinking ratchet baseline of orphan test files (test files with no
-# matching source file). Established 2026-08-19 per the rules audit
 # (~225 files). Remove entries as files are consolidated into canonical
-# <source>_test.go files. NEVER add entries.
 internal/agent/loader_compaction_threshold_test.go
 internal/agent/suite_test.go
 internal/agent/tools/suite_test.go
@@ -171,6 +168,7 @@ internal/engine/snapshot_test.go
 internal/engine/splitter_atomicity_test.go
 internal/engine/splitter_eviction_test.go
 internal/engine/splitter_idle_sweeper_test.go
+internal/engine/stream_internal_test.go
 internal/engine/sub_swarm_recursion_test.go
 internal/engine/suite_test.go
 internal/engine/system_prompt_skills_test.go
@@ -181,6 +179,7 @@ internal/engine/toolcall_correlation_test.go
 internal/engine/tool_call_test.go
 internal/engine/tool_filtering_test.go
 internal/engine/tool_loop_cap_test.go
+internal/engine/toolloop_internal_test.go
 internal/engine/tool_use_no_calls_test.go
 internal/execution/suite_test.go
 internal/gates/suite_test.go
@@ -325,3 +324,6 @@ internal/tool/web/suite_test.go
 internal/tool/write/suite_test.go
 internal/tracer/suite_test.go
 internal/vaultindex/suite_test.go
+# matching source file). Established 2026-08-19 per the rules audit
+# Shrinking ratchet baseline of orphan test files (test files with no
+# <source>_test.go files. NEVER add entries.

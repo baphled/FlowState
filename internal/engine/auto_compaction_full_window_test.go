@@ -284,7 +284,10 @@ var _ = Describe("Engine auto-compaction soft-trigger tool-schema token inclusio
 			&mockTool{name: "t", description: "d"},
 		}
 		eng, store := newFullWindowEngineWithTools(summariser, true, 0.50, tools)
-		seedFullWindowMessages(store, 48)
+		// 40 messages × (100 words + 8/msg overhead) = 4_320 tokens plus tool
+		// schema tokens stay below the 5_000 hard limit, so the soft trigger
+		// must stay quiet.
+		seedFullWindowMessages(store, 40)
 
 		_ = eng.BuildContextWindowForTest(context.Background(), "sess-tool-soft-quiet", "next user turn")
 

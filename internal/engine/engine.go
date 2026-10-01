@@ -1441,20 +1441,10 @@ const engineMaxToolLoopWatchdog = 10 * time.Minute
 // SetMaxIdenticalToolCallsForTest; zero/negative disables repeat detection.
 const engineMaxIdenticalToolCalls = 3
 
-// engineMaxSameToolPatternCalls is the trip threshold for the tool-pattern
-// detector: when the SAME set of tool-call names (sorted, comma-joined)
-// recurs for this many CONSECUTIVE tool-loop continuations, regardless of
-// the assistant response text content, the loop is considered stuck and
-// terminated. This guards the real-world failure observed with z.ai/glm-5.2,
-// which produced a long run of assistant messages each carrying a single
-// todo_update call with an incrementing index — varied enough to dodge the
-// repeat-call fingerprint and sparse enough (3-4 occurrences) to stay well
-// under the 50-iteration backstop, yet the session spun for 30 minutes
-// without making real progress. The earlier empty-text-only detector was
-// insufficient because the provider could emit non-empty text while still
-// repeating the same tool. Set to 3 so two legitimate same-tool turns still
-// pass while a genuine stall trips quickly. Overridable via
-// SetMaxSameToolPatternCallsForTest; zero/negative disables the detector.
+// engineMaxSameToolPatternCalls bounds consecutive failed batches using
+// the same tool names, even when arguments vary. Successful calls reset
+// this detector because repeated use of a tool does not establish a stall.
+// Identical-call, iteration, and duration guards still bound successful loops.
 const engineMaxSameToolPatternCalls = 3
 
 // resolveFactService returns the RLM Phase B service the engine should
