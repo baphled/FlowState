@@ -502,7 +502,7 @@ var _ = Describe("Engine tool-loop cap", func() {
 			eng.SetMaxToolLoopIterationsForTest(0)
 			eng.SetMaxIdenticalToolCallsForTest(0)
 			eng.SetMaxSameToolPatternCallsForTest(0)
-			eng.SetMaxToolLoopDurationForTest(time.Millisecond)
+			eng.SetMaxToolLoopDurationForTest(100 * time.Millisecond)
 
 			chunks, err := eng.Stream(context.Background(), "loop-cap-agent", "Go")
 			Expect(err).NotTo(HaveOccurred())

@@ -360,7 +360,7 @@ var _ = Describe("Engine tool-loop total tool-time backstop", func() {
 	Context("when a TimeoutOverrider-zero tool runs past the duration cap", func() {
 		It("does not count the delegated execution toward the backstop", func() {
 			inherit := &sleepingToolWithOverride{
-				sleepingTool: sleepingTool{name: "delegate_like", sleepFor: 250 * time.Millisecond},
+				sleepingTool: sleepingTool{name: "delegate_like", sleepFor: 150 * time.Millisecond},
 			}
 
 			registry := tool.NewRegistry()

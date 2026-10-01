@@ -1641,6 +1641,37 @@ func (e *Engine) streamWithToolLoop(
 		nonDelegatedToolExecDuration += nonDelegatedExec
 		watchdog.markToolBatchComplete()
 
+		// Wall-clock backstop at tool-result time: delegated children run
+		// with Timeout()==0 (no per-tool deadline), so a single child can
+		// run far past the wall-clock cap between loop iterations. If the
+		// wall clock already exceeds multiplier*cap when the batch
+		// completes, end the turn now through the duration backstop
+		// instead of waiting for the next iteration-boundary evaluation —
+		// which may never come when the model finishes the turn naturally
+		// with the child's result.
+		// Wall-clock backstop applies regardless of exclusions: delegated
+		// execution time is exempt from total_tool_time accounting, but the
+		// wall-clock cap still bounds delegated turns.
+		if e.maxToolLoopDuration > 0 &&
+			time.Since(loopStart) >= toolLoopWallClockMultiplier*e.maxToolLoopDuration {
+			wallElapsed := time.Since(loopStart)
+			slog.Warn("engine tool loop capped",
+				"session", sessionID,
+				"trip", "duration_backstop",
+				"iterations", iterations,
+				"elapsed", wallElapsed-toolExecDuration,
+				"wall_elapsed", wallElapsed,
+				"non_delegated_tool_time", nonDelegatedToolExecDuration,
+				"max_iterations", e.maxToolLoopIterations,
+				"max_duration", e.maxToolLoopDuration,
+			)
+			watchdog.markFired()
+			if forcedSummaryTerminal("duration_backstop") {
+				continue
+			}
+			return
+		}
+
 		// When a tool execution returns a hard error (not a tool-level Result.Error)
 		// persist a synthetic tool_result so the session history has a complete
 		// tool_call + tool_result pair. Without this the agent sees a dangling
