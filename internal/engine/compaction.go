@@ -213,14 +213,17 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 			"tokenBudget", tokenBudget,
 			"threshold", threshold,
 		)
-		return "[truncation fallback: the conversation summariser was unavailable so older messages were dropped. Use recall_search or re-read files if you need earlier context.]"
+		return truncationFallbackSummaryText
 	}
 	latency := time.Since(start)
 
 	summaryJSON, err := json.Marshal(summary)
 	if err != nil {
-		slog.Warn("engine auto-compaction produced unmarshallable summary", "error", err)
-		return ""
+		slog.Warn("engine auto-compaction produced unmarshallable summary; applying truncation fallback",
+			"error", err,
+			"sessionID", sessionID,
+		)
+		return truncationFallbackSummaryText
 	}
 
 	summaryCopy := summary
@@ -368,17 +371,17 @@ func (e *Engine) maybeAutoCompactExplicit(ctx context.Context, sessionID string,
 			"recentTokens", recentTokens,
 			"tokenBudget", tokenBudget,
 		)
-		return "[truncation fallback: the conversation summariser was unavailable so older messages were dropped. Use recall_search or re-read files if you need earlier context.]"
+		return truncationFallbackSummaryText
 	}
 	latency := time.Since(start)
 
 	summaryJSON, err := json.Marshal(summary)
 	if err != nil {
-		slog.Warn("engine manual compaction produced unmarshallable summary",
+		slog.Warn("engine manual compaction produced unmarshallable summary; applying truncation fallback",
 			"error", err,
 			"sessionID", sessionID,
 		)
-		return ""
+		return truncationFallbackSummaryText
 	}
 
 	summaryCopy := summary

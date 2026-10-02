@@ -121,6 +121,11 @@ type AppConfig struct {
 	// default to disabled; see internal/context.DefaultCompressionConfig.
 	Compression      contextpkg.CompressionConfig  `json:"compression" yaml:"compression"`
 	ProviderFallback engine.ProviderFallbackConfig `json:"provider_fallback" yaml:"provider_fallback"`
+	// Summariser configures the Phase 1 compaction SummariserChain.
+	// Provider/Model name the preferred summariser hop (Z.AI when its
+	// credentials are present); the chain appends Anthropic and a
+	// configurable-model Ollama as lower-priority hops.
+	Summariser SummariserConfig `json:"summariser" yaml:"summariser"`
 	// Compaction controls the RLM Phase A Layer 1 micro-compaction —
 	// the hot-tail/cold-store split for compactable tool results. It
 	// defaults to ENABLED with a 3-result hot-tail floor and an 8000-

@@ -12,6 +12,14 @@ import (
 // naive truncation fallback (summariser unavailable or errored).
 const truncationFallbackSummaryPrefix = "[truncation fallback: "
 
+// truncationFallbackSummaryText is the single source of truth for the
+// bounded degradation path returned whenever the summariser chain
+// fails or a compaction summary cannot be marshalled. Centralising the
+// literal guarantees the WARN-side fallback and the prefix-checking
+// consumers stay in lockstep; Phase 1 of the compaction redesign
+// replaces the historic silent "" no-op with this explicit fallback.
+const truncationFallbackSummaryText = "[truncation fallback: the conversation summariser was unavailable so older messages were dropped. Use recall_search or re-read files if you need earlier context.]"
+
 // TrimForDispatchBudget returns a message window that fits the model's
 // context budget before the request is dispatched to a provider. It
 // estimates the token cost of the window with the supplied counter,

@@ -919,6 +919,10 @@ type compressionComponents struct {
 	// the engine's chat provider. Retained here so call-site wiring can
 	// rebind the manifest after the engine is constructed.
 	summariserAdapter *engine.ProviderSummariser
+	// summariserChain is the Phase 1 multi-provider summariser that the
+	// AutoCompactor dispatches through: configured provider (Z.AI when
+	// credentials are present) first, Anthropic second, Ollama last.
+	summariserChain *engine.SummariserChain
 	// knowledgeExtractorFactory lazily produces a per-session L3
 	// extractor. Non-nil iff cfg.Compression.SessionMemory.Enabled and
 	// the session-memory store is live. Nil leaves L3 inert.
@@ -2862,8 +2866,10 @@ func (a *App) buildDelegateCompression(manifest agent.Manifest) compressionCompo
 	adapter := engine.NewProviderSummariser(a.defaultProvider, summariserResolver, fallbackModel, a.Config.ProviderFallback).
 		WithProviderRegistry(a.providerRegistry).
 		WithManifest(&manifest)
+	chain := engine.NewSummariserChain(a.providerRegistry, a.Config.SummariserChainEntries())
+	a.compression.summariserChain = chain
 	out.summariserAdapter = adapter
-	out.autoCompactor = ctxstore.NewAutoCompactor(adapter)
+	out.autoCompactor = ctxstore.NewAutoCompactor(chain)
 	return out
 }
 
@@ -4755,8 +4761,9 @@ func buildCompressionComponents(
 		fallbackModel := cfg.Providers.Ollama.Model
 		adapter := engine.NewProviderSummariser(chatProvider, summariserResolver, fallbackModel, cfg.ProviderFallback).
 			WithProviderRegistry(providerRegistry)
+		chain := engine.NewSummariserChain(providerRegistry, cfg.SummariserChainEntries())
 		out.summariserAdapter = adapter
-		out.autoCompactor = ctxstore.NewAutoCompactor(adapter)
+		out.autoCompactor = ctxstore.NewAutoCompactor(chain)
 	}
 
 	if cfg.Compression.SessionMemory.Enabled {

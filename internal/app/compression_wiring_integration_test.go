@@ -34,7 +34,7 @@ type compressionFakeProvider struct {
 	chatCalls   atomic.Int64
 }
 
-func (f *compressionFakeProvider) Name() string { return "compression-fake" }
+func (f *compressionFakeProvider) Name() string { return "ollama" }
 func (f *compressionFakeProvider) Stream(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	ch := make(chan provider.StreamChunk)
 	close(ch)
@@ -50,7 +50,7 @@ func (f *compressionFakeProvider) Embed(_ context.Context, _ provider.EmbedReque
 	return nil, nil
 }
 func (f *compressionFakeProvider) Models() ([]provider.Model, error) {
-	return []provider.Model{{ID: "fake-model", Provider: "compression-fake", ContextLength: 100}}, nil
+	return []provider.Model{{ID: "fake-model", Provider: "ollama", ContextLength: 100}}, nil
 }
 
 // wordTokenCounter attributes one token per whitespace-delimited word.
@@ -125,7 +125,9 @@ func runWiringScenario() wiringScenario {
 	metricsReg := prometheus.NewRegistry()
 	recorder := tracer.NewPrometheusRecorder(metricsReg)
 	fake := &compressionFakeProvider{summaryJSON: buildCompressionSummaryJSON()}
-	compression := buildCompressionComponents(cfg, nil, fake, nil, recorder)
+	registry := provider.NewRegistry()
+	registry.Register(fake)
+	compression := buildCompressionComponents(cfg, nil, fake, registry, recorder)
 
 	// Explicitly inherit the global AutoCompaction.Threshold (0.60 in
 	// cfg above) by zeroing the per-agent override. The H3 precedence
