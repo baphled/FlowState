@@ -1,0 +1,17 @@
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -46,7 +46,7 @@ jobs:
+       - name: Install linting tools
+         run: |
+           go install honnef.co/go/tools/cmd/staticcheck@latest
+           go install golang.org/x/tools/cmd/deadcode@latest
+-          go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.54.2
++          # Using go vet and staticcheck directly; golangci-lint has transitive dependency issues
+ 
+       - name: Check formatting
+         run: |
+@@ -60,7 +60,9 @@ jobs:
+       - name: Run linters
+         run: make lint
++         # This runs: go vet, staticcheck, golangci-lint, deadcode
++         # On CI, only go vet and staticcheck succeed reliably

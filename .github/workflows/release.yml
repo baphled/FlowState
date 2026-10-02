@@ -27,8 +27,8 @@ jobs:
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@latest
           go install golang.org/x/tools/cmd/deadcode@latest
-          go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
           go install github.com/cucumber/godog/cmd/godog@latest
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.11.3
 
       - name: Run checks
         run: make check
@@ -110,11 +110,11 @@ jobs:
 
       - name: Run semantic-release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GIT_AUTHOR_NAME: "github-actions[bot]"
-          GIT_AUTHOR_EMAIL: "github-actions[bot]@users.noreply.github.com"
-          GIT_COMMITTER_NAME: "github-actions[bot]"
-          GIT_COMMITTER_EMAIL: "github-actions[bot]@users.noreply.github.com"
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GIT_AUTHOR_NAME: "semantic-release-bot"
+          GIT_AUTHOR_EMAIL: "semantic-release-bot@martynus.net"
+          GIT_COMMITTER_NAME: "semantic-release-bot"
+          GIT_COMMITTER_EMAIL: "semantic-release-bot@martynus.net"
         run: npx semantic-release
 
   notify-failure:
