@@ -31,7 +31,7 @@ Feature: Hot tail budget and drop-oldest overflow retry (Phase 2)
     And the hot tail retains the most recent messages
 
   Scenario: An over-budget final context drops the oldest hot-tail messages until it fits
-    Given an engine with a token counter and compaction budget of 30 tokens
+    Given an engine with a token counter and compaction budget of 4200 tokens
     And a hot tail budget of 40 tokens and a minimum floor of 3 recent messages
     And 6 recent messages each costing 5 tokens
     And a compaction summary costing 8 tokens
@@ -40,9 +40,9 @@ Feature: Hot tail budget and drop-oldest overflow retry (Phase 2)
     And the rebuilt window retains the newest live message
 
   Scenario: A context that cannot fit even with one message fails the compaction turn loudly
-    Given an engine with a token counter and compaction budget of 12 tokens
+    Given an engine with a token counter and compaction budget of 100 tokens
     And a hot tail budget of 40 tokens and a minimum floor of 3 recent messages
     And 4 recent messages each costing 50 tokens
-    And a compaction summary costing 8 tokens
+    And a compaction summary costing 80 tokens
     When the post-compaction window is rebuilt from the token-bounded hot tail
     Then the rebuild fails loudly with a compaction insufficient error

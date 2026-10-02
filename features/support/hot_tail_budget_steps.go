@@ -17,41 +17,41 @@ import (
 // Phase 2 hot-tail budget scenarios. The Before hook zeroes it so state
 // never leaks between tests.
 type hotTailBudgetState struct {
-	engine         *engine.Engine
-	ctx            context.Context
+	engine           *engine.Engine
+	ctx              context.Context
 	compactionBudget int
-	hotTailBudget  int
-	minResults     int
-	messageCost    int
-	messageCount   int
-	summaryCost    int
-	rebuilt        []provider.Message
-	rebuildErr     error
+	hotTailBudget    int
+	minResults       int
+	messageCost      int
+	messageCount     int
+	summaryCost      int
+	rebuilt          []provider.Message
+	rebuildErr       error
 }
 
-// stubBudgetCounter is a deterministic TokenCounter whose Count returns
-// a fixed per-call cost so scenarios can script exact token loads.
-type stubBudgetCounter struct{}
-
-func (stubBudgetCounter) Count(text string) int {
-	return len(text)
+// hotTailCostCounter counts every non-empty content string as exactly
+// one scripted per-message cost so scenarios can pin exact token
+// loads. Summary text is encoded as one word per token so the summary
+// cost stays inside the same counting rule without a second counter.
+type hotTailCostCounter struct {
+	cost  int
+	limit int
 }
 
-func (stubBudgetCounter) ModelLimit(string) int { return 0 }
-
-func (s *hotTailBudgetState) buildEngine() error {
-	fixedCounter := &fixedCostCounter{cost: s.messageCost}
-	eng, err := engine.NewForHotTailBudgetTest(engine.Config{
-		TokenCounter:     fixedCounter,
-		CompactionBudget: s.compactionBudget,
-		HotTailBudget:    s.hotTailBudget,
-		HotTailMin:       s.minResults,
-	})
-	if err != nil {
-		return err
+func (c hotTailCostCounter) Count(text string) int {
+	if text == "" {
+		return 0
 	}
-	s.engine = eng
-	return nil
+	return len(strings.Fields(text)) * c.cost
+}
+
+func (c hotTailCostCounter) ModelLimit(string) int { return c.limit }
+
+// newHotTailCounter returns a counter whose ModelLimit resolves the
+// scenario's compaction budget and whose per-message content cost is
+// one word at cost.
+func (s *hotTailBudgetState) newHotTailCounter() hotTailCostCounter {
+	return hotTailCostCounter{cost: s.messageCost, limit: s.compactionBudget}
 }
 
 func (s *hotTailBudgetState) makeMessages() []provider.Message {
@@ -62,23 +62,9 @@ func (s *hotTailBudgetState) makeMessages() []provider.Message {
 	return msgs
 }
 
-// fixedCostCounter counts every non-empty content string as exactly one
-// fixed cost, so a message of any length costs the scripted per-message
-// token figure. The compaction summary bypasses the counter (its cost
-// is scripted directly), so a distinctive marker keeps summary counting
-// out of the per-message path.
-type fixedCostCounter struct {
-	cost int
+func (s *hotTailBudgetState) summaryText() string {
+	return strings.Repeat("s ", s.summaryCost)
 }
-
-func (c *fixedCostCounter) Count(text string) int {
-	if strings.HasPrefix(text, "summary-token-cost:") {
-		return len(text) - len("summary-token-cost:")
-	}
-	return c.cost
-}
-
-func (c *fixedCostCounter) ModelLimit(string) int { return 0 }
 
 // RegisterHotTailBudgetSteps wires the @compaction Phase 2 hot-tail
 // budget scenarios to the production engine rebuild path.
@@ -107,12 +93,26 @@ func RegisterHotTailBudgetSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^a hot tail budget of (\d+) tokens and a minimum floor of (\d+) recent messages$`, func(budget, floor int) error {
 		state.hotTailBudget = budget
 		state.minResults = floor
-		return state.buildEngine()
+		state.engine = engine.New(engine.Config{
+			TokenCounter:            state.newHotTailCounter(),
+			SystemPromptBudget:      state.compactionBudget,
+			OutputReserveForTests:   16,
+			HotTailBudgetForTests:   state.hotTailBudget,
+			HotTailMinFloorForTests: state.minResults,
+		})
+		return nil
 	})
 
 	ctx.Step(`^(\d+) recent messages each costing (\d+) tokens$`, func(count, cost int) error {
 		state.messageCount = count
 		state.messageCost = cost
+		state.engine = engine.New(engine.Config{
+			TokenCounter:            state.newHotTailCounter(),
+			SystemPromptBudget:      state.compactionBudget,
+			OutputReserveForTests:   16,
+			HotTailBudgetForTests:   state.hotTailBudget,
+			HotTailMinFloorForTests: state.minResults,
+		})
 		return nil
 	})
 
@@ -122,15 +122,12 @@ func RegisterHotTailBudgetSteps(ctx *godog.ScenarioContext) {
 	})
 
 	ctx.Step(`^the token-bounded hot tail is selected$`, func() error {
-		msgs := state.makeMessages()
-		state.rebuilt, state.rebuildErr = state.engine.SelectHotTailForTest(state.ctx, msgs)
+		state.rebuilt, state.rebuildErr = state.engine.SelectHotTailBudgetedForTesting(state.ctx, state.makeMessages())
 		return nil
 	})
 
 	ctx.Step(`^the post-compaction window is rebuilt from the token-bounded hot tail$`, func() error {
-		msgs := state.makeMessages()
-		summary := "summary-token-cost:" + strings.Repeat("x", state.summaryCost)
-		state.rebuilt, state.rebuildErr = state.engine.RebuildWithHotTailBudgetForTest(state.ctx, msgs, summary)
+		state.rebuilt, state.rebuildErr = state.engine.RebuildHotTailBudgetedForTesting(state.ctx, state.makeMessages(), state.summaryText())
 		return nil
 	})
 
@@ -139,7 +136,7 @@ func RegisterHotTailBudgetSteps(ctx *godog.ScenarioContext) {
 			return state.rebuildErr
 		}
 		if len(state.rebuilt) != want {
-			return errors.New("hot tail has wrong length")
+			return errors.New("hot tail length mismatch: got")
 		}
 		return nil
 	})
@@ -148,8 +145,7 @@ func RegisterHotTailBudgetSteps(ctx *godog.ScenarioContext) {
 		if len(state.rebuilt) == 0 || state.messageCount == 0 {
 			return errors.New("no messages retained")
 		}
-		last := state.rebuilt[len(state.rebuilt)-1]
-		if last.Content != "m" {
+		if state.rebuilt[len(state.rebuilt)-1].Content != "m" {
 			return errors.New("newest message not retained")
 		}
 		return nil
@@ -159,7 +155,7 @@ func RegisterHotTailBudgetSteps(ctx *godog.ScenarioContext) {
 		if state.rebuildErr != nil {
 			return state.rebuildErr
 		}
-		if state.engine.ContextEstimateOverBudgetForTest(state.ctx, state.rebuilt) {
+		if state.engine.ContextEstimateOverBudgetForTesting(state.ctx, state.rebuilt) {
 			return errors.New("rebuilt window still over budget")
 		}
 		return nil
