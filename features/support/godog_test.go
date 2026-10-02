@@ -87,6 +87,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterCompressionSteps(ctx)
 	RegisterAutoCompactionSteps(ctx)
 	RegisterSummariserChainSteps(ctx)
+	RegisterHotTailBudgetSteps(ctx)
 	RegisterSessionMemorySteps(ctx)
 	RegisterCompressionE2ESteps(ctx)
 	RegisterCompactionUsageFeedbackSteps(ctx)
