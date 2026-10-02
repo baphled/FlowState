@@ -866,6 +866,9 @@ const (
 // Side effects:
 //   - None.
 func (e *Engine) outputReserveFor(req *provider.ChatRequest) int {
+	if e != nil && e.outputReserveOverride > 0 {
+		return e.outputReserveOverride
+	}
 	if req.MaxTokens > 0 {
 		if req.MaxTokens < minOutputReserve {
 			return minOutputReserve

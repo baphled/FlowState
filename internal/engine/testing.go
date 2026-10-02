@@ -109,3 +109,58 @@ func (e *Engine) StopSessionSplitterForTesting(sessionID string) bool {
 func (e *Engine) HookChainForTesting() *hook.Chain {
 	return e.hookChain
 }
+
+// SelectHotTailBudgetedForTesting exposes the Phase 2 token-bounded
+// hot tail selection (floor of recent messages grown backwards until
+// the hot-tail token budget is reached) so cross-package BDD wiring
+// can pin the selection contract without a provider stack. The
+// budget and floor fall back to the engine's CompactionConfig unless
+// test overrides were supplied at construction.
+//
+// Expected:
+//   - messages is a non-empty live slice.
+//
+// Returns:
+//   - The bounded tail, anchored at the newest message.
+//   - errNoLiveMessages when messages is empty.
+//
+// Side effects: None.
+func (e *Engine) SelectHotTailBudgetedForTesting(ctx context.Context, messages []provider.Message) ([]provider.Message, error) {
+	return e.selectHotTailBudgetedResolving(ctx, messages)
+}
+
+// RebuildHotTailBudgetedForTesting exposes the Phase 2 budgeted
+// post-compaction rebuild (system + todo + summary + token-bounded
+// hot tail, with drop-oldest retry) so cross-package BDD wiring can
+// pin the fits-budget and loud-failure contracts. Returns an error
+// wrapping ErrCompactionInsufficient when no single-message window
+// fits.
+//
+// Expected:
+//   - messages is a non-empty live slice; summary may be "".
+//
+// Returns:
+//   - The rebuilt, budget-fitting window.
+//   - A non-nil error wrapping ErrCompactionInsufficient on terminal
+//     overflow.
+//
+// Side effects:
+//   - Logs a loud error with token counts on terminal overflow.
+func (e *Engine) RebuildHotTailBudgetedForTesting(ctx context.Context, messages []provider.Message, summary string) ([]provider.Message, error) {
+	return e.rebuildHotTailBudgetedResolving(ctx, messages, summary)
+}
+
+// ContextEstimateOverBudgetForTesting exposes the usable-budget
+// overflow estimate so cross-package assertions can verify a rebuilt
+// window genuinely fits before dispatch.
+//
+// Expected:
+//   - ctx carries the provider/model resolution keys.
+//
+// Returns:
+//   - true when the estimated request exceeds the usable budget.
+//
+// Side effects: None.
+func (e *Engine) ContextEstimateOverBudgetForTesting(ctx context.Context, messages []provider.Message) bool {
+	return e.contextEstimateOverBudget(ctx, messages)
+}

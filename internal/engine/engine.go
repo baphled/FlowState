@@ -476,6 +476,19 @@ type Engine struct {
 	// CompressionConfig so the two layers can be enabled independently.
 	compactionConfig compaction.Config
 
+	// hotTailBudgetOverride / hotTailMinFloorOverride carry the Phase 2
+	// test wiring knobs so the budgeted rebuild path can be pinned by
+	// BDD step definitions without standing up a full config file.
+	// Zero values fall back to the compactionConfig figures.
+	hotTailBudgetOverride   int
+	hotTailMinFloorOverride int
+
+	// outputReserveOverride carries the Phase 2 test wiring knob for
+	// the usable-budget reserve so BDD scenarios with small synthetic
+	// context budgets can pin drop-oldest behaviour. Zero falls back
+	// to the production reserve formula.
+	outputReserveOverride int
+
 	// factService is the RLM Phase B Layer 3 service. It exposes a
 	// Recall(query, topK) call the engine consults inside
 	// buildContextWindow to prepend a "[recalled facts]" system block
@@ -637,6 +650,22 @@ type Config struct {
 	// are dropped). Typically set to the active sessions dir at App
 	// wiring time.
 	CompactionStoreDir string
+	// HotTailBudgetForTests overrides the hot-tail token budget used
+	// by the Phase 2 token-bounded rebuild path (see
+	// hot_tail_budget.go). Zero means "use CompactionConfig's
+	// HotTailSizeBudget". Test wiring only — production callers rely
+	// on CompactionConfig.
+	HotTailBudgetForTests int
+	// HotTailMinFloorForTests overrides the hot-tail minimum floor
+	// used by the Phase 2 token-bounded rebuild path. Zero means
+	// "use CompactionConfig's HotTailMinResults". Test wiring only.
+	HotTailMinFloorForTests int
+	// OutputReserveForTests overrides the output reserve subtracted
+	// from the context limit when computing the usable budget (see
+	// outputReserveFor). Zero means "production default". Test wiring
+	// only — BDD scenarios with small synthetic budgets need a small
+	// reserve so the usable figure is meaningful.
+	OutputReserveForTests int
 	// FactService is the RLM Phase B Layer 3 service. When non-nil AND
 	// CompactionConfig.FactExtractionEnabled is true, the engine
 	// consults Recall on every buildContextWindow call to prepend a
@@ -1353,6 +1382,9 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		swarmContext:                     cfg.SwarmContext,
 		microCompactor:                   resolveMicroCompactor(cfg),
 		compactionConfig:                 cfg.CompactionConfig,
+		hotTailBudgetOverride:            cfg.HotTailBudgetForTests,
+		hotTailMinFloorOverride:          cfg.HotTailMinFloorForTests,
+		outputReserveOverride:            cfg.OutputReserveForTests,
 		factService:                      resolveFactService(cfg),
 		nowFunc:                          resolveNowFunc(cfg),
 		onStreamCancel:                   cfg.OnStreamCancel,
