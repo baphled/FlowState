@@ -1232,17 +1232,48 @@ func (e *Engine) baseStreamHandler() hook.HandlerFunc {
 				return e.overflowRefusalChannel(pErr), nil
 			}
 		}
+		nextStreamViaFailover := func(providerName, modelName string) (<-chan provider.StreamChunk, bool) {
+			if e.failoverManager == nil || providerName == "" || modelName == "" {
+				return nil, false
+			}
+			if !e.failoverManager.Health().IsRateLimited(providerName, modelName) {
+				return nil, false
+			}
+			for _, candidate := range e.failoverManager.Candidates() {
+				if candidate.Provider == providerName && candidate.Model == modelName {
+					continue
+				}
+				p, err := e.providerRegistry.Get(candidate.Provider)
+				if err != nil {
+					continue
+				}
+				req.Provider = candidate.Provider
+				req.Model = candidate.Model
+				e.failoverManager.SetLast(candidate.Provider, candidate.Model)
+				next, streamErr := p.Stream(ctx, *req)
+				if streamErr != nil {
+					continue
+				}
+				return next, true
+			}
+			return nil, false
+		}
 		if req.Provider != "" && e.providerRegistry != nil {
 			p, err := e.providerRegistry.Get(req.Provider)
 			if err == nil {
+				if next, ok := nextStreamViaFailover(req.Provider, req.Model); ok {
+					return next, nil
+				}
 				return p.Stream(ctx, *req)
 			}
 		}
 		if e.chatProvider != nil {
+			if next, ok := nextStreamViaFailover(e.lastProviderCtx(ctx), e.lastModelCtx(ctx)); ok {
+				return next, nil
+			}
 			return e.chatProvider.Stream(ctx, *req)
 		}
-		return nil, errors.New("no provider available: configure either ChatProvider or FailoverManager")
-	}
+		return nil, errors.New("no provider available: configure either ChatProvider or FailoverManager")}
 }
 
 // publishTurnCompleteNotification fires a user-facing turn_complete
