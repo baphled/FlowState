@@ -491,6 +491,8 @@ func (e *Engine) sessionOutputTokensSnapshot(sessionID string) int64 {
 //
 // Side effects:
 //   - Writes to e.sessionInputTokens under e.sessionInputTokensMu.
+//
+// Returns: result of recordSessionInputTokens.
 func (e *Engine) recordSessionInputTokens(sessionID string, tokens int64) {
 	if sessionID == "" {
 		return

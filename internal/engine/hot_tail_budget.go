@@ -289,6 +289,8 @@ func (e *Engine) rebuildHotTailBudgetedResolving(ctx context.Context, messages [
 //   - The hot-tail minimum floor and token budget.
 //
 // Side effects: None.
+//
+// Expected: parameters for resolveHotTailKnobs.
 func (e *Engine) resolveHotTailKnobs() (int, int) {
 	cfg := e.compactionConfig
 	compactionpkg.ApplyDefaults(&cfg)

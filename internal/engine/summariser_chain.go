@@ -168,6 +168,8 @@ func (c *SummariserChain) Summarise(
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for AttemptedProviders.
 func (c *SummariserChain) AttemptedProviders() []string {
 	out := make([]string, len(c.attempted))
 	copy(out, c.attempted)

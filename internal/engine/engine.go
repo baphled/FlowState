@@ -169,6 +169,21 @@ type Engine struct {
 	// rehydrates again; an identical re-fire does not refill the window.
 	sessionRehydrated map[string]string
 
+	// sessionRecentFiles (Phase 3, rank 6) records the most recent
+	// write/edit tool targets per session in insertion order, capped
+	// at sessionRecentFilesCap. The rehydrated rebuild re-injects
+	// these paths (path + status) as structural context after a
+	// compaction so the agent knows which files it touched without
+	// the transcript having to survive summarisation.
+	sessionRecentFiles map[string][]string
+
+	// sessionCoordinationKeys (Phase 3, rank 6) records coordination
+	// store keys written this session, capped at
+	// sessionCoordinationKeysCap, so the rehydrated rebuild can
+	// re-inject the key references the agent needs to re-read its
+	// handoff payloads after a compaction.
+	sessionCoordinationKeys map[string][]string
+
 	// seededSessions tracks which session IDs have had their historical
 	// messages loaded into e.store via SeedHistory. Once a session is
 	// seeded we skip future calls so that the messages are not duplicated
@@ -1253,6 +1268,8 @@ func resolveToolReadOversizeThreshold(cfg Config) int {
 //
 // Side effects:
 //   - Emits a WARN-level structured log record when output exceeds it.
+//
+// Returns: result of warnOversizedToolResult.
 func (e *Engine) warnOversizedToolResult(toolName, output string) {
 	if e.toolReadOversizeThreshold > 0 && len(output) > e.toolReadOversizeThreshold {
 		slog.Warn("tool result exceeded large-result threshold", "tool", toolName, "bytes", len(output), "hint", "use offset/limit reads")
@@ -1352,6 +1369,8 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		sessionCompressionMetrics:        make(map[string]*ctxstore.CompressionMetrics),
 		sessionCompactionMemo:            make(map[string]sessionCompactionMemoEntry),
 		sessionRehydrated:                make(map[string]string),
+		sessionRecentFiles:               make(map[string][]string),
+		sessionCoordinationKeys:          make(map[string][]string),
 		seededSessions:                   make(map[string]struct{}),
 		sessionLookup:                    cfg.SessionLookup,
 		permissionPrompter:               cfg.PermissionPrompter,
@@ -3189,6 +3208,14 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 			e.workToolCallsSinceContinuation[sessionID]++
 			e.workCallsSinceLastTodoCompletion[sessionID]++
 			e.mu.Unlock()
+			e.recordSessionFileForTool(sessionID, toolCall.Name, input.Arguments)
+		}
+		if toolCall.Name == "coordination_store" {
+			if op, _ := input.Arguments["operation"].(string); op == "set" {
+				if key, _ := input.Arguments["key"].(string); key != "" {
+					e.recordSessionCoordinationKey(sessionID, key)
+				}
+			}
 		}
 		// Guard: prevent rapid todo completion without any work between items.
 		// When the model tries to complete a todo item but has done zero
@@ -3815,10 +3842,21 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 		e.mu.RUnlock()
 
 		// Determine trigger for L2 auto-compaction: gate-proximity
-		// takes precedence over the ratio threshold.
+		// takes precedence over the ratio threshold. Phase 3 (rank
+		// 5): the ratio tier must NOT force-fire — passing "ratio"
+		// would skip the H2 memo, re-summarising an unchanged cold
+		// range on every turn. The ratio fire therefore invokes the
+		// explicit path with an empty trigger so the memo check
+		// still applies; only gate-proximity (a genuine force
+		// signal) sets the force discriminant.
 		forceTrigger := ""
 		if e.shouldCompactExplicitForGate(&manifestCopy, userMessage, tokenBudget, tools, priorMsgs) {
 			forceTrigger = "gate_proximity"
+		}
+
+		var compactedSummary string
+		if forceTrigger != "" {
+			compactedSummary = e.maybeAutoCompactExplicit(ctx, sessionID, &manifestCopy, tokenBudget, forceTrigger, priorMsgs)
 		} else if threshold, ok := e.autoCompactionThreshold(&manifestCopy, tokenBudget); ok {
 			fullWindowTokens := e.estimateRequestTokens(&provider.ChatRequest{
 				Messages: priorMsgs,
@@ -3826,18 +3864,20 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 			})
 			ratio := float64(fullWindowTokens) / float64(tokenBudget)
 			if ratio > threshold {
-				forceTrigger = "ratio"
+				compactedSummary = e.maybeAutoCompactExplicit(ctx, sessionID, &manifestCopy, tokenBudget, "", priorMsgs)
 			}
-		}
-
-		var compactedSummary string
-		if forceTrigger != "" {
-			compactedSummary = e.maybeAutoCompactExplicit(ctx, sessionID, &manifestCopy, tokenBudget, forceTrigger, priorMsgs)
 		}
 
 		var messages []provider.Message
 
 		if compactedSummary != "" {
+			// Phase 3 (rank 6): the rebuild re-injects structural
+			// context (active plan, recently-modified files,
+			// coordination keys) from source-of-truth alongside the
+			// summary and a token-bounded stubbed tail. The legacy
+			// rebuilds below remain as fallbacks when the rehydrated
+			// assembly cannot resolve a usable budget.
+			plans, files, keys := e.structuralContextSources(sessionID)
 			var rebuilt []provider.Message
 			if strings.HasPrefix(compactedSummary, truncationFallbackSummaryPrefix) {
 				slidingWindowSize := manifestCopy.ContextManagement.SlidingWindowSize
@@ -3854,7 +3894,10 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 				rebuilt = append(rebuilt, provider.Message{Role: "assistant", Content: compactedSummary})
 				rebuilt = append(rebuilt, hotTail...)
 			} else {
-				rebuilt = e.rebuildContextWindowTokenBounded(ctx, sessionID, priorMsgs, compactedSummary)
+				rebuilt = e.rebuildRehydrated(ctx, sessionID, priorMsgs, compactedSummary, plans, files, keys)
+				if rebuilt == nil {
+					rebuilt = e.rebuildContextWindowTokenBounded(ctx, sessionID, priorMsgs, compactedSummary)
+				}
 				if rebuilt == nil {
 					slidingWindowSize := manifestCopy.ContextManagement.SlidingWindowSize
 					if slidingWindowSize <= 0 {
@@ -4904,6 +4947,8 @@ func (e *Engine) ModelContextLimit() int {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for modelOutputLimit.
 func (e *Engine) modelOutputLimit() int {
 	if e.failoverManager == nil {
 		return 0

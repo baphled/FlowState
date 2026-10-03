@@ -178,15 +178,20 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 	// The hash is computed against the PRUNED slice; turns whose
 	// prune decision differs (different size threshold met, different
 	// protected names) produce different hashes and re-fire.
+	//
+	// Phase 3 (rank 5): memo reuse applies ONLY to non-forced
+	// triggers. A forced compaction (gate proximity, model switch,
+	// tool-result wave, manual /compact) must produce a fresh
+	// summary — the caller explicitly decided the cached state is
+	// stale, so re-serving the memo would defeat the point.
 	currentHash := coldRangeHash(recent)
-	if reused, hit := e.reuseMemoisedSummary(sessionID, currentHash, recentTokens); hit {
-		return reused
+	if !forceFire {
+		if reused, hit := e.reuseMemoisedSummary(sessionID, currentHash, recentTokens); hit {
+			return reused
+		}
 	}
 
 	// Anchored iterative summarisation (Feature 1): when a prior summary
-	// exists for this session, use CompactExtend instead of Compact to
-	// avoid re-summarising the full cold range from scratch. The prior
-	// summary was cached from the most recent compaction turn; CompactExtend
 	// passes it to the summariser as context alongside the current messages,
 	// so the model only needs to extend rather than regenerate.
 	start := time.Now()
@@ -213,6 +218,7 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 			"tokenBudget", tokenBudget,
 			"threshold", threshold,
 		)
+		e.invalidateCompactionMemo(sessionID)
 		return truncationFallbackSummaryText
 	}
 	latency := time.Since(start)
@@ -223,6 +229,7 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 			"error", err,
 			"sessionID", sessionID,
 		)
+		e.invalidateCompactionMemo(sessionID)
 		return truncationFallbackSummaryText
 	}
 
@@ -300,14 +307,10 @@ func (e *Engine) maybeAutoCompactExplicit(ctx context.Context, sessionID string,
 		return ""
 	}
 
-	if !forceFire {
-		// The explicit-message path is currently only reached via the
-		// manual /compact force-trigger. Defending the branch keeps a
-		// future ratio-driven caller from silently no-op'ing when the
-		// ratio compare would need a full-window count we don't
-		// compute here.
-		return ""
-	}
+	// Phase 3 (rank 5): force-fire never reaches the memo check
+	// below — the guard is `if !forceFire` — so a manual /compact
+	// re-summarises while a non-forced ratio fire on an
+	// unchanged cold range reuses the memoised summary.
 
 	slidingWindowSize := manifest.ContextManagement.SlidingWindowSize
 	if slidingWindowSize <= 0 {
@@ -341,9 +344,14 @@ func (e *Engine) maybeAutoCompactExplicit(ctx context.Context, sessionID string,
 	}
 
 	// H2 memoisation — same per-session keying as maybeAutoCompact.
+	// Phase 3 (rank 5): this path is only reached on force triggers
+	// (CompactNow), so a memo hit must never be served — a manual
+	// /compact re-summarises.
 	currentHash := coldRangeHash(recent)
-	if reused, hit := e.reuseMemoisedSummary(sessionID, currentHash, recentTokens); hit {
-		return reused
+	if !forceFire {
+		if reused, hit := e.reuseMemoisedSummary(sessionID, currentHash, recentTokens); hit {
+			return reused
+		}
 	}
 
 	// Anchored iterative summarisation: use CompactExtend when a prior
@@ -371,6 +379,7 @@ func (e *Engine) maybeAutoCompactExplicit(ctx context.Context, sessionID string,
 			"recentTokens", recentTokens,
 			"tokenBudget", tokenBudget,
 		)
+		e.invalidateCompactionMemo(sessionID)
 		return truncationFallbackSummaryText
 	}
 	latency := time.Since(start)
@@ -381,6 +390,7 @@ func (e *Engine) maybeAutoCompactExplicit(ctx context.Context, sessionID string,
 			"error", err,
 			"sessionID", sessionID,
 		)
+		e.invalidateCompactionMemo(sessionID)
 		return truncationFallbackSummaryText
 	}
 
@@ -497,6 +507,27 @@ func compactionSummaryIdentity(summary ctxstore.CompactionSummary) string {
 		_, _ = h.Write([]byte{0})
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+// invalidateCompactionMemo evicts the session's memoised compaction
+// summary. Phase 3 (rank 5): a summariser-chain failure means the
+// cached summary is no longer trustworthy as an anchor for
+// CompactExtend — the next successful fire must summarise from
+// scratch rather than extend from a stale anchor.
+//
+// Expected:
+//   - sessionID identifies the session whose memo should be evicted.
+//
+// Side effects:
+//   - Deletes the per-session memo entry and clears
+//     lastCompactionSummary.
+//
+// Returns: result of invalidateCompactionMemo.
+func (e *Engine) invalidateCompactionMemo(sessionID string) {
+	e.buildStateMu.Lock()
+	delete(e.sessionCompactionMemo, sessionID)
+	e.lastCompactionSummary = nil
+	e.buildStateMu.Unlock()
 }
 
 // reuseMemoisedSummary looks up the per-session H2 memo and returns a

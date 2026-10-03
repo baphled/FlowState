@@ -313,6 +313,8 @@ func newTurnWatchdog(window time.Duration) *turnWatchdog {
 //
 // Side effects:
 //   - Overwrites the last-progress timestamp.
+//
+// Returns: result of markProgress.
 func (w *turnWatchdog) markProgress() {
 	if w == nil || w.window <= 0 {
 		return
@@ -332,6 +334,8 @@ func (w *turnWatchdog) markProgress() {
 //
 // Side effects:
 //   - Advances the last-progress timestamp when the throttle elapsed.
+//
+// Returns: result of markChunkProgress.
 func (w *turnWatchdog) markChunkProgress() {
 	if w == nil || w.window <= 0 {
 		return
@@ -361,6 +365,8 @@ func (w *turnWatchdog) markChunkProgress() {
 //
 // Side effects:
 //   - Overwrites the in-flight tool-execution timestamp.
+//
+// Returns: result of markToolExecStart.
 func (w *turnWatchdog) markToolExecStart() {
 	if w == nil || w.window <= 0 {
 		return
@@ -378,6 +384,8 @@ func (w *turnWatchdog) markToolExecStart() {
 // Side effects:
 //   - Clears the in-flight tool-execution timestamp and overwrites the
 //     last-progress timestamp.
+//
+// Returns: result of markToolBatchComplete.
 func (w *turnWatchdog) markToolBatchComplete() {
 	if w == nil {
 		return
@@ -421,6 +429,8 @@ func (w *turnWatchdog) stallSince(now time.Time) time.Duration {
 //
 // Side effects:
 //   - Overwrites the mirrored iteration counter.
+//
+// Returns: result of recordIterations.
 func (w *turnWatchdog) recordIterations(n int) {
 	if w == nil {
 		return
@@ -436,6 +446,9 @@ func (w *turnWatchdog) recordIterations(n int) {
 //
 // Side effects:
 //   - Sets the fired flag (idempotent).
+//
+// Expected: parameters for markFired.
+// Returns: result of markFired.
 func (w *turnWatchdog) markFired() {
 	if w == nil {
 		return
@@ -465,6 +478,9 @@ func (w *turnWatchdog) hasFired() bool {
 //
 // Side effects:
 //   - Sets the tool-time budget exhausted flag (idempotent).
+//
+// Expected: parameters for markToolTimeBudgetExhausted.
+// Returns: result of markToolTimeBudgetExhausted.
 func (w *turnWatchdog) markToolTimeBudgetExhausted() {
 	if w == nil {
 		return
@@ -519,6 +535,8 @@ func (w *turnWatchdog) claimTerminal() bool {
 // Side effects:
 //   - Emits one WARN log and invokes cancel when the window expires.
 //   - Closes ack on every exit path.
+//
+// Returns: result of watch.
 func (w *turnWatchdog) watch(sessionID string, cancel context.CancelFunc, done <-chan struct{}, ack chan<- struct{}) {
 	defer close(ack)
 	if w.window <= 0 {

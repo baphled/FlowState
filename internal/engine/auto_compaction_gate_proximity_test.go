@@ -529,7 +529,7 @@ var _ = Describe("Engine mid-tool-loop refresh hook", func() {
 			"mid-tool-loop fire must stamp the dedicated trigger discriminant so the chip tooltip can attribute the cause")
 	})
 
-	It("does not double-fire when called from a session that already compacted on this turn", func() {
+	It("re-summarises on a second forced fire even when the cold range is unchanged", func() {
 		summariser := &recordingSummariser{response: buildSummaryJSON()}
 		eng, store := newGateProxEngine(summariser, true, 0.99)
 		seedGateProxMessages(store, 95)
@@ -537,16 +537,21 @@ var _ = Describe("Engine mid-tool-loop refresh hook", func() {
 		outChan := make(chan provider.StreamChunk, 8)
 		// First call — fires.
 		eng.EmitMidToolLoopRefreshForTest(context.Background(), "sess-no-double", outChan)
-		// Second call against the same persisted state — H2 memo
-		// should reuse the cached summary; summariser is invoked
-		// exactly once, no second event.
+		// Second call against the same persisted state — the
+		// gate-proximity verdict still holds and the trigger is a
+		// FORCE trigger, so Phase 3 (rank 5) requires a fresh
+		// summary rather than the stale H2 memo: the caller
+		// explicitly decided the cached state is no longer
+		// trustworthy. The pre-Phase-3 spec expected memo
+		// coalescing here (calls == 1); rank 5 inverts that —
+		// forced compactions always re-summarise.
 		eng.EmitMidToolLoopRefreshForTest(context.Background(), "sess-no-double", outChan)
 		close(outChan)
 		for range outChan {
 		}
 
-		Expect(summariser.calls.Load()).To(Equal(int32(1)),
-			"H2 memoisation must coalesce duplicate fires when the cold range is unchanged")
+		Expect(summariser.calls.Load()).To(Equal(int32(2)),
+			"Phase 3 rank 5: forced tool_result_wave fires must bypass the H2 memo and re-summarise")
 	})
 
 	// Bug #35 — post-compaction message reload. emitMidToolLoopRefresh
@@ -634,8 +639,13 @@ var _ = Describe("Engine mid-tool-loop refresh hook", func() {
 			Expect(rebuilt[len(rebuilt)-1]).To(Equal(provider.Message{Role: "user", Content: "rebuild this request"}),
 				"the rebuilt slice must preserve the original user prompt instead of appending an empty trailing user message")
 
-			Expect(summariser.calls.Load()).To(Equal(int32(1)),
-				"reload must reuse the H2 memo, not re-invoke the summariser")
+			// Phase 3 (rank 5): the rebuild re-enters
+			// buildContextWindow with the gate-proximity verdict
+			// still positive, so the forced path re-summarises
+			// instead of reusing the H2 memo — two summariser
+			// calls total (one refresh fire + one rebuild fire).
+			Expect(summariser.calls.Load()).To(Equal(int32(2)),
+				"Phase 3 rank 5: forced fires bypass the H2 memo and re-summarise")
 		})
 	})
 
