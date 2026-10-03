@@ -169,6 +169,29 @@ type Engine struct {
 	// rehydrates again; an identical re-fire does not refill the window.
 	sessionRehydrated map[string]string
 
+	// sessionMidLoopFired coalesces duplicate mid-loop tool_result_wave
+	// fires per session: after a force-fire produces a summary, a
+	// re-fire against unchanged persisted state must reuse the H2
+	// memo instead of re-invoking the summariser. Guarded by
+	// buildStateMu.
+	sessionMidLoopFired map[string]bool
+
+	// sessionActivePlans holds the per-session active plan text the
+	// Phase 3 structural-context rebuild re-injects after compaction
+	// (re-injected from source-of-truth, never carried through the
+	// summary). Guarded by e.mu.
+	sessionActivePlans map[string]string
+	// sessionRecentFiles holds the per-session recently-modified file
+	// paths plus a brief status for the Phase 3 structural-context
+	// rebuild. Above structuralContextFilesTokenCap the rebuild
+	// degrades to path-only. Guarded by e.mu.
+	sessionRecentFiles map[string]sessionFileState
+	// sessionCoordinationKeys holds the per-session coordination-store
+	// keys written this session, re-injected after compaction so the
+	// next turn can re-read them via coordination_store. Guarded by
+	// e.mu.
+	sessionCoordinationKeys map[string][]string
+
 	// seededSessions tracks which session IDs have had their historical
 	// messages loaded into e.store via SeedHistory. Once a session is
 	// seeded we skip future calls so that the messages are not duplicated
@@ -1352,6 +1375,7 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		sessionCompressionMetrics:        make(map[string]*ctxstore.CompressionMetrics),
 		sessionCompactionMemo:            make(map[string]sessionCompactionMemoEntry),
 		sessionRehydrated:                make(map[string]string),
+		sessionMidLoopFired:              make(map[string]bool),
 		seededSessions:                   make(map[string]struct{}),
 		sessionLookup:                    cfg.SessionLookup,
 		permissionPrompter:               cfg.PermissionPrompter,
@@ -4169,8 +4193,27 @@ func (e *Engine) emitMidToolLoopRefresh(
 	if e.gateProximityForceCompact(&manifestCopy, "", tokenBudget, tools) {
 		forceTrigger = "tool_result_wave"
 	}
+	// Coalescing: a prior tool_result_wave fire already produced a
+	// summary for the same persisted state — reuse it via the H2
+	// memo instead of paying for a second summariser call. The
+	// per-turn ctx guard covers the explicit path; the legacy
+	// store path tracks it on the engine.
+	guard := midLoopCompactionGuardFromContext(ctx)
+	e.buildStateMu.Lock()
+	alreadyFired := e.sessionMidLoopFired[sessionID]
+	e.buildStateMu.Unlock()
+	if (guard != nil && guard.fired) || alreadyFired {
+		forceTrigger = ""
+	}
 	summary := e.maybeAutoCompact(ctx, sessionID, &manifestCopy, tokenBudget, forceTrigger)
-	return summary != ""
+	compacted := summary != ""
+	if compacted {
+		if guard != nil {
+			guard.fired = true
+		}
+		e.markMidLoopCompactionFired(sessionID)
+	}
+	return compacted
 }
 
 // emitMidToolLoopRefreshExplicit is the serve-mode compaction decision
