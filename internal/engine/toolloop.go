@@ -1877,7 +1877,9 @@ func (e *Engine) streamWithToolLoop(
 		}
 
 		if e.maxSameToolPatternCalls > 0 {
-			if len(result.toolCalls) > 0 && batchAllFailed(toolResults) {
+			identicalBreakout := len(result.toolCalls) > 0 && identicalRun >= e.maxIdenticalToolCalls
+			narratedRound := len(result.toolCalls) > 0 && strings.TrimSpace(result.responseContent) != ""
+			if len(result.toolCalls) > 0 && (batchAllFailed(toolResults) || identicalBreakout || narratedRound) {
 				names := make([]string, len(result.toolCalls))
 				for i, tc := range result.toolCalls {
 					names[i] = tc.Name
@@ -3318,6 +3320,7 @@ func (e *Engine) processStreamChunks(
 						toolCalls:       toolCalls,
 						responseContent: responseContent.String(),
 						thinkingContent: thinkingContent.String(),
+						stopReason:      chunk.StopReason,
 					}
 				}
 				if overflowDetected {
