@@ -746,6 +746,14 @@ func (e *Engine) streamWithToolLoop(
 	sameToolPatternRun := 0
 	lastToolNames := ""
 	const maxToolUseNoCallsRetries = 3
+	// toolUseNoCallsStreakThreshold is the per-turn streak of
+	// tool_use_no_calls rounds after which the provider/model pair is
+	// marked unhealthy for the rest of the turn so streamFromProvider's
+	// failover hook routes the retry to the next healthy candidate
+	// instead of hammering the same model until the iteration budget
+	// trips (2026-09-30 Tool Budget Exhaustion RCA: streak-thresholded
+	// failover replaces unbounded in-session same-model retries).
+	const toolUseNoCallsStreakThreshold = 2
 	var toolUseNoCallsAttempts int
 	sawContextOverflow := false
 	pendingOverflowRecovery := pendingOverflowRecoveryFromContext(ctx)
@@ -1176,6 +1184,17 @@ func (e *Engine) streamWithToolLoop(
 					"attempt", toolUseNoCallsAttempts,
 					"max_attempts", maxToolUseNoCallsRetries,
 				)
+				primaryProvider := e.lastProviderCtx(ctx)
+				primaryModel := e.lastModelCtx(ctx)
+				if toolUseNoCallsAttempts >= toolUseNoCallsStreakThreshold && primaryProvider != "" && primaryModel != "" && e.failoverManager != nil {
+					e.failoverManager.Health().MarkRateLimited(primaryProvider, primaryModel, time.Now().Add(5*time.Minute))
+					slog.Warn("tool_use_no_calls streak threshold reached, failing over to next candidate",
+						"session", sessionID,
+						"streak", toolUseNoCallsAttempts,
+						"provider", primaryProvider,
+						"model", primaryModel,
+					)
+				}
 				retryReq := provider.ChatRequest{
 					Provider: e.lastProviderCtx(ctx),
 					Model:    e.lastModelCtx(ctx),
