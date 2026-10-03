@@ -38,6 +38,29 @@ func (e *Engine) BuildContextWindowForTesting(ctx context.Context, sessionID str
 	return e.buildContextWindow(ctx, sessionID, userMessage)
 }
 
+// MaybeAutoCompactExplicitForTesting exposes the explicit-messages
+// compaction path (with an empty forceTrigger for the non-forced
+// ratio tier) to the BDD harness, mirroring
+// BuildContextWindowForTesting. Production code MUST NOT call this.
+//
+// Expected:
+//   - ctx carries a live context for summariser calls.
+//   - sessionID identifies a session with prior messages to compact.
+//   - forceTrigger is "" for the non-forced ratio tier, or a named
+//     trigger (e.g. "manual") for forced compaction.
+//   - messages is the explicit message slice to evaluate.
+//
+// Returns:
+//   - the summary text produced (or the truncation fallback), "" when
+//     no compaction fired.
+//
+// Side effects:
+//   - May mutate the session's memoised summary cache and compacted
+//     context store, exactly like the production compaction path.
+func (e *Engine) MaybeAutoCompactExplicitForTesting(ctx context.Context, sessionID, forceTrigger string, messages []provider.Message) string {
+	return e.maybeAutoCompactExplicit(ctx, sessionID, &e.manifest, e.ModelContextLimit(), forceTrigger, messages)
+}
+
 // StopSessionSplitterForTesting flushes and shuts down the
 // HotColdSplitter cached for the given sessionID so integration tests
 // in sibling packages can make deterministic filesystem assertions
