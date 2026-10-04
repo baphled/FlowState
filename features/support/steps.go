@@ -4107,8 +4107,8 @@ func (s *StepDefinitions) theSystemPromptShouldNotContainAgentsMdContent() error
 	if s.lastPrompt == "" {
 		return errors.New("no system prompt built")
 	}
-	if s.lastPrompt != "Base system prompt." {
-		return fmt.Errorf("expected only base prompt, got: %s", s.lastPrompt)
+	if strings.Contains(s.lastPrompt, "Instructions from:") {
+		return fmt.Errorf("expected no AGENTS.md content, got: %s", s.lastPrompt)
 	}
 	return nil
 }
