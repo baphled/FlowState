@@ -372,7 +372,7 @@ func (m *Manager) LastModel() string {
 func (m *Manager) SetLast(providerName, model string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.recordAttemptLocked(providerName, model)
+	m.recordSuccessLocked(providerName, model)
 	m.lastProvider = providerName
 	m.lastModel = model
 }
@@ -563,9 +563,10 @@ func rankCandidatesByHealth(
 	return rankCandidatesWithTiers(health, tiers, attempts, candidates)
 }
 
-// attemptRecord tracks the last attempt timestamp for a candidate.
+// attemptRecord tracks the last attempt and last success timestamps for a candidate.
 type attemptRecord struct {
-	lastAttemptAt time.Time
+	lastAttemptAt  time.Time
+	lastSuccessAt  time.Time
 }
 
 // rankedCandidate pairs a provider model preference with its failover rank score.
@@ -584,6 +585,20 @@ type rankedCandidate struct {
 // Returns: result of recordAttemptLocked.
 //
 // Side effects: None.
+// recordSuccessLocked records a successful completion for the given provider
+// model, stamping both the last success and last attempt timestamps.
+func (m *Manager) recordSuccessLocked(providerName, model string) {
+	if m.attempts == nil {
+		m.attempts = make(map[ProviderModel]attemptRecord)
+	}
+	now := time.Now()
+	key := ProviderModel{Provider: providerName, Model: model}
+	record := m.attempts[key]
+	record.lastAttemptAt = now
+	record.lastSuccessAt = now
+	m.attempts[key] = record
+}
+
 func (m *Manager) recordAttemptLocked(providerName, model string) {
 	if m.attempts == nil {
 		m.attempts = make(map[ProviderModel]attemptRecord)
@@ -717,9 +732,17 @@ func sortEquivalentGroup(candidates []rankedCandidate) {
 			return false
 		case !left.lastAttemptAt.IsZero() && right.lastAttemptAt.IsZero():
 			return true
-		case left.lastAttemptAt.After(right.lastAttemptAt):
-			return true
+		case !left.lastSuccessAt.IsZero() || !right.lastSuccessAt.IsZero():
+			if left.lastSuccessAt.IsZero() {
+				return false
+			}
+			if right.lastSuccessAt.IsZero() {
+				return true
+			}
+			return left.lastSuccessAt.After(right.lastSuccessAt)
 		case right.lastAttemptAt.After(left.lastAttemptAt):
+			return true
+		case left.lastAttemptAt.After(right.lastAttemptAt):
 			return false
 		default:
 			return candidates[i].index < candidates[j].index
