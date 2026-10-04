@@ -14,8 +14,6 @@ capabilities:
   always_active_skills:
     - pre-action
     - discipline
-    - memory-keeper
-    - knowledge-base
     - deadline-urgency
   mcp_servers:
     - memory
