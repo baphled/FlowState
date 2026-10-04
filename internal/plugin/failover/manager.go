@@ -565,8 +565,8 @@ func rankCandidatesByHealth(
 
 // attemptRecord tracks the last attempt and last success timestamps for a candidate.
 type attemptRecord struct {
-	lastAttemptAt  time.Time
-	lastSuccessAt  time.Time
+	lastAttemptAt time.Time
+	lastSuccessAt time.Time
 }
 
 // rankedCandidate pairs a provider model preference with its failover rank score.
@@ -578,15 +578,12 @@ type rankedCandidate struct {
 	attempt   attemptRecord
 }
 
-// recordAttemptLocked ...
-//
-// Expected: parameters for recordAttemptLocked.
-//
-// Returns: result of recordAttemptLocked.
-//
-// Side effects: None.
 // recordSuccessLocked records a successful completion for the given provider
 // model, stamping both the last success and last attempt timestamps.
+//
+// Expected: parameters for recordSuccessLocked.
+//
+// Side effects: None.
 func (m *Manager) recordSuccessLocked(providerName, model string) {
 	if m.attempts == nil {
 		m.attempts = make(map[ProviderModel]attemptRecord)
@@ -599,6 +596,11 @@ func (m *Manager) recordSuccessLocked(providerName, model string) {
 	m.attempts[key] = record
 }
 
+// recordAttemptLocked records an attempt for the given provider model.
+//
+// Expected: parameters for recordAttemptLocked.
+//
+// Side effects: None.
 func (m *Manager) recordAttemptLocked(providerName, model string) {
 	if m.attempts == nil {
 		m.attempts = make(map[ProviderModel]attemptRecord)
