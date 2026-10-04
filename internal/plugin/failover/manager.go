@@ -563,7 +563,10 @@ func rankCandidatesByHealth(
 	return rankCandidatesWithTiers(health, tiers, attempts, candidates)
 }
 
-// attemptRecord tracks the last attempt and last success timestamps for a candidate.
+// attemptRecord tracks the last attempt and last success timestamps for a
+// candidate. Attempts drive least-recently-used rotation between equivalent
+// candidates; successes confer stickiness so the last healthy candidate stays
+// first within its tier.
 type attemptRecord struct {
 	lastAttemptAt time.Time
 	lastSuccessAt time.Time
@@ -608,6 +611,22 @@ func (m *Manager) recordAttemptLocked(providerName, model string) {
 	m.attempts[ProviderModel{Provider: providerName, Model: model}] = attemptRecord{
 		lastAttemptAt: time.Now(),
 	}
+}
+
+// recordSuccessLocked stamps the success timestamp for a candidate so it
+// retains affinity at the head of its equivalent tier while healthy.
+//
+// Expected: called under a write lock on m.mu.
+// Side effects: mutates m.attempts.
+func (m *Manager) recordSuccessLocked(providerName, model string) {
+	if m.attempts == nil {
+		m.attempts = make(map[ProviderModel]attemptRecord)
+	}
+	key := ProviderModel{Provider: providerName, Model: model}
+	record := m.attempts[key]
+	record.lastAttemptAt = time.Now()
+	record.lastSuccessAt = record.lastAttemptAt
+	m.attempts[key] = record
 }
 
 // rankCandidatesWithTiers ...
@@ -729,11 +748,26 @@ func sortEquivalentGroup(candidates []rankedCandidate) {
 	sort.SliceStable(candidates, func(i, j int) bool {
 		left := candidates[i].attempt
 		right := candidates[j].attempt
+		if !left.lastSuccessAt.IsZero() || !right.lastSuccessAt.IsZero() {
+			switch {
+			case left.lastSuccessAt.IsZero():
+				return false
+			case right.lastSuccessAt.IsZero():
+				return true
+			case left.lastSuccessAt.After(right.lastSuccessAt):
+				return true
+			case right.lastSuccessAt.After(left.lastSuccessAt):
+				return false
+			default:
+				return candidates[i].index < candidates[j].index
+			}
+		}
 		switch {
 		case left.lastAttemptAt.IsZero() && !right.lastAttemptAt.IsZero():
 			return false
 		case !left.lastAttemptAt.IsZero() && right.lastAttemptAt.IsZero():
 			return true
+<<<<<<< HEAD
 		case !left.lastSuccessAt.IsZero() || !right.lastSuccessAt.IsZero():
 			if left.lastSuccessAt.IsZero() {
 				return false
