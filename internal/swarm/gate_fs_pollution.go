@@ -326,6 +326,7 @@ func manifestDeclarationMismatch(profile FSPollutionMemberProfile, w fsWrite) st
 //   - None.
 func (r *fsPollutionRunner) checkWrites(memberID string, writes []fsWrite) []fsWrite {
 	profile, attested := r.profiles[memberID]
+	legacy := r.profiles == nil && !attested
 	var out []fsWrite
 	for _, w := range writes {
 		if w.Path == "" {
@@ -335,20 +336,26 @@ func (r *fsPollutionRunner) checkWrites(memberID string, writes []fsWrite) []fsW
 			out = append(out, w)
 			continue
 		}
-		if !attested {
+		if !attested && !legacy {
 			out = append(out, fsWrite{Path: w.Path, ContentType: w.ContentType, Role: w.Role})
 			continue
 		}
-		if mismatch := manifestDeclarationMismatch(profile, w); mismatch != "" {
-			out = append(out, fsWrite{Path: w.Path, ContentType: w.ContentType, Role: w.Role + "; manifest mismatch: " + mismatch})
-			continue
+		if attested {
+			if mismatch := manifestDeclarationMismatch(profile, w); mismatch != "" {
+				out = append(out, fsWrite{Path: w.Path, ContentType: w.ContentType, Role: w.Role + "; manifest mismatch: " + mismatch})
+				continue
+			}
 		}
 		resolved := w.Path
 		if !filepath.IsAbs(resolved) {
 			resolved = filepath.Join(r.repoRoot, resolved)
 		}
 		resolved = resolveSymlinkAncestry(filepath.Clean(resolved))
-		if !r.isSanctioned(resolved, strings.ToLower(w.ContentType), strings.ToLower(profile.Role)) {
+		role := strings.ToLower(profile.Role)
+		if legacy {
+			role = strings.ToLower(w.Role)
+		}
+		if !r.isSanctioned(resolved, strings.ToLower(w.ContentType), role) {
 			out = append(out, w)
 		}
 	}
