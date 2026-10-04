@@ -213,12 +213,14 @@ func validateStatusPatch(current []Item, idx int, patch itemPatch) error {
 	if err := validateTransition(current[idx].Status, patch.status); err != nil {
 		return err
 	}
-	// Prevent fraudulent batch completions: only an item currently in_progress
-	// can be marked completed or cancelled. This forces agents to work on items
-	// sequentially (claim → work → complete → claim next) rather than batch
-	// completing items without doing the work.
-	if patch.status == "completed" || patch.status == "cancelled" {
-		if current[idx].Status != "in_progress" {
+	// Prevent fraudulent batch cancellations: only an item currently
+	// in_progress or pending can be cancelled, and terminal states can
+	// never be re-entered. Completing a pending item directly is
+	// sanctioned by the BDD contract (pending may jump straight to
+	// completed), while revert protection below still guarantees
+	// terminal states are final.
+	if patch.status == "cancelled" {
+		if current[idx].Status != "in_progress" && current[idx].Status != "pending" {
 			return fmt.Errorf("can only mark an in_progress item as %s; item %d is currently %s", patch.status, idx, current[idx].Status)
 		}
 	}

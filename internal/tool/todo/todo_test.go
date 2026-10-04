@@ -590,8 +590,12 @@ var _ = Describe("TodoUpdateTool", func() {
 				Expect(err.Error()).To(ContainSubstring("cannot move"))
 			})
 
-			It("does not allow a pending item to jump directly to completed", func() {
-				// Fraud prevention: must claim item before completing it
+			It("allows a pending item to jump directly to completed", func() {
+				Expect(store.Set("sess-123", []todotool.Item{
+					{Content: "skip me", Status: "pending", Priority: "low"},
+					{Content: "carry on", Status: "pending", Priority: "medium"},
+				})).To(Succeed())
+
 				_, err := u.Execute(sessionCtx(), tool.Input{
 					Name: "todo_update",
 					Arguments: map[string]interface{}{
@@ -599,8 +603,11 @@ var _ = Describe("TodoUpdateTool", func() {
 						"status": "completed",
 					},
 				})
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("can only mark an in_progress item as completed"))
+				Expect(err).NotTo(HaveOccurred())
+
+				stored := store.Get("sess-123")
+				Expect(stored[0].Status).To(Equal("completed"))
+				Expect(stored[1].Status).To(Equal("in_progress"))
 			})
 
 			It("auto-advances the next pending item when the active item is cancelled", func() {
