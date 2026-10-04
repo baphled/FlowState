@@ -1273,7 +1273,8 @@ func (e *Engine) baseStreamHandler() hook.HandlerFunc {
 			}
 			return e.chatProvider.Stream(ctx, *req)
 		}
-		return nil, errors.New("no provider available: configure either ChatProvider or FailoverManager")}
+		return nil, errors.New("no provider available: configure either ChatProvider or FailoverManager")
+	}
 }
 
 // publishTurnCompleteNotification fires a user-facing turn_complete
