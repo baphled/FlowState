@@ -3,6 +3,7 @@
 package support
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -76,28 +77,14 @@ func (s *SkillAutoloadingStepDefinitions) runSelectionAndCapture() {
 		},
 	}
 
-	baselineSet := make(map[string]bool, len(s.cfg.BaselineSkills))
-	for _, b := range s.cfg.BaselineSkills {
-		baselineSet[b] = true
-	}
-	var sessionStart, contextual []string
-	for _, sk := range s.selection.Skills {
-		if baselineSet[sk] {
-			sessionStart = append(sessionStart, sk)
-		} else {
-			contextual = append(contextual, sk)
-		}
-	}
-	var leanParts []string
-	if len(sessionStart) > 0 {
-		leanParts = append(leanParts, fmt.Sprintf("session start — invoke before first response: [%s]", strings.Join(sessionStart, ", ")))
-	}
-	if len(contextual) > 0 {
-		leanParts = append(leanParts, fmt.Sprintf("load when relevant: [%s]", strings.Join(contextual, ", ")))
-	}
-	lean := "Your load_skills: " + strings.Join(leanParts, "; ") + ". Use skill_load(name) to invoke."
-
-	s.capturedReq.Messages[0].Content = lean + "\n\n" + s.capturedReq.Messages[0].Content
+	// Drive the real autoloader hook so the captured prompt reflects the
+	// production lean-injection format (<available_skills> block) rather
+	// than a hand-rolled duplicate that drifts from the hook.
+	manifest := s.manifest
+	h := hook.SkillAutoLoaderHook(s.cfg, func() agent.Manifest { return manifest }, nil, nil)
+	_, _ = h(func(_ context.Context, _ *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+		return nil, nil
+	})(context.Background(), s.capturedReq)
 }
 
 // theAgentSystemIsInitialised sets up the default config and manifest.
@@ -341,8 +328,8 @@ func (s *SkillAutoloadingStepDefinitions) theSystemPromptShouldListTheSkillByIts
 		return errors.New("no captured request; skill has not been injected")
 	}
 	systemContent := s.capturedReq.Messages[0].Content
-	if !strings.Contains(systemContent, "Your load_skills: [") {
-		return fmt.Errorf("expected lean skill format 'Your load_skills: [...]' in prompt, got: %s", systemContent)
+	if !strings.Contains(systemContent, "<available_skills>") {
+		return fmt.Errorf("expected lean skill block '<available_skills>...' in prompt, got: %s", systemContent)
 	}
 	return nil
 }
