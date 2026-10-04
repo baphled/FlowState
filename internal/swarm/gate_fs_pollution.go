@@ -336,8 +336,12 @@ func (r *fsPollutionRunner) checkWrites(memberID string, writes []fsWrite) []fsW
 			out = append(out, w)
 			continue
 		}
+		role := w.Role
 		if !attested && !legacy {
-			out = append(out, fsWrite{Path: w.Path, ContentType: w.ContentType, Role: w.Role})
+			// Fail closed: against a manifest-attested runner a
+			// member absent from the manifest cannot attest any
+			// write (ADR-0001 gap 1).
+			out = append(out, fsWrite{Path: w.Path, ContentType: w.ContentType, Role: w.Role + "; unattested member"})
 			continue
 		}
 		if attested {
@@ -345,17 +349,14 @@ func (r *fsPollutionRunner) checkWrites(memberID string, writes []fsWrite) []fsW
 				out = append(out, fsWrite{Path: w.Path, ContentType: w.ContentType, Role: w.Role + "; manifest mismatch: " + mismatch})
 				continue
 			}
+			role = profile.Role
 		}
 		resolved := w.Path
 		if !filepath.IsAbs(resolved) {
 			resolved = filepath.Join(r.repoRoot, resolved)
 		}
 		resolved = resolveSymlinkAncestry(filepath.Clean(resolved))
-		role := strings.ToLower(profile.Role)
-		if legacy {
-			role = strings.ToLower(w.Role)
-		}
-		if !r.isSanctioned(resolved, strings.ToLower(w.ContentType), role) {
+		if !r.isSanctioned(resolved, strings.ToLower(w.ContentType), strings.ToLower(role)) {
 			out = append(out, w)
 		}
 	}

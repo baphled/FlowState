@@ -613,22 +613,6 @@ func (m *Manager) recordAttemptLocked(providerName, model string) {
 	}
 }
 
-// recordSuccessLocked stamps the success timestamp for a candidate so it
-// retains affinity at the head of its equivalent tier while healthy.
-//
-// Expected: called under a write lock on m.mu.
-// Side effects: mutates m.attempts.
-func (m *Manager) recordSuccessLocked(providerName, model string) {
-	if m.attempts == nil {
-		m.attempts = make(map[ProviderModel]attemptRecord)
-	}
-	key := ProviderModel{Provider: providerName, Model: model}
-	record := m.attempts[key]
-	record.lastAttemptAt = time.Now()
-	record.lastSuccessAt = record.lastAttemptAt
-	m.attempts[key] = record
-}
-
 // rankCandidatesWithTiers ...
 //
 // Expected: parameters for rankCandidatesWithTiers.
@@ -767,7 +751,6 @@ func sortEquivalentGroup(candidates []rankedCandidate) {
 			return false
 		case !left.lastAttemptAt.IsZero() && right.lastAttemptAt.IsZero():
 			return true
-<<<<<<< HEAD
 		case !left.lastSuccessAt.IsZero() || !right.lastSuccessAt.IsZero():
 			if left.lastSuccessAt.IsZero() {
 				return false
