@@ -3341,7 +3341,7 @@ func (s *StepDefinitions) aConfigFileExistsAtThatPath() error {
 	if s.tempDir == "" {
 		return errors.New("tempDir not set - call xdgConfigHomeIsSetToACustomPath first")
 	}
-	content := []byte("providers:\n  default: anthropic\nlog_level: trace\n")
+	content := []byte("log_level: trace\n")
 	configPath := filepath.Join(s.tempDir, "config.yaml")
 	if err := os.WriteFile(configPath, content, 0o600); err != nil {
 		return fmt.Errorf("writing XDG config file: %w", err)
