@@ -16,6 +16,7 @@ import (
 
 	agentpkg "github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/api"
+	dispatchpkg "github.com/baphled/flowstate/internal/dispatch"
 	"github.com/baphled/flowstate/internal/voice"
 	"github.com/cucumber/godog"
 )
@@ -209,12 +210,51 @@ type voiceAPIState struct {
 // voiceAPI is the scenario-scoped state, rebound per scenario.
 var voiceAPI *voiceAPIState
 
-// aVoiceAPIServer builds a bare API server for the endpoint tests.
+// apiTurnPipeline adapts the shared voice pipeline and a no-op
+// dispatch spy into the API transcribe seam.
+type apiTurnPipeline struct {
+	pipeline *voice.Pipeline
+	spy      *apiDispatchSpy
+}
+
+// DispatchAudio transcribes and dispatches without blocking on a
+// real ephemeral turn.
+//
+// Expected:
+//   - audio is WAV file bytes from the endpoint upload.
+//
+// Returns:
+//   - The dispatched transcript.
+//   - ErrSTTUnavailable when no STT binary resolves.
+func (a *apiTurnPipeline) DispatchAudio(audio []byte) (string, error) {
+	return a.pipeline.DispatchAudio(context.Background(), a.spy, audio)
+}
+
+// apiDispatchSpy accepts the ephemeral dispatch and completes
+// immediately, standing in for the production dispatcher.
+type apiDispatchSpy struct{}
+
+// DispatchEphemeral records nothing and returns a finished handle.
+func (a *apiDispatchSpy) DispatchEphemeral(_ context.Context, _ dispatchpkg.DispatchRequest, _ interface{}) (dispatchpkg.EphemeralHandle, error) {
+	done := make(chan error, 1)
+	done <- nil
+	return dispatchpkg.EphemeralHandle{Done: done}, nil
+}
+
+// aVoiceAPIServer builds an API server with the voice turn pipeline
+// wired, honouring the scenario's STT environment.
+//
+// Expected:
+//   - None; the pipeline is constructed with an empty STT binary path.
+//
+// Returns:
+//   - Always nil.
 //
 // Side effects:
-//   - Stores a fresh *api.Server on the state.
+//   - Stores a fresh *api.Server with a live voice pipeline.
 func (v *voiceAPIState) aVoiceAPIServer() error {
-	v.server = api.NewServer(nil, agentpkg.NewRegistry(), nil, nil)
+	adapter := &apiTurnPipeline{pipeline: voice.NewPipeline(""), spy: &apiDispatchSpy{}}
+	v.server = api.NewServer(nil, agentpkg.NewRegistry(), nil, nil, api.WithVoiceTurnPipeline(adapter))
 	return nil
 }
 
@@ -347,9 +387,7 @@ func VoiceAPIContext(sc *godog.ScenarioContext) {
 	sc.Step(`^the response contains the transcript "([^"]*)"$`, func(transcript string) error {
 		return voiceAPI.theResponseContainsTheTranscript(transcript)
 	})
-}
-
-// aFakeSTTCommandThatEmits installs a fake STT binary emitting the
+}// aFakeSTTCommandThatEmits installs a fake STT binary emitting the
 // given transcript, shared by the @b6 endpoint scenarios.
 //
 // Expected:
