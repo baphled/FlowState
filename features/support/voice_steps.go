@@ -387,7 +387,7 @@ func VoiceAPIContext(sc *godog.ScenarioContext) {
 	sc.Step(`^the response contains the transcript "([^"]*)"$`, func(transcript string) error {
 		return voiceAPI.theResponseContainsTheTranscript(transcript)
 	})
-}// aFakeSTTCommandThatEmits installs a fake STT binary emitting the
+} // aFakeSTTCommandThatEmits installs a fake STT binary emitting the
 // given transcript, shared by the @b6 endpoint scenarios.
 //
 // Expected:

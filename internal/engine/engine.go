@@ -169,19 +169,20 @@ type Engine struct {
 	// rehydrates again; an identical re-fire does not refill the window.
 	sessionRehydrated map[string]string
 
-	// sessionRecentFiles (Phase 3, rank 6) records the most recent
-	// write/edit tool targets per session in insertion order, capped
-	// at sessionRecentFilesCap. The rehydrated rebuild re-injects
-	// these paths (path + status) as structural context after a
-	// compaction so the agent knows which files it touched without
-	// the transcript having to survive summarisation.
-	sessionRecentFiles map[string][]string
-
-	// sessionCoordinationKeys (Phase 3, rank 6) records coordination
-	// store keys written this session, capped at
-	// sessionCoordinationKeysCap, so the rehydrated rebuild can
-	// re-inject the key references the agent needs to re-read its
-	// handoff payloads after a compaction.
+	// sessionActivePlans holds the per-session active plan text the
+	// Phase 3 structural-context rebuild re-injects after compaction
+	// (re-injected from source-of-truth, never carried through the
+	// summary). Guarded by e.mu.
+	sessionActivePlans map[string]string
+	// sessionRecentFiles holds the per-session recently-modified file
+	// paths plus a brief status for the Phase 3 structural-context
+	// rebuild. Above structuralContextFilesTokenCap the rebuild
+	// degrades to path-only. Guarded by e.mu.
+	sessionRecentFiles map[string]sessionFileState
+	// sessionCoordinationKeys holds the per-session coordination-store
+	// keys written this session, re-injected after compaction so the
+	// next turn can re-read them via coordination_store. Guarded by
+	// e.mu.
 	sessionCoordinationKeys map[string][]string
 
 	// seededSessions tracks which session IDs have had their historical
@@ -1369,8 +1370,6 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		sessionCompressionMetrics:        make(map[string]*ctxstore.CompressionMetrics),
 		sessionCompactionMemo:            make(map[string]sessionCompactionMemoEntry),
 		sessionRehydrated:                make(map[string]string),
-		sessionRecentFiles:               make(map[string][]string),
-		sessionCoordinationKeys:          make(map[string][]string),
 		seededSessions:                   make(map[string]struct{}),
 		sessionLookup:                    cfg.SessionLookup,
 		permissionPrompter:               cfg.PermissionPrompter,
@@ -4212,6 +4211,14 @@ func (e *Engine) emitMidToolLoopRefresh(
 	if e.gateProximityForceCompact(&manifestCopy, "", tokenBudget, tools) {
 		forceTrigger = "tool_result_wave"
 	}
+	// Coalescing: a prior tool_result_wave fire already produced a
+	// summary for the same persisted state — reuse it via the H2
+	// memo instead of paying for a second summariser call. The
+	// per-turn ctx guard covers the explicit path; the legacy
+	// store path tracks it on the engine.
+	// No alreadyFired coalescing: agent-platform's rank-5 contract
+	// requires every forced tool_result_wave fire to re-summarise
+	// (bypassing the H2 memo).
 	summary := e.maybeAutoCompact(ctx, sessionID, &manifestCopy, tokenBudget, forceTrigger)
 	return summary != ""
 }
@@ -4251,6 +4258,10 @@ func (e *Engine) emitMidToolLoopRefreshExplicit(
 	if tokenBudget <= 0 {
 		return false
 	}
+	// Per-turn ctx guard: at most one mid-loop fire per turn. The
+	// rank-5 forced re-summarise tests pass a bare Background ctx (no
+	// guard), so the guard suppresses only same-turn re-fires — it is
+	// not the alreadyFired coalescing that memoised the summary.
 	guard := midLoopCompactionGuardFromContext(ctx)
 	if guard != nil && guard.fired {
 		slog.Debug("mid-loop compaction already fired this turn; suppressing re-fire",

@@ -212,6 +212,11 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 		summary, err = e.autoCompactor.Compact(ctx, recent)
 	}
 	if err != nil {
+		// Phase 3 memo invalidation: a failed summarisation must not
+		// leave the stale memo entry in place — the next turn would
+		// reuse a summary of a cold range that no longer matches, and
+		// getPriorCompactionSummary would anchor CompactExtend on it.
+		e.invalidateSessionCompactionMemo(sessionID)
 		slog.Warn("engine auto-compaction failed; applying naive truncation fallback",
 			"error", err,
 			"recentTokens", recentTokens,
@@ -225,6 +230,7 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 
 	summaryJSON, err := json.Marshal(summary)
 	if err != nil {
+		e.invalidateSessionCompactionMemo(sessionID)
 		slog.Warn("engine auto-compaction produced unmarshallable summary; applying truncation fallback",
 			"error", err,
 			"sessionID", sessionID,
@@ -344,9 +350,9 @@ func (e *Engine) maybeAutoCompactExplicit(ctx context.Context, sessionID string,
 	}
 
 	// H2 memoisation — same per-session keying as maybeAutoCompact.
-	// Phase 3 (rank 5): this path is only reached on force triggers
-	// (CompactNow), so a memo hit must never be served — a manual
-	// /compact re-summarises.
+	// Phase 3: the force-fire path (the only caller today) skips the
+	// memo so a manual /compact regenerates a fresh summary even when
+	// the cold-range hash is unchanged.
 	currentHash := coldRangeHash(recent)
 	if !forceFire {
 		if reused, hit := e.reuseMemoisedSummary(sessionID, currentHash, recentTokens); hit {
@@ -373,6 +379,9 @@ func (e *Engine) maybeAutoCompactExplicit(ctx context.Context, sessionID string,
 		summary, err = e.autoCompactor.Compact(ctx, recent)
 	}
 	if err != nil {
+		// Phase 3 memo invalidation — mirrors maybeAutoCompact: the
+		// stale memo must not outlive a failed manual compaction.
+		e.invalidateSessionCompactionMemo(sessionID)
 		slog.Warn("engine manual compaction failed; applying naive truncation fallback",
 			"error", err,
 			"sessionID", sessionID,
@@ -386,6 +395,7 @@ func (e *Engine) maybeAutoCompactExplicit(ctx context.Context, sessionID string,
 
 	summaryJSON, err := json.Marshal(summary)
 	if err != nil {
+		e.invalidateSessionCompactionMemo(sessionID)
 		slog.Warn("engine manual compaction produced unmarshallable summary; applying truncation fallback",
 			"error", err,
 			"sessionID", sessionID,
@@ -579,6 +589,20 @@ func (e *Engine) reuseMemoisedSummary(sessionID string, currentHash [32]byte, re
 	e.lastCompactionSummary = cached.summary
 	e.buildStateMu.Unlock()
 	return autoCompactedSummaryPrefix + string(summaryJSON), true
+}
+
+// invalidateSessionCompactionMemo drops the per-session H2 memo entry
+// after a SummariserChain failure so a failed compaction turn never
+// poisons later turns with a stale summary.
+//
+// Expected: sessionID identifies the session whose memo entry to drop.
+// Returns: None.
+// Side effects: Deletes e.sessionCompactionMemo[sessionID] under
+// buildStateMu; safe when no entry exists.
+func (e *Engine) invalidateSessionCompactionMemo(sessionID string) {
+	e.buildStateMu.Lock()
+	delete(e.sessionCompactionMemo, sessionID)
+	e.buildStateMu.Unlock()
 }
 
 // getPriorCompactionSummary retrieves the most recent successful compaction
@@ -1455,6 +1479,12 @@ func (e *Engine) rebuildContextWindowAfterMidLoopCompaction(ctx context.Context,
 	}
 	started := time.Now()
 	preEstimate := e.estimateMessagesForLog(ctx, messages)
+	// The mid-loop fire already produced this session's summary. The
+	// pre-Phase-3 rebuild bound a per-turn guard so buildContextWindow
+	// read the memoised summary instead of re-firing, but Phase 3
+	// (rank 5, agent-platform) requires forced fires to skip the H2
+	// memo — the Bug #35 reload spec expects a second summariser call
+	// here (one refresh fire + one rebuild fire). No guard is bound.
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == "user" {
 			rebuilt := e.buildContextWindow(ctx, sessionID, messages[i].Content)

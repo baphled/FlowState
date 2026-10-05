@@ -127,7 +127,7 @@ func (s *phase3State) wireEngine(limit int) error {
 
 // RegisterPhase3Steps wires the @compaction-phase3 scenarios to the
 // production compaction and rebuild paths.
-func RegisterPhase3Steps(ctx *godog.ScenarioContext) {
+func RegisterPhase3RehydrationSteps(ctx *godog.ScenarioContext) {
 	state := &phase3State{}
 
 	ctx.Before(func(c context.Context, _ *godog.Scenario) (context.Context, error) {
@@ -195,7 +195,7 @@ func RegisterPhase3Steps(ctx *godog.ScenarioContext) {
 		return nil
 	})
 
-	ctx.Step(`^the summariser is invoked again$`, func() error {
+	ctx.Step(`^the summariser is invoked again after the re-scripting$`, func() error {
 		if got := state.summariser.calls(); got < 2 {
 			return fmt.Errorf("summariser calls = %d, want >= 2", got)
 		}
@@ -513,4 +513,245 @@ func RegisterPhase3Steps(ctx *godog.ScenarioContext) {
 			}
 			return nil
 		})
+
+	// Steps carried over from the summariser-chain Phase-3 work for the
+	// token-budget trimming scenario in phase3_rehydration.feature.
+	ctx.Step(`^a compaction summary$`, func() error {
+		state.summaryText = "[auto-compacted summary]: " + phase3SummaryJSON("trim summary")
+		return nil
+	})
+
+	ctx.Step(`^a transcript with several old tool calls and results$`, func() error {
+		state.messages = append(state.messages, provider.Message{
+			Role:    "assistant",
+			Content: "calling read on target",
+			ToolCalls: []provider.ToolCall{{
+				ID:        "call-1",
+				Name:      "read",
+				Arguments: map[string]any{"target": "phase3/target"},
+			}},
+		})
+		state.messages = append(state.messages, provider.Message{Role: "tool", Content: "first tool result body here"})
+		for i := range 6 {
+			state.messages = append(state.messages,
+				provider.Message{Role: "assistant", Content: fmt.Sprintf("assistant batch %d", i), ToolCalls: []provider.ToolCall{{
+					ID:        fmt.Sprintf("call-%d", i+2),
+					Name:      "read",
+					Arguments: map[string]any{"target": fmt.Sprintf("file%d.go", i)},
+				}}},
+				provider.Message{Role: "tool", Content: fmt.Sprintf("tool result %d with plenty of body words to cost tokens", i)},
+			)
+		}
+		state.messages = append(state.messages, provider.Message{Role: "assistant", Content: "the newest live message"})
+		return nil
+	})
+
+	ctx.Step(`^the newest live message is retained$`, func() error {
+		if len(state.rebuilt) == 0 {
+			return errors.New("rebuilt window is empty")
+		}
+		last := state.rebuilt[len(state.rebuilt)-1]
+		if !strings.Contains(last.Content, "newest live message") {
+			return errors.New("newest live message not retained: " + last.Content)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the oldest stubs are trimmed first$`, func() error {
+		foundNewest := false
+		for i := len(state.rebuilt) - 1; i >= 0; i-- {
+			if strings.Contains(state.rebuilt[i].Content, "newest live message") {
+				foundNewest = true
+			}
+		}
+		if !foundNewest {
+			return errors.New("newest live message missing from trimmed window")
+		}
+		for _, m := range state.rebuilt {
+			if m.Role == "tool" && strings.Contains(m.Content, "first tool result body here") {
+				return errors.New("oldest tool result survived trimming")
+			}
+		}
+		return nil
+	})
+
+	ctx.Step(`^an engine with a rehydrating explicit-path rebuild$`, func() error {
+		if err := state.wireEngine(1000); err != nil {
+			return err
+		}
+		state.messages = []provider.Message{{Role: "user", Content: "live tail message"}}
+		return nil
+	})
+
+	ctx.Step(`^the post-compaction window is rebuilt with structural context$`, func() error {
+		state.rebuilt = state.eng.RebuildExplicitPathForTesting(
+			context.Background(), "phase3-session", state.messages, state.summaryText)
+		if state.rebuilt == nil {
+			return errors.New("explicit-path rebuild returned nil")
+		}
+		return nil
+	})
+
+	ctx.Step(`^the rebuilt window fits the usable budget after stub trimming$`, func() error {
+		if state.eng == nil || state.rebuilt == nil {
+			return errors.New("rebuilt window is nil")
+		}
+		if state.eng.ContextEstimateOverBudgetForTesting(context.Background(), state.rebuilt) {
+			return errors.New("rebuilt window still over budget")
+		}
+		return nil
+	})
+
+	// Stubbing and structural-context assertions carried over from the
+	// summariser-chain Phase-3 step set, adapted to phase3State.
+	ctx.Step(`^a transcript with an old compactable tool call and result$`, func() error {
+		state.messages = []provider.Message{{Role: "user", Content: "do the thing"},
+			{Role: "assistant", Content: "calling read on target", ToolCalls: []provider.ToolCall{{ID: "call-1", Name: "read", Arguments: map[string]any{"target": "phase3/target"}}}},
+			{Role: "tool", Content: "line one\nline two\nline three\nline four"},
+			{Role: "assistant", Content: "done with the tool"}}
+		return nil
+	})
+
+	ctx.Step(`^a transcript with a coordination_store tool call and a small result$`, func() error {
+		state.messages = []provider.Message{{Role: "user", Content: "do the thing"},
+			{Role: "assistant", Content: "calling coordination_store", ToolCalls: []provider.ToolCall{{ID: "call-1", Name: "coordination_store", Arguments: map[string]any{"target": "phase3/target"}}}},
+			{Role: "tool", Content: "stored key compaction/phase3/x"},
+			{Role: "assistant", Content: "done with the tool"}}
+		return nil
+	})
+
+	ctx.Step(`^a transcript with a delegate tool call whose result exceeds the cap$`, func() error {
+		state.messages = []provider.Message{{Role: "user", Content: "do the thing"},
+			{Role: "assistant", Content: "calling delegate", ToolCalls: []provider.ToolCall{{ID: "call-1", Name: "delegate", Arguments: map[string]any{"target": "phase3/target"}}}},
+			{Role: "tool", Content: strings.Repeat("payload ", 4000)},
+			{Role: "assistant", Content: "done with the tool"}}
+		return nil
+	})
+
+	ctx.Step(`^the post-compaction window is rebuilt with tool stubbing$`, func() error {
+		state.rebuilt = state.eng.StubToolCallsForTesting(state.messages)
+		return nil
+	})
+
+	ctx.Step(`^the old tool result is replaced by a one-line stub$`, func() error {
+		for _, m := range state.rebuilt {
+			if m.Role != "tool" {
+				continue
+			}
+			if strings.Count(strings.TrimSpace(m.Content), "\n") != 0 {
+				return errors.New("tool result not a one-line stub: " + m.Content)
+			}
+			return nil
+		}
+		return errors.New("no tool result found in rebuilt window")
+	})
+
+	ctx.Step(`^an active plan with plan text$`, func() error {
+		state.structuralPlans = []string{"phase3 plan: implement rehydration"}
+		state.eng.SetActivePlanForTesting("phase3-session", "phase3 plan: implement rehydration")
+		return nil
+	})
+
+	ctx.Step(`^recently modified files recorded for the session$`, func() error {
+		state.modifiedFiles = []string{"internal/engine/compaction.go", "internal/engine/engine.go"}
+		state.eng.SetSessionFilesForTesting("phase3-session", state.modifiedFiles, "modified")
+		return nil
+	})
+
+	ctx.Step(`^recently modified files recorded for the session whose full status exceeds (\d+) tokens$`, func(capped int) error {
+		state.modifiedFiles = []string{"internal/engine/compaction.go", "internal/engine/engine.go"}
+		state.eng.SetSessionFilesForTesting("phase3-session", state.modifiedFiles, strings.Repeat("detail ", capped))
+		return nil
+	})
+
+	ctx.Step(`^coordination keys recorded for the session$`, func() error {
+		state.coordKeys = []string{"bug-hunt/report", "compaction/phase3/result"}
+		state.eng.SetSessionCoordinationKeysForTesting("phase3-session", state.coordKeys)
+		return nil
+	})
+
+	ctx.Step(`^the rebuilt window lists the recently modified file paths with brief status$`, func() error {
+		if err := windowContains(state.rebuilt, "internal/engine/compaction.go"); err != nil {
+			return err
+		}
+		return windowContains(state.rebuilt, "modified")
+	})
+
+	ctx.Step(`^the rebuilt window contains the active plan text$`, func() error {
+		return windowContains(state.rebuilt, "phase3 plan: implement rehydration")
+	})
+
+	ctx.Step(`^the stub names the tool, its target and its outcome$`, func() error {
+		for _, m := range state.rebuilt {
+			if m.Role != "tool" {
+				continue
+			}
+			if !strings.Contains(m.Content, "read") || !strings.Contains(m.Content, "phase3/target") {
+				return errors.New("stub missing tool or target: " + m.Content)
+			}
+			if !strings.Contains(m.Content, "outcome") {
+				return errors.New("stub missing outcome field: " + m.Content)
+			}
+			return nil
+		}
+		return errors.New("no tool result found in rebuilt window")
+	})
+
+	ctx.Step(`^the coordination_store tool result is retained verbatim$`, func() error {
+		for _, m := range state.rebuilt {
+			if m.Role != "tool" {
+				continue
+			}
+			if !strings.Contains(m.Content, "stored key compaction/phase3/x") {
+				return errors.New("coordination_store result not retained verbatim: " + m.Content)
+			}
+			return nil
+		}
+		return errors.New("no tool result found in rebuilt window")
+	})
+
+	ctx.Step(`^the delegate tool result is replaced by a stub with a key reference$`, func() error {
+		for _, m := range state.rebuilt {
+			if m.Role != "tool" {
+				continue
+			}
+			if !strings.Contains(m.Content, "coordination key") {
+				return errors.New("delegate stub missing key reference: " + m.Content)
+			}
+			return nil
+		}
+		return errors.New("no tool result found in rebuilt window")
+	})
+
+	ctx.Step(`^the rebuilt window lists the recently modified file paths only$`, func() error {
+		if err := windowContains(state.rebuilt, "internal/engine/compaction.go"); err != nil {
+			return err
+		}
+		for _, m := range state.rebuilt {
+			if m.Role != "assistant" {
+				continue
+			}
+			if strings.Contains(m.Content, "detail") && strings.Contains(m.Content, "compaction.go") {
+				return errors.New("full file status leaked into rebuilt window above the token cap")
+			}
+		}
+		return nil
+	})
+
+	ctx.Step(`^the rebuilt window lists the coordination keys written this session$`, func() error {
+		return windowContains(state.rebuilt, "bug-hunt/report")
+	})
+}
+
+// windowContains reports whether any message in msgs contains want.
+func windowContains(msgs []provider.Message, want string) error {
+	if want == "" {
+		return nil
+	}
+	for _, m := range msgs {
+		if strings.Contains(m.Content, want) {
+			return nil
+		}
+	}
+	return errors.New("rebuilt window does not contain: " + want)
 }

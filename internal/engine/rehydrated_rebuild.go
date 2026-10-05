@@ -63,9 +63,9 @@ const sessionCoordinationKeysCap = 20
 func (e *Engine) recordSessionFile(sessionID, path string) {
 	e.buildStateMu.Lock()
 	defer e.buildStateMu.Unlock()
-	files := e.sessionRecentFiles[sessionID]
-	out := files[:0]
-	for _, f := range files {
+	entry := e.sessionRecentFiles[sessionID]
+	out := entry.paths[:0]
+	for _, f := range entry.paths {
 		if f != path {
 			out = append(out, f)
 		}
@@ -74,7 +74,11 @@ func (e *Engine) recordSessionFile(sessionID, path string) {
 	if len(out) > sessionRecentFilesCap {
 		out = out[len(out)-sessionRecentFilesCap:]
 	}
-	e.sessionRecentFiles[sessionID] = out
+	entry.paths = out
+	if e.sessionRecentFiles == nil {
+		e.sessionRecentFiles = make(map[string]sessionFileState)
+	}
+	e.sessionRecentFiles[sessionID] = entry
 }
 
 // recordSessionCoordinationKey appends key to the session's
@@ -91,6 +95,9 @@ func (e *Engine) recordSessionFile(sessionID, path string) {
 func (e *Engine) recordSessionCoordinationKey(sessionID, key string) {
 	e.buildStateMu.Lock()
 	defer e.buildStateMu.Unlock()
+	if e.sessionCoordinationKeys == nil {
+		e.sessionCoordinationKeys = make(map[string][]string)
+	}
 	keys := e.sessionCoordinationKeys[sessionID]
 	out := keys[:0]
 	for _, k := range keys {
@@ -160,7 +167,7 @@ func (e *Engine) structuralContextSources(sessionID string) (plans, modifiedFile
 		return nil, nil, nil
 	}
 	e.buildStateMu.Lock()
-	modifiedFiles = append(modifiedFiles, e.sessionRecentFiles[sessionID]...)
+	modifiedFiles = append(modifiedFiles, e.sessionRecentFiles[sessionID].paths...)
 	coordKeys = append(coordKeys, e.sessionCoordinationKeys[sessionID]...)
 	e.buildStateMu.Unlock()
 	if e.todoStore != nil {

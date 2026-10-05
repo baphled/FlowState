@@ -53,14 +53,14 @@ func TestRecordSessionFileEvictsDuplicates(t *testing.T) {
 	e.recordSessionFile("s", "a.go")
 	e.recordSessionFile("s", "b.go")
 	e.recordSessionFile("s", "a.go")
-	files := e.sessionRecentFiles["s"]
+	files := e.sessionRecentFiles["s"].paths
 	if len(files) != 2 || files[0] != "b.go" || files[1] != "a.go" {
 		t.Fatalf("want [b.go a.go], got %v", files)
 	}
 	for i := 0; i < sessionRecentFilesCap+5; i++ {
 		e.recordSessionFile("s", string(rune('a'+i%26))+string(rune('0'+i%10))+".go")
 	}
-	if got := len(e.sessionRecentFiles["s"]); got != sessionRecentFilesCap {
+	if got := len(e.sessionRecentFiles["s"].paths); got != sessionRecentFilesCap {
 		t.Fatalf("tracked files = %d, want cap %d", got, sessionRecentFilesCap)
 	}
 }
