@@ -242,6 +242,19 @@ func (v *voiceFEState) ttsCommandNonexistentBinary() error {
 	return nil
 }
 
+// ttsCommandNonexistentBinaryFE points the TTS override at a
+// nonexistent path for both Speak and Synthesize callers.
+//
+// Side effects:
+//   - Sets FLOWSTATE_VOICE_TTS to a nonexistent absolute path; stores
+//     a TTSTool on the state.
+func (v *voiceFEState) ttsCommandNonexistentBinaryFE() error {
+	tmpl := filepath.Join(os.TempDir(), "definitely-not-a-piper-binary-xyz")
+	_ = os.Setenv("FLOWSTATE_VOICE_TTS", tmpl)
+	v.tool = &voice.TTSTool{Command: tmpl}
+	return nil
+}
+
 // noPiperButEspeakPresent ensures synthesis cannot silently fall
 // back: unset overrides so only a path probe could resolve.
 func (v *voiceFEState) noPiperButEspeakPresent() error {
@@ -490,6 +503,39 @@ func (v *voiceFEState) theResponseBodyIsWAVAudio() error {
 	return nil
 }
 
+// noSTTCommandConfigured clears the STT override and lazily wires the
+// pipeline server so the endpoint reports the unconfigured state.
+//
+// Side effects:
+//   - Unsets FLOWSTATE_VOICE_STT; may build v.server.
+func (v *voiceFEState) noSTTCommandConfigured() error {
+	_ = os.Unsetenv("FLOWSTATE_VOICE_STT")
+	if v.server == nil {
+		return v.serverWithVoiceTurnPipeline()
+	}
+	return nil
+}
+
+// postNoAudio posts an empty body to the transcribe endpoint.
+//
+// Expected:
+//   - path is the endpoint path.
+//
+// Side effects:
+//   - Lazily wires v.server; records the response.
+func (v *voiceFEState) postNoAudio(path string) error {
+	if v.server == nil {
+		if err := v.serverWithVoiceTurnPipeline(); err != nil {
+			return err
+		}
+	}
+	req := httptest.NewRequest(http.MethodPost, path, nil)
+	rec := httptest.NewRecorder()
+	v.server.Handler().ServeHTTP(rec, req)
+	v.recorder = rec
+	return nil
+}
+
 // aFakeSTTCommandEmitsFE installs the fake STT binary.
 func (v *voiceFEState) aFakeSTTCommandEmitsFE(transcript string) error {
 	dir, err := os.MkdirTemp("", "voice-fe-stt-*")
@@ -518,23 +564,10 @@ func VoiceFEContext(sc *godog.ScenarioContext) {
 	})
 
 	sc.Step(`^no STT command is configured$`, func() error {
-		_ = os.Unsetenv("FLOWSTATE_VOICE_STT")
-		if voiceFE.server == nil {
-			return voiceFE.serverWithVoiceTurnPipeline()
-		}
-		return nil
+		return voiceFE.noSTTCommandConfigured()
 	})
 	sc.Step(`^I POST no audio to (/api/v1/voice/transcribe)$`, func(path string) error {
-		if voiceFE.server == nil {
-			if err := voiceFE.serverWithVoiceTurnPipeline(); err != nil {
-				return err
-			}
-		}
-		req := httptest.NewRequest(http.MethodPost, path, nil)
-		rec := httptest.NewRecorder()
-		voiceFE.server.Handler().ServeHTTP(rec, req)
-		voiceFE.recorder = rec
-		return nil
+		return voiceFE.postNoAudio(path)
 	})
 	sc.Step(`^a fake STT command that emits "([^"]*)"$`, func(transcript string) error {
 		return voiceFE.aFakeSTTCommandEmitsFE(transcript)
@@ -578,7 +611,7 @@ func VoiceFEContext(sc *godog.ScenarioContext) {
 		return voiceFE.ttsToolConfigured(model, float64(li)+float64(ld)/10, float64(ni)+float64(nd)/10, float64(si)+float64(sd)/10)
 	})
 	sc.Step(`^a TTS command pointing at a nonexistent binary$`, func() error {
-		return voiceFE.ttsCommandNonexistentBinary()
+		return voiceFE.ttsCommandNonexistentBinaryFE()
 	})
 	sc.Step(`^no piper binary on PATH but espeak-ng present$`, func() error {
 		return voiceFE.noPiperButEspeakPresent()
