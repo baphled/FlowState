@@ -713,7 +713,7 @@ func (e *Engine) streamWithToolLoop(
 	var noProgressContinuations int
 	var lastTodoContinuationSnapshot []todo.Item
 	var backgroundContinuationCount int
-	const maxTodoContinuations = 20
+	maxTodoContinuations := e.EffectiveTodoContinuationLimit(sessionID)
 	const maxNoProgressContinuations = 3
 	const maxBackgroundContinuations = 20
 
@@ -834,6 +834,7 @@ func (e *Engine) streamWithToolLoop(
 				"max_continuations", maxTodoContinuations,
 				"reason", logReason,
 			)
+			e.recordTodoExhaustion(sessionID)
 			return false, provider.Message{}
 		}
 
@@ -1478,6 +1479,7 @@ func (e *Engine) streamWithToolLoop(
 						"session", sessionID,
 						"max_continuations", maxTodoContinuations,
 					)
+					e.recordTodoExhaustion(sessionID)
 					if completeAfterTodoCheck("todo continuation budget exhausted after turn end") {
 						continue
 					}
@@ -1603,6 +1605,7 @@ func (e *Engine) streamWithToolLoop(
 						"session", sessionID,
 						"max_continuations", maxTodoContinuations,
 					)
+					e.recordTodoExhaustion(sessionID)
 					if completeAfterTodoCheck("todo continuation budget exhausted after stream truncation") {
 						continue
 					}
@@ -2122,6 +2125,7 @@ func (e *Engine) streamWithToolLoop(
 						"trip", reason,
 						"max_continuations", maxTodoContinuations,
 					)
+					e.recordTodoExhaustion(sessionID)
 					if doneAfterTodoCheck("todo continuation budget exhausted after tool loop cap") {
 						continue
 					}
@@ -4074,4 +4078,90 @@ func (e *Engine) warnDeliveryToolBypassCtx(ctx context.Context, sessionID string
 		"agent", agentID,
 		"delivery_tools", deliveryTools,
 	)
+}
+
+// MaxTodoContinuations is the fixed per-session starting budget for
+// todo continuation injections.
+//
+// Expected: none.
+//
+// Returns: the base limit as a constant.
+//
+// Side effects: none.
+const MaxTodoContinuations = 20
+
+// DefaultTodoContinuationLimit is a deprecated alias for
+// MaxTodoContinuations kept for existing callers.
+//
+// Expected: none.
+//
+// Side effects: none.
+const DefaultTodoContinuationLimit = MaxTodoContinuations
+
+// recordTodoExhaustion notes that the session exhausted its todo
+// continuation budget so the next turn starts with a grown limit.
+//
+// Expected:
+//   - sessionID identifies the exhausted session.
+//
+// Side effects:
+//   - Increments the per-session exhaustion counter.
+func (e *Engine) recordTodoExhaustion(sessionID string) {
+	e.mu.Lock()
+	e.todoExhaustions[sessionID]++
+	e.mu.Unlock()
+}
+
+// EffectiveTodoContinuationLimit resolves the per-session todo
+// continuation budget, growing it after repeated exhaustions.
+//
+// Expected:
+//   - sessionID identifies the session whose budget is queried.
+//
+// Returns:
+//   - The effective continuation limit: the base doubled once per
+//     recorded exhaustion, capped at 4x the base.
+//
+// Side effects: none.
+func (e *Engine) EffectiveTodoContinuationLimit(sessionID string) int {
+	e.mu.RLock()
+	exhaustions := e.todoExhaustions[sessionID]
+	e.mu.RUnlock()
+	if exhaustions <= 0 {
+		return MaxTodoContinuations
+	}
+	limit := MaxTodoContinuations
+	for i := 0; i < exhaustions && limit < 4*MaxTodoContinuations; i++ {
+		limit *= 2
+	}
+	if limit > 4*MaxTodoContinuations {
+		limit = 4 * MaxTodoContinuations
+	}
+	return limit
+}
+
+// EffectiveTodoContinuationLimitFor resolves the todo continuation
+// budget from a raw exhaustion count.
+//
+// Expected:
+//   - exhaustions is the number of prior budget exhaustions recorded
+//     for the session.
+//
+// Returns:
+//   - The effective continuation limit, doubling once per exhaustion
+//     and capped at 4x the base.
+//
+// Side effects: none.
+func EffectiveTodoContinuationLimitFor(exhaustions int) int {
+	if exhaustions <= 0 {
+		return MaxTodoContinuations
+	}
+	limit := MaxTodoContinuations
+	for i := 0; i < exhaustions && limit < 4*MaxTodoContinuations; i++ {
+		limit *= 2
+	}
+	if limit > 4*MaxTodoContinuations {
+		limit = 4 * MaxTodoContinuations
+	}
+	return limit
 }

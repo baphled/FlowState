@@ -34,22 +34,22 @@ Feature: Loop-based budget guard distinguishes productive work from loops
   Scenario: Soft continuation compacts history before continuing
     Given an engine with a loop guard iteration budget of 2 and compaction enabled
     And a provider that makes varied productive tool calls each round without finishing
-    When the guarded turn runs
+    When the guarded soft-continuation turn runs
     Then the turn compacts before each soft continuation
-    And the turn completes without StopReason "StopReasonToolLoopExceeded"
+    And the soft turn completes without StopReason "StopReasonToolLoopExceeded"
 
   Scenario: Duration budget still forces a summary after soft continuations
     Given an engine with a loop guard duration budget of 50ms and compaction enabled
     And a provider that makes varied productive tool calls each round without finishing
-    When the guarded turn runs
+    When the guarded soft-continuation turn runs
     Then the soft continuations do not reset the duration budget
-    And the guarded turn terminates with StopReason "StopReasonToolLoopExceeded"
+    And the soft turn terminates with StopReason "StopReasonToolLoopExceeded"
 
   Scenario: Soft continuation is refused when history already exceeds the compaction threshold
     Given an engine with a loop guard iteration budget of 2 and compaction enabled
     And a provider whose history already exceeds the compaction threshold
-    When the guarded turn runs
-    Then the guarded turn terminates with StopReason "StopReasonToolLoopExceeded"
+    When the guarded soft-continuation turn runs
+    Then the soft turn terminates with StopReason "StopReasonToolLoopExceeded"
 
   Scenario: Todo discipline guard stays non-fatal on shutdown bookkeeping
     Given an engine with a todo store and a productive provider

@@ -228,7 +228,6 @@ func (s *engineSteps) aCompactorIsConfigured() error { return nil }
 func RegisterEngineSteps(ctx *godog.ScenarioContext) {
 	s := &engineSteps{session: "engine-steps-session"}
 	ctx.Step(`^an agent manifest with tool support$`, s.agentManifestWithToolSupport)
-	ctx.Step(`^the todo tool is enabled$`, s.todoToolEnabled)
 	ctx.Step(`^the provider will return a context-window-exceeded error on the first call$`, s.providerOverflowFirstCall)
 	ctx.Step(`^the provider will return a context-window-exceeded error on every call$`, s.providerOverflowEveryCall)
 	ctx.Step(`^the provider overflows and the retry stream also overflows in-stream$`, s.providerOverflowThenInStreamOverflow)
@@ -249,12 +248,9 @@ func RegisterEngineSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^an agent has added a pending todo "([^"]*)"$`, s.agentHasPendingTodo)
 	ctx.Step(`^an agent has no pending todos$`, s.agentHasNoPendingTodos)
 	ctx.Step(`^the model ends its turn without completing the todo$`, s.modelEndsTurnWithoutCompleting)
-	ctx.Step(`^the model ends its turn cleanly$`, s.modelEndsTurnCleanly)
 	ctx.Step(`^the engine should inject a continuation prompt$`, s.engineInjectsContinuation)
-	ctx.Step(`^the engine should not inject a continuation prompt$`, s.engineDoesNotInjectContinuation)
 	ctx.Step(`^the model should be called again$`, s.modelCalledAgain)
 	ctx.Step(`^the agent should eventually complete "([^"]*)"$`, s.agentEventuallyCompletes)
-	ctx.Step(`^the conversation should complete on the first turn$`, s.conversationCompletesFirstTurn)
 	ctx.Step(`^the session context is over budget after a todo continuation$`, s.sessionContextOverBudget)
 	ctx.Step(`^compaction is unavailable$`, s.compactionUnavailable)
 	ctx.Step(`^the engine attempts the continuation retry$`, s.engineAttemptsContinuationRetry)

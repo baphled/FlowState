@@ -225,36 +225,37 @@ func (m *FailoverMockStreamProvider) RefreshStatus() (time.Time, int) {
 
 // FailoverSteps holds state for failover BDD step definitions.
 type FailoverSteps struct {
-	registry           *provider.Registry
-	health             *failover.HealthManager
-	manager            *failover.Manager
-	streamHook         *failover.StreamHook
-	candidateProvider  string
-	candidateModel     string
-	defaultProvider    string
-	defaultModel       string
-	configured         []provider.ModelPreference
-	equivalentSpecs    []equivalentProviderSpec
-	eligible           map[provider.ModelPreference]bool
-	chain              []provider.ModelPreference
-	selectionErr       error
-	preparedRound      []provider.ModelPreference
-	selected           provider.ModelPreference
-	selectedModel      string
-	rotationOrder      []provider.ModelPreference
-	trackedProvider    string
-	trackedModel       string
-	receivedError      string
-	reloadedHealth     *failover.HealthManager
-	refreshSucceeded   bool
-	succeededCandidate string
-	receivedMsgCounts  map[string]int
-	strictChain        []provider.ModelPreference
-	globalChain        []provider.ModelPreference
-	resolvedChain      []provider.ModelPreference
-	attemptedMu        sync.Mutex
-	attemptedProviders []string
-	lastContent        string
+	registry             *provider.Registry
+	health               *failover.HealthManager
+	manager              *failover.Manager
+	streamHook           *failover.StreamHook
+	candidateProvider    string
+	candidateModel       string
+	defaultProvider      string
+	defaultModel         string
+	configured           []provider.ModelPreference
+	equivalentSpecs      []equivalentProviderSpec
+	eligible             map[provider.ModelPreference]bool
+	chain                []provider.ModelPreference
+	selectionErr         error
+	preparedRound        []provider.ModelPreference
+	selected             provider.ModelPreference
+	selectedModel        string
+	rotationOrder        []provider.ModelPreference
+	trackedProvider      string
+	trackedModel         string
+	receivedError        string
+	reloadedHealth       *failover.HealthManager
+	refreshSucceeded     bool
+	succeededCandidate   string
+	carrierPendingErrors []*provider.Error
+	receivedMsgCounts    map[string]int
+	strictChain          []provider.ModelPreference
+	globalChain          []provider.ModelPreference
+	resolvedChain        []provider.ModelPreference
+	attemptedMu          sync.Mutex
+	attemptedProviders   []string
+	lastContent          string
 }
 
 type equivalentProviderSpec struct {
@@ -270,6 +271,7 @@ type equivalentProviderSpec struct {
 // Side effects: None.
 func RegisterFailoverSteps(ctx *godog.ScenarioContext) {
 	fs := &FailoverSteps{}
+	registerCarrierCooldownSteps(ctx, fs)
 
 	ctx.Before(func(bctx context.Context, _ *godog.Scenario) (context.Context, error) {
 		fs.registry = nil
@@ -379,6 +381,11 @@ func (fs *FailoverSteps) aFailoverHookWithSingleCandidate(providerName, model st
 	fs.candidateModel = model
 	fs.registry = provider.NewRegistry()
 	fs.health = failover.NewHealthManager()
+	persistDir, err := os.MkdirTemp("", "flowstate-health-cache-*")
+	if err != nil {
+		return fmt.Errorf("temp persist dir: %w", err)
+	}
+	fs.health.SetPersistPath(filepath.Join(persistDir, "provider-health.json"))
 	fs.manager = failover.NewManager(fs.registry, fs.health, 2*time.Second)
 	fs.streamHook = failover.NewStreamHook(fs.manager, nil, "")
 	fs.manager.SetBasePreferences([]provider.ModelPreference{
