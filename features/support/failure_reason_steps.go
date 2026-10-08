@@ -326,7 +326,7 @@ func (st *failureReasonSteps) theUserRuns(command string) error {
 	if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), []byte(cfgYAML), 0o600); err != nil {
 		return fmt.Errorf("writing CLI config: %w", err)
 	}
-	cmd := exec.Command("/tmp/flowstate-test", args...)
+	cmd := exec.Command(FlowStateTestBinaryPath(), args...)
 	cmd.Env = []string{
 		"HOME=" + home,
 		"XDG_CONFIG_HOME=" + filepath.Join(home, ".config"),
@@ -342,17 +342,7 @@ func (st *failureReasonSteps) theUserRuns(command string) error {
 }
 
 func (st *failureReasonSteps) buildCLI() error {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("resolving cwd: %w", err)
-	}
-	projectRoot := filepath.Dir(filepath.Dir(cwd))
-	build := exec.Command("go", "build", "-o", "/tmp/flowstate-test", "./cmd/flowstate")
-	build.Dir = projectRoot
-	if out, err := build.CombinedOutput(); err != nil {
-		return fmt.Errorf("building CLI: %w: %s", err, string(out))
-	}
-	return nil
+	return EnsureFlowStateTestBinary()
 }
 
 func (st *failureReasonSteps) itPrints(text string) error {

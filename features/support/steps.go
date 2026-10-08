@@ -1909,17 +1909,8 @@ func (s *StepDefinitions) iShouldReceiveAVectorOfFloats() error {
 // Returns: nil on success, or an error if the step fails.
 // Side effects: May modify the test state.
 func (s *StepDefinitions) theFlowStateCLIIsAvailable() error {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("failed to get working directory: %w", err)
-	}
-	projectRoot := filepath.Dir(filepath.Dir(cwd))
-	cmd := exec.Command("go", "build", "-o", "/tmp/flowstate-test", "./cmd/flowstate")
-	cmd.Dir = projectRoot
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to build CLI in %s: %w: %s", projectRoot, err, stderr.String())
+	if err := EnsureFlowStateTestBinary(); err != nil {
+		return err
 	}
 	return s.ensureOAuthStub()
 }
@@ -1955,7 +1946,7 @@ func (s *StepDefinitions) iRun(command string) error {
 // the always-available ollama provider as the default, so app.New can
 // boot without any API keys present in the host environment.
 func runTestCLI(args []string, oauthBaseURL string) (output string, exitCode int) {
-	const testBinaryPath = "/tmp/flowstate-test"
+	testBinaryPath := FlowStateTestBinaryPath()
 	cmdArgs := append([]string{testBinaryPath}, args...)
 	cmd := &exec.Cmd{
 		Path: testBinaryPath,
