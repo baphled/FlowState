@@ -14,6 +14,6 @@ Feature: Voice STT
     Then transcription fails with an empty-transcript error
 
   Scenario: Missing STT binary fails with actionable guidance
-    Given no STT command is configured
+    Given the STT wrapper is unconfigured
     When I transcribe a recorded WAV file
     Then transcription fails with an error mentioning whisper-cli
