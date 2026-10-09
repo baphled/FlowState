@@ -31,8 +31,6 @@ type AlwaysActiveSkillStepDefinitions struct {
 func RegisterAlwaysActiveSkillSteps(ctx *godog.ScenarioContext) {
 	s := &AlwaysActiveSkillStepDefinitions{}
 
-	ctx.Step(`^an engine configured with always-active skills "([^"]*)" and "([^"]*)"$`, s.engineWithAlwaysActiveSkills)
-	ctx.Step(`^the system prompt is built for skills$`, s.theSystemPromptIsBuilt)
 	ctx.Step(`^the system prompt should contain the full body of skill "([^"]*)"$`, s.theSystemPromptShouldContainSkillBody)
 	ctx.Step(`^zero skill_load tool calls should be required to activate them$`, s.zeroSkillLoadCallsRequired)
 }

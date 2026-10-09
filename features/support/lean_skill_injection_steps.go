@@ -76,6 +76,15 @@ func (s *leanSkillInjectionSteps) engineWithResolver(first, second, swapped stri
 		s.resolverCalls++
 		return []skill.Skill{{Name: swapped, Content: "MEMORY_KEEPER_BODY"}}
 	}
+	// Build the engine eagerly so the manifest-swap scenario has s.eng
+	// even though it never runs the "system prompt is built" step.
+	cfg := engine.Config{Skills: s.skills, SkillsResolver: s.skillsResolver}
+	eng := engine.New(cfg)
+	s.eng = eng
+	s.prompt = eng.BuildSystemPrompt()
+	if s.prompt == "" {
+		return godog.ErrUndefined
+	}
 	return nil
 }
 

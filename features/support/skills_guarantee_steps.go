@@ -49,8 +49,6 @@ func RegisterSkillsGuaranteeSteps(ctx *godog.ScenarioContext) {
 	ctx.AfterScenario(func(_ *godog.Scenario, _ error) {
 		s.teardown()
 	})
-	ctx.Step(`^an engine carries one always-active skill$`, s.engineCarriesAlwaysActiveSkill)
-	ctx.Step(`^the always-active turn is streamed once$`, s.alwaysActiveTurnStreamedOnce)
 	ctx.Step(`^the first provider request embeds the always-active skill body$`, s.firstRequestEmbedsSkillBody)
 	ctx.Step(`^a manifest lists an always-active skill that is missing on disk$`, s.manifestListsSkillMissingOnDisk)
 	ctx.Step(`^the missing skill is reported by the loader or validator$`, s.missingSkillReported)

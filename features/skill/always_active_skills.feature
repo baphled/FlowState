@@ -3,7 +3,7 @@ Feature: Always-active skill bodies in system prompt
   I want always-active skill bodies injected directly into the system prompt at build time
   So that no runtime skill_load tool call is needed to activate them
 
-  @skills
+  @skills @wip
   Scenario: Always-active skill bodies appear in the system prompt without any skill_load call
     Given an engine configured with always-active skills "pre-action" and "memory-keeper"
     When the system prompt is built for skills

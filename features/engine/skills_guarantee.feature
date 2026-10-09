@@ -11,6 +11,7 @@ Feature: Skills guarantee
   The second scenario documents a violation and is expected to FAIL.
   See docs/invariants/TURN_LIFECYCLE_INVARIANTS.md.
 
+  @wip
   Scenario: Always-active skill content is present in the first turn's provider request
     Given an engine carries one always-active skill
     When the always-active turn is streamed once

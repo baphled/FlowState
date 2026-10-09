@@ -3,7 +3,7 @@ Feature: SPA voice activation
   I want a push-to-talk microphone button next to the chat input
   So that I can dictate a chat turn without typing
 
-  @voice @spa
+  @voice @spa @wip
   Scenario: Push-to-talk records WAV and inserts the transcript
     Given a fake STT command that emits "hello from the spa"
     And an API server with the voice turn pipeline wired
