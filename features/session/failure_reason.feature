@@ -1,4 +1,4 @@
-@session @failover
+@session @failover @slow
 Feature: Session failure reason capture with provider health CLI (S5)
 
   When a session transitions to the failed state (via StopReasonStreamTruncated,

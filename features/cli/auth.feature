@@ -1,4 +1,4 @@
-@auth @cli @smoke
+@auth @cli @smoke @slow
 Feature: Provider Authentication
   As a FlowState user
   I want to authenticate with AI providers

@@ -1,4 +1,4 @@
-.PHONY: all build run test test-e2e test-external test-recall bdd bdd-smoke bdd-wip fmt lint check check-docblocks check-untested-packages check-note-comments check-keyword-adr check-gating-drift check-controller-line-cap clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks debug-session debug-latest debug-errors session-overview log-analysis parse-recording session-history session-history-detail session-ids qdrant-up qdrant-down qdrant-logs qdrant-status
+.PHONY: all build run test test-e2e test-external test-recall bdd bdd-slow bdd-smoke bdd-wip fmt lint check check-docblocks check-untested-packages check-note-comments check-keyword-adr check-gating-drift check-controller-line-cap clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks debug-session debug-latest debug-errors session-overview log-analysis parse-recording session-history session-history-detail session-ids qdrant-up qdrant-down qdrant-logs qdrant-status
 # Binary name
 BINARY_NAME=flowstate
 BUILD_DIR=./build
@@ -83,9 +83,13 @@ coverage-check: ## Check test coverage against thresholds (excluding BDD feature
 # BDD Testing (Godog/Cucumber)
 #
 
-bdd: ## Run all BDD tests
+bdd: ## Run all BDD tests (excludes @wip and @slow daemon-boot features)
 	@echo "Running BDD tests..."
-	go test -tags e2e -v ./features/...
+	GODOG_TAGS="~@wip && ~@slow" go test -tags e2e -v ./features/...
+
+bdd-slow: ## Run slow daemon-boot BDD tests (longer timeout budget)
+	@echo "Running slow BDD tests..."
+	GODOG_TAGS="@slow" go test -tags e2e -v ./features/... -timeout 15m
 
 bdd-smoke: ## Run smoke BDD tests
 	@echo "Running smoke tests..."
