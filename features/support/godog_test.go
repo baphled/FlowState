@@ -139,5 +139,6 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	VoiceFEContext(ctx)
 	ComposerVoiceContext(ctx)
 	VoiceWiringContext(ctx)
+	VoiceSTTContext(ctx)
 	NarrationContext(ctx)
 }

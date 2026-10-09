@@ -649,6 +649,9 @@ func VoiceFEContext(sc *godog.ScenarioContext) {
 	sc.Step(`^I PATCH /api/v1/voice/settings with length_scale -3$`, func() error {
 		return voiceFE.iPATCHVoiceSettings(`{"length_scale":-3}`)
 	})
+	sc.Step(`^the settings JSON shows enabled false$`, func() error {
+		return voiceFE.settingsJSONShows(false, "")
+	})
 	sc.Step(`^the settings JSON shows enabled true and tts_model "([^"]*)"$`, func(model string) error {
 		return voiceFE.settingsJSONShows(true, model)
 	})
