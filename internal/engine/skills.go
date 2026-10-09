@@ -46,6 +46,49 @@ func LoadAlwaysActiveSkills(skillsDir string, appLevel []string, agentLevel []st
 	return loaded
 }
 
+// LoadAlwaysActiveSkillNames resolves the merged always-active skill
+// names for the given agent without reading skill bodies from disk.
+// It applies the same merge, skip-on-missing and WARN-on-missing
+// behaviour as LoadAlwaysActiveSkills but returns Skill values whose
+// Content is empty, so prompt assembly stays lean (names only; bodies
+// are loaded in-session via skill_load).
+//
+// Expected:
+//   - skillsDir is the directory path containing skill definitions.
+//   - appLevel is the list of application-level always-active skill names.
+//   - agentLevel is the list of agent-level always-active skill names.
+//
+// Returns:
+//   - A slice of Skill values with only the Name populated, or nil on error.
+//
+// Side effects:
+//   - Reads skill file names from the skillsDir directory.
+//   - Logs one WARN per requested skill missing on disk.
+func LoadAlwaysActiveSkillNames(skillsDir string, appLevel []string, agentLevel []string) []skill.Skill {
+	merged := MergeSkillNames(appLevel, agentLevel)
+	if len(merged) == 0 {
+		return nil
+	}
+
+	loader := skill.NewFileSkillLoader(skillsDir)
+	allSkills, err := loader.LoadAll()
+	if err != nil {
+		slog.Warn("always-active skills could not be read from the skills directory",
+			"skills_dir", skillsDir,
+			"error", err,
+		)
+		return nil
+	}
+
+	loaded := filterSkillsByName(allSkills, merged)
+	warnMissingAlwaysActiveSkills(merged, loaded, skillsDir)
+	names := make([]skill.Skill, len(loaded))
+	for i := range loaded {
+		names[i] = skill.Skill{Name: loaded[i].Name}
+	}
+	return names
+}
+
 // warnMissingAlwaysActiveSkills logs one WARN per requested always-active
 // skill name that resolved to no loaded skill. The skill name is embedded
 // in the message body (not only as an attribute) so message-keyed log

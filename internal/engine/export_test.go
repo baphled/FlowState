@@ -531,9 +531,3 @@ func SkillGuardRejectionCountForTest(e *Engine, sessionID string) int {
 func TruncateFailureTextForTest(s string) string {
 	return truncateFailureText(s)
 }
-
-// CapPersistedToolResultForTest exposes capPersistedToolResult so the
-// P2 persistence-cap specs can pin the truncation contract.
-func CapPersistedToolResultForTest(content string) string {
-	return capPersistedToolResult(content)
-}

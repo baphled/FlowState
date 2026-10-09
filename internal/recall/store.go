@@ -604,14 +604,16 @@ func (s *FileContextStore) UnpinMessage(index int) bool {
 
 // messageTokens estimates the number of tokens in a stored message.
 //
+// Expected:
+//   - A token estimate using a 1 token ≈ 4 character heuristic,
+//     including overhead for message structure.
+//
 // Returns:
 //   - An integer token estimate using a 1 token ≈ 4 character heuristic,
 //     including overhead for message structure.
 //
 // Side effects:
 //   - None.
-//
-// Expected: parameters for messageTokens.
 func messageTokens(sm StoredMessage) int {
 	contentLen := len(sm.Message.Content)
 	roleLen := len(sm.Message.Role)
@@ -626,8 +628,6 @@ func messageTokens(sm StoredMessage) int {
 //
 // Side effects:
 //   - None.
-//
-// Expected: parameters for totalTokensLocked.
 func (s *FileContextStore) totalTokensLocked() int {
 	total := 0
 	for _, sm := range s.messages {

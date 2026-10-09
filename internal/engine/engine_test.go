@@ -529,7 +529,7 @@ var _ = Describe("Engine", func() {
 			Expect(prompt).To(ContainSubstring("You are a helpful assistant."))
 		})
 
-		It("includes skill content in system prompt", func() {
+		It("injects lean skill header in system prompt", func() {
 			eng := engine.New(engine.Config{
 				ChatProvider: chatProvider,
 				Manifest:     manifest,
@@ -538,12 +538,14 @@ var _ = Describe("Engine", func() {
 
 			prompt := eng.BuildSystemPrompt()
 
-			Expect(prompt).To(ContainSubstring("Always remember context."))
-			Expect(prompt).To(ContainSubstring("This should not appear."))
+			Expect(prompt).To(ContainSubstring(`<skill name="memory-keeper" />`))
+			Expect(prompt).To(ContainSubstring(`skill_load(name=`))
+			Expect(prompt).NotTo(ContainSubstring("Always remember context."))
+			Expect(prompt).NotTo(ContainSubstring("This should not appear."))
 		})
 
 		Context("with skill injection", func() {
-			It("includes headings and content when two skills are configured", func() {
+			It("injects lean tags when two skills are configured", func() {
 				twoSkills := []skill.Skill{
 					{Name: "pre-action", Content: "PREFLIGHT content"},
 					{Name: "memory-keeper", Content: "MEMORY content"},
@@ -557,13 +559,13 @@ var _ = Describe("Engine", func() {
 
 				prompt := eng.BuildSystemPrompt()
 
-				Expect(prompt).To(ContainSubstring("# Skill: pre-action"))
-				Expect(prompt).To(ContainSubstring("PREFLIGHT content"))
-				Expect(prompt).To(ContainSubstring("# Skill: memory-keeper"))
-				Expect(prompt).To(ContainSubstring("MEMORY content"))
+				Expect(prompt).To(ContainSubstring(`<skill name="pre-action" />`))
+				Expect(prompt).NotTo(ContainSubstring("PREFLIGHT content"))
+				Expect(prompt).To(ContainSubstring(`<skill name="memory-keeper" />`))
+				Expect(prompt).NotTo(ContainSubstring("MEMORY content"))
 			})
 
-			It("includes heading and content when one skill is configured", func() {
+			It("injects lean tag when one skill is configured", func() {
 				oneSkill := []skill.Skill{
 					{Name: "scope-management", Content: "Manage scope effectively."},
 				}
@@ -576,8 +578,8 @@ var _ = Describe("Engine", func() {
 
 				prompt := eng.BuildSystemPrompt()
 
-				Expect(prompt).To(ContainSubstring("# Skill: scope-management"))
-				Expect(prompt).To(ContainSubstring("Manage scope effectively."))
+				Expect(prompt).To(ContainSubstring(`<skill name="scope-management" />`))
+				Expect(prompt).NotTo(ContainSubstring("Manage scope effectively."))
 			})
 
 			It("does not include skill markers when Skills is nil", func() {
@@ -589,7 +591,7 @@ var _ = Describe("Engine", func() {
 
 				prompt := eng.BuildSystemPrompt()
 
-				Expect(prompt).NotTo(ContainSubstring("# Skill:"))
+				Expect(prompt).NotTo(ContainSubstring("<skill name="))
 			})
 		})
 
@@ -685,7 +687,7 @@ var _ = Describe("Engine", func() {
 		})
 
 		Context("when agent has agent-level skills", func() {
-			It("includes agent-level skill content in system prompt", func() {
+			It("injects lean tags for agent-level skills in system prompt", func() {
 				manifest.Capabilities.Skills = []string{"agent-skill"}
 				manifest.Capabilities.AlwaysActiveSkills = []string{"memory-keeper"}
 
@@ -702,9 +704,10 @@ var _ = Describe("Engine", func() {
 
 				prompt := eng.BuildSystemPrompt()
 
-				Expect(prompt).To(ContainSubstring("Always remember context."))
-				Expect(prompt).To(ContainSubstring("This is an agent-level skill."))
-				Expect(prompt).To(ContainSubstring("# Skill: agent-skill"))
+				Expect(prompt).To(ContainSubstring(`<skill name="memory-keeper" />`))
+				Expect(prompt).NotTo(ContainSubstring("Always remember context."))
+				Expect(prompt).To(ContainSubstring(`<skill name="agent-skill" />`))
+				Expect(prompt).NotTo(ContainSubstring("This is an agent-level skill."))
 			})
 		})
 

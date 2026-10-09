@@ -1,10 +1,9 @@
 package engine
 
 import (
-	"fmt"
 	"log/slog"
-	"strings"
 
+	"github.com/baphled/flowstate/internal/hook"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/skill"
 )
@@ -37,9 +36,10 @@ func (e *Engine) alwaysActiveSkillsForGate() []skill.Skill {
 }
 
 // autoInjectAlwaysActiveSkills deterministically activates the session's
-// always-active skills by appending their full bodies to the session
-// history as a system message, then marking skill_load as completed so
-// the harness guard has nothing left to reject.
+// always-active skills by injecting a lean header naming them and
+// instructing in-session loading via skill_load, then marking
+// skill_load as completed so the harness guard has nothing left to
+// reject.
 //
 // Expected: sessionID identifies the session the gate is evaluating.
 // Returns: true when skill content was found and injected.
@@ -50,13 +50,13 @@ func (e *Engine) autoInjectAlwaysActiveSkills(sessionID string) bool {
 	if len(skills) == 0 {
 		return false
 	}
-	var sb strings.Builder
-	sb.WriteString("Your always-active skills have been auto-loaded and are active NOW. Act on their instructions (e.g. any Phase 0 classification a discovery skill prescribes) before further tool calls.\n\n")
-	for _, s := range skills {
-		sb.WriteString(fmt.Sprintf("# Skill: %s\n%s\n\n", s.Name, s.Content))
+	names := make([]string, len(skills))
+	for i, s := range skills {
+		names[i] = s.Name
 	}
+	lean := hook.BuildLeanInjection(names, nil)
 	if e.store != nil {
-		e.store.Append(provider.Message{Role: "system", Content: sb.String()})
+		e.store.Append(provider.Message{Role: "system", Content: lean})
 	}
 	e.markSkillLoadCalled(sessionID)
 	if e.recorder != nil {

@@ -11,7 +11,7 @@ import (
 )
 
 var _ = Describe("BuildSystemPrompt skill injection", func() {
-	It("injects content for two skills", func() {
+	It("injects lean names for two skills", func() {
 		eng := engine.New(engine.Config{
 			Skills: []skill.Skill{
 				{Name: "pre-action", Content: "PREFLIGHT"},
@@ -19,21 +19,21 @@ var _ = Describe("BuildSystemPrompt skill injection", func() {
 			},
 		})
 		prompt := eng.BuildSystemPrompt()
-		Expect(prompt).To(ContainSubstring("# Skill: pre-action"))
-		Expect(prompt).To(ContainSubstring("PREFLIGHT"))
-		Expect(prompt).To(ContainSubstring("# Skill: memory-keeper"))
-		Expect(prompt).To(ContainSubstring("MEMORY"))
+		Expect(prompt).To(ContainSubstring(`<skill name="pre-action" />`))
+		Expect(prompt).To(ContainSubstring(`<skill name="memory-keeper" />`))
+		Expect(prompt).NotTo(ContainSubstring("PREFLIGHT"))
+		Expect(prompt).NotTo(ContainSubstring("MEMORY"))
 	})
 
-	It("injects content for a single skill", func() {
+	It("injects a lean name for a single skill", func() {
 		eng := engine.New(engine.Config{
 			Skills: []skill.Skill{
 				{Name: "discipline", Content: "DISCIPLINE_CONTENT"},
 			},
 		})
 		prompt := eng.BuildSystemPrompt()
-		Expect(prompt).To(ContainSubstring("# Skill: discipline"))
-		Expect(prompt).To(ContainSubstring("DISCIPLINE_CONTENT"))
+		Expect(prompt).To(ContainSubstring(`<skill name="discipline" />`))
+		Expect(prompt).NotTo(ContainSubstring("DISCIPLINE_CONTENT"))
 	})
 
 	It("produces no skill marker when Skills is nil", func() {
@@ -123,7 +123,7 @@ var _ = Describe("autoresearch program-of-record skill", func() {
 			Skills: []skill.Skill{*sk},
 		})
 		prompt := eng.BuildSystemPrompt()
-		Expect(prompt).To(ContainSubstring("# Skill: autoresearch"))
-		Expect(prompt).To(ContainSubstring("## Trial protocol"))
+		Expect(prompt).To(ContainSubstring(`<skill name="autoresearch" />`))
+		Expect(prompt).NotTo(ContainSubstring("## Trial protocol"))
 	})
 })

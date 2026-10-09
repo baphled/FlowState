@@ -1663,7 +1663,7 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 	skillDir := params.skillDir
 	appLevelSkillNames := params.appLevelSkillNames
 	skillsResolver := func(m agent.Manifest) []skill.Skill {
-		return engine.LoadAlwaysActiveSkills(
+		return engine.LoadAlwaysActiveSkillNames(
 			skillDir, appLevelSkillNames, m.Capabilities.AlwaysActiveSkills,
 		)
 	}
