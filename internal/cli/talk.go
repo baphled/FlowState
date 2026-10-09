@@ -65,7 +65,7 @@ var talkLastResponse string
 //   - Registers the --agent, --session, --json, --text-only, --speak
 //     and --no-speak flags.
 func newTalkCmd(getApp func() *app.App) *cobra.Command {
-	opts := &talkOptions{Agent: "worker"}
+	opts := &talkOptions{Agent: "default-assistant"}
 	cmd := &cobra.Command{
 		Use:   "talk",
 		Short: "Talk to agents by voice (push-to-talk)",
