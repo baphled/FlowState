@@ -1,3 +1,4 @@
+@slow
 Feature: Orchestrator Metadata
   As a FlowState orchestrator
   I want agent metadata to drive my delegation sections

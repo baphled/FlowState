@@ -1,3 +1,4 @@
+@slow
 Feature: CLI Commands
   As a user
   I want FlowState CLI commands to expose consistent help and behaviour

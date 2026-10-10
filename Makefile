@@ -1,4 +1,4 @@
-.PHONY: all build run test test-e2e test-external test-recall bdd bdd-smoke bdd-wip fmt lint check check-docblocks check-untested-packages check-note-comments check-keyword-adr check-gating-drift check-controller-line-cap clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks debug-session debug-latest debug-errors session-overview log-analysis parse-recording session-history session-history-detail session-ids qdrant-up qdrant-down qdrant-logs qdrant-status
+.PHONY: all build run test test-e2e test-external test-recall bdd bdd-slow bdd-smoke bdd-wip fmt lint check check-docblocks check-untested-packages check-note-comments check-keyword-adr check-gating-drift check-controller-line-cap clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks debug-session debug-latest debug-errors session-overview log-analysis parse-recording session-history session-history-detail session-ids qdrant-up qdrant-down qdrant-logs qdrant-status
 # Binary name
 BINARY_NAME=flowstate
 BUILD_DIR=./build
@@ -83,9 +83,13 @@ coverage-check: ## Check test coverage against thresholds (excluding BDD feature
 # BDD Testing (Godog/Cucumber)
 #
 
-bdd: ## Run all BDD tests
-	@echo "Running BDD tests..."
-	go test -tags e2e -v ./features/...
+bdd: ## Run default BDD tier (fast scenarios; excludes @wip and @slow)
+	@echo "Running BDD tests (default tier: ~@wip && ~@slow)..."
+	GODOG_TAGS="~@wip && ~@slow" go test -tags e2e -timeout 8m -v ./features/...
+
+bdd-slow: ## Run slow BDD tier (@slow and @e2e daemon-boot features)
+	@echo "Running slow BDD tests ((@slow || @e2e) && ~@wip)..."
+	GODOG_TAGS="(@slow || @e2e) && ~@wip" go test -tags e2e -timeout 20m -v ./features/...
 
 bdd-smoke: ## Run smoke BDD tests
 	@echo "Running smoke tests..."
@@ -160,13 +164,15 @@ check-swarm-manifests: build ## Validate embedded swarm manifests and surface ch
 	@echo "Validating embedded swarm manifests..."
 	@./build/flowstate swarm validate --swarm-dir internal/app/swarms
 
-check: build fmt lint test coverage-check check-docblocks check-untested-packages check-note-comments check-keyword-adr check-gating-drift check-controller-line-cap check-agent-manifests check-swarm-manifests check-test-file-convention check-funlen-ratchet ## Run all checks
+check: build fmt lint test coverage-check check-docblocks check-untested-packages check-note-comments check-keyword-adr check-gating-drift check-controller-line-cap check-agent-manifests check-swarm-manifests check-test-file-convention check-step-context-registration check-funlen-ratchet ## Run all checks
 
 .PHONY: check-funlen-ratchet
 check-funlen-ratchet: ## Enforce funlen (50 lines/40 statements) ratchet baseline
 	@bash scripts/check-funlen-ratchet.sh
 
-.PHONY: check-test-file-convention check-funlen-ratchet
+.PHONY: check-test-file-convention check-step-context-registration check-funlen-ratchet
+check-step-context-registration: ## Fail when a step context is not registered in InitializeScenario
+	@bash scripts/check-step-context-registration.sh
 check-test-file-convention: ## Enforce test-file convention ratchet (2-test cap, no new orphan test files)
 	@bash scripts/check-test-file-convention.sh
 

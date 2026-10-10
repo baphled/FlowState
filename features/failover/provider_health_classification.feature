@@ -1,4 +1,4 @@
-@failover @health-classification
+@failover @health-classification @slow
 Feature: Provider health classification
 
   The failover health store should classify provider errors into cooldowns,

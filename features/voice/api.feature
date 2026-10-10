@@ -1,3 +1,5 @@
+@voice
+@slow
 Feature: Voice transcription API
   As a client of the FlowState HTTP API
   I want to upload a recorded WAV and receive its transcript

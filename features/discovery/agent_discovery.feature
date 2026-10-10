@@ -1,3 +1,4 @@
+@slow
 Feature: Agent Discovery
   As a user
   I want the system to suggest appropriate agents for my task

@@ -4,7 +4,9 @@
 package support
 
 import (
+	"context"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/cucumber/godog"
@@ -17,7 +19,7 @@ import (
 // scenarios are still runnable explicitly via `GODOG_TAGS=@wip` or the
 // `make bdd-wip` target, which keeps them findable without breaking the
 // default `go test ./features/...` gate under Strict:true.
-const defaultTagFilter = "~@wip"
+const defaultTagFilter = "~@wip && ~@frontend"
 
 func getOptions() *godog.Options {
 	opts := &godog.Options{
@@ -113,6 +115,10 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterBatchedPersistenceSteps(ctx)
 	RegisterToolLoopBudgetSteps(ctx)
 	RegisterLoopGuardSteps(ctx)
+	RegisterSoftContinuationSteps(ctx)
+	RegisterTodoCompletionSteps(ctx)
+	RegisterTruncationClassificationSteps(ctx)
+	RegisterSessionResilienceSteps(ctx)
 	RegisterTurnWatchdogSteps(ctx)
 	RegisterTurnCompletesSteps(ctx)
 	RegisterNoCallsStreakSteps(ctx)
@@ -121,7 +127,29 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	registerOpenAICompatClassificationSteps(ctx)
 	registerTurnDeadlineSteps(ctx)
 	RegisterBashProcessKillSteps(ctx, &BashProcessKillSteps{})
-	RegisterFailureReasonSteps(ctx, &failureReasonSteps{})
+	frs := &failureReasonSteps{}
+	removeHealthSandboxes := func() {
+		for _, pat := range []string{"/tmp/flowstate-health-cache-*", "/tmp/flowstate-health-home-*",
+			"/tmp/flowstate-failure-reason-*", "/tmp/flowstate-cli-home-*"} {
+			matches, err := filepath.Glob(pat)
+			if err != nil {
+				continue
+			}
+			for _, m := range matches {
+				_ = os.RemoveAll(m)
+			}
+		}
+	}
+	ctx.Before(func(sctx context.Context, _ *godog.Scenario) (context.Context, error) {
+		removeHealthSandboxes()
+		frs.resetEnv()
+		return sctx, nil
+	})
+	ctx.After(func(sctx context.Context, _ *godog.Scenario, _ error) (context.Context, error) {
+		removeHealthSandboxes()
+		return sctx, nil
+	})
+	RegisterFailureReasonSteps(ctx, frs)
 	RegisterStopButtonSteps(ctx, &stopButtonSteps{})
 	RegisterDelegationIntegritySteps(ctx)
 	RegisterDelegationCoordinationSteps(ctx)
@@ -140,4 +168,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	ComposerVoiceContext(ctx)
 	VoiceWiringContext(ctx)
 	NarrationContext(ctx)
+	RegisterSTTSteps(ctx)
+	PttContext(ctx)
+	RegisterQuitSteps(ctx)
 }

@@ -1,3 +1,4 @@
+@slow
 Feature: Delegation session management
   As a user
   I want to see which agents have been delegated to

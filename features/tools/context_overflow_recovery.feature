@@ -1,3 +1,4 @@
+@slow
 Feature: Context-window overflow recovery
   As an agent using FlowState
   I want the engine to recover gracefully when the provider rejects a request due to context-window overflow

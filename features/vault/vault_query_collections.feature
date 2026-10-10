@@ -1,3 +1,4 @@
+@slow
 Feature: Per-vault query collection resolution
   As an agent calling the query_vault tool
   I want the vault argument to scope my search to that vault's Qdrant collection

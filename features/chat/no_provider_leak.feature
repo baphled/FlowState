@@ -1,3 +1,4 @@
+@slow
 Feature: No Provider or Model JSON Leakage
   As a user
   I want the chat view to display only the assistant's prose

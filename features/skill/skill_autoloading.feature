@@ -1,3 +1,4 @@
+@slow
 Feature: Skill Auto-Loading
   As an agent orchestrator
   I want skills to be injected automatically into the system prompt

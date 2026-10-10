@@ -1,4 +1,4 @@
-@failover
+@failover @slow
 Feature: Carrier cooldown signal extraction on non-429 responses
 
   When a provider returns an error response (401, 402, 403, 503, 5xx) that

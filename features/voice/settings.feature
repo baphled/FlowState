@@ -1,3 +1,5 @@
+@voice
+@slow
 Feature: Frontend voice settings API
   As a browser client of the FlowState HTTP API
   I want runtime voice settings exposed over HTTP

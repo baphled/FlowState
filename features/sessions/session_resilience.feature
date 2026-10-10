@@ -1,3 +1,4 @@
+@slow
 Feature: Session resilience against abrupt stream deaths
   As a user of FlowState
   I want transient provider stream failures to be retried before my session is marked failed

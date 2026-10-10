@@ -1,3 +1,4 @@
+@slow
 @promptguard
 Feature: Coordination-store file guard in system prompt assembly
 

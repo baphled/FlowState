@@ -1,3 +1,4 @@
+@slow
 Feature: Context Management
   As an AI agent platform
   I need to manage context efficiently using RLM principles

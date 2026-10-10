@@ -1,4 +1,4 @@
-@failover @config-chain
+@failover @config-chain @slow
 Feature: Config-driven provider selection chain
 
   The failover chain should honour providers.default, exclude providers without

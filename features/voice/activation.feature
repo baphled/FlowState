@@ -1,3 +1,5 @@
+@voice
+@slow
 Feature: SPA voice activation
   As a browser user of the FlowState SPA
   I want a push-to-talk microphone button next to the chat input

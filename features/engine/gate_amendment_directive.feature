@@ -1,3 +1,4 @@
+@slow
 @gate-amendment
 Feature: Gate Failure Amendment Directive
   appendGateDirective turns a post-member gate failure into the

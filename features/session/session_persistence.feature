@@ -1,3 +1,4 @@
+@slow
 Feature: Session Persistence
   As a user
   I want my chat sessions to persist

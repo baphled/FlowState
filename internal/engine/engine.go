@@ -242,6 +242,22 @@ type Engine struct {
 	// continuation fires; reset on turn-end acceptance. Protected by e.mu.
 	todoContinuationFired map[string]bool
 
+	// sessionTodoBudgetExhaustions counts how many times the todo
+	// continuation budget has been exhausted per session. Each recorded
+	// exhaustion grows the effective continuation limit for that session
+	// by one above the default, so sessions with persistent pending work
+	// retry harder rather than giving up at the flat default. Protected
+	// by e.mu.
+	sessionTodoBudgetExhaustions map[string]int
+
+	// todoExhaustions counts how many times the todo continuation
+	// budget was exhausted for a session. Each recorded exhaustion
+	// grows the session's effective continuation budget via
+	// EffectiveTodoContinuationLimit, honouring the TodoStore contract
+	// that the retry budget grows automatically when exhaustion is
+	// detected repeatedly. Protected by e.mu.
+	todoExhaustions map[string]int
+
 	// workToolCallsSinceContinuation counts non-todowrite/non-todo_update
 	// tool calls since the last continuation injection. Used by
 	// hasIncompleteTodos to detect the stale-continuation bypass: if
@@ -1377,6 +1393,8 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		todoNonTodowriteToolCalls:        make(map[string]int),
 		todoStore:                        cfg.TodoStore,
 		todoContinuationFired:            make(map[string]bool),
+		todoExhaustions:                  make(map[string]int),
+		sessionTodoBudgetExhaustions:     make(map[string]int),
 		workToolCallsSinceContinuation:   make(map[string]int),
 		workCallsSinceLastTodoCompletion: make(map[string]int),
 		skillLoadCalled:                  make(map[string]bool),

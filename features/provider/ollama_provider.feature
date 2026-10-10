@@ -1,3 +1,4 @@
+@slow
 Feature: Ollama Provider
   As a FlowState user
   I want to use local Ollama models

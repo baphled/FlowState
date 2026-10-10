@@ -1,4 +1,4 @@
-@failover @budget
+@failover @budget @slow
 Feature: Pre-dispatch budget gate
   Scenario: Oversized request is trimmed before dispatch without health penalty
     Given the engine resolves a token budget of 8192 tokens for the candidate model

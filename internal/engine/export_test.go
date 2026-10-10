@@ -537,3 +537,21 @@ func TruncateFailureTextForTest(s string) string {
 func CapPersistedToolResultForTest(content string) string {
 	return capPersistedToolResult(content)
 }
+
+// RecordTodoBudgetExhaustionForTest records one todo continuation budget
+// exhaustion for the session so the BDD retry-growth scenario can drive
+// the growth rule through the real engine state.
+func RecordTodoBudgetExhaustionForTest(e *Engine, sessionID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.sessionTodoBudgetExhaustions[sessionID]++
+}
+
+// EffectiveTodoContinuationLimitForTest exposes the effective todo
+// continuation limit for the session.
+func EffectiveTodoContinuationLimitForTest(e *Engine, sessionID string) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	const maxTodoContinuations = 20
+	return maxTodoContinuations + e.sessionTodoBudgetExhaustions[sessionID]
+}

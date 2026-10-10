@@ -1,3 +1,4 @@
+@slow
 Feature: Multiline Chat Input
   As a user
   I want to compose messages across multiple lines

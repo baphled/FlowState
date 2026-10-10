@@ -1,3 +1,4 @@
+@slow
 Feature: Prompt Append Configuration
   As a FlowState user
   I want to append custom instructions to agent prompts via config

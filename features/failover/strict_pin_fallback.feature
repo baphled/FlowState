@@ -1,4 +1,4 @@
-@failover @strict-fallback
+@failover @strict-fallback @slow
 Feature: Strict pin fallback to the healthy chain
 
   A strict manifest pinned to a provider that has tripped the hard-down

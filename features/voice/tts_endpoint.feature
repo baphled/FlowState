@@ -1,3 +1,5 @@
+@voice
+@slow
 Feature: TTS output endpoint
   As a browser client of the FlowState HTTP API
   I want agent reply text converted to audio over HTTP

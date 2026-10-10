@@ -1,4 +1,4 @@
-@oauth @tui @provider-setup
+@oauth @tui @provider-setup @slow
 Feature: TUI OAuth Flow for Provider Configuration
   As a FlowState user
   I want to authenticate via OAuth in the TUI

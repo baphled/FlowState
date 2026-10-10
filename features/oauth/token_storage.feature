@@ -1,4 +1,4 @@
-@oauth @security @token-storage
+@oauth @security @token-storage @slow
 Feature: Encrypted OAuth Token Storage
   As a FlowState user
   I want my OAuth tokens to be securely stored

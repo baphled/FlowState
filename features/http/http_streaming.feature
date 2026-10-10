@@ -1,3 +1,4 @@
+@slow
 Feature: HTTP Streaming
   As an API consumer
   I want to receive streaming responses via SSE

@@ -1,3 +1,5 @@
+@voice
+@slow
 Feature: Voice session activation in serve
   As a FlowState operator running the SPA server
   I want the voice pipeline wired into the HTTP API when voice is enabled in config

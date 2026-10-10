@@ -1,3 +1,4 @@
+@slow
 Feature: Agent Switching
   As a user
   I want to switch between different agents

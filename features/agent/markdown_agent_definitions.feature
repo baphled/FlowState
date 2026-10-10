@@ -1,3 +1,4 @@
+@slow
 Feature: Markdown Agent Definitions
   As a FlowState user
   I want to define agents as single markdown files with YAML frontmatter

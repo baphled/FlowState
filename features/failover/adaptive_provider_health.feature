@@ -1,4 +1,4 @@
-@failover @adaptive-health
+@failover @adaptive-health @slow
 Feature: Adaptive provider health — hard-down circuit breaker
 
   A provider whose credential cannot recover on its own (billing

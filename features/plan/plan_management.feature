@@ -1,3 +1,4 @@
+@slow
 Feature: Plan Management
   As a FlowState user
   I want to manage plans

@@ -1,3 +1,4 @@
+@slow
 Feature: Basic Chat
   As a user
   I want to chat with an AI assistant

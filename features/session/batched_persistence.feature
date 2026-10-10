@@ -1,3 +1,4 @@
+@slow
 Feature: Batched session persistence
   As a FlowState operator
   I want session sidecar writes batched across message appends

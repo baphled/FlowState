@@ -1,3 +1,4 @@
+@slow
 Feature: Skill Load Tool
   As an agent
   I want to load skill content by name

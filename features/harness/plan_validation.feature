@@ -1,3 +1,4 @@
+@slow
 Feature: Planning Harness Validation
   The planning harness enforces plan quality through automated validation
   ensuring that generated plans meet structural and content requirements.
