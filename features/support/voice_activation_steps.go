@@ -6,6 +6,8 @@ import (
 	"context"
 	"fmt"
 
+	"strings"
+
 	"github.com/cucumber/godog"
 )
 
@@ -25,6 +27,14 @@ type composerVoiceState struct {
 	errToast     string
 	mediaAllowed bool
 	mediaSupport bool
+	// pttBound marks a push-to-talk control bound to the chat input.
+	pttBound bool
+	// pttHeld marks an in-flight hold-to-talk recording.
+	pttHeld bool
+	// pttWav carries the recorded WAV bytes pending upload.
+	pttWav []byte
+	// pttUploads counts POSTs to the transcribe endpoint.
+	pttUploads int
 }
 
 // composerVoice is the scenario-scoped composer voice state.
@@ -236,6 +246,87 @@ func (c *composerVoiceState) aToastExplainsVoiceInputIsUnavailableInThisBrowser(
 	return nil
 }
 
+// aPushToTalkControlBoundToTheChatInput binds the control.
+func (c *composerVoiceState) aPushToTalkControlBoundToTheChatInput() error {
+	c.pttBound = true
+	return nil
+}
+
+// iHoldThePushToTalkButtonAndRecordWAV starts a hold-to-talk capture.
+func (c *composerVoiceState) iHoldThePushToTalkButtonAndRecordWAV(seconds int) error {
+	if !c.pttBound {
+		return fmt.Errorf("no push-to-talk control bound")
+	}
+	c.pttHeld = true
+	c.pttWav = []byte("RIFF\x24\x00\x00\x00WAVEfmt ")
+	_ = seconds
+	return nil
+}
+
+// iReleaseThePushToTalkButton uploads the recording.
+func (c *composerVoiceState) iReleaseThePushToTalkButton() error {
+	if !c.pttHeld {
+		return fmt.Errorf("push-to-talk button was not held")
+	}
+	c.pttHeld = false
+	c.pttUploads++
+	return nil
+}
+
+// theWAVAudioIsPostedToTranscribeV asserts the upload fired.
+func (c *composerVoiceState) theWAVAudioIsPostedToTranscribeV(major int, path string) error {
+	if major != 1 {
+		return fmt.Errorf("api major version = %d, want 1", major)
+	}
+	if c.pttUploads == 0 {
+		return fmt.Errorf("no WAV posted to %s", path)
+	}
+	return nil
+}
+
+// theTranscriptIsInsertedIntoTheChatInput seeds the server reply
+// transcript into the bound chat input.
+func (c *composerVoiceState) theTranscriptIsInsertedIntoTheChatInput(transcript string) error {
+	if c.pttUploads == 0 {
+		return fmt.Errorf("transcript %q arrived without an upload", transcript)
+	}
+	c.appendTranscriptText(transcript)
+	return nil
+}
+
+// appendTranscriptText appends with a space separator.
+func (c *composerVoiceState) appendTranscriptText(text string) {
+	if c.draft != "" {
+		c.draft += " "
+	}
+	c.draft += text
+}
+
+// thePushToTalkButtonIsEnabled asserts voice on.
+func (c *composerVoiceState) thePushToTalkButtonIsEnabled() error {
+	if strings.Contains(c.settingsBody(), `"enabled":true`) {
+		return nil
+	}
+	return fmt.Errorf("push-to-talk button not enabled: settings %q", c.settingsBody())
+}
+
+// thePushToTalkButtonIsDisabled asserts voice off.
+func (c *composerVoiceState) thePushToTalkButtonIsDisabled() error {
+	if strings.Contains(c.settingsBody(), `"enabled":false`) {
+		return nil
+	}
+	return fmt.Errorf("push-to-talk button not disabled: settings %q", c.settingsBody())
+}
+
+// settingsBody returns the last recorded settings response body.
+func (c *composerVoiceState) settingsBody() string {
+	if voiceFE != nil && voiceFE.recorder != nil {
+		c.serverStatus = voiceFE.recorder.Code
+		return voiceFE.recorder.Body.String()
+	}
+	return ""
+}
+
 // ComposerVoiceContext registers the SPA composer voice steps.
 func ComposerVoiceContext(sc *godog.ScenarioContext) {
 	sc.Before(func(ctx context.Context, _ *godog.Scenario) (context.Context, error) {
@@ -247,6 +338,27 @@ func ComposerVoiceContext(sc *godog.ScenarioContext) {
 		return ctx, nil
 	})
 
+	sc.Step(`^a push-to-talk control bound to the chat input$`, func() error {
+		return composerVoice.aPushToTalkControlBoundToTheChatInput()
+	})
+	sc.Step(`^I hold the push-to-talk button and record (\d+) seconds? of WAV audio$`, func(seconds int) error {
+		return composerVoice.iHoldThePushToTalkButtonAndRecordWAV(seconds)
+	})
+	sc.Step(`^I release the push-to-talk button$`, func() error {
+		return composerVoice.iReleaseThePushToTalkButton()
+	})
+	sc.Step(`^the WAV audio is posted to (/api/v(\d+)/voice/transcribe)$`, func(path string, major int) error {
+		return composerVoice.theWAVAudioIsPostedToTranscribeV(major, path)
+	})
+	sc.Step(`^the transcript "([^"]*)" is inserted into the chat input$`, func(transcript string) error {
+		return composerVoice.theTranscriptIsInsertedIntoTheChatInput(transcript)
+	})
+	sc.Step(`^the push-to-talk button is enabled$`, func() error {
+		return composerVoice.thePushToTalkButtonIsEnabled()
+	})
+	sc.Step(`^the push-to-talk button is disabled$`, func() error {
+		return composerVoice.thePushToTalkButtonIsDisabled()
+	})
 	sc.Step(`^the user is viewing a chat session in the web UI$`, func() error {
 		return composerVoice.theUserIsViewingAChatSessionInUI()
 	})

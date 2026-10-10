@@ -190,6 +190,7 @@ func newRootCmd(appPtr **app.App) *cobra.Command {
 		newDiscoverCmd(getApp),
 		NewPlanCommand(getApp),
 		newToolsCmd(getApp),
+		newTalkCmd(getApp),
 	}
 	for _, c := range bootstrapping {
 		MarkNeedsBootstrap(c)
