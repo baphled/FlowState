@@ -388,6 +388,7 @@ func (fs *FailoverSteps) aFailoverHookWithSingleCandidate(providerName, model st
 	fs.health.SetPersistPath(filepath.Join(persistDir, "provider-health.json"))
 	fs.manager = failover.NewManager(fs.registry, fs.health, 2*time.Second)
 	fs.streamHook = failover.NewStreamHook(fs.manager, nil, "")
+	fs.streamHook.SetRetryBackoff(failover.RetryBackoffConfig{Sleep: func(context.Context, time.Duration) error { return nil }})
 	fs.manager.SetBasePreferences([]provider.ModelPreference{
 		{Provider: providerName, Model: model},
 	})
@@ -570,6 +571,7 @@ func (fs *FailoverSteps) ensureFailoverState() {
 	}
 	if fs.streamHook == nil {
 		fs.streamHook = failover.NewStreamHook(fs.manager, nil, "")
+		fs.streamHook.SetRetryBackoff(failover.RetryBackoffConfig{Sleep: func(context.Context, time.Duration) error { return nil }})
 	}
 }
 
