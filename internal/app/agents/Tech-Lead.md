@@ -15,6 +15,13 @@ capabilities:
     - search_nodes
     - open_nodes
     - todowrite
+    - coordination_store
+    - bash
+    - read
+    - write
+    - edit
+    - grep
+    - glob
   skills:
     - memory-keeper
     - architecture
@@ -57,6 +64,12 @@ delegation:
 orchestrator_meta:
   cost: "high"
   category: "orchestration"
+  # Lead self-execution override (Oct 2026): Tech-Lead is a hybrid
+  # lead — it must be able to self-execute (bash/read/write/edit/
+  # grep/glob) AND delegate. The bare orchestration category forbids
+  # implementation surfaces; this override opts the manifest back
+  # into them without reclassifying it as a pure implementation agent.
+  category_execution_override: true
   triggers: []
   use_when:
     - Complex tasks spanning multiple files, packages, or systems
