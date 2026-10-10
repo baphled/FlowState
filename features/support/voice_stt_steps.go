@@ -244,6 +244,11 @@ func VoiceSTTContext(sc *godog.ScenarioContext) {
 	sc.Step(`^a fake STT command that emits "([^"]*)" on stdout$`, func(text string) error {
 		return voiceSTT.aFakeSTTCommandThatEmits(text)
 	})
+	sc.Step(`^the STT wrapper is unconfigured$`, func() error {
+		voiceSTT.sttEnv("")
+		voiceSTT.err = nil
+		return nil
+	})
 	sc.Step(`^a fake STT command that emits nothing on stdout$`, func() error {
 		return voiceSTT.aFakeSTTCommandThatEmitsNothingOnStdout()
 	})
