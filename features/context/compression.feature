@@ -1,3 +1,4 @@
+@slow
 Feature: Context Compression — Layers 1 and 2
   As an agent platform operator
   I need older messages to be elided into placeholders when they exceed

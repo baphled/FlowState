@@ -1,4 +1,4 @@
-@voice @ui
+@voice @ui @frontend
 Feature: Voice push-to-talk activation in the web composer
   The flowstate-web chat composer offers a hold-to-talk microphone
   button. Holding it captures browser audio; releasing converts the

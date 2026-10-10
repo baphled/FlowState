@@ -1,4 +1,4 @@
-@engine
+@engine @slow
 Feature: A turn finishes completely
 
   Invariant: whatever path ends a turn — natural completion, a tool-loop

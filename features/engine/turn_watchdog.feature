@@ -1,4 +1,4 @@
-@engine
+@engine @slow
 Feature: Turn watchdog cancels stuck tool loops
 
   Scenario: A turn that stops making progress is cancelled by the watchdog

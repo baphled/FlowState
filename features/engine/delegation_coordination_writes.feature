@@ -1,4 +1,4 @@
-@engine @delegation
+@engine @delegation @slow
 Feature: Delegation coordination-write enforcement
 
   Scenario: A synchronous delegate completing without coordination writes fails closed

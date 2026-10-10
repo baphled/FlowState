@@ -1,3 +1,5 @@
+@voice
+@slow
 Feature: Tool call narration
   As a user listening to spoken agent turns
   I want tool calls narrated as short descriptions

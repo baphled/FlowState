@@ -1,3 +1,4 @@
+@slow
 Feature: Flag-gated pprof instrumentation
   As an operator diagnosing FlowState performance
   I want the Go runtime profiler served behind an explicit flag

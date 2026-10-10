@@ -1,4 +1,4 @@
-@failover
+@failover @slow
 Feature: Repeated-failure escalation
 
   When the same provider/model pair fails repeatedly with the same error type

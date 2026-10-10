@@ -531,3 +531,18 @@ func SkillGuardRejectionCountForTest(e *Engine, sessionID string) int {
 func TruncateFailureTextForTest(s string) string {
 	return truncateFailureText(s)
 }
+
+// RecordTodoBudgetExhaustionForTest records one todo continuation budget
+// exhaustion for the session so the BDD retry-growth scenario can drive
+// the growth rule through the real engine state.
+func RecordTodoBudgetExhaustionForTest(e *Engine, sessionID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.todoExhaustions[sessionID]++
+}
+
+// EffectiveTodoContinuationLimitForTest exposes the effective todo
+// continuation limit for the session.
+func EffectiveTodoContinuationLimitForTest(e *Engine, sessionID string) int {
+	return e.EffectiveTodoContinuationLimit(sessionID)
+}

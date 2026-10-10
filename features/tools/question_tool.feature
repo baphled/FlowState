@@ -1,3 +1,4 @@
+@slow
 Feature: Blocking question tool
   As a user
   I want agents to be able to ask me a clarifying question and wait for my answer

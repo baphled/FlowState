@@ -1,4 +1,4 @@
-@oauth @github @smoke
+@oauth @github @smoke @slow
 Feature: GitHub OAuth Device Flow
   As a FlowState user
   I want to authenticate with GitHub using OAuth Device Flow

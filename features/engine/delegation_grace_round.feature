@@ -1,3 +1,4 @@
+@slow
 @wip
 Feature: Delegation grace round in tool loop backstop
 

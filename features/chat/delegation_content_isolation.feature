@@ -1,3 +1,4 @@
+@slow
 Feature: Delegation content isolation
   As a user
   I want delegated child-agent content to stay isolated unless teeing is enabled

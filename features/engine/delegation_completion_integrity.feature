@@ -1,3 +1,4 @@
+@slow
 @wip @delegation @integrity
 Feature: Delegation completion integrity
 

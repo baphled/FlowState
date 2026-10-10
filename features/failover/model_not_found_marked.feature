@@ -1,4 +1,4 @@
-@failover
+@failover @slow
 Feature: Model-not-found marks provider pair for table-default cooldown
 
   When a provider returns a model-not-found error (HTTP 404), the failover

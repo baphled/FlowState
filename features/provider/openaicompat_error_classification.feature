@@ -1,3 +1,4 @@
+@slow
 Feature: OpenAI-compatible provider context-window error classification
   As a FlowState engine
   I need context-window overflow errors from OpenAI-compatible providers to be classified correctly

@@ -1,4 +1,4 @@
-@engine @session
+@engine @session @slow
 Feature: Truncation-aware stop-reason classification
 
   A turn that ended on a max_tokens/length stop signal was truncated

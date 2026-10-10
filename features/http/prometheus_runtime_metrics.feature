@@ -1,3 +1,4 @@
+@slow
 Feature: Standard Prometheus runtime collectors
   As an operator monitoring FlowState
   I want Go runtime and process metrics exported alongside the existing gauges

@@ -1,4 +1,4 @@
-@failover
+@failover @slow
 Feature: Context-aware failover — size errors are user-correctable, not provider-health faults
 
   Oversized-prompt failures (context-length errors) are caused by the

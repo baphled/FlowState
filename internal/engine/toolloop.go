@@ -809,6 +809,7 @@ func (e *Engine) streamWithToolLoop(
 				"session", sessionID,
 				"reason", logReason,
 			)
+			e.recordTodoExhaustion(sessionID)
 			return false, provider.Message{}
 		}
 
@@ -982,8 +983,8 @@ func (e *Engine) streamWithToolLoop(
 			Messages: messages,
 			Tools:    e.buildToolSchemasCtx(ctx),
 		})
-		if threshold, ok := e.autoCompactionThreshold(&manifestCopy, tokenBudget); !ok ||
-			float64(fullWindowTokens) <= threshold*float64(tokenBudget) {
+		threshold, thresholdOk := e.autoCompactionThreshold(&manifestCopy, tokenBudget)
+		if !thresholdOk || float64(fullWindowTokens) <= threshold*float64(tokenBudget) {
 			// Under the auto-compaction threshold — there is headroom,
 			// continue without compaction.
 			return true
@@ -994,6 +995,19 @@ func (e *Engine) streamWithToolLoop(
 			"token_budget", tokenBudget)
 		if summary := e.maybeAutoCompactExplicit(ctx, sessionID, &manifestCopy, tokenBudget, "soft_continuation", messages); summary != "" {
 			if rebuilt := e.rebuildContextWindowTokenBounded(ctx, sessionID, messages, summary); rebuilt != nil {
+				refit := e.estimateRequestTokens(&provider.ChatRequest{
+					Provider: provName,
+					Model:    modelName,
+					Messages: rebuilt,
+					Tools:    e.buildToolSchemasCtx(ctx),
+				})
+				if float64(refit) > float64(tokenBudget) {
+					slog.Warn("soft continuation refused: rebuilt window still exceeds the model budget",
+						"session", sessionID,
+						"refit_tokens", refit,
+						"token_budget", tokenBudget)
+					return false
+				}
 				messages = rebuilt
 				return true
 			}

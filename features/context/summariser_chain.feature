@@ -1,3 +1,4 @@
+@slow
 Feature: Summariser Chain — ordered multi-provider fallback (Phase 1)
   As an agent platform operator
   I need the L2 summariser to walk an ordered provider chain — the

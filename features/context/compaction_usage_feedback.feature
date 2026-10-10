@@ -1,3 +1,4 @@
+@slow
 Feature: Auto-compaction usage feedback
   As an agent platform operator
   I need the auto-compaction gate to weigh the provider-reported

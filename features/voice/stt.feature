@@ -1,3 +1,5 @@
+@voice
+@slow
 Feature: Voice STT
   As a developer building the talk-to-agents surface
   I want a whisper-cli wrapper

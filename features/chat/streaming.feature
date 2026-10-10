@@ -1,3 +1,4 @@
+@slow
 Feature: Streaming Responses
   As a user
   I want to see responses stream in real-time

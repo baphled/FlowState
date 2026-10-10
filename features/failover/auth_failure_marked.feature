@@ -1,4 +1,4 @@
-@failover
+@failover @slow
 Feature: Auth failure marks provider pair for table-default cooldown
 
   When a provider returns an authentication failure (HTTP 401 token_expired),

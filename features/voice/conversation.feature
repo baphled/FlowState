@@ -1,3 +1,5 @@
+@voice
+@slow
 Feature: Voice conversation mode
   As a browser user of the FlowState SPA
   I want a conversation mode where my spoken turns are transcribed and sent

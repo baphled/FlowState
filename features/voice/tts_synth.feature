@@ -1,3 +1,5 @@
+@voice
+@slow
 Feature: Voice TTS synthesis for the frontend
   As a browser client of the FlowState HTTP API
   I want agent replies synthesised to WAV bytes via a TTS endpoint

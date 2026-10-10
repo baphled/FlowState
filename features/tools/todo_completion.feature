@@ -1,3 +1,4 @@
+@slow
 Feature: Todo completion continuation
   As a user
   I want the engine to ensure agents complete all planned tasks

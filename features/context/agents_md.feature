@@ -1,3 +1,4 @@
+@slow
 Feature: AGENTS.md Context Loading
   As a FlowState user
   I want AGENTS.md files to be included in the session context

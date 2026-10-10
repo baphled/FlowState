@@ -1,3 +1,4 @@
+@slow
 Feature: Vault index and sync commands
   As an agent or operator
   I want to trigger vault indexing and incremental sync from the FlowState CLI

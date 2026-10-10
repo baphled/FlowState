@@ -3,6 +3,7 @@
 package support
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -261,6 +262,13 @@ func (st *failureReasonSteps) failureReasonIsCleared() error {
 	return nil
 }
 
+func (st *failureReasonSteps) resetEnv() {
+	st.cliCacheDir = ""
+	if err := os.Unsetenv("XDG_CACHE_HOME"); err != nil {
+		fmt.Fprintf(os.Stderr, "unsetting XDG_CACHE_HOME: %v\n", err)
+	}
+}
+
 func (st *failureReasonSteps) healthSandbox() error {
 	if st.cliCacheDir != "" {
 		return nil
@@ -333,12 +341,27 @@ func (st *failureReasonSteps) theUserRuns(command string) error {
 		"XDG_CACHE_HOME=" + st.cliCacheDir,
 		"PATH=" + os.Getenv("PATH"),
 	}
-	out, err := cmd.CombinedOutput()
-	st.cliOutput = string(out)
-	if err != nil {
-		return fmt.Errorf("running %q: %w: %s", command, err, st.cliOutput)
+	var outBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &outBuf
+	started := time.Now()
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("starting %q: %w", command, err)
 	}
-	return nil
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		st.cliOutput = outBuf.String()
+		if err != nil {
+			return fmt.Errorf("running %q: %w: %s", command, err, st.cliOutput)
+		}
+		return nil
+	case <-time.After(30 * time.Second):
+		_ = cmd.Process.Kill()
+		st.cliOutput = outBuf.String()
+		return fmt.Errorf("running %q: timed out after 30s (started %s ago): %s", command, time.Since(started), st.cliOutput)
+	}
 }
 
 func (st *failureReasonSteps) buildCLI() error {

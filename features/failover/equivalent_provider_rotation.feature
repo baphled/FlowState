@@ -1,4 +1,4 @@
-@failover @equivalent-rotation
+@failover @equivalent-rotation @slow
 Feature: Equivalent provider rotation
 
   Same-tier equivalent providers should rotate by least recently used order,

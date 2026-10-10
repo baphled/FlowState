@@ -59,6 +59,7 @@ git branch -d feature/my-feature
 | **Run all tests** | `make test` |
 | **Run BDD tests** | `make bdd` |
 | **Run smoke tests** | `make bdd-smoke` |
+| **Run slow BDD tier** | `make bdd-slow` |
 | **Build** | `make build` |
 | **Format** | `make fmt` |
 | **Lint** | `make lint` |
@@ -298,6 +299,7 @@ production code first; the per-source convention falls out for free.
 
 ```gherkin
 @smoke       # Critical path, always run
+@slow        # Daemon-boot heavy tier, run via `make bdd-slow`
 @wip         # Work in progress
 @navigation  # Navigation tests
 @chat        # Chat functionality
@@ -306,7 +308,8 @@ production code first; the per-source convention falls out for free.
 ### Running Tests
 
 ```bash
-make bdd           # All BDD tests
+make bdd           # Default BDD tier (~@wip && ~@slow, under 300s)
+make bdd-slow      # Slow tier (@slow + @e2e, 20m budget)
 make bdd-smoke     # Smoke tests only
 make bdd-wip       # WIP tests only
 make test          # Go tests

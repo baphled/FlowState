@@ -1,3 +1,5 @@
+@voice
+@slow
 Feature: Frontend voice turns
   As a browser client of the FlowState HTTP API
   I want to upload recorded audio and have it transcribed and dispatched

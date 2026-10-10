@@ -1,3 +1,4 @@
+@slow
 Feature: Plugin System
   As a FlowState user
   I want a robust plugin system

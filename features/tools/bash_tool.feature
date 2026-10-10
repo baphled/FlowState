@@ -1,3 +1,4 @@
+@slow
 Feature: Bash Tool
   As a user
   I want the AI to execute bash commands

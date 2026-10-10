@@ -1,3 +1,4 @@
+@slow
 Feature: Always-active skill bodies in system prompt
   As an agent orchestrator
   I want always-active skill bodies injected directly into the system prompt at build time

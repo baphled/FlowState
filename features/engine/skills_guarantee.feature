@@ -1,4 +1,4 @@
-@engine
+@engine @slow
 Feature: Skills guarantee
 
   Invariant: when a manifest declares always-active skills, the skill

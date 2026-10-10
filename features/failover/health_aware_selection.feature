@@ -1,4 +1,4 @@
-@failover @health-selection
+@failover @health-selection @slow
 Feature: Health-aware provider selection
 
   The failover manager should prefer the lower-risk healthy candidate, keep the

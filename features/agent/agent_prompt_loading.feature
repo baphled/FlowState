@@ -1,3 +1,4 @@
+@slow
 Feature: Agent Prompt Loading
   As a FlowState user
   I want agents to load their embedded prompts

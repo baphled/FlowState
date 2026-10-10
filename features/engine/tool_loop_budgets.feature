@@ -1,4 +1,4 @@
-@engine
+@engine @slow
 Feature: Tool-loop budgets count tool execution time
 
   Scenario: Successful calls with different arguments are progress

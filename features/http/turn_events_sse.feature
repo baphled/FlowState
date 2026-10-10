@@ -1,3 +1,4 @@
+@slow
 Feature: Per-turn SSE event stream
   As an API consumer
   I want to stream a sessioned turn's events over SSE

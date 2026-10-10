@@ -1,4 +1,4 @@
-@engine
+@engine @slow
 Feature: A session cannot go on forever
 
   Invariant: every ratchet the engine uses — the same-tool-pattern cap,

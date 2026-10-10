@@ -1,4 +1,4 @@
-@failover
+@failover @slow
 Feature: Auth failure triggers reactive OAuth refresh
 
   When a provider that implements RefreshCapable returns an auth failure

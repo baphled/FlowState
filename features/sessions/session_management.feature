@@ -1,3 +1,4 @@
+@slow
 Feature: Session Management
   As a user
   I want to manage my chat sessions

@@ -1,3 +1,4 @@
+@slow
 Feature: Agent Registry
   As a FlowState operator
   I want FlowState to discover available agents

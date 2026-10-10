@@ -1,3 +1,4 @@
+@slow
 Feature: Per-turn stream deadline for OpenAI-compatible providers
   As a FlowState engine
   I need a total wall-clock cap on a single provider streaming turn

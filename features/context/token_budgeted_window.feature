@@ -1,3 +1,4 @@
+@slow
 Feature: Token-budgeted context-window truncation
   As an agent platform operator
   I need the engine's overflow fallback, mid-loop compaction rebuild, and

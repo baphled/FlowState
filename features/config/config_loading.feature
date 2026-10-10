@@ -1,3 +1,4 @@
+@slow
 Feature: Configuration Loading
   As a FlowState operator
   I want FlowState to load configuration from sensible sources

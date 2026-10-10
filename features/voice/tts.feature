@@ -1,3 +1,5 @@
+@voice
+@slow
 Feature: Voice TTS
   As a user who has opted in to spoken responses
   I want agent replies spoken through a local TTS binary

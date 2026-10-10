@@ -1,4 +1,4 @@
-@engine
+@engine @slow
 Feature: Tool-use-no-calls streak fails over instead of retrying the same model
 
   Per the 2026-09-30 Tool Budget Exhaustion RCA: when a provider
