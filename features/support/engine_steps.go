@@ -51,6 +51,9 @@ type engineSteps struct {
 	// refusedLocally records that the engine surfaced a local
 	// context-window error to the stream consumer.
 	refusedLocally bool
+	// noCounterLowBudget arms a low SystemPromptBudget without wiring
+	// a token counter, exercising the gate's chars/4 fallback.
+	noCounterLowBudget bool
 	// compactionInsufficient records that the engine surfaced the
 	// distinct terminal compaction-insufficient error after a
 	// post-compaction retry still overflowed.
@@ -252,6 +255,7 @@ func RegisterEngineSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the model should be called again$`, s.modelCalledAgain)
 	ctx.Step(`^the agent should eventually complete "([^"]*)"$`, s.agentEventuallyCompletes)
 	ctx.Step(`^the session context is over budget after a todo continuation$`, s.sessionContextOverBudget)
+	ctx.Step(`^the session context is over budget after a todo continuation without a token counter$`, s.sessionContextOverBudgetNoCounter)
 	ctx.Step(`^compaction is unavailable$`, s.compactionUnavailable)
 	ctx.Step(`^the engine attempts the continuation retry$`, s.engineAttemptsContinuationRetry)
 	ctx.Step(`^the provider does not receive the over-budget request$`, s.providerDoesNotReceiveOverBudgetRequest)
@@ -283,6 +287,7 @@ func (s *engineSteps) reset() {
 	s.compressionConfig = nil
 	s.refusedLocally = false
 	s.compactionInsufficient = false
+	s.noCounterLowBudget = false
 }
 
 // todoToolEnabled accepts the todo-tool Background step for the
@@ -390,6 +395,27 @@ func (s *engineSteps) compactionUnavailable() error {
 	}
 	s.store2 = fileStore
 	s.tokenCounter = &engineStepTokenCounter{limit: 64}
+	return nil
+}
+
+// sessionContextOverBudgetNoCounter arms the low model budget without
+// wiring a token counter, pinning the gate's chars/4 fallback counter:
+// a legacy engine without a counter must still refuse over-budget
+// requests deterministically instead of no-op'ing the gate.
+func (s *engineSteps) sessionContextOverBudgetNoCounter() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	dir, err := os.MkdirTemp("", "engine-steps-nocounter-*")
+	if err != nil {
+		return err
+	}
+	fileStore, err := recall.NewFileContextStore(dir+"/ctx.json", "engine-steps-model")
+	if err != nil {
+		return err
+	}
+	s.store2 = fileStore
+	s.tokenCounter = nil
+	s.noCounterLowBudget = true
 	return nil
 }
 
@@ -506,6 +532,9 @@ func (s *engineSteps) runTurn() error {
 	}
 	if s.compressionConfig != nil {
 		cfg.CompressionConfig = *s.compressionConfig
+	}
+	if s.noCounterLowBudget {
+		cfg.SystemPromptBudget = 64
 	}
 	eng := engine.New(cfg)
 

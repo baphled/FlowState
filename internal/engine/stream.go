@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/baphled/flowstate/internal/agent"
+	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine/lifecycle"
 	"github.com/baphled/flowstate/internal/hook"
 	"github.com/baphled/flowstate/internal/plugin/events"
@@ -937,16 +938,18 @@ func (e *Engine) outputReserveFor(req *provider.ChatRequest) int {
 // Side effects:
 //   - None.
 func (e *Engine) checkContextWindowOverflow(req *provider.ChatRequest) *provider.Error {
-	if e == nil || req == nil || e.tokenCounter == nil {
+	if e == nil || req == nil {
 		return nil
 	}
 	limit := e.ResolveContextLength(req.Provider, req.Model)
 	if limit <= 0 {
-		// No limit known and no fallback wired — pass through. The
+		// The resolver yielded nothing — fall back to the engine's
+		// documented system-prompt budget default so the gate keeps a
+		// deterministic bound instead of silently passing through. The
 		// existing in-stream classification still catches a genuine
 		// upstream context-length-exceeded response if the provider
 		// returns one.
-		return nil
+		limit = e.resolvedSystemPromptBudget()
 	}
 
 	estimated := e.estimateRequestTokens(req)
@@ -1139,16 +1142,77 @@ func (e *Engine) ContextUsageJSONForSession(providerID, modelID string, messages
 	return e.buildContextUsagePayload(providerID, modelID, messages, tools, 0)
 }
 
+// gateTokenCounter returns the counter the context-overflow gate
+// should estimate with: the engine's wired tokenCounter when present,
+// otherwise a deterministic character-based approximate counter
+// (chars/4, mirroring ctxstore.ApproximateCounter.Count) so the gate
+// no longer silently no-ops for legacy callers without a counter.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - The wired token counter, or a shared approximate counter.
+//
+// Side effects:
+//   - None.
+func (e *Engine) gateTokenCounter() ctxstore.TokenCounter {
+	if e != nil && e.tokenCounter != nil {
+		return e.tokenCounter
+	}
+	return fallbackApproximateCounter
+}
+
+// fallbackApproximateCounter is the deterministic chars/4 estimator
+// used when no tokenCounter is wired. It mirrors
+// ctxstore.ApproximateCounter's character heuristic so the gate's
+// estimates match the documented 1-token-≈-4-chars convention without
+// allocating per call.
+var fallbackApproximateCounter ctxstore.TokenCounter = approximateCharsCounter{}
+
+// approximateCharsCounter is a minimal TokenCounter implementation
+// (len/4, minimum 1 for non-empty text) matching the documented
+// heuristic of ctxstore.ApproximateCounter.Count.
+type approximateCharsCounter struct{}
+
+// Count estimates tokens as character length divided by four, with a
+// floor of one token for any non-empty text.
+//
+// Expected: the text to estimate.
+// Returns: the estimated token count.
+// Side effects: None.
+func (approximateCharsCounter) Count(text string) int {
+	if text == "" {
+		return 0
+	}
+	count := len(text) / 4
+	if count == 0 {
+		return 1
+	}
+	return count
+}
+
+// ModelLimit reports no per-model limit for the fallback counter; the
+// gate resolves limits through ResolveContextLength, never through
+// the counter.
+//
+// Expected: the model name.
+// Returns: 0 for every model (unknown).
+// Side effects: None.
+func (approximateCharsCounter) ModelLimit(model string) int {
+	return 0
+}
+
 // estimateRequestTokens approximates the prompt-token count for req
-// using the engine's configured tokenCounter. The estimate sums every
-// message's Content + Thinking, serialised tool arguments and schemas,
-// and fixed message and tool framing overhead. The gate
+// using the gate's effective token counter (the engine's configured
+// counter, or the chars/4 fallback when none is wired). The estimate
+// sums every message's Content + Thinking, serialised tool arguments
+// and schemas, and fixed message and tool framing overhead. The gate
 // is allowed to over-fire (refuse a marginally-fitting request) but
 // must not under-fire (let an over-budget request through).
 //
 // Expected:
-//   - req is non-nil. The engine's tokenCounter is non-nil (caller
-//     guards this).
+//   - req is non-nil.
 //
 // Returns:
 //   - The estimated input-token count.
@@ -1157,30 +1221,31 @@ func (e *Engine) ContextUsageJSONForSession(providerID, modelID string, messages
 //   - None.
 func (e *Engine) estimateRequestTokens(req *provider.ChatRequest) int {
 	const perToolOverhead = 32
+	counter := e.gateTokenCounter()
 	total := 0
 	for _, m := range req.Messages {
 		total += 8
 		if m.Content != "" {
-			total += e.tokenCounter.Count(m.Content)
+			total += counter.Count(m.Content)
 		}
 		if len(m.ThinkingBlocks) > 0 {
 			if blocks, err := json.Marshal(m.ThinkingBlocks); err == nil {
-				total += e.tokenCounter.Count(string(blocks))
+				total += counter.Count(string(blocks))
 			}
 		} else if m.Thinking != "" {
-			total += e.tokenCounter.Count(m.Thinking)
+			total += counter.Count(m.Thinking)
 		}
 		for _, tc := range m.ToolCalls {
-			total += e.tokenCounter.Count(tc.Name)
+			total += counter.Count(tc.Name)
 			if arguments, err := json.Marshal(tc.Arguments); err == nil {
-				total += e.tokenCounter.Count(string(arguments))
+				total += counter.Count(string(arguments))
 			}
 		}
 	}
 	for _, t := range req.Tools {
-		total += e.tokenCounter.Count(t.Name) + e.tokenCounter.Count(t.Description) + perToolOverhead
+		total += counter.Count(t.Name) + counter.Count(t.Description) + perToolOverhead
 		if schema, err := json.Marshal(t.Schema); err == nil {
-			total += e.tokenCounter.Count(string(schema))
+			total += counter.Count(string(schema))
 		}
 	}
 	return total

@@ -55,3 +55,23 @@ func TestBaseHandlerChecksMutatedDispatchBudget(t *testing.T) {
 		t.Fatal("base handler dispatched an oversized request")
 	}
 }
+
+func TestCheckContextWindowOverflowFallbackCounter(t *testing.T) {
+	eng := &Engine{systemPromptBudget: 1000}
+	req := &provider.ChatRequest{Messages: []provider.Message{{Role: "user", Content: strings.Repeat("x", 80000)}}}
+	pErr := eng.checkContextWindowOverflow(req)
+	if pErr == nil {
+		t.Fatal("expected a local overflow refusal via the chars/4 fallback counter, got nil")
+	}
+	if pErr.ErrorType != provider.ErrorTypeContextWindowExceeded {
+		t.Fatalf("expected context-window-exceeded error type, got %v", pErr.ErrorType)
+	}
+}
+
+func TestCheckContextWindowOverflowFallbackUnderBudget(t *testing.T) {
+	eng := &Engine{systemPromptBudget: 16384}
+	req := &provider.ChatRequest{Messages: []provider.Message{{Role: "user", Content: "small"}}}
+	if pErr := eng.checkContextWindowOverflow(req); pErr != nil {
+		t.Fatalf("expected small request to pass with the fallback counter, got %v", pErr)
+	}
+}
