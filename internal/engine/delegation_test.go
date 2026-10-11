@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/agent"
+	"github.com/baphled/flowstate/internal/app"
 	delegationpkg "github.com/baphled/flowstate/internal/delegation"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/plugin/failover"
@@ -20,6 +22,7 @@ import (
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tool"
+	"gopkg.in/yaml.v3"
 )
 
 var _ = Describe("Delegation", func() {
@@ -3446,4 +3449,76 @@ var _ = Describe("Permissive-orchestrator delegation scope", func() {
 				"restrictive rejection format must remain the Members[] roster shape, not the permissive registry-miss shape")
 		})
 	})
+})
+
+// loadLeadAgentManifest loads an agent manifest by id from the
+// embedded agent set, failing the spec when the manifest is absent.
+func loadLeadAgentManifest(id string) agent.Manifest {
+	agentsFS, err := fs.Sub(app.EmbeddedAgentsFS(), "agents")
+	Expect(err).NotTo(HaveOccurred())
+
+	body, readErr := fs.ReadFile(agentsFS, id+".md")
+	Expect(readErr).NotTo(HaveOccurred())
+
+	Expect(string(body)).To(HavePrefix("---"))
+	parts := strings.SplitN(string(body)[3:], "---", 2)
+	Expect(parts).To(HaveLen(2))
+
+	var m agent.Manifest
+	Expect(yaml.Unmarshal([]byte(parts[0]), &m)).NotTo(HaveOccurred())
+	return m
+}
+
+type leadExecTestTool struct {
+	name string
+}
+
+func (t *leadExecTestTool) Name() string { return t.name }
+func (t *leadExecTestTool) Description() string {
+	return "test tool " + t.name
+}
+func (t *leadExecTestTool) Execute(_ context.Context, _ tool.Input) (tool.Result, error) {
+	return tool.Result{Output: "ok"}, nil
+}
+func (t *leadExecTestTool) Schema() tool.Schema { return tool.Schema{} }
+
+var _ = Describe("LeadSelfExecutionToolset", func() {
+	manifestIDs := []string{"Team-Lead", "Tech-Lead"}
+
+	for _, id := range manifestIDs {
+		agentID := id
+		Context("when the "+agentID+" manifest is loaded", func() {
+			It("declares both the delegation and execution tool surfaces", func() {
+				manifest := loadLeadAgentManifest(agentID)
+				Expect(manifest.ID).To(Equal(agentID))
+
+				effective := manifest.EffectiveTools()
+				Expect(effective).To(ContainElement("delegate"),
+					agentID+" must hold the delegation surface so lead turns can dispatch members")
+				for _, exec := range []string{"bash", "read", "write", "edit", "grep", "glob"} {
+					Expect(effective).To(ContainElement(exec),
+						agentID+" must hold the execution surface ("+exec+") so lead turns are not dead-ended when self-execution is required")
+				}
+			})
+
+			It("surfaces those tools in the engine schema for a lead turn", func() {
+				manifest := loadLeadAgentManifest(agentID)
+
+				tools := []tool.Tool{}
+				for _, name := range []string{"delegate", "bash", "read", "write", "edit"} {
+					tools = append(tools, &leadExecTestTool{name: name})
+				}
+
+				eng := engine.New(engine.Config{Manifest: manifest, Tools: tools})
+				schemas := eng.ToolSchemas()
+
+				names := make([]string, 0, len(schemas))
+				for _, s := range schemas {
+					names = append(names, s.Name)
+				}
+				Expect(names).To(ContainElement("delegate"))
+				Expect(names).To(ContainElement("bash"))
+			})
+		})
+	}
 })

@@ -220,7 +220,8 @@ type validatorManifestProbe struct {
 		CanDelegate bool `yaml:"can_delegate"`
 	} `yaml:"delegation"`
 	OrchestratorMeta struct {
-		Category string `yaml:"category"`
+		Category                  string `yaml:"category"`
+		CategoryExecutionOverride bool   `yaml:"category_execution_override"`
 	} `yaml:"orchestrator_meta"`
 }
 
@@ -589,6 +590,9 @@ func ruleCategoryRequired(name string, probe validatorManifestProbe) []Violation
 func ruleCategoryForbidden(name string, probe validatorManifestProbe) []Violation {
 	cat := strings.TrimSpace(probe.OrchestratorMeta.Category)
 	if cat != "orchestration" && cat != "coordination" {
+		return nil
+	}
+	if probe.OrchestratorMeta.CategoryExecutionOverride {
 		return nil
 	}
 	forbiddenSet := make(map[string]bool, len(orchestrationForbidden))

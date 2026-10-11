@@ -15,8 +15,13 @@ capabilities:
     - search_nodes
     - open_nodes
     - todowrite
-  delivery_tools:
     - coordination_store
+    - bash
+    - read
+    - write
+    - edit
+    - grep
+    - glob
   skills:
     - memory-keeper
     - architecture
@@ -61,6 +66,12 @@ delegation:
 orchestrator_meta:
   cost: "high"
   category: "orchestration"
+  # Lead self-execution override (Oct 2026): Team-Lead is a hybrid
+  # lead — it must be able to self-execute (bash/read/write/edit/
+  # grep/glob) AND delegate. The bare orchestration category forbids
+  # implementation surfaces; this override opts the manifest back
+  # into them without reclassifying it as a pure implementation agent.
+  category_execution_override: true
   triggers: []
   use_when:
     - Project/sprint kickoff — assemble squad, set merge gates
@@ -150,7 +161,7 @@ This is what each agent in your `delegation_allowlist` can actually DO at runtim
 
 | Agent | Tools (live as of May 2026) | Can write files | Can run shell | Reads memory |
 |---|---|---|---|---|
-| `Tech-Lead` | delegate, skill_load, memory, todowrite | ❌ (orchestrator only) | ❌ | ✓ |
+| `Tech-Lead` | delegate, skill_load, memory, todowrite, coordination_store, bash, read, write, edit, grep, glob | ✓ | ✓ | ✓ |
 | `Senior-Engineer` | delegate, skill_load, memory, todowrite, coordination_store, bash, read, write, edit, grep, glob | ✓ | ✓ | ✓ |
 | `Mid-Engineer` | delegate, skill_load, memory, todowrite, bash, read, write, edit, grep, glob | ✓ | ✓ | ✓ |
 | `Junior-Engineer` | skill_load, memory, todowrite, bash, read, write, edit, grep, glob (no delegate) | ✓ | ✓ | ✓ |
