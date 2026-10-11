@@ -30,6 +30,10 @@ import (
 type voiceServeState struct {
 	cfg    *config.AppConfig
 	server *api.Server
+	// turnStatus records the last turn HTTP status code.
+	turnStatus int
+	// turnBody records the last turn response body.
+	turnBody string
 }
 
 // voiceServe is the scenario-scoped state, reset per scenario.
@@ -148,6 +152,36 @@ func (v *voiceServeState) fakeServeSTT(text string) error {
 	return os.Setenv("FLOWSTATE_VOICE_STT", bin)
 }
 
+// fakeServeSTTFail installs a fake STT binary that exits non-zero
+// with a stderr message, exercising the 502 mapping.
+func (v *voiceServeState) fakeServeSTTFail() error {
+	dir, err := os.MkdirTemp("", "voice-serve-stt-*")
+	if err != nil {
+		return err
+	}
+	bin := filepath.Join(dir, "whisper-cli")
+	payload := "#!/bin/sh\necho 'model load failed' >&2\nexit 3\n"
+	if err := os.WriteFile(bin, []byte(payload), 0o755); err != nil {
+		return err
+	}
+	return os.Setenv("FLOWSTATE_VOICE_STT", bin)
+}
+
+// fakeServeSTTStderr installs a fake STT binary that mimics
+// openai-whisper: transcript on stderr, progress noise included.
+func (v *voiceServeState) fakeServeSTTStderr(text string) error {
+	dir, err := os.MkdirTemp("", "voice-serve-stt-*")
+	if err != nil {
+		return err
+	}
+	bin := filepath.Join(dir, "whisper-cli")
+	payload := "#!/bin/sh\nprintf ' 50%%|\\u258b| 0/300 [00:00<00:00, 0.00 frames/s]\\r' >&2\nprintf '" + text + "\\n' >&2\nexit 0\n"
+	if err := os.WriteFile(bin, []byte(payload), 0o755); err != nil {
+		return err
+	}
+	return os.Setenv("FLOWSTATE_VOICE_STT", bin)
+}
+
 // startServeConversation activates conversation mode on the wired
 // server.
 func (v *voiceServeState) startServeConversation(session string) error {
@@ -201,11 +235,24 @@ func (v *voiceServeState) submitServeTurn() error {
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	rec := httptest.NewRecorder()
 	v.server.Handler().ServeHTTP(rec, req)
+	v.turnStatus = rec.Code
+	v.turnBody = rec.Body.String()
 	if rec.Code != http.StatusOK {
-		return fmt.Errorf("turn status = %d, want 200; body %s", rec.Code, rec.Body.String())
+		return nil
 	}
-	if !strings.Contains(rec.Body.String(), "hello agent") {
+	if !strings.Contains(rec.Body.String(), "transcript") {
 		return fmt.Errorf("turn body %s missing transcript", rec.Body.String())
+	}
+	return nil
+}
+
+// serveTurnStatus asserts the last turn response status and code.
+func (v *voiceServeState) serveTurnStatus(want int, code string) error {
+	if v.turnStatus != want {
+		return fmt.Errorf("turn status = %d, want %d; body %s", v.turnStatus, want, v.turnBody)
+	}
+	if !strings.Contains(v.turnBody, code) {
+		return fmt.Errorf("turn body %s missing code %s", v.turnBody, code)
 	}
 	return nil
 }
@@ -267,6 +314,10 @@ func VoiceServeContext(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the serve command wires serve voice from the config$`, voiceServe.wireServeVoice)
 	ctx.Step(`^the conversation mode endpoints are not wired$`, voiceServe.conversationEndpointsNotWired)
 	ctx.Step(`^a fake serve STT command that emits "(.*)"$`, voiceServe.fakeServeSTT)
+	ctx.Step(`^a serve STT command that emits nothing$`, func() error { return voiceServe.fakeServeSTT("") })
+	ctx.Step(`^a serve STT command that exits non-zero$`, voiceServe.fakeServeSTTFail)
+	ctx.Step(`^a serve STT command that emits "(.*)" on stderr$`, voiceServe.fakeServeSTTStderr)
+	ctx.Step(`^the serve turn response status is (\d+) with code "([^"]*)"$`, voiceServe.serveTurnStatus)
 	ctx.Step(`^serve conversation mode is active for session "([^"]*)"$`, voiceServe.startServeConversation)
 	ctx.Step(`^the serve chat session replies "(.*)"$`, voiceServe.chatReplies)
 	ctx.Step(`^I submit serve conversation audio to /api/v1/voice/conversation/turn$`, voiceServe.submitServeTurn)

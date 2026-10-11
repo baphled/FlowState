@@ -28,6 +28,27 @@ Feature: Voice conversation served from flowstate serve
     And the serve synthesiser receives the text "all done, agent idle"
 
   @voice @voice_serve
+  Scenario: A served voice turn with an empty transcript returns 422 not 500
+    Given a serve STT command that emits nothing
+    And serve conversation mode is active for session "sess-serve-1"
+    When I submit serve conversation audio to /api/v1/voice/conversation/turn
+    Then the serve turn response status is 422 with code "empty_transcript"
+
+  @voice @voice_serve
+  Scenario: A served voice turn with a failing STT command returns 502
+    Given a serve STT command that exits non-zero
+    And serve conversation mode is active for session "sess-serve-1"
+    When I submit serve conversation audio to /api/v1/voice/conversation/turn
+    Then the serve turn response status is 502 with code "stt_failed"
+
+  @voice @voice_serve
+  Scenario: A served voice turn prefers the whisper stderr transcript
+    Given a serve STT command that emits "hello stderr agent" on stderr
+    And serve conversation mode is active for session "sess-serve-1"
+    When I submit serve conversation audio to /api/v1/voice/conversation/turn
+    And the serve chat session receives the message "hello stderr agent"
+
+  @voice @voice_serve
   Scenario: Disabled voice config leaves conversation endpoints unwired
     Given a serve config with voice disabled
     And the serve command wires serve voice from the config
