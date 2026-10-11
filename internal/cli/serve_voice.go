@@ -3,10 +3,14 @@ package cli
 import (
 	"context"
 	"errors"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/baphled/flowstate/internal/api"
 	"github.com/baphled/flowstate/internal/config"
 	dispatchpkg "github.com/baphled/flowstate/internal/dispatch"
+	turnpkg "github.com/baphled/flowstate/internal/turn"
 	"github.com/baphled/flowstate/internal/voice"
 )
 
@@ -119,6 +123,12 @@ func InstallVoiceFromConfig(apiServer *api.Server, cfg *config.AppConfig) error 
 		pipeline:   pipeline,
 		dispatcher: &voiceDispatchAdapter{svc: dispatcher},
 	}))
+	apiServer.ApplyOption(api.WithVoiceConversation(&voiceConversationInstaller{
+		stt:          cfg.Voice.STTCmd,
+		svc:          dispatcher,
+		synth:        resolveServeSynthesiser(cfg),
+		sessionAgent: apiServer.SessionManagerSnapshot(),
+	}))
 	if cfg.Voice.TTSEnabled {
 		tts, err := voice.NewTTSTool(cfg.Voice.TTSCmd)
 		if err != nil {
@@ -130,4 +140,215 @@ func InstallVoiceFromConfig(apiServer *api.Server, cfg *config.AppConfig) error 
 		apiServer.ApplyOption(api.WithVoiceTTSSynthesizer(tts))
 	}
 	return nil
+}
+
+// resolveServeSynthesiser builds the conversational TTS synthesiser
+// from the loaded config, degrading to nil when TTS is disabled or
+// unavailable.
+//
+// Expected:
+//   - cfg is the loaded application config; a nil-safe read of the
+//     voice section.
+//
+// Returns:
+//   - A *voice.TTSTool when TTS is enabled and the binary resolves;
+//     nil otherwise (a nil synthesiser skips spoken replies without
+//     failing the turn).
+//
+// Side effects:
+//   - None.
+func resolveServeSynthesiser(cfg *config.AppConfig) *voice.TTSTool {
+	if cfg == nil || !cfg.Voice.TTSEnabled {
+		return nil
+	}
+	tts, err := voice.NewTTSTool(cfg.Voice.TTSCmd)
+	if err != nil {
+		return nil
+	}
+	return tts
+}
+
+// replyWaitTimeout bounds how long a served voice turn waits for the
+// dispatched chat turn to complete before returning the transcript
+// without a reply.
+const replyWaitTimeout = 90 * time.Second
+
+// voiceConversationInstaller adapts the API DispatcherService to the
+// voice package's ConversationService, dispatching each transcript as
+// a sessioned turn and awaiting the turn registry for the reply
+// text.
+type voiceConversationInstaller struct {
+	stt   string
+	svc   api.DispatcherService
+	synth *voice.TTSTool
+	// sessionAgent resolves a session's baseline agent id, matching
+	// the /messages handler's CurrentAgentID override.
+	sessionAgent func(sessionID string) string
+	once         sync.Once
+	inner        *voice.ConversationService
+}
+
+// Start activates conversation mode for the session.
+//
+// Expected:
+//   - sessionID is non-empty.
+//
+// Side effects:
+//   - Delegates to the lazily built conversation service.
+func (v *voiceConversationInstaller) Start(sessionID string) {
+	v.service().Start(sessionID)
+}
+
+// Stop deactivates conversation mode.
+//
+// Expected:
+//   - None.
+//
+// Side effects:
+//   - Delegates to the lazily built conversation service.
+func (v *voiceConversationInstaller) Stop() {
+	v.service().Stop()
+}
+
+// Active reports the active session ID.
+//
+// Returns:
+//   - The bound session ID, or the empty string when inactive.
+//
+// Side effects:
+//   - None.
+func (v *voiceConversationInstaller) Active() string {
+	return v.service().Active()
+}
+
+// Turn runs one served voice conversation turn: STT the upload,
+// dispatch the transcript to the bound session's chat machinery, and
+// await the turn registry for the reply.
+//
+// Expected:
+//   - audio is non-empty WAV bytes.
+//
+// Returns:
+//   - A voice.ConversationResult carrying the transcript and, when
+//     the dispatched turn completes within replyWaitTimeout, the
+//     reply text and synthesised audio when speakReply is set.
+//   - The STT or dispatch error verbatim.
+//
+// Side effects:
+//   - Builds the conversation service on first use; spawns the STT
+//     child and one ephemeral dispatch per turn.
+func (v *voiceConversationInstaller) Turn(audio []byte, speakReply bool) (voice.ConversationResult, error) {
+	service := v.service()
+	original := service.Dispatcher
+	service.Dispatcher = v
+	defer func() { service.Dispatcher = original }()
+	return service.Turn(context.Background(), voice.ConversationTurn{
+		Audio:      audio,
+		SpeakReply: speakReply,
+	})
+}
+
+// service lazily builds the wrapped conversation service.
+//
+// Returns:
+//   - A *voice.ConversationService bound to this installer's
+//     dispatcher and synthesiser.
+//
+// Side effects:
+//   - Caches the service on first call.
+func (v *voiceConversationInstaller) service() *voice.ConversationService {
+	v.once.Do(func() {
+		v.inner = voice.NewConversationService(v.stt, v, v.synth)
+	})
+	return v.inner
+}
+
+// ConversationReply dispatches the transcript to the bound session
+// via the shared DispatcherService and awaits the turn registry for
+// the assistant reply.
+//
+// Expected:
+//   - sessionID is the conversation-mode session; transcript is the
+//     STT output.
+//
+// Returns:
+//   - The assistant reply text (empty when the turn does not
+//     complete within replyWaitTimeout).
+//   - The dispatch error verbatim on failure.
+//
+// Side effects:
+//   - Spawns one ephemeral dispatch goroutine and polls the turn
+//     registry until the turn reaches a terminal state.
+func (v *voiceConversationInstaller) ConversationReply(ctx context.Context, sessionID, transcript string) (string, error) {
+	registry := v.svc.TurnRegistry()
+	if registry == nil {
+		return "", errors.New("voice serve: turn registry unavailable")
+	}
+	agentID := v.agentForSession(sessionID)
+	handle, err := v.svc.DispatchSessioned(ctx, dispatchpkg.DispatchRequest{
+		SessionID:    sessionID,
+		AgentID:      agentID,
+		Content:      transcript,
+		ScanMentions: true,
+	}, nil)
+	if err != nil {
+		return "", err
+	}
+	turnID := handle.TurnID
+	deadline := time.Now().Add(replyWaitTimeout)
+	for {
+		t, getErr := registry.Get(turnID)
+		if getErr != nil {
+			return "", getErr
+		}
+		if t.Status != turnpkg.StatusRunning {
+			return replyText(t), nil
+		}
+		if time.Now().After(deadline) {
+			return "", nil
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
+// replyText joins the assistant messages recorded on a turn.
+//
+// Expected:
+//   - t is a terminal-state turn snapshot.
+//
+// Returns:
+//   - The concatenated assistant reply text (empty when none).
+//
+// Side effects:
+//   - None.
+func replyText(t turnpkg.Turn) string {
+	var reply strings.Builder
+	for _, msg := range t.MessagesAdded {
+		if msg.Role == "assistant" {
+			reply.WriteString(msg.Content)
+		}
+	}
+	return reply.String()
+}
+
+// agentForSession resolves the session's baseline agent id so the
+// dispatched turn matches the /messages handler's resolution.
+//
+// Expected:
+//   - sessionID is a known conversation-mode session.
+//
+// Returns:
+//   - The session's agent id (empty when the session is unknown).
+//
+// Side effects:
+//   - None.
+func (v *voiceConversationInstaller) agentForSession(sessionID string) string {
+	if v.sessionAgent == nil {
+		return ""
+	}
+	return v.sessionAgent(sessionID)
 }
