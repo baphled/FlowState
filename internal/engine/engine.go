@@ -3697,10 +3697,11 @@ func (e *Engine) appendToolResultsBatchToMessages(
 		if isError && content == "" {
 			content = "Error: " + results[i].Error.Error()
 		}
-		totalContentBytes += len(content)
+		capped := capPersistedToolResult(content)
+		totalContentBytes += len(capped)
 		messages = append(messages, provider.Message{
 			Role:    "tool",
-			Content: content,
+			Content: capped,
 			IsError: isError,
 			ToolCalls: []provider.ToolCall{
 				{ID: tc.ID, Name: tc.Name},
