@@ -26,6 +26,12 @@ Feature: Tool-loop budgets count tool execution time
     When the delegation completes
     Then the parent tool loop does not trip the tool-time backstop
 
+  Scenario: Bookkeeping tool calls do not count toward the iteration budget
+    Given an engine with a tool loop duration cap of 200ms
+    And a bookkeeping tool sequence of 12 coordination_store calls
+    When the bookkeeping-heavy sequence completes
+    Then the turn completes without tripping the iteration backstop
+
   Scenario: Background-task continuations are capped
     Given a session whose background tasks never complete
     When the tool loop requests more than 20 background-task continuations

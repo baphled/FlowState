@@ -52,6 +52,46 @@ func batchDeadlineKilled(results []tool.Result) bool {
 	return false
 }
 
+// bookkeepingToolNames lists the tools whose calls are pure session
+// bookkeeping rather than task progress: the todo-list tools (plan
+// tracking) and coordination_store (inter-agent handoffs). The
+// tool-loop iteration budget exempts batches made up solely of these
+// names, mirroring the deadline-killed exemption, so a model that
+// diligently maintains its todo list or publishes handoffs mid-turn is
+// never starved of continuation budget by that maintenance alone.
+var bookkeepingToolNames = map[string]bool{
+	"todowrite":          true,
+	"todo_update":        true,
+	"todo_append":        true,
+	"todo_insert":        true,
+	"todo_clear":         true,
+	"coordination_store": true,
+}
+
+// bookkeepingOnlyBatch reports whether every call in the supplied batch
+// targets a bookkeeping tool (todo tools or coordination_store), and the
+// batch is non-empty.
+//
+// Expected:
+//   - toolCalls is the assistant's just-executed batch.
+//
+// Returns:
+//   - true when the batch contains at least one call and every call's
+//     tool name is a bookkeeping tool.
+//
+// Side effects: None.
+func bookkeepingOnlyBatch(toolCalls []*provider.ToolCall) bool {
+	if len(toolCalls) == 0 {
+		return false
+	}
+	for _, tc := range toolCalls {
+		if tc == nil || !bookkeepingToolNames[tc.Name] {
+			return false
+		}
+	}
+	return true
+}
+
 // maxOverflowRetries bounds context-window overflow recovery to two
 // retries so a turn makes at most three provider calls (the initial
 // request plus two post-compaction retries) before surfacing the
@@ -1893,8 +1933,18 @@ func (e *Engine) streamWithToolLoop(
 		//      stalls where varied tool args dodge the fingerprint and
 		//      the low count dodges the iteration backstop.
 		// Zero/negative on any field disables its respective check.
-		iterations++
-		watchdog.recordIterations(iterations)
+		//
+		// Bookkeeping-exemption: batches consisting solely of
+		// bookkeeping tools (todo tools and coordination_store) are
+		// pure state maintenance, not turn progress — a model may
+		// legitimately interleave many such batches while working.
+		// They must not consume the fixed-N iteration budget, so the
+		// increment is skipped for them (mirroring the
+		// deadline-exemption below for the repeat detectors).
+		if !bookkeepingOnlyBatch(result.toolCalls) {
+			iterations++
+			watchdog.recordIterations(iterations)
+		}
 		// Deadline-exemption (F2): when the previous batch's results
 		// contain a tool-deadline kill (bash.ErrDeadlineExceeded), the
 		// model re-issuing the same batch is a legitimate retry of a

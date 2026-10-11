@@ -232,7 +232,7 @@ func (s *toolLoopBudgetSteps) runTurn(sessionID, prompt string, watchdog time.Du
 		ID:   "tool-budget-agent",
 		Name: "Tool Budget Agent",
 		Capabilities: agent.Capabilities{
-			Tools: []string{"slowpoke", "delegate", "spinner"},
+			Tools: []string{"slowpoke", "delegate", "spinner", "coordination_store"},
 		},
 	}
 	maxIterations := s.maxIterations
@@ -306,6 +306,9 @@ func RegisterToolLoopBudgetSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^an engine with a tool loop duration cap of 200ms$`, s.engineWithToolLoopDurationCap)
 	ctx.Step(`^a tool that sleeps 50ms per call and never finishes the task$`, s.toolSleepsPerCallNeverFinishing)
 	ctx.Step(`^a delegation tool whose child engine runs for (\d+)ms$`, s.delegationToolRunningChildEngine)
+	ctx.Step(`^a bookkeeping tool sequence of (\d+) coordination_store calls$`, s.bookkeepingToolSequence)
+	ctx.Step(`^the bookkeeping-heavy sequence completes$`, s.bookkeepingSequenceCompletes)
+	ctx.Step(`^the turn completes without tripping the iteration backstop$`, s.turnCompletesWithoutIterationBackstop)
 	ctx.Step(`^the cumulative tool execution time exceeds the cap$`, s.cumulativeToolExecutionTimeExceedsCap)
 	ctx.Step(`^the tool loop is capped with reason "([^"]+)"$`, s.toolLoopCappedWithReason)
 	ctx.Step(`^the cap warning includes a "([^"]+)" duration field$`, s.capWarningIncludesDurationField)
@@ -357,6 +360,46 @@ func (s *toolLoopBudgetSteps) delegationToolRunningChildEngine(durationMs int) e
 // a watchdog.
 func (s *toolLoopBudgetSteps) cumulativeToolExecutionTimeExceedsCap() error {
 	return s.runTurn("tool-budget-session", "Go", 8*time.Second)
+}
+
+// bookkeepingToolSequence registers a coordination_store-named tool and
+// scripts n calls before natural completion, with the duration cap
+// disabled and a tiny iteration cap so only the exemption can carry the
+// turn past it.
+func (s *toolLoopBudgetSteps) bookkeepingToolSequence(calls int) error {
+	s.cap = 0
+	s.maxIterations = 3
+	s.tools = []tool.Tool{&budgetSleepTool{name: "coordination_store"}}
+	s.provider.turns = make([]toolBudgetTurn, 0, calls+1)
+	for i := 0; i < calls; i++ {
+		s.provider.turns = append(s.provider.turns, toolBudgetTurn{toolName: "coordination_store"})
+	}
+	s.provider.turns = append(s.provider.turns, toolBudgetTurn{content: "All done."})
+	return nil
+}
+
+// bookkeepingSequenceCompletes runs the bookkeeping-heavy turn under a
+// watchdog.
+func (s *toolLoopBudgetSteps) bookkeepingSequenceCompletes() error {
+	return s.runTurn("tool-budget-session", "Coordinate", 8*time.Second)
+}
+
+// turnCompletesWithoutIterationBackstop asserts the turn finished
+// naturally despite exceeding the iteration cap with bookkeeping calls.
+func (s *toolLoopBudgetSteps) turnCompletesWithoutIterationBackstop() error {
+	if !s.ran {
+		return fmt.Errorf("no turn was streamed")
+	}
+	if s.capturer.hasTrip("iteration_backstop") {
+		return fmt.Errorf("bookkeeping calls must not trip the iteration backstop")
+	}
+	if s.observedStopReason(session.StopReasonToolLoopExceeded) {
+		return fmt.Errorf("bookkeeping-heavy turns must complete naturally, not with tool_loop_exceeded")
+	}
+	if n := s.provider.callCount(); n != len(s.provider.turns) {
+		return fmt.Errorf("expected %d provider calls, got %d", len(s.provider.turns), n)
+	}
+	return nil
 }
 
 // delegationCompletes runs the delegated turn to its natural completion.
