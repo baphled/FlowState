@@ -116,6 +116,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterToolLoopBudgetSteps(ctx)
 	RegisterLeanSkillInjectionSteps(ctx)
 	RegisterInFlightToolResultCapSteps(ctx)
+	RegisterTranscriptToolResultCapSteps(ctx)
 	RegisterLoopGuardSteps(ctx)
 	RegisterSoftContinuationSteps(ctx)
 	RegisterTodoCompletionSteps(ctx)

@@ -784,7 +784,7 @@ func applyToolResult(appender MessageAppender, s *streamAccumState, tr *provider
 	}
 	appender.AppendMessage(s.sessionID, Message{
 		Role:      role,
-		Content:   tr.Content,
+		Content:   capTranscriptToolResult(tr.Content),
 		ToolName:  s.lastToolName,
 		ToolInput: s.lastToolInput,
 		AgentID:   s.agentID,
