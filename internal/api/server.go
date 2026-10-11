@@ -1213,6 +1213,38 @@ func (s *Server) DispatcherService() DispatcherService {
 	return s.dispatcher
 }
 
+// SessionManagerSnapshot resolves a session's baseline agent id the
+// same way the /messages handler does: CurrentAgentID overrides the
+// persisted AgentID. Exposed so the serve-side voice conversation
+// wiring can dispatch transcripts to the same agent the chat surface
+// would.
+//
+// Expected:
+//   - None (the server holds the wired session manager).
+//
+// Returns:
+//   - A resolution function; nil when no session manager is wired.
+//   - The returned function yields the empty string for unknown
+//     sessions.
+//
+// Side effects:
+//   - None.
+func (s *Server) SessionManagerSnapshot() func(sessionID string) string {
+	if s.sessionManager == nil {
+		return nil
+	}
+	return func(sessionID string) string {
+		snap, err := s.sessionManager.SnapshotSession(sessionID)
+		if err != nil {
+			return ""
+		}
+		if snap.CurrentAgentID != "" {
+			return snap.CurrentAgentID
+		}
+		return snap.AgentID
+	}
+}
+
 // securityHeaders returns a middleware that adds defensive HTTP security headers to every response.
 //
 // Expected:

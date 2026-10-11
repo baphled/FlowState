@@ -74,8 +74,9 @@ func NewSTTTool(command string) (*STTTool, error) {
 // Returns:
 //   - The transcript string (whitespace-trimmed).
 //   - ErrSTTUnavailable when no command is configured.
-//   - An error wrapping the exit status when the command fails.
-//   - ErrEmptyTranscript when stdout holds no usable text.
+//   - An error wrapping the exit status and the STT stderr tail
+//     when the command fails.
+//   - ErrEmptyTranscript when neither stream holds usable text.
 //
 // Side effects:
 //   - Spawns the STT binary with the WAV path as a literal argv
@@ -88,20 +89,84 @@ func (s *STTTool) Transcribe(ctx context.Context, path string) (string, error) {
 	}
 	args := sttArgs(s.Command, path)
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	var stdout bytes.Buffer
+	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
-	cmd.Stderr = nil
+	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
 			return "", fmt.Errorf("%w: %s: %w", ErrSTTUnavailable, args[0], err)
 		}
-		return "", fmt.Errorf("voice: stt command %q failed: %w", args[0], err)
+		// Wrap the failure with the STT stderr tail so a broken
+		// model path or crash is diagnosable from the API error
+		// alone.
+		return "", fmt.Errorf("voice: stt command %q failed: %w: %s",
+			args[0], err, stderrTail(stderr.String()))
 	}
-	transcript := strings.TrimSpace(strings.TrimSpace(stdout.String()))
+	// openai-whisper's CLI prints transcript lines to stderr while
+	// stdout stays empty; whisper.cpp's whisper-cli prints to stdout.
+	// Prefer stderr parsing, fall back to stdout.
+	transcript := parseWhisperStderr(stderr.String())
+	if transcript == "" {
+		transcript = strings.TrimSpace(strings.TrimSpace(stdout.String()))
+	}
 	if transcript == "" {
 		return "", ErrEmptyTranscript
 	}
 	return transcript, nil
+}
+
+// stderrTail returns the last usable chunk of STT stderr output for
+// error wrapping, capped so a progress bar does not flood logs.
+//
+// Expected:
+//   - s is the raw stderr text captured from the STT child.
+//
+// Returns:
+//   - The trimmed stderr, truncated to its final 512 bytes.
+//
+// Side effects:
+//   - None.
+func stderrTail(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) > 512 {
+		s = s[len(s)-512:]
+	}
+	return s
+}
+
+// parseWhisperStderr extracts transcript text from openai-whisper's
+// stderr output. With --verbose False the CLI writes plain
+// transcript lines to stderr alongside tqdm progress noise
+// (percentage bars containing '%' and '\r'), which is filtered out.
+//
+// Expected:
+//   - stderr is the raw stderr byte stream of the STT child.
+//
+// Returns:
+//   - The trimmed transcript with progress noise removed; empty
+//     when no transcript lines are present.
+//
+// Side effects:
+//   - None.
+func parseWhisperStderr(stderr string) string {
+	stderr = strings.ReplaceAll(stderr, "\r", "\n")
+	var lines []string
+	for _, line := range strings.Split(stderr, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Skip tqdm progress bars ("  5%|▌ | ...", "0/300 [00:00<...]"),
+		// banner noise, and bracketed diagnostics whisper prefixes.
+		if strings.Contains(line, "%|") || strings.Contains(line, "|") && strings.Contains(line, "/") && strings.Contains(line, "[") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") || strings.HasPrefix(line, ">") {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return strings.TrimSpace(strings.Join(lines, " "))
 }
 
 // sttArgs substitutes the {file} placeholder and splits the command

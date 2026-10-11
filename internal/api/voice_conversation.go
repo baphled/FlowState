@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/baphled/flowstate/internal/voice"
 )
@@ -112,7 +113,9 @@ func (s *Server) handleVoiceConversationStop(w http.ResponseWriter, _ *http.Requ
 //   - 200 with transcript, reply, and audio when speaking.
 //   - 400 invalid_request for missing or non-WAV audio.
 //   - 409 conversation_inactive when no session is active.
+//   - 422 empty_transcript when STT yields no usable text.
 //   - 501 voice_not_wired when no conversation service is wired.
+//   - 502 stt_failed when the STT command fails or cannot spawn.
 //   - 503 voice_unavailable when no STT binary resolves.
 //   - 500 internal on dispatch failure.
 //
@@ -137,6 +140,11 @@ func (s *Server) handleVoiceConversationTurn(w http.ResponseWriter, r *http.Requ
 			writeVoiceError(w, http.StatusConflict, "conversation_inactive", "conversation mode is not active; start it first")
 		case errors.Is(err, voice.ErrSTTUnavailable):
 			writeVoiceError(w, http.StatusServiceUnavailable, "voice_unavailable", "speech-to-text is unavailable; install whisper or configure the STT command")
+		case errors.Is(err, voice.ErrEmptyTranscript):
+			writeVoiceError(w, http.StatusUnprocessableEntity, "empty_transcript", err.Error())
+		case isSTTCommandFailure(err):
+			slog.Error("voice stt command failed", "error", err)
+			writeVoiceError(w, http.StatusBadGateway, "stt_failed", err.Error())
 		default:
 			slog.Error("voice conversation turn failed", "error", err)
 			writeVoiceError(w, http.StatusInternalServerError, "internal", "conversation turn failed")
@@ -144,4 +152,20 @@ func (s *Server) handleVoiceConversationTurn(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, voiceConversationTurnResponse{Transcript: result.Transcript, Reply: result.Reply, Audio: result.Audio})
+}
+
+// isSTTCommandFailure reports whether err is a failing STT child
+// process (non-zero exit or spawn error), as wrapped by the voice
+// package's Transcribe.
+//
+// Expected:
+//   - err is the error chain from ConversationService.Turn.
+//
+// Returns:
+//   - true when the chain carries the stt-command-failure prefix.
+//
+// Side effects:
+//   - None.
+func isSTTCommandFailure(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "stt command")
 }
