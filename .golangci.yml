@@ -312,6 +312,7 @@ linters:
             - github.com/spf13/viper
             - gopkg.in/yaml.v3
             - github.com/cucumber/godog
+            - golang.org/x/sync
             - github.com/sashabaranov/go-openai
             - github.com/pkoukk/tiktoken-go
             - github.com/anthropics/anthropic-sdk-go

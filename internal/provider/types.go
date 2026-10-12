@@ -410,6 +410,16 @@ type EmbedRequest struct {
 	Model string
 }
 
+// EmbedManyRequest contains the parameters for a batched embedding request.
+//
+// Inputs carries one or more texts; providers that support multi-input
+// embedding APIs (Ollama /api/embed with a []string input) return one
+// vector per element in a single HTTP round-trip.
+type EmbedManyRequest struct {
+	Inputs []string
+	Model  string
+}
+
 // Model describes an available LLM model.
 //
 // OutputLimit declares the maximum response tokens the model is configured

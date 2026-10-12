@@ -103,6 +103,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterFSPollutionSteps(ctx)
 	RegisterAdultingDeadlineSteps(ctx)
 	RegisterVaultIndexSyncSteps(ctx)
+	RegisterVaultSyncPerfSteps(ctx)
 	RegisterVaultQueryCollectionSteps(ctx)
 	RegisterVaultQueryScriptSteps(ctx)
 	RegisterTodoSteps(ctx)

@@ -344,6 +344,55 @@ func (p *Provider) Embed(ctx context.Context, req provider.EmbedRequest) ([]floa
 	return result, nil
 }
 
+// EmbedMany generates embeddings for multiple input texts in a single
+// Ollama /api/embed request. The Ollama API accepts a string array as the
+// embed input and returns one vector per element, which collapses N
+// single-chunk HTTP round-trips (the old vaultindex behaviour) into one
+// request per batch.
+//
+// Expected:
+//   - ctx is a valid context for the API call.
+//   - req contains at least one input text and the model to use. The API
+//     currently carries a single text; this method batches identical-input
+//     callers by issuing one request with Input set to a []string.
+//
+// Returns:
+//   - One float64 slice per input text, in input order.
+//   - An error if the API call fails or the returned embedding count does
+//     not match the input count.
+//
+// Side effects:
+//   - Makes one HTTP request to the Ollama embedding API.
+func (p *Provider) EmbedMany(ctx context.Context, req provider.EmbedManyRequest) ([][]float64, error) {
+	if len(req.Inputs) == 0 {
+		return nil, errors.New("no inputs to embed")
+	}
+	embedReq := &ollamaAPI.EmbedRequest{
+		Model: req.Model,
+		Input: req.Inputs,
+	}
+
+	resp, err := p.client.Embed(ctx, embedReq)
+	if err != nil {
+		return nil, fmt.Errorf("ollama embed batch failed: %w", err)
+	}
+
+	if len(resp.Embeddings) != len(req.Inputs) {
+		return nil, fmt.Errorf("ollama embed batch returned %d embeddings for %d inputs",
+			len(resp.Embeddings), len(req.Inputs))
+	}
+
+	out := make([][]float64, len(resp.Embeddings))
+	for i, emb := range resp.Embeddings {
+		vec := make([]float64, len(emb))
+		for j, v := range emb {
+			vec[j] = float64(v)
+		}
+		out[i] = vec
+	}
+	return out, nil
+}
+
 // Models returns the list of available Ollama models.
 //
 // Returns:

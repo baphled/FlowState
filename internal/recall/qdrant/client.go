@@ -186,6 +186,31 @@ func (c *Client) Upsert(ctx context.Context, collection string, points []Point, 
 	return requireOK(body, status)
 }
 
+// Flush blocks until all previously submitted (wait=false) upserts for the
+// collection have been persisted and indexed. It backs the vault indexer's
+// deferred-write mode: per-file upserts are issued with wait=false so Qdrant
+// can batch internally, and a single Flush at the end of a sync pass provides
+// the durability guarantee the old per-file wait=true gave, without N
+// synchronous flush round-trips.
+//
+// Expected:
+//   - collection names an existing collection with pending wait=false upserts.
+//
+// Returns:
+//   - nil once all pending points are persisted.
+//   - A *Error if the server returns a non-2xx status.
+//
+// Side effects:
+//   - Issues an HTTP POST to Qdrant.
+func (c *Client) Flush(ctx context.Context, collection string) error {
+	path := collectionsPath + collection + "/points/flush"
+	body, status, err := c.do(ctx, http.MethodPost, path, nil)
+	if err != nil {
+		return fmt.Errorf("flushing collection %q: %w", collection, err)
+	}
+	return requireOK(body, status)
+}
+
 // Search finds the nearest points for the supplied vector within a Qdrant collection.
 //
 // Expected:

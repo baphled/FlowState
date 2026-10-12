@@ -31,9 +31,10 @@ type FileState struct {
 // mutex so the indexer can fan out file work over multiple goroutines later
 // without re-engineering the type.
 type State struct {
-	mu    sync.Mutex
-	path  string
-	files map[string]FileState
+	mu        sync.Mutex
+	path      string
+	files     map[string]FileState
+	saveCount int
 }
 
 // LoadState reads the sidecar at the supplied path.
@@ -178,7 +179,22 @@ func (s *State) Save() error {
 		os.Remove(tmpName)
 		return fmt.Errorf("renaming sidecar %s -> %s: %w", tmpName, s.path, err)
 	}
+	s.saveCount++
 	return nil
+}
+
+// SaveCount reports how many times Save has persisted the sidecar over
+// this State's lifetime. Exposed so the indexer tests can assert the
+// checkpoint cadence (once per sync plus interval checkpoints, instead
+// of the historical once-per-file O(N²) pattern).
+//
+// Expected: parameters for SaveCount.
+// Returns: result of SaveCount.
+// Side effects: None.
+func (s *State) SaveCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveCount
 }
 
 // stateWire is the on-disk wrapper around the files map.

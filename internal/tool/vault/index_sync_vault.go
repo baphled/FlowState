@@ -3,15 +3,22 @@ package vault
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"os"
+	"strconv"
 
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/ollama"
+	"github.com/baphled/flowstate/internal/provider/shared"
 	qdrantclient "github.com/baphled/flowstate/internal/recall/qdrant"
 	"github.com/baphled/flowstate/internal/tool"
 	"github.com/baphled/flowstate/internal/vaultindex"
 )
+
+// vaultSyncWorkersEnv names the environment variable overriding the number
+// of concurrent file workers during a vault sync/index pass. Bounded
+// concurrency keeps a local Ollama embedder from saturating the machine;
+// the default (vaultindex.DefaultWorkers = 2) is deliberately conservative.
+const vaultSyncWorkersEnv = "VAULT_SYNC_WORKERS"
 
 // IndexerConfig carries the settings needed to build and run a vault indexer.
 type IndexerConfig struct {
@@ -172,7 +179,11 @@ func runVaultIndexerTool(ctx context.Context, cfg IndexerConfig) (vaultindex.Sum
 		return vaultindex.Summary{}, fmt.Errorf("vault root %q: %w", cfg.VaultRoot, err)
 	}
 
-	prov, err := ollama.NewWithClient(cfg.OllamaHost, &http.Client{})
+	// StreamGuardHTTPClient gives the embedder a ResponseHeaderTimeout so a
+	// stalled Ollama process (accepts the connection, never responds) fails
+	// the sync within a bounded window instead of hanging the tool thread
+	// forever. Previously a bare &http.Client{} had no timeout at all.
+	prov, err := ollama.NewWithClient(cfg.OllamaHost, shared.StreamGuardHTTPClient(shared.DefaultResponseHeaderTimeout))
 	if err != nil {
 		return vaultindex.Summary{}, fmt.Errorf("creating ollama client: %w", err)
 	}
@@ -190,6 +201,7 @@ func runVaultIndexerTool(ctx context.Context, cfg IndexerConfig) (vaultindex.Sum
 		Collection:   cfg.Collection,
 		EmbeddingDim: vaultindex.DefaultEmbeddingDim,
 		Reindex:      cfg.Reindex,
+		Workers:      vaultSyncWorkers(),
 		Chunker:      vaultindex.NewChunker(vaultindex.DefaultChunkSize, vaultindex.DefaultChunkOverlap),
 		Embedder:     embedder,
 		Store:        store,
@@ -200,6 +212,22 @@ func runVaultIndexerTool(ctx context.Context, cfg IndexerConfig) (vaultindex.Sum
 		return vaultindex.Summary{}, fmt.Errorf("ensure collection: %w", err)
 	}
 	return indexer.IndexAll(ctx)
+}
+
+// vaultSyncWorkers resolves the worker count for a sync pass: the
+// VAULT_SYNC_WORKERS env var when set to a positive integer, otherwise the
+// conservative vaultindex default.
+//
+// Expected: parameters for vaultSyncWorkers.
+// Returns: result of vaultSyncWorkers.
+// Side effects: None.
+func vaultSyncWorkers() int {
+	if raw := os.Getenv(vaultSyncWorkersEnv); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			return n
+		}
+	}
+	return vaultindex.DefaultWorkers
 }
 
 // vaultToolOllamaAdapter bridges ollama.Provider onto vaultindex.Embedder.
@@ -215,4 +243,16 @@ type vaultToolOllamaAdapter struct {
 // Side effects: None.
 func (a vaultToolOllamaAdapter) Embed(ctx context.Context, text string) ([]float64, error) {
 	return a.provider.Embed(ctx, provider.EmbedRequest{Input: text, Model: a.model})
+}
+
+// EmbedBatch implements vaultindex.BatchEmbedder: one multi-input Ollama
+// /api/embed request per batch window instead of N single-text round-trips.
+// A server that rejects batching returns an error and the indexer falls
+// back to per-chunk Embed calls automatically.
+//
+// Expected: parameters for EmbedBatch.
+// Returns: result of EmbedBatch.
+// Side effects: None.
+func (a vaultToolOllamaAdapter) EmbedBatch(ctx context.Context, input []string) ([][]float64, error) {
+	return a.provider.EmbedMany(ctx, provider.EmbedManyRequest{Inputs: input, Model: a.model})
 }
