@@ -813,8 +813,14 @@ func (e *Engine) streamWithToolLoop(
 	lastTodoContinuationSnapshot = []todo.Item(nil)
 	consecutiveSameToolContinuations := 0
 	const maxRejectedToolCalls = 3
+	// rejectedFingerprintThreshold is the cumulative per-fingerprint
+	// rejection bound: the SAME rejected batch recurring this many
+	// times within one loop trips the guard even when interleaved
+	// successful batches keep resetting the consecutive counter.
+	const rejectedFingerprintThreshold = 5
 	const maxSoftTripContinuations = 3
 	consecutiveRejectedToolCalls := 0
+	rejectedFingerprintCounts := make(map[string]int)
 	delegationGraceUsed := false
 	finalResponseGraceUsed := false
 	forcedSummaryUsed := false
@@ -1876,6 +1882,14 @@ func (e *Engine) streamWithToolLoop(
 		} else {
 			consecutiveRejectedToolCalls = 0
 		}
+		rejectedFingerprintRepeat := false
+		if batchAllRejected {
+			batchFingerprint := fingerprintToolBatch(result.toolCalls)
+			if batchFingerprint != "" {
+				rejectedFingerprintCounts[batchFingerprint]++
+				rejectedFingerprintRepeat = rejectedFingerprintCounts[batchFingerprint] >= rejectedFingerprintThreshold
+			}
+		}
 		if batchGuardOutput(execResults) != "" &&
 			strings.Contains(batchGuardOutput(execResults),
 				"must load your always-active skills via") &&
@@ -2002,7 +2016,7 @@ func (e *Engine) streamWithToolLoop(
 		durationTripped = durationTripped || wallTripped
 		totalToolTimeTripped := e.maxToolLoopDuration > 0 && nonDelegatedToolExecDuration >= e.maxToolLoopDuration
 		sameToolTripped := e.maxSameToolPatternCalls > 0 && sameToolPatternRun >= e.maxSameToolPatternCalls
-		rejectionTripped := consecutiveRejectedToolCalls >= maxRejectedToolCalls
+		rejectionTripped := consecutiveRejectedToolCalls >= maxRejectedToolCalls || rejectedFingerprintRepeat
 		if skillsGuardRejectionLoop {
 			e.warnDeliveryToolBypassCtx(ctx, sessionID)
 			emitTerminalStreamChunk(ctx, outChan, provider.StreamChunk{

@@ -57,3 +57,8 @@ Feature: Loop-based budget guard distinguishes productive work from loops
     When the guarded turn runs
     Then the turn completes without StopReason "StopReasonToolLoopExceeded"
     And the todo bookkeeping calls are not rejected as "no work done"
+
+  Scenario: The same rejected tool batch recurring behind interleaved successes is stopped
+    Given a provider that interleaves one rejected tool call with one successful tool call
+    When the guarded turn runs
+    Then the guarded turn terminates with StopReason "StopReasonToolLoopExceeded"

@@ -30,6 +30,11 @@ type loopGuardSteps struct {
 	stopReasons   []string
 	rejectedTodo  bool
 	ran           bool
+	// interleavedRejection marks the interleaved rejection-loop scenario:
+	// every other batch is runtime-gate rejected, so the repeat/pattern/
+	// iteration detectors are disabled to isolate the cumulative
+	// per-fingerprint rejection guard.
+	interleavedRejection bool
 }
 
 // loopGuardTurn is one scripted provider turn.
@@ -49,6 +54,11 @@ type loopGuardScriptedProvider struct {
 	turns      []loopGuardTurn
 	varyArgs   bool
 	rejectText string
+	// loopForever keeps replaying the scripted turns cyclically past
+	// the script's end instead of settling on the final turn. Loop
+	// scenarios (interleaved rejection) need the alternating pattern
+	// to continue indefinitely; only the loop guard ends the turn.
+	loopForever bool
 
 	mu        sync.Mutex
 	calls     int
@@ -67,6 +77,11 @@ func (p *loopGuardScriptedProvider) Stream(_ context.Context, _ provider.ChatReq
 	if n := len(p.turns); n > 0 {
 		if idx < n {
 			turn = p.turns[idx]
+		} else if p.loopForever {
+			// Loop scenarios (interleaved rejection) keep replaying the
+			// final alternating pair so the loop never "completes"
+			// naturally; only the guard can end it.
+			turn = p.turns[idx%n]
 		} else {
 			turn = p.turns[n-1]
 		}
@@ -141,11 +156,19 @@ func (p *loopGuardScriptedProvider) callCount() int {
 // runLoopGuardTurn streams one turn and records terminal stop reasons plus
 // any todo-guard rejection text seen in streamed content.
 func (s *loopGuardSteps) runLoopGuardTurn(sessionID, prompt string) error {
+	manifestTools := toolNames(s.tools)
+	if s.interleavedRejection {
+		// The rejected tool must be REGISTERED with the engine (so the
+		// runtime gate's matched-tool branch fires) but ABSENT from the
+		// manifest's allowed toolset — otherwise it dispatches and
+		// succeeds, and the rejection guard never engages.
+		manifestTools = []string{"research"}
+	}
 	manifest := agent.Manifest{
 		ID:   "loop-guard-agent",
 		Name: "Loop Guard Agent",
 		Capabilities: agent.Capabilities{
-			Tools: toolNames(s.tools),
+			Tools: manifestTools,
 		},
 	}
 	cfg := engine.Config{
@@ -158,6 +181,12 @@ func (s *loopGuardSteps) runLoopGuardTurn(sessionID, prompt string) error {
 		cfg.TodoStore = s.todoStore
 	}
 	eng := engine.New(cfg)
+	if s.interleavedRejection {
+		eng.SetMaxIdenticalToolCallsForTestE2E(0)
+		eng.SetMaxToolLoopIterationsForTestE2E(0)
+		eng.SetMaxToolLoopDurationForTestE2E(0)
+		eng.SetMaxSameToolPatternCallsForTestE2E(0)
+	}
 
 	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), session.IDKey{}, sessionID))
 	defer cancel()
@@ -179,6 +208,7 @@ func (s *loopGuardSteps) runLoopGuardTurn(sessionID, prompt string) error {
 	}()
 	select {
 	case <-drained:
+
 		s.ran = true
 		return nil
 	case <-time.After(10 * time.Second):
@@ -218,6 +248,7 @@ func RegisterLoopGuardSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^an engine with a todo store and a productive provider$`, s.engineWithTodoStoreAndProductiveProvider)
 	ctx.Step(`^the provider did real work, then calls todo_clear followed by a final todo_update marking completion$`, s.providerDoesWorkThenShutdownBookkeeping)
 	ctx.Step(`^the todo bookkeeping calls are not rejected as "no work done"$`, s.todoBookkeepingNotRejected)
+	ctx.Step(`^a provider that interleaves one rejected tool call with one successful tool call$`, s.interleavedRejectionProvider)
 }
 
 func (s *loopGuardSteps) engineWithIterationBudget(n int) error {
@@ -228,6 +259,7 @@ func (s *loopGuardSteps) engineWithIterationBudget(n int) error {
 	s.stopReasons = nil
 	s.rejectedTodo = false
 	s.ran = false
+	s.interleavedRejection = false
 	return nil
 }
 
@@ -330,7 +362,7 @@ func (s *loopGuardSteps) turnTerminatesWithLoopExceeded() error {
 		return fmt.Errorf("no turn was streamed")
 	}
 	if !s.observedStop(session.StopReasonToolLoopExceeded) {
-		return fmt.Errorf("expected terminal tool_loop_exceeded stop reason")
+		return fmt.Errorf("expected terminal tool_loop_exceeded stop reason, observed: %v", s.stopReasons)
 	}
 	return nil
 }
@@ -384,5 +416,32 @@ func (s *loopGuardSteps) todoBookkeepingNotRejected() error {
 	if s.rejectedTodo {
 		return fmt.Errorf("shutdown todo bookkeeping was rejected as no-work-done; guard must be non-fatal here")
 	}
+	return nil
+}
+
+// interleavedRejectionProvider scripts a turn script alternating one
+// runtime-gate-rejected tool call (bash, absent from the manifest's toolset)
+// with one successful tool call (research). The rejected fingerprint recurs
+// cumulatively across the loop while the interleaved successes keep resetting
+// the consecutive rejection counter — the shape the cumulative
+// per-fingerprint rejection guard must catch.
+func (s *loopGuardSteps) interleavedRejectionProvider() error {
+	s.tools = []tool.Tool{
+		&loopGuardWorkTool{name: "research"},
+		&loopGuardWorkTool{name: "bash"},
+	}
+	prov := &loopGuardScriptedProvider{name: "interleaved-rejection-provider", varyArgs: false, loopForever: true}
+	turns := make([]loopGuardTurn, 0, 10)
+	for i := range 10 {
+		if i%2 == 0 {
+			turns = append(turns, loopGuardTurn{content: "trying bash", toolName: "bash", args: map[string]any{"command": "ls"}})
+		} else {
+			turns = append(turns, loopGuardTurn{content: "working", toolName: "research", args: map[string]any{"topic": "steady"}})
+		}
+	}
+	prov.turns = turns
+	s.provider = prov
+	s.maxIterations = 0
+	s.interleavedRejection = true
 	return nil
 }

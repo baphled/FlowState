@@ -950,4 +950,74 @@ var _ = Describe("Engine tool-loop cap", func() {
 				"bash must never execute while the skills-first guard rejects it")
 		})
 	})
+
+	Context("when the same rejected batch recurs behind interleaved successes", func() {
+		It("trips the cumulative per-fingerprint rejection guard at five recurrences", func() {
+			batches := make([][]*provider.ToolCall, 0, 12)
+			for i := range 12 {
+				if i%2 == 0 {
+					batches = append(batches, []*provider.ToolCall{{
+						ID:        fmt.Sprintf("call_reject_%d", i),
+						Name:      "bash",
+						Arguments: map[string]any{"command": "ls"},
+					}})
+				} else {
+					batches = append(batches, []*provider.ToolCall{{
+						ID:        fmt.Sprintf("call_good_%d", i),
+						Name:      "echo",
+						Arguments: map[string]any{"text": fmt.Sprintf("note %d", i)},
+					}})
+				}
+			}
+			prov := &scriptedToolProvider{name: "interleaved-rejection-loop", batch: batches}
+
+			echoTool := &executableMockTool{
+				name:        "echo",
+				description: "Echo tool",
+				execResult:  tool.Result{Output: "ok"},
+			}
+
+			bashTool := &executableMockTool{
+				name:        "bash",
+				description: "Bash tool",
+				execResult:  tool.Result{Output: "ok"},
+			}
+
+			gatedManifest := agent.Manifest{
+				ID:   "interleaved-gate-agent",
+				Name: "Interleaved",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"echo", "coordination_store"},
+				},
+			}
+
+			eng := engine.New(engine.Config{
+				ChatProvider: prov,
+				Manifest:     gatedManifest,
+				Tools:        []tool.Tool{echoTool, bashTool},
+			})
+			eng.SetMaxIdenticalToolCallsForTest(0)
+			eng.SetMaxToolLoopIterationsForTest(0)
+			eng.SetMaxToolLoopDurationForTest(0)
+			eng.SetMaxSameToolPatternCallsForTest(0)
+
+			chunks, err := eng.Stream(context.Background(), "interleaved-gate-agent", "Do something")
+			Expect(err).NotTo(HaveOccurred())
+
+			received, closed := drain(chunks)
+			Expect(closed).To(BeTrue())
+
+			var terminal *provider.StreamChunk
+			for i := range received {
+				if received[i].Done {
+					terminal = &received[i]
+				}
+			}
+			Expect(terminal).NotTo(BeNil(), "expected a terminal Done chunk")
+			Expect(terminal.StopReason).To(Equal(session.StopReasonToolLoopExceeded),
+				"a rejected fingerprint recurring five times must stamp tool_loop_exceeded even when successes interleave")
+			Expect(prov.calls).To(BeNumerically("<=", 13),
+				"the cumulative fingerprint guard must trip within five rejections of the same batch")
+		})
+	})
 })
