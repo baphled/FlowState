@@ -33,3 +33,11 @@ Feature: Stale memoised summary bypass on force-fire and memo invalidation on su
     When a compaction runs for session alpha
     Then the summariser is invoked again
     And the fresh summary is applied
+
+  Scenario: An unresolvable summariser still applies the truncation fallback
+    Given an engine with a memoised compaction summary for session alpha
+    And the summariser chain fails
+    And the compaction preconditions degrade with the summariser unresolvable
+    When a compaction runs for session alpha
+    Then the truncation fallback summary is applied
+    And the session memo is invalidated

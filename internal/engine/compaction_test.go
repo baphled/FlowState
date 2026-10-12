@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -331,5 +332,18 @@ var _ = Describe("Mid-loop compaction hysteresis", func() {
 
 		Expect(summariser.calls).To(BeNumerically("<=", 1),
 			"a marginal trim must not re-fire the mid-loop summariser within the turn (ran %d times)", summariser.calls)
+	})
+})
+
+var _ = Describe("maybeAutoCompact summariser-unavailable fallback", func() {
+	It("returns the truncation fallback summary when the summariser errors", func() {
+		summariser := &recordingSummariser{err: context.DeadlineExceeded}
+		eng, store := newTestEngineWithCompactor(summariser, 0.60, true)
+		const compactSession = "summariser-unavailable-session"
+		for i := range 40 {
+			store.Append(provider.Message{Role: "assistant", Content: fmt.Sprintf("history %d with several tokens of body text", i)})
+		}
+		got := eng.MaybeCompactForcedForTesting(context.Background(), compactSession, "gate_proximity", nil)
+		Expect(got).To(HavePrefix("[truncation fallback"))
 	})
 })

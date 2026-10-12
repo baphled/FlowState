@@ -70,10 +70,106 @@ var ErrCompactionInsufficient = errors.New("compaction insufficient: context sti
 //   - Publishes a pluginevents.ContextCompactedEvent on the engine bus
 //     on successful compaction (T10b per ADR - Tool-Call Atomicity).
 //     Phase-5 Slice α/δ stamps the Trigger field.
+//
+// maybeAutoCompact additionally consults summariserUnavailableForCompaction
+// on the precondition-failure path: when the summariser machinery is
+// unavailable while the operator asked for compaction and the load would
+// have crossed the threshold, the naive truncation fallback summary text
+// is returned so the turn degrades to truncateMessagesTokenBounded
+// instead of silently returning "".
+
+// summariserUnavailableForCompaction reports whether a compaction
+// precondition failure is a summariser-availability problem rather
+// than an operator opt-out: the operator asked for auto-compaction
+// (feature enabled) and the machinery is wired (compactor present),
+// so any threshold-gate failure is environmental, not deliberate.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - true when AutoCompaction is enabled and the compactor is wired.
+//
+// Side effects:
+//   - None.
+func (e *Engine) summariserUnavailableForCompaction() bool {
+	if e == nil {
+		return false
+	}
+	return e.autoCompactor != nil && e.compressionConfig.AutoCompaction.Enabled
+}
+
+// fallbackCompactionThreshold resolves the threshold the naive
+// truncation fallback decision evaluates against when
+// autoCompactionThreshold refused to supply one. It mirrors the
+// autoCompactionThreshold precedence — manifest override, then the
+// configured global — and falls back to the documented default of
+// 0.75 so the fallback decision degrades deterministically.
+//
+// Expected:
+//   - manifest is the active agent manifest; may be nil.
+//
+// Returns:
+//   - A positive threshold fraction.
+//
+// Side effects:
+//   - None.
+func (e *Engine) fallbackCompactionThreshold(manifest *agent.Manifest) float64 {
+	threshold := e.compressionConfig.AutoCompaction.Threshold
+	if manifest != nil && manifest.ContextManagement.CompactionThreshold > 0 {
+		threshold = manifest.ContextManagement.CompactionThreshold
+	}
+	if threshold <= 0 {
+		return defaultCompactionFallbackThreshold
+	}
+	return threshold
+}
+
+// defaultCompactionFallbackThreshold is the documented default
+// compaction ratio used when neither the manifest nor configuration
+// supplies one.
+const defaultCompactionFallbackThreshold = 0.75
+
+// maybeAutoCompact fires auto-compaction when the session's token load
+// crosses the configured threshold, returning the summary text on fire
+// and "" on no-fire. See the full contract above the file's fallback
+// helpers: when the summariser machinery is unavailable while the
+// operator asked for compaction and the load would have crossed the
+// threshold, the naive truncation fallback summary text is returned so
+// the turn degrades to truncateMessagesTokenBounded.
+//
+// Expected:
+//   - ctx carries cancellation; sessionID identifies the session;
+//     manifest is the active agent manifest (may be nil);
+//     tokenBudget is the session's token budget; a non-empty
+//     forceTrigger forces the fire decision.
+//
+// Returns:
+//   - The compaction summary text on fire, the truncation fallback
+//     summary text when the summariser is unavailable but the load
+//     would fire, and "" on no-fire.
+//
+// Side effects:
+//   - Issues one LLM call via the injected AutoCompactor when fired;
+//     updates memo/summary state as described in the file-level notes.
 func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifest *agent.Manifest, tokenBudget int, forceTrigger string) string {
 	forceFire := forceTrigger != ""
 	threshold, ok := e.autoCompactionThreshold(manifest, tokenBudget)
 	if !ok {
+		if e.summariserUnavailableForCompaction() {
+			if _, _, _, wouldFire := e.autoCompactionCandidates(ctx, sessionID, manifest, tokenBudget, e.fallbackCompactionThreshold(manifest), forceFire); wouldFire {
+				e.buildStateMu.Lock()
+				e.lastCompactionSummary = nil
+				delete(e.sessionCompactionMemo, sessionID)
+				e.buildStateMu.Unlock()
+				slog.Warn("engine auto-compaction summariser unavailable; applying naive truncation fallback",
+					"sessionID", sessionID,
+					"tokenBudget", tokenBudget,
+					"forceTrigger", forceTrigger,
+				)
+				return truncationFallbackSummaryText
+			}
+		}
 		// Feature disabled or preconditions unmet — clear the cross-
 		// session "last summary" so LastCompactionSummary reflects
 		// the current build rather than stale state from earlier
@@ -302,6 +398,26 @@ func (e *Engine) maybeAutoCompactExplicit(ctx context.Context, sessionID string,
 	forceFire := forceTrigger != ""
 	_, ok := e.autoCompactionThreshold(manifest, tokenBudget)
 	if !ok {
+		if e.summariserUnavailableForCompaction() {
+			synthetic := &provider.ChatRequest{Messages: explicitMessages}
+			fullWindowTokens := e.estimateRequestTokens(synthetic)
+			ratio := float64(fullWindowTokens) / float64(tokenBudget)
+			if tokenBudget <= 0 {
+				ratio = math.Inf(1)
+			}
+			if forceFire || ratio > e.fallbackCompactionThreshold(manifest) {
+				e.buildStateMu.Lock()
+				e.lastCompactionSummary = nil
+				delete(e.sessionCompactionMemo, sessionID)
+				e.buildStateMu.Unlock()
+				slog.Warn("engine explicit auto-compaction summariser unavailable; applying naive truncation fallback",
+					"sessionID", sessionID,
+					"tokenBudget", tokenBudget,
+					"forceTrigger", forceTrigger,
+				)
+				return truncationFallbackSummaryText
+			}
+		}
 		// Feature disabled or preconditions unmet — mirror
 		// maybeAutoCompact's bookkeeping so the manual path is
 		// observationally indistinguishable from a no-fire on the

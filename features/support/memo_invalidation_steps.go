@@ -29,6 +29,7 @@ type memoInvalidationState struct {
 	summariser *memoScriptedSummariser
 	lastResult string
 	sessID     string
+	store      *recall.FileContextStore
 }
 
 // memoScriptedSummariser is a flowctx.Summariser double whose responses can
@@ -37,7 +38,11 @@ type memoInvalidationState struct {
 type memoScriptedSummariser struct {
 	response string
 	fail     bool
-	calls    int
+	// unresolvable models the precondition-level summariser
+	// unavailability: the chain cannot even reach a provider, so the
+	// compaction gate fails before Summarise is invoked.
+	unresolvable bool
+	calls        int
 }
 
 // Summarise implements flowctx.Summariser for the memo scenarios.
@@ -105,6 +110,7 @@ func (s *memoInvalidationState) wireMemoEngine() error {
 		Store:             store,
 		CompressionConfig: cfg,
 	})
+	s.store = store
 	return nil
 }
 
@@ -200,6 +206,18 @@ func RegisterMemoInvalidationSteps(ctx *godog.ScenarioContext) {
 
 	ctx.Step(`^the summariser chain recovers$`, func() error {
 		state.summariser.fail = false
+		return nil
+	})
+
+	ctx.Step(`^the compaction preconditions degrade with the summariser unresolvable$`, func() error {
+		// Simulate the environmental precondition failure: drive the
+		// store-backed path with an explicit-message slice while the
+		// summariser is unresolvable, so the threshold gate fails for
+		// availability reasons rather than "nothing to compact".
+		state.summariser.unresolvable = true
+		msgs := []provider.Message{{Role: "user", Content: "degraded turn"}}
+		cctx := context.WithValue(context.Background(), session.IDKey{}, state.sessID)
+		state.lastResult = state.engine.MaybeCompactForcedForTesting(cctx, state.sessID, "gate_proximity", msgs)
 		return nil
 	})
 
