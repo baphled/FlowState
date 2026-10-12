@@ -60,39 +60,30 @@ def query_vault(vault_name: str, question: str, config: dict, top_k: int = 5):
     model_name = embed_cfg.get("model", "BAAI/bge-small-en-v1.5")
     Settings.embed_model = FastEmbedEmbedding(model_name=model_name)
 
-    # Disable LLM for retrieval-only mode
-    Settings.llm = None
-
     index = VectorStoreIndex.from_vector_store(vector_store=vector_store)
 
-    # Query with retrieval only (no LLM generation)
+    # Retrieve nodes directly. We deliberately avoid building a
+    # query engine: LlamaIndex resolves the configured LLM on every
+    # query call, and with no LLM configured it
+    # prints "LLM is explicitly disabled. Using MockLLM." into stdout —
+    # noise that mcp-vault-server forwards verbatim as the tool result.
+    # Retrieval-only means exactly that: retrieve and format sources.
     from llama_index.core.retrievers import VectorIndexRetriever
     retriever = VectorIndexRetriever(
         index=index,
         similarity_top_k=top_k
     )
-    
-    # Retrieve nodes directly
-    from llama_index.core.query_engine import RetrieverQueryEngine
-    from llama_index.core.response_synthesizers import get_response_synthesizer
-    
-    response_synthesizer = get_response_synthesizer(response_mode="no_text")
-    query_engine = RetrieverQueryEngine(
-        retriever=retriever,
-        response_synthesizer=response_synthesizer
-    )
-    
-    response = query_engine.query(question)
-    
+
+    nodes = retriever.retrieve(question)
+
     print(f"\n❓ Question: {question}")
-    print(f"\n💡 Answer:\n{response}")
     print(f"\n📚 Sources:")
-    for node in response.source_nodes:
+    for node in nodes:
         file_name = node.metadata.get('file_name', 'Unknown')
         score = getattr(node, 'score', 0.0)
         print(f"  - {file_name}: {score:.3f}")
-    
-    return response
+
+    return nodes
 
 def list_vaults(config: dict):
     """List configured vaults"""

@@ -104,6 +104,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterAdultingDeadlineSteps(ctx)
 	RegisterVaultIndexSyncSteps(ctx)
 	RegisterVaultQueryCollectionSteps(ctx)
+	RegisterVaultQueryScriptSteps(ctx)
 	RegisterTodoSteps(ctx)
 	RegisterQuestionSteps(ctx)
 	RegisterMCPServerLifecycleSteps(ctx)

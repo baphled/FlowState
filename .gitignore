@@ -70,3 +70,6 @@ demos/temp_demo_env/
 # Editor temporary files
 tmp/
 *.orig
+
+# Inter-agent gate self-report (never commit)
+coordination_store/
