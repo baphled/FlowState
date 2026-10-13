@@ -47,7 +47,8 @@
         "mcp",
         "engine",
         "streaming",
-        "voice"
+        "voice",
+        "ux"
       ]
     ],
     "scope-empty": [
