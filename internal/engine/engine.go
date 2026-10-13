@@ -3708,10 +3708,11 @@ func (e *Engine) appendToolResultsBatchToMessages(
 		if isError && content == "" {
 			content = "Error: " + results[i].Error.Error()
 		}
-		totalContentBytes += len(content)
+		capped := capPersistedToolResult(content)
+		totalContentBytes += len(capped)
 		messages = append(messages, provider.Message{
 			Role:    "tool",
-			Content: content,
+			Content: capped,
 			IsError: isError,
 			ToolCalls: []provider.ToolCall{
 				{ID: tc.ID, Name: tc.Name},
@@ -4229,7 +4230,8 @@ func (e *Engine) emitMidToolLoopRefresh(
 	// requires every forced tool_result_wave fire to re-summarise
 	// (bypassing the H2 memo).
 	summary := e.maybeAutoCompact(ctx, sessionID, &manifestCopy, tokenBudget, forceTrigger)
-	return summary != ""
+	compacted := summary != ""
+	return compacted
 }
 
 // emitMidToolLoopRefreshExplicit is the serve-mode compaction decision

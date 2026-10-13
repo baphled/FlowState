@@ -48,7 +48,8 @@
         "engine",
         "streaming",
         "voice",
-        "ux"
+        "ux",
+        "merge"
       ]
     ],
     "scope-empty": [
