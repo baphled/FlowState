@@ -224,11 +224,13 @@ These match the earlier GPU run (sub-100 ms short, ~0.25 s for 2 KB) — reprodu
 - 8 sequential decision calls fired while `flowstate vault sync` ran on the production
   daemon (770 files, 0 changed): decisions **0.030–0.043 s** — zero inflation vs idle
   (0.033–0.158 s idle range, first call after idle pause slightly higher at 0.158 s).
-- Sync wall time: **13.7 s under concurrent decisions vs 9.6 s idle** — the delta is
-  within the run-to-run variance observed across this spike (16.5–21.8 s historically;
-  both runs well inside that band) and the decisions ride a different GPU-resident model,
-  so no queueing/stalling is evident. 0 chunks embedded (unchanged vault), so this
-  exercises the metadata pass, not embedding throughput.
+- Sync wall time: two paired runs — **13.7 s under 8 concurrent decisions vs 9.6 s idle**,
+  then **19.7 s under 6 concurrent decisions vs 15.0 s idle**. Both pairs show a consistent
+  **~+30% sync inflation under concurrent decision load**, even though the decisions ride a
+  separate GPU-resident model on a separate daemon. Inflation is likely host-side (curl/CLI
+  CPU contention and the sync's own metadata pass competing for cores), not GPU queueing —
+  decision latency itself stayed flat. No stalls or failures either way. 0 chunks embedded
+  (unchanged vault), so this exercises the metadata pass, not embedding throughput.
 
 ### Re-run conclusions
 
