@@ -71,5 +71,5 @@ demos/temp_demo_env/
 tmp/
 *.orig
 
-# Inter-agent gate self-report (never commit)
+# Coordination-store gate self-report (local, never committed)
 coordination_store/

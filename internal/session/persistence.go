@@ -39,6 +39,11 @@ type Metadata struct {
 	// the legacy "no diagnostic available" condition. See
 	// Session.EmbeddingModel for the full rationale.
 	EmbeddingModel string `json:"embedding_model,omitempty"`
+	// CompactionSummaryJSON mirrors Session.CompactionSummaryJSON and
+	// surfaces in the .meta.json sidecar as "compaction_summary".
+	// Omitted when empty so legacy sidecars stay byte-identical; a
+	// missing key on load reads as "no compaction state to restore".
+	CompactionSummaryJSON string `json:"compaction_summary,omitempty"`
 	// ChainID mirrors Session.ChainID and surfaces in the .meta.json
 	// sidecar as "chain_id". Omitted when empty so root (non-delegated)
 	// sessions stay byte-identical to their pre-field sidecar shape and a
@@ -96,21 +101,22 @@ type Metadata struct {
 //     <sessionsDir>/<sess.ID>.meta.json.
 func PersistSession(sessionsDir string, sess *Session) error {
 	meta := Metadata{
-		ID:                sess.ID,
-		ParentID:          sess.ParentID,
-		AgentID:           sess.AgentID,
-		CurrentAgentID:    sess.CurrentAgentID,
-		CurrentModelID:    sess.CurrentModelID,
-		CurrentProviderID: sess.CurrentProviderID,
-		Status:            sess.Status,
-		CreatedAt:         sess.CreatedAt,
-		EmbeddingModel:    sess.EmbeddingModel,
-		ChainID:           sess.ChainID,
-		PermissionMode:    sess.PermissionMode,
-		FailureReason:     sess.FailureReason,
-		DurationMs:        time.Since(sess.CreatedAt).Milliseconds(),
-		ModelPinned:       sess.ModelPinned,
-		Messages:          sess.Messages,
+		ID:                    sess.ID,
+		ParentID:              sess.ParentID,
+		AgentID:               sess.AgentID,
+		CurrentAgentID:        sess.CurrentAgentID,
+		CurrentModelID:        sess.CurrentModelID,
+		CurrentProviderID:     sess.CurrentProviderID,
+		Status:                sess.Status,
+		CreatedAt:             sess.CreatedAt,
+		EmbeddingModel:        sess.EmbeddingModel,
+		CompactionSummaryJSON: sess.CompactionSummaryJSON,
+		ChainID:               sess.ChainID,
+		PermissionMode:        sess.PermissionMode,
+		FailureReason:         sess.FailureReason,
+		DurationMs:            time.Since(sess.CreatedAt).Milliseconds(),
+		ModelPinned:           sess.ModelPinned,
+		Messages:              sess.Messages,
 	}
 
 	data, err := json.Marshal(meta)
@@ -226,20 +232,21 @@ func LoadSessionMetadata(sessionsDir, sessionID string) (*Session, error) {
 		return nil, err
 	}
 	return &Session{
-		ID:                meta.ID,
-		ParentID:          meta.ParentID,
-		AgentID:           meta.AgentID,
-		CurrentAgentID:    meta.CurrentAgentID,
-		CurrentModelID:    meta.CurrentModelID,
-		CurrentProviderID: meta.CurrentProviderID,
-		Status:            meta.Status,
-		CreatedAt:         meta.CreatedAt,
-		EmbeddingModel:    meta.EmbeddingModel,
-		ChainID:           meta.ChainID,
-		PermissionMode:    meta.PermissionMode,
-		FailureReason:     meta.FailureReason,
-		ModelPinned:       meta.ModelPinned,
-		Messages:          meta.Messages,
+		ID:                    meta.ID,
+		ParentID:              meta.ParentID,
+		AgentID:               meta.AgentID,
+		CurrentAgentID:        meta.CurrentAgentID,
+		CurrentModelID:        meta.CurrentModelID,
+		CurrentProviderID:     meta.CurrentProviderID,
+		Status:                meta.Status,
+		CreatedAt:             meta.CreatedAt,
+		EmbeddingModel:        meta.EmbeddingModel,
+		CompactionSummaryJSON: meta.CompactionSummaryJSON,
+		ChainID:               meta.ChainID,
+		PermissionMode:        meta.PermissionMode,
+		FailureReason:         meta.FailureReason,
+		ModelPinned:           meta.ModelPinned,
+		Messages:              meta.Messages,
 	}, nil
 }
 
@@ -265,20 +272,21 @@ func loadMetaFile(path string) *Session {
 	}
 
 	return &Session{
-		ID:                meta.ID,
-		ParentID:          meta.ParentID,
-		AgentID:           meta.AgentID,
-		CurrentAgentID:    meta.CurrentAgentID,
-		CurrentModelID:    meta.CurrentModelID,
-		CurrentProviderID: meta.CurrentProviderID,
-		Status:            meta.Status,
-		CreatedAt:         meta.CreatedAt,
-		EmbeddingModel:    meta.EmbeddingModel,
-		ChainID:           meta.ChainID,
-		PermissionMode:    meta.PermissionMode,
-		FailureReason:     meta.FailureReason,
-		ModelPinned:       meta.ModelPinned,
-		Messages:          meta.Messages,
+		ID:                    meta.ID,
+		ParentID:              meta.ParentID,
+		AgentID:               meta.AgentID,
+		CurrentAgentID:        meta.CurrentAgentID,
+		CurrentModelID:        meta.CurrentModelID,
+		CurrentProviderID:     meta.CurrentProviderID,
+		Status:                meta.Status,
+		CreatedAt:             meta.CreatedAt,
+		EmbeddingModel:        meta.EmbeddingModel,
+		CompactionSummaryJSON: meta.CompactionSummaryJSON,
+		ChainID:               meta.ChainID,
+		PermissionMode:        meta.PermissionMode,
+		FailureReason:         meta.FailureReason,
+		ModelPinned:           meta.ModelPinned,
+		Messages:              meta.Messages,
 	}
 }
 

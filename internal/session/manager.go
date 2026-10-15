@@ -170,6 +170,11 @@ type Session struct {
 	// in the FlowState vault and memory entry
 	// `project_flowstate_recall_silent_zero_failure`.
 	EmbeddingModel string `json:"embedding_model,omitempty"`
+	// CompactionSummaryJSON carries the JSON-encoded context compaction
+	// summary for the session so rehydration state (FilesToRestore,
+	// intent) survives a daemon restart. Empty when no compaction has
+	// fired; a missing key on load reads as "no compaction state".
+	CompactionSummaryJSON string `json:"compaction_summary,omitempty"`
 	// PermissionMode is the per-session safety dial introduced by the
 	// Permission Modes plan (May 2026). Valid values are:
 	//
@@ -647,6 +652,31 @@ func (m *Manager) markPersistDirtyLocked(sess *Session) {
 	}
 	m.persistLocked(sess)
 	delete(m.persistDirty, sess.ID)
+}
+
+// SetCompactionSummary stamps the JSON-encoded compaction summary on
+// the session and schedules the sidecar write so rehydration state
+// survives a daemon restart.
+//
+// Expected:
+//   - sessionID identifies an existing session.
+//   - summaryJSON is the encoded CompactionSummary ("" clears).
+//
+// Returns:
+//   - An error when the session does not exist.
+//
+// Side effects:
+//   - Mutates the session record; marks the sidecar persist dirty.
+func (m *Manager) SetCompactionSummary(sessionID, summaryJSON string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sess, ok := m.sessions[sessionID]
+	if !ok {
+		return ErrSessionNotFound
+	}
+	sess.CompactionSummaryJSON = summaryJSON
+	m.markPersistDirtyLocked(sess)
+	return nil
 }
 
 // ensurePersistSweeperLocked starts the background debounce flusher

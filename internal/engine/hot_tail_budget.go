@@ -281,9 +281,21 @@ func (e *Engine) rebuildHotTailBudgetedResolving(ctx context.Context, messages [
 	return e.rebuildHotTailBudgeted(ctx, "hot-tail-budget-test", messages, summary, minResults, budget)
 }
 
+// hotTailProportionalFloor bounds the proportional hot-tail budget
+// derived from the model context limit so the tail reliably keeps a
+// meaningful share of the window.
+const (
+	hotTailProportionalMinTokens = 8000
+	hotTailProportionalRatio     = 0.15
+	hotTailProportionalMaxRatio  = 0.25
+)
+
 // resolveHotTailKnobs returns the effective (floor, budget) pair from
 // the test overrides when set, otherwise from the engine's compaction
-// config with defaults applied.
+// config with defaults applied. When no explicit budget is configured
+// (or the legacy default 8000 applies), the budget scales
+// proportionally with the model context limit (15–25% of the window)
+// so large-context models keep a correspondingly larger hot tail.
 //
 // Returns:
 //   - The hot-tail minimum floor and token budget.
@@ -297,6 +309,22 @@ func (e *Engine) resolveHotTailKnobs() (int, int) {
 	budget := e.hotTailBudgetOverride
 	if budget == hotTailBudgetDisabled {
 		budget = cfg.HotTailSizeBudget
+	}
+	if !e.hotTailBudgetOverrideSet {
+		limit := e.ModelContextLimit()
+		if limit > 0 {
+			proportional := int(float64(limit) * hotTailProportionalRatio)
+			maxProportional := int(float64(limit) * hotTailProportionalMaxRatio)
+			if proportional < hotTailProportionalMinTokens {
+				proportional = hotTailProportionalMinTokens
+			}
+			if proportional > maxProportional && maxProportional > hotTailProportionalMinTokens {
+				proportional = maxProportional
+			}
+			if proportional > budget {
+				budget = proportional
+			}
+		}
 	}
 	minResults := e.hotTailMinFloorOverride
 	if minResults == 0 {

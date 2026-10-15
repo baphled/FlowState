@@ -15,7 +15,9 @@ const toolMessageCompactionDetector = "[tool-result compacted:"
 
 // toolResultTokenFloorRatio is the fraction of the model context limit
 // above which the token-based floor forces compaction regardless of
-// tool-message count.
+// tool-message count. Set strictly above the auto-compaction threshold
+// (0.75) so this pass only fires when L2 compaction declined or cannot
+// keep up.
 const toolResultTokenFloorRatio = 0.8
 
 // compactOldToolResultsForBudget applies compactOldToolResults gated on
@@ -24,6 +26,7 @@ const toolResultTokenFloorRatio = 0.8
 // contextLimit, compaction fires even when the tool-message count is
 // below the count threshold. When counter or contextLimit is unset the
 // floor is disabled and behaviour degenerates to the count-only path.
+// Both gates are strict: a window at or under budget is never stubbed.
 //
 // Expected:
 //   - msgs is the in-flight provider message slice.
@@ -44,6 +47,7 @@ func compactOldToolResultsForBudget(msgs []provider.Message, threshold, keepRece
 		if estimateMessageTokens(msgs, counter) > budget {
 			return compactOldToolResults(msgs, 0, keepRecent)
 		}
+		return msgs
 	}
 	return compactOldToolResults(msgs, threshold, keepRecent)
 }

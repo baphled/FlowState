@@ -181,13 +181,10 @@ func DefaultCompressionConfig() CompressionConfig {
 			// the saturation safety net for long sessions; operators
 			// who want the previous behaviour set
 			// `compression.auto_compaction.enabled: false` in
-			// config.yaml. Threshold of 0.75 fires only once the
-			// window is genuinely close to saturation — the earlier
-			// 0.50 default compounded with tool-result stubbing and
-			// prune passes into a permanent compaction saw-tooth at
-			// half-window (the October 2026 context-loss regression).
-			// Overridable per-agent through
-			// manifest.context_management.compaction_threshold.
+			// config.yaml. Threshold of 0.75 delays the summariser
+			// until genuine pressure so small/medium sessions never
+			// pay the compaction cost, and is overridable per-agent
+			// through manifest.context_management.compaction_threshold.
 			Enabled:   true,
 			Threshold: 0.75,
 		},

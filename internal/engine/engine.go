@@ -161,6 +161,17 @@ type Engine struct {
 	// does not rob session B of its own ContextCompactedEvent and
 	// per-session metrics bump.
 	sessionCompactionMemo map[string]sessionCompactionMemoEntry
+	// sessionCompactionSummaries holds the most recent successful
+	// compaction summary per session. It supersedes the engine-global
+	// lastCompactionSummary for rehydration so concurrent sessions
+	// never consume each other's FilesToRestore. Held under
+	// buildStateMu.
+	sessionCompactionSummaries map[string]*ctxstore.CompactionSummary
+	// sessionPersistHook is the optional callback used to stamp the
+	// compaction summary into the session's .meta.json sidecar so
+	// rehydration state survives a daemon restart. Wired by the serve
+	// path; nil in tests unless explicitly provided.
+	sessionPersistHook func(sessionID, compactionSummaryJSON string) error
 	// sessionRehydrated maps each session to the identity of the
 	// compaction summary whose FilesToRestore it has already consumed,
 	// so the next turn after a compaction rehydrates exactly once per
@@ -515,8 +526,9 @@ type Engine struct {
 	// test wiring knobs so the budgeted rebuild path can be pinned by
 	// BDD step definitions without standing up a full config file.
 	// Zero values fall back to the compactionConfig figures.
-	hotTailBudgetOverride   int
-	hotTailMinFloorOverride int
+	hotTailBudgetOverride    int
+	hotTailBudgetOverrideSet bool
+	hotTailMinFloorOverride  int
 
 	// outputReserveOverride carries the Phase 2 test wiring knob for
 	// the usable-budget reserve so BDD scenarios with small synthetic
@@ -1388,6 +1400,7 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		sessionSplitters:                 make(map[string]*sessionSplitterEntry),
 		sessionCompressionMetrics:        make(map[string]*ctxstore.CompressionMetrics),
 		sessionCompactionMemo:            make(map[string]sessionCompactionMemoEntry),
+		sessionCompactionSummaries:       make(map[string]*ctxstore.CompactionSummary),
 		sessionRehydrated:                make(map[string]string),
 		sessionCompactionSummary:         make(map[string]*ctxstore.CompactionSummary),
 		sessionFallbackEmissions:         make(map[string]int),
@@ -1423,6 +1436,7 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		microCompactor:                   resolveMicroCompactor(cfg),
 		compactionConfig:                 cfg.CompactionConfig,
 		hotTailBudgetOverride:            cfg.HotTailBudgetForTests,
+		hotTailBudgetOverrideSet:         cfg.HotTailBudgetForTests > 0,
 		hotTailMinFloorOverride:          cfg.HotTailMinFloorForTests,
 		outputReserveOverride:            cfg.OutputReserveForTests,
 		factService:                      resolveFactService(cfg),
@@ -1770,6 +1784,7 @@ func (e *Engine) handleSessionEnded(evt any) {
 	// H1 — same lifetime for the rehydration-consumed flag.
 	e.buildStateMu.Lock()
 	delete(e.sessionCompactionMemo, sessionID)
+	delete(e.sessionCompactionSummaries, sessionID)
 	delete(e.sessionRehydrated, sessionID)
 	e.buildStateMu.Unlock()
 
@@ -3902,34 +3917,16 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 			plans, files, keys := e.structuralContextSources(sessionID)
 			var rebuilt []provider.Message
 			if strings.HasPrefix(compactedSummary, truncationFallbackSummaryPrefix) {
-				hotTail := fallbackTailTokenBounded(priorMsgs, e.tokenCounter, 0)
-				rebuilt = make([]provider.Message, 0, len(hotTail)+4)
-				rebuilt = append(rebuilt, provider.Message{Role: "system", Content: systemPrompt})
-				rebuilt = e.appendTodoContext(rebuilt, sessionID)
-				rebuilt = append(rebuilt, provider.Message{Role: "assistant", Content: compactedSummary})
-				rebuilt = append(rebuilt, hotTail...)
 			} else {
 				rebuilt = e.rebuildRehydrated(ctx, sessionID, priorMsgs, compactedSummary, plans, files, keys)
 				if rebuilt == nil {
 					rebuilt = e.rebuildContextWindowTokenBounded(ctx, sessionID, priorMsgs, compactedSummary)
 				}
 				if rebuilt == nil {
-					slidingWindowSize := manifestCopy.ContextManagement.SlidingWindowSize
-					if slidingWindowSize <= 0 {
-						slidingWindowSize = 50
-					}
-					hotTail := priorMsgs
-					if len(hotTail) > slidingWindowSize {
-						hotTail = hotTail[len(hotTail)-slidingWindowSize:]
-					}
-					rebuilt = make([]provider.Message, 0, len(hotTail)+4)
-					rebuilt = append(rebuilt, provider.Message{Role: "system", Content: systemPrompt})
-					rebuilt = e.appendTodoContext(rebuilt, sessionID)
-					rebuilt = append(rebuilt, provider.Message{Role: "assistant", Content: compactedSummary})
-					rebuilt = append(rebuilt, hotTail...)
+					rebuilt = e.rebuildTruncationFallbackWindow(ctx, sessionID, priorMsgs, compactedSummary, tokenBudget, &provider.Message{Role: "user", Content: userMessage})
 				}
 			}
-			messages = append(rebuilt, provider.Message{Role: "user", Content: userMessage})
+			messages = rebuilt
 		} else if compactedSummary == "" {
 			// No compaction triggered — use raw prior messages.
 			messages = make([]provider.Message, 0, len(priorMsgs)+3)
