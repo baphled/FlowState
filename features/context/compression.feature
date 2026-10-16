@@ -126,9 +126,9 @@ Feature: Context Compression — Layers 1 and 2
     Then the compressed window tokens are at most 60 percent of the uncompressed window tokens
 
   @auto-compaction
-  Scenario: Default auto-compaction threshold is 0.50 to account for tool-schema overhead
+  Scenario: Default auto-compaction threshold is 0.75 so compaction fires only near saturation
     Given the default compression configuration is loaded
-    Then the auto-compaction threshold is 0.50
+    Then the auto-compaction threshold is 0.75
 
   @e2e
   Scenario: Soft trigger includes tool schema tokens when computing the full-window ratio

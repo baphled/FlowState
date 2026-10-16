@@ -236,7 +236,7 @@ func (e *Engine) stubTailMessages(msgs []provider.Message) []provider.Message {
 		}
 		out[i] = provider.Message{
 			Role:      "tool",
-			Content:   fmt.Sprintf("[tool %s #%s: result exceeded the rehydration cap; re-read via the coordination store key]", call.Name, call.ID),
+			Content:   fmt.Sprintf("[tool %s #%s: result exceeded the rehydration cap]", call.Name, call.ID),
 			ToolCalls: m.ToolCalls,
 		}
 	}

@@ -57,6 +57,9 @@ type memoScriptedSummariser struct {
 //   - Increments calls exactly once per invocation.
 func (s *memoScriptedSummariser) Summarise(_ context.Context, _ string, _ string, _ []provider.Message) (string, error) {
 	s.calls++
+	if s.unresolvable {
+		return "", errors.New("summariser chain unresolvable: no provider available")
+	}
 	if s.fail {
 		return "", errors.New("summariser chain failed")
 	}
@@ -222,6 +225,9 @@ func RegisterMemoInvalidationSteps(ctx *godog.ScenarioContext) {
 	})
 
 	ctx.Step(`^a compaction runs for session alpha$`, func() error {
+		if state.engine == nil {
+			return errors.New("engine not wired")
+		}
 		cctx := context.WithValue(context.Background(), session.IDKey{}, state.sessID)
 		state.lastResult = state.engine.MaybeCompactForcedForTesting(cctx, state.sessID, "tool_result_wave", nil)
 		return nil

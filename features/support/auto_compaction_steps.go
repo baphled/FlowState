@@ -271,6 +271,13 @@ func RegisterAutoCompactionSteps(ctx *godog.ScenarioContext) {
 		}
 		return nil
 	})
+
+	ctx.Step(`^the auto-compaction threshold is 0\.75$`, func() error {
+		if state.cfg.AutoCompaction.Threshold != 0.75 {
+			return fmt.Errorf("auto-compaction threshold = %v; want 0.75", state.cfg.AutoCompaction.Threshold)
+		}
+		return nil
+	})
 }
 
 // bddSummaryJSON builds a CompactionSummary JSON body for BDD scenarios.

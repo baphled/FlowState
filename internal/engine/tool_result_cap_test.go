@@ -4,6 +4,7 @@ package engine_test
 
 import (
 	"strings"
+	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -37,3 +38,22 @@ var _ = Describe("capPersistedToolResult", func() {
 		Expect(engine.CapPersistedToolResultForTest(once)).To(Equal(once))
 	})
 })
+
+// Benchmarks for capPersistedToolResult (migrated from zz_perffix_bench_test.go).
+// Package-level: the canonical file is engine_test, so drive the
+// exported for-test wrapper instead of the unexported core.
+
+func benchmarkCapPersisted(b *testing.B, s string) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = engine.CapPersistedToolResultForTest(s)
+	}
+}
+
+func BenchmarkCapPersistedToolResultSmall(b *testing.B) {
+	benchmarkCapPersisted(b, strings.Repeat("x", 1024))
+}
+
+func BenchmarkCapPersistedToolResultLarge(b *testing.B) {
+	benchmarkCapPersisted(b, strings.Repeat("x", 1<<20))
+}

@@ -160,12 +160,13 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 			if _, _, _, wouldFire := e.autoCompactionCandidates(ctx, sessionID, manifest, tokenBudget, e.fallbackCompactionThreshold(manifest), forceFire); wouldFire {
 				e.buildStateMu.Lock()
 				e.lastCompactionSummary = nil
-				delete(e.sessionCompactionMemo, sessionID)
 				e.buildStateMu.Unlock()
+				e.noteFallbackEmission(sessionID)
 				slog.Warn("engine auto-compaction summariser unavailable; applying naive truncation fallback",
 					"sessionID", sessionID,
 					"tokenBudget", tokenBudget,
 					"forceTrigger", forceTrigger,
+					"fallbackEmissions", e.FallbackEmissionsForTesting(sessionID),
 				)
 				return truncationFallbackSummaryText
 			}
@@ -308,16 +309,22 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 		summary, err = e.autoCompactor.Compact(ctx, recent)
 	}
 	if err != nil {
+		summary, err = e.autoCompactor.Compact(ctx, recent)
+	}
+	if err != nil {
 		// Phase 3 memo invalidation: a failed summarisation must not
 		// leave the stale memo entry in place — the next turn would
 		// reuse a summary of a cold range that no longer matches, and
 		// getPriorCompactionSummary would anchor CompactExtend on it.
 		e.invalidateSessionCompactionMemo(sessionID)
-		slog.Warn("engine auto-compaction failed; applying naive truncation fallback",
+		e.noteFallbackEmission(sessionID)
+		slog.Warn("engine auto-compaction failed after one retry; applying naive truncation fallback",
 			"error", err,
+			"sessionID", sessionID,
 			"recentTokens", recentTokens,
 			"tokenBudget", tokenBudget,
 			"threshold", threshold,
+			"fallbackEmissions", e.FallbackEmissionsForTesting(sessionID),
 		)
 		e.invalidateCompactionMemo(sessionID)
 		return truncationFallbackSummaryText
@@ -338,6 +345,10 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 	summaryCopy := summary
 	e.buildStateMu.Lock()
 	e.lastCompactionSummary = &summaryCopy
+	if e.sessionCompactionSummary == nil {
+		e.sessionCompactionSummary = make(map[string]*ctxstore.CompactionSummary)
+	}
+	e.sessionCompactionSummary[sessionID] = &summaryCopy
 	e.sessionCompactionMemo[sessionID] = sessionCompactionMemoEntry{
 		hash:    currentHash,
 		summary: &summaryCopy,
@@ -408,12 +419,13 @@ func (e *Engine) maybeAutoCompactExplicit(ctx context.Context, sessionID string,
 			if forceFire || ratio > e.fallbackCompactionThreshold(manifest) {
 				e.buildStateMu.Lock()
 				e.lastCompactionSummary = nil
-				delete(e.sessionCompactionMemo, sessionID)
 				e.buildStateMu.Unlock()
+				e.noteFallbackEmission(sessionID)
 				slog.Warn("engine explicit auto-compaction summariser unavailable; applying naive truncation fallback",
 					"sessionID", sessionID,
 					"tokenBudget", tokenBudget,
 					"forceTrigger", forceTrigger,
+					"fallbackEmissions", e.FallbackEmissionsForTesting(sessionID),
 				)
 				return truncationFallbackSummaryText
 			}
@@ -495,10 +507,14 @@ func (e *Engine) maybeAutoCompactExplicit(ctx context.Context, sessionID string,
 		summary, err = e.autoCompactor.Compact(ctx, recent)
 	}
 	if err != nil {
+		summary, err = e.autoCompactor.Compact(ctx, recent)
+	}
+	if err != nil {
 		// Phase 3 memo invalidation — mirrors maybeAutoCompact: the
 		// stale memo must not outlive a failed manual compaction.
 		e.invalidateSessionCompactionMemo(sessionID)
-		slog.Warn("engine manual compaction failed; applying naive truncation fallback",
+		e.noteFallbackEmission(sessionID)
+		slog.Warn("engine manual compaction failed after one retry; applying naive truncation fallback",
 			"error", err,
 			"sessionID", sessionID,
 			"recentTokens", recentTokens,
@@ -523,6 +539,10 @@ func (e *Engine) maybeAutoCompactExplicit(ctx context.Context, sessionID string,
 	summaryCopy := summary
 	e.buildStateMu.Lock()
 	e.lastCompactionSummary = &summaryCopy
+	if e.sessionCompactionSummary == nil {
+		e.sessionCompactionSummary = make(map[string]*ctxstore.CompactionSummary)
+	}
+	e.sessionCompactionSummary[sessionID] = &summaryCopy
 	e.sessionCompactionMemo[sessionID] = sessionCompactionMemoEntry{
 		hash:    currentHash,
 		summary: &summaryCopy,
@@ -653,6 +673,7 @@ func (e *Engine) invalidateCompactionMemo(sessionID string) {
 	e.buildStateMu.Lock()
 	delete(e.sessionCompactionMemo, sessionID)
 	e.lastCompactionSummary = nil
+	delete(e.sessionCompactionSummary, sessionID)
 	e.buildStateMu.Unlock()
 }
 
@@ -703,6 +724,10 @@ func (e *Engine) reuseMemoisedSummary(sessionID string, currentHash [32]byte, re
 	}
 	e.buildStateMu.Lock()
 	e.lastCompactionSummary = cached.summary
+	if e.sessionCompactionSummary == nil {
+		e.sessionCompactionSummary = make(map[string]*ctxstore.CompactionSummary)
+	}
+	e.sessionCompactionSummary[sessionID] = cached.summary
 	e.buildStateMu.Unlock()
 	return autoCompactedSummaryPrefix + string(summaryJSON), true
 }
@@ -718,6 +743,7 @@ func (e *Engine) reuseMemoisedSummary(sessionID string, currentHash [32]byte, re
 func (e *Engine) invalidateSessionCompactionMemo(sessionID string) {
 	e.buildStateMu.Lock()
 	delete(e.sessionCompactionMemo, sessionID)
+	delete(e.sessionCompactionSummary, sessionID)
 	e.buildStateMu.Unlock()
 }
 
@@ -785,7 +811,7 @@ func (e *Engine) maybeRehydrate(sessionID string, msgs []provider.Message) []pro
 		return msgs
 	}
 	e.buildStateMu.Lock()
-	summary := e.lastCompactionSummary
+	summary := e.sessionLastCompactionSummaryLocked(sessionID)
 	consumedIdentity := e.sessionRehydrated[sessionID]
 	e.buildStateMu.Unlock()
 	if summary == nil || len(summary.FilesToRestore) == 0 {

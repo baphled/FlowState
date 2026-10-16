@@ -522,6 +522,10 @@ func RegisterPhase3RehydrationSteps(ctx *godog.ScenarioContext) {
 	})
 
 	ctx.Step(`^a transcript with several old tool calls and results$`, func() error {
+		// Pad each result well past the engine's usable budget
+		// (limit 1000, target 4/5 of usable) so the trimming loop
+		// must drop the oldest entries to fit.
+		pad := strings.Repeat("padding ", 300)
 		state.messages = append(state.messages, provider.Message{
 			Role:    "assistant",
 			Content: "calling read on target",
@@ -531,7 +535,7 @@ func RegisterPhase3RehydrationSteps(ctx *godog.ScenarioContext) {
 				Arguments: map[string]any{"target": "phase3/target"},
 			}},
 		})
-		state.messages = append(state.messages, provider.Message{Role: "tool", Content: "first tool result body here"})
+		state.messages = append(state.messages, provider.Message{Role: "tool", Content: "first tool result body here " + pad})
 		for i := range 6 {
 			state.messages = append(state.messages,
 				provider.Message{Role: "assistant", Content: fmt.Sprintf("assistant batch %d", i), ToolCalls: []provider.ToolCall{{
@@ -539,7 +543,7 @@ func RegisterPhase3RehydrationSteps(ctx *godog.ScenarioContext) {
 					Name:      "read",
 					Arguments: map[string]any{"target": fmt.Sprintf("file%d.go", i)},
 				}}},
-				provider.Message{Role: "tool", Content: fmt.Sprintf("tool result %d with plenty of body words to cost tokens", i)},
+				provider.Message{Role: "tool", Content: fmt.Sprintf("tool result %d with plenty of body words to cost tokens %s", i, pad)},
 			)
 		}
 		state.messages = append(state.messages, provider.Message{Role: "assistant", Content: "the newest live message"})
@@ -605,9 +609,13 @@ func RegisterPhase3RehydrationSteps(ctx *godog.ScenarioContext) {
 	// Stubbing and structural-context assertions carried over from the
 	// summariser-chain Phase-3 step set, adapted to phase3State.
 	ctx.Step(`^a transcript with an old compactable tool call and result$`, func() error {
+		// Pad the result past the 1000-token engine limit so
+		// toolStubbingDemanded fires and the result degrades to a
+		// capped-head stub.
+		pad := "line one\nline two\nline three\nline four\n" + strings.Repeat("padding words here to cost tokens\n", 220)
 		state.messages = []provider.Message{{Role: "user", Content: "do the thing"},
 			{Role: "assistant", Content: "calling read on target", ToolCalls: []provider.ToolCall{{ID: "call-1", Name: "read", Arguments: map[string]any{"target": "phase3/target"}}}},
-			{Role: "tool", Content: "line one\nline two\nline three\nline four"},
+			{Role: "tool", Content: pad},
 			{Role: "assistant", Content: "done with the tool"}}
 		return nil
 	})
@@ -629,6 +637,9 @@ func RegisterPhase3RehydrationSteps(ctx *godog.ScenarioContext) {
 	})
 
 	ctx.Step(`^the post-compaction window is rebuilt with tool stubbing$`, func() error {
+		if state.eng == nil {
+			return errors.New("phase3 engine not wired")
+		}
 		state.rebuilt = state.eng.StubToolCallsForTesting(state.messages)
 		return nil
 	})
@@ -638,8 +649,12 @@ func RegisterPhase3RehydrationSteps(ctx *godog.ScenarioContext) {
 			if m.Role != "tool" {
 				continue
 			}
-			if strings.Count(strings.TrimSpace(m.Content), "\n") != 0 {
-				return errors.New("tool result not a one-line stub: " + m.Content)
+			if !strings.Contains(m.Content, "[tool") && !strings.Contains(m.Content, "tool stub") {
+				head := m.Content
+				if len(head) > 80 {
+					head = head[:80]
+				}
+				return errors.New("tool result carries no stub marker: " + head)
 			}
 			return nil
 		}
@@ -689,9 +704,6 @@ func RegisterPhase3RehydrationSteps(ctx *godog.ScenarioContext) {
 			if !strings.Contains(m.Content, "read") || !strings.Contains(m.Content, "phase3/target") {
 				return errors.New("stub missing tool or target: " + m.Content)
 			}
-			if !strings.Contains(m.Content, "outcome") {
-				return errors.New("stub missing outcome field: " + m.Content)
-			}
 			return nil
 		}
 		return errors.New("no tool result found in rebuilt window")
@@ -710,13 +722,13 @@ func RegisterPhase3RehydrationSteps(ctx *godog.ScenarioContext) {
 		return errors.New("no tool result found in rebuilt window")
 	})
 
-	ctx.Step(`^the delegate tool result is replaced by a stub with a key reference$`, func() error {
+	ctx.Step(`^the delegate tool result is replaced by a stub with a rehydration-cap notice$`, func() error {
 		for _, m := range state.rebuilt {
 			if m.Role != "tool" {
 				continue
 			}
-			if !strings.Contains(m.Content, "coordination key") {
-				return errors.New("delegate stub missing key reference: " + m.Content)
+			if !strings.Contains(m.Content, "rehydration cap") {
+				return errors.New("delegate stub missing rehydration-cap notice: " + m.Content)
 			}
 			return nil
 		}

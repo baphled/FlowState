@@ -65,9 +65,9 @@ type AutoCompactionConfig struct {
 	// Enabled toggles Layer 2 on or off. Defaults to false.
 	Enabled bool `json:"enabled" yaml:"enabled"`
 	// Threshold is the fraction of the model's context window at which the
-	// auto-compaction layer fires. Defaults to 0.50 to account for tool-schema
-	// tokens that are excluded from naive message-only estimates, ensuring
-	// compaction fires well before the provider's context window is saturated.
+	// auto-compaction layer fires. Defaults to 0.75 so compaction fires only
+	// near saturation; the earlier 0.50 default compounded with stubbing
+	// into a permanent half-window compaction saw-tooth.
 	Threshold float64 `json:"threshold" yaml:"threshold"`
 }
 
@@ -156,7 +156,7 @@ type CompressionMetrics struct {
 //   - MicroCompaction.StorageDir:        ~/.flowstate/compacted
 //   - MicroCompaction.PlaceholderTokens: 50
 //   - AutoCompaction.Enabled:            true
-//   - AutoCompaction.Threshold:          0.50
+//   - AutoCompaction.Threshold:          0.75
 //   - SessionMemory.Enabled:             false
 //   - SessionMemory.StorageDir:          ~/.flowstate/session-memory
 //
@@ -181,11 +181,15 @@ func DefaultCompressionConfig() CompressionConfig {
 			// the saturation safety net for long sessions; operators
 			// who want the previous behaviour set
 			// `compression.auto_compaction.enabled: false` in
-			// config.yaml. Threshold of 0.50 accounts for tool-schema
-			// tokens and is overridable per-agent through
+			// config.yaml. Threshold of 0.75 fires only once the
+			// window is genuinely close to saturation — the earlier
+			// 0.50 default compounded with tool-result stubbing and
+			// prune passes into a permanent compaction saw-tooth at
+			// half-window (the October 2026 context-loss regression).
+			// Overridable per-agent through
 			// manifest.context_management.compaction_threshold.
 			Enabled:   true,
-			Threshold: 0.50,
+			Threshold: 0.75,
 		},
 		SessionMemory: SessionMemoryConfig{
 			Enabled:     false,

@@ -114,7 +114,7 @@ fmt: ## Format code
 lint: ## Run linters
 	@echo "Running linters..."
 	$(GOVET) ./...
-	@if command -v staticcheck &> /dev/null; then staticcheck ./...; fi
+	@if command -v staticcheck &> /dev/null; then GOTOOLCHAIN=go1.26.1 staticcheck ./...; fi
 	@if command -v golangci-lint &> /dev/null; then GOTOOLCHAIN=go1.26.1 golangci-lint run; fi
 	@if command -v deadcode >/dev/null 2>&1; then deadcode -test -tags e2e ./...; fi
 

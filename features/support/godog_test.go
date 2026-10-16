@@ -93,6 +93,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterMemoInvalidationSteps(ctx)
 	RegisterPhase3RehydrationSteps(ctx)
 	RegisterSummaryKeepListSteps(ctx)
+	RegisterContextLossGuardSteps(ctx)
 	RegisterSessionMemorySteps(ctx)
 	RegisterCompressionE2ESteps(ctx)
 	RegisterCompactionUsageFeedbackSteps(ctx)

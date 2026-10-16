@@ -104,7 +104,7 @@ func (e *Engine) SetSessionCoordinationKeysForTesting(sessionID string, keys []s
 // Returns: The stubbed copy of the slice.
 // Side effects: None — pure function over engine state.
 func (e *Engine) StubToolCallsForTesting(messages []provider.Message) []provider.Message {
-	return e.stubToolCalls(messages)
+	return e.stubToolCalls(context.Background(), messages)
 }
 
 // RebuildExplicitPathForTesting drives the Phase 3 explicit-path
@@ -122,7 +122,7 @@ func (e *Engine) StubToolCallsForTesting(messages []provider.Message) []provider
 //
 // Side effects: None beyond reading engine state.
 func (e *Engine) RebuildExplicitPathForTesting(ctx context.Context, sessionID string, messages []provider.Message, summary string) []provider.Message {
-	stubbed := e.stubToolCalls(messages)
+	stubbed := e.stubToolCalls(ctx, messages)
 	rebuilt := e.rebuildExplicitPathTokenBounded(ctx, sessionID, stubbed, summary)
 	if rebuilt == nil {
 		floor := []provider.Message{{Role: "system", Content: e.BuildSystemPromptCtx(ctx)}}
@@ -149,12 +149,23 @@ var nonCompactableToolNames = map[string]struct{}{
 // tool results are retained verbatim under phase3StubCapTokens, else
 // stubbed with a coordination key reference.
 //
+// Budget gate (context-loss regression fix): stubbing only fires when
+// the stubbed form would actually reclaim budget the window needs —
+// when the verbatim transcript already fits the engine's usable
+// budget the slice is returned unchanged. When stubbing does fire,
+// ordinary tools (read/bash/grep class) retain a capped head of their
+// result instead of a one-line stub, and no false coordination-store
+// re-read promise is emitted.
+//
 // Expected: messages is the transcript; tool names ride on the
 // preceding assistant message's ToolCalls.
 // Returns: The stubbed slice.
 // Side effects: None — input never mutated.
-func (e *Engine) stubToolCalls(messages []provider.Message) []provider.Message {
+func (e *Engine) stubToolCalls(ctx context.Context, messages []provider.Message) []provider.Message {
 	if len(messages) == 0 {
+		return messages
+	}
+	if !e.toolStubbingDemanded(ctx, messages) {
 		return messages
 	}
 	out := make([]provider.Message, len(messages))
@@ -168,25 +179,45 @@ func (e *Engine) stubToolCalls(messages []provider.Message) []provider.Message {
 			if e.tokenCounter != nil && e.tokenCounter.Count(out[i].Content) <= phase3StubCapTokens {
 				continue
 			}
-			out[i].Content = fmt.Sprintf("[tool stub: %s target=%q coordination key reference — re-read via coordination_store List]", name, target)
+			out[i].Content = fmt.Sprintf("[tool stub: %s target=%q result exceeded the rehydration cap]", name, target)
 			continue
 		}
-		out[i].Content = toolCallStubLine(name, target, out[i].Content)
+		if isCappedHeadStub(out[i].Content) {
+			continue
+		}
+		out[i].Content = cappedToolResultHead(name, target, out[i].Content)
 	}
 	return out
 }
 
-// toolCallStubLine renders the one-line stub for a compacted tool call.
+// toolStubbingDemanded reports whether the transcript's token cost
+// exceeds the engine's usable dispatch budget, i.e. whether stubbing
+// would reclaim budget the window actually needs. When the counter or
+// limit cannot be resolved the demand is conservatively true,
+// preserving the historical stubbing behaviour for unconfigured
+// engines.
 //
-// Expected: name and target describe the call; content is the result.
-// Returns: The single-line stub text.
+// Expected: messages is the transcript slice.
+// Returns: true when stubbing is budget-demanded.
 // Side effects: None.
-func toolCallStubLine(name, target, content string) string {
-	outcome := "completed"
-	if strings.HasPrefix(strings.TrimSpace(content), "Error") {
-		outcome = "errored"
+func (e *Engine) toolStubbingDemanded(ctx context.Context, messages []provider.Message) bool {
+	if e == nil || e.tokenCounter == nil {
+		return true
 	}
-	return fmt.Sprintf("[tool stub: %s target=%q outcome=%s]", name, target, outcome)
+	limit := e.ModelContextLimit()
+	if limit <= 0 {
+		return true
+	}
+	reserve := e.outputReserveFor(&provider.ChatRequest{Messages: messages, Tools: e.buildToolSchemasCtx(ctx)})
+	usable := limit - reserve
+	if usable < 1 {
+		usable = 1
+	}
+	total := 0
+	for i := range messages {
+		total += e.tokenCounter.Count(messages[i].Content)
+	}
+	return total > usable
 }
 
 // precedingToolNameAndTarget resolves the tool name and target argument

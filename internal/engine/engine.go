@@ -168,6 +168,17 @@ type Engine struct {
 	// subsequent build. A genuinely new summary (different identity)
 	// rehydrates again; an identical re-fire does not refill the window.
 	sessionRehydrated map[string]string
+	// sessionCompactionSummary keys each session's most recent
+	// successful compaction summary so maybeRehydrate consumes the
+	// owning session's summary rather than the engine-global pointer
+	// (the cross-session contamination bug where session B rehydrated
+	// from session A's FilesToRestore). Falls back to the global
+	// pointer only when the session holds a memo entry (legacy
+	// pre-keying summaries).
+	sessionCompactionSummary map[string]*ctxstore.CompactionSummary
+	// sessionFallbackEmissions counts naive-truncation-fallback fires
+	// per session so the fallback is observable, not silent loss.
+	sessionFallbackEmissions map[string]int
 
 	// sessionActivePlans holds the per-session active plan text the
 	// Phase 3 structural-context rebuild re-injects after compaction
@@ -1378,6 +1389,8 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		sessionCompressionMetrics:        make(map[string]*ctxstore.CompressionMetrics),
 		sessionCompactionMemo:            make(map[string]sessionCompactionMemoEntry),
 		sessionRehydrated:                make(map[string]string),
+		sessionCompactionSummary:         make(map[string]*ctxstore.CompactionSummary),
+		sessionFallbackEmissions:         make(map[string]int),
 		seededSessions:                   make(map[string]struct{}),
 		sessionLookup:                    cfg.SessionLookup,
 		permissionPrompter:               cfg.PermissionPrompter,
@@ -3889,14 +3902,7 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 			plans, files, keys := e.structuralContextSources(sessionID)
 			var rebuilt []provider.Message
 			if strings.HasPrefix(compactedSummary, truncationFallbackSummaryPrefix) {
-				slidingWindowSize := manifestCopy.ContextManagement.SlidingWindowSize
-				if slidingWindowSize <= 0 {
-					slidingWindowSize = 50
-				}
-				hotTail := priorMsgs
-				if len(hotTail) > slidingWindowSize {
-					hotTail = hotTail[len(hotTail)-slidingWindowSize:]
-				}
+				hotTail := fallbackTailTokenBounded(priorMsgs, e.tokenCounter, 0)
 				rebuilt = make([]provider.Message, 0, len(hotTail)+4)
 				rebuilt = append(rebuilt, provider.Message{Role: "system", Content: systemPrompt})
 				rebuilt = e.appendTodoContext(rebuilt, sessionID)
@@ -3946,8 +3952,18 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 			e.tokenCounter,
 			e.ModelContextLimit())
 
-		if trimmed, didTrim := TrimForDispatchBudget(ctx, messages, e.tokenCounter, tokenBudget, e.modelOutputLimit()); didTrim {
-			messages = trimmed
+		// The dispatch-budget trim must not shred the naive truncation
+		// fallback's hot tail: the fallback path above already sized a
+		// token-proportional tail, and re-trimming it against the raw
+		// dispatch budget (which subtracts a 4K output reserve that can
+		// dwarf a small test/production limit) collapses the window to
+		// a couple of messages — silent context loss the fallback exists
+		// to prevent. The overflow gate still refuses genuinely
+		// over-budget requests at dispatch time.
+		if !strings.HasPrefix(compactedSummary, truncationFallbackSummaryPrefix) {
+			if trimmed, didTrim := TrimForDispatchBudget(ctx, messages, e.tokenCounter, tokenBudget, e.modelOutputLimit()); didTrim {
+				messages = trimmed
+			}
 		}
 
 		slog.Info("engine context window",

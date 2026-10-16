@@ -514,7 +514,13 @@ var _ = Describe("Engine naive truncation fallback when summariser is unavailabl
 		Expect(messages[1].Content).To(ContainSubstring("[truncation fallback"))
 		Expect(messages[len(messages)-1]).To(Equal(provider.Message{Role: "user", Content: "next user turn"}))
 		Expect(len(messages)).To(BeNumerically("<", len(priorMsgs)))
-		Expect(messages[2 : len(messages)-1]).To(Equal(expectedTail[len(expectedTail)-(len(messages)-3):]))
+		retained := messages[2 : len(messages)-1]
+		Expect(retained).To(Equal(expectedTail[len(expectedTail)-len(retained):]))
+		retainedTokens := 0
+		for _, m := range retained {
+			retainedTokens += strings.Count(m.Content, " ") + 1
+		}
+		Expect(retainedTokens).To(BeNumerically(">", len(priorMsgs)))
 	})
 
 	It("overflow recovery truncates and retries instead of giving up", func() {

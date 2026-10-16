@@ -8,7 +8,7 @@ Feature: Tool-result rehydration and structural context on the explicit/session 
   compacted tool calls leaving one-line stubs, so important information
   survives compaction on every path, not just the store-bound one.
 
-  Scenario: Compacted tool calls leave one-line stubs naming tool, target and outcome
+  Scenario: Compacted tool calls retain a capped head naming tool and target when the budget demands
     Given an engine with a rehydrating explicit-path rebuild
     And a transcript with an old compactable tool call and result
     When the post-compaction window is rebuilt with tool stubbing
@@ -21,11 +21,11 @@ Feature: Tool-result rehydration and structural context on the explicit/session 
     When the post-compaction window is rebuilt with tool stubbing
     Then the coordination_store tool result is retained verbatim
 
-  Scenario: Non-compactable tool results above the token cap are stubbed with a key reference
+  Scenario: Non-compactable tool results above the token cap are stubbed with a rehydration-cap notice
     Given an engine with a rehydrating explicit-path rebuild
     And a transcript with a delegate tool call whose result exceeds the cap
     When the post-compaction window is rebuilt with tool stubbing
-    Then the delegate tool result is replaced by a stub with a key reference
+    Then the delegate tool result is replaced by a stub with a rehydration-cap notice
 
   Scenario: Structural context is re-injected into the rebuilt window
     Given an engine with a rehydrating explicit-path rebuild
