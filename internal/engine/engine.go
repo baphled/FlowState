@@ -3917,16 +3917,22 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 			plans, files, keys := e.structuralContextSources(sessionID)
 			var rebuilt []provider.Message
 			if strings.HasPrefix(compactedSummary, truncationFallbackSummaryPrefix) {
+				hotTail := fallbackTailTokenBounded(priorMsgs, e.tokenCounter, 0)
+				rebuilt = make([]provider.Message, 0, len(hotTail)+4)
+				rebuilt = append(rebuilt, provider.Message{Role: "system", Content: systemPrompt})
+				rebuilt = e.appendTodoContext(rebuilt, sessionID)
+				rebuilt = append(rebuilt, provider.Message{Role: "assistant", Content: compactedSummary})
+				rebuilt = append(rebuilt, hotTail...)
 			} else {
 				rebuilt = e.rebuildRehydrated(ctx, sessionID, priorMsgs, compactedSummary, plans, files, keys)
 				if rebuilt == nil {
 					rebuilt = e.rebuildContextWindowTokenBounded(ctx, sessionID, priorMsgs, compactedSummary)
 				}
 				if rebuilt == nil {
-					rebuilt = e.rebuildTruncationFallbackWindow(ctx, sessionID, priorMsgs, compactedSummary, tokenBudget, &provider.Message{Role: "user", Content: userMessage})
+					rebuilt = e.rebuildTruncationFallbackWindow(ctx, sessionID, priorMsgs, compactedSummary, tokenBudget, nil)
 				}
 			}
-			messages = rebuilt
+			messages = append(rebuilt, provider.Message{Role: "user", Content: userMessage})
 		} else if compactedSummary == "" {
 			// No compaction triggered — use raw prior messages.
 			messages = make([]provider.Message, 0, len(priorMsgs)+3)
