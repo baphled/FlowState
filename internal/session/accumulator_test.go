@@ -3,6 +3,7 @@ package session_test
 import (
 	"context"
 	"strings"
+	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -3195,3 +3196,48 @@ var _ = Describe("truncation-aware stop-reason classification (Slice 2, Sep 2026
 				"wire-contract violation — the truncation guard must not swallow Bug G detection")
 	})
 })
+
+// cappedTurnRecordingAppender records appended messages for inspection.
+type cappedTurnRecordingAppender struct {
+	messages []session.Message
+}
+
+// AppendMessage records the message.
+func (a *cappedTurnRecordingAppender) AppendMessage(_ string, msg session.Message) {
+	a.messages = append(a.messages, msg)
+}
+
+// UpdateDelegation satisfies the MessageAppender interface as a no-op.
+func (a *cappedTurnRecordingAppender) UpdateDelegation(_, _ string, _ func(*session.Message)) {}
+
+// TestCappedTurnTerminalDoneStampsPersistedAssistant verifies the G2
+// end-to-end chain: when the engine's tool loop caps a turn it emits a
+// terminal Done chunk carrying StopReasonToolLoopExceeded; the streaming
+// accumulator must stamp that sentinel on the persisted assistant
+// message so the session manager flips status to failed and records
+// failure_reason in meta.json.
+func TestCappedTurnTerminalDoneStampsPersistedAssistant(t *testing.T) {
+	appender := &cappedTurnRecordingAppender{}
+	rawCh := make(chan provider.StreamChunk, 3)
+	rawCh <- provider.StreamChunk{Content: "Let me check that again."}
+	rawCh <- provider.StreamChunk{ToolCall: &provider.ToolCall{ID: "call_1", Name: "echoer"}}
+	rawCh <- provider.StreamChunk{Done: true, StopReason: session.StopReasonToolLoopExceeded}
+	close(rawCh)
+
+	out := session.AccumulateStream(context.Background(), appender, "capped-session", "agent-1", rawCh)
+	for range out {
+	}
+
+	var assistant *session.Message
+	for i := range appender.messages {
+		if appender.messages[i].Role == "assistant" {
+			assistant = &appender.messages[i]
+		}
+	}
+	if assistant == nil {
+		t.Fatalf("no persisted assistant message; got %+v", appender.messages)
+	}
+	if assistant.StopReason != session.StopReasonToolLoopExceeded {
+		t.Fatalf("persisted assistant stop reason = %q; want %q", assistant.StopReason, session.StopReasonToolLoopExceeded)
+	}
+}

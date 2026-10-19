@@ -7,7 +7,12 @@
 //   - The deterministic truncation-marker prefix
 package engine
 
-import "time"
+import (
+	"context"
+	"time"
+
+	"github.com/baphled/flowstate/internal/provider"
+)
 
 // CapPersistedToolResultForTest exposes capPersistedToolResult so e2e
 // persistence-cap specs can pin the truncation contract.
@@ -50,4 +55,55 @@ func (e *Engine) SetMaxSameToolPatternCallsForTestE2E(n int) {
 // prefix so e2e specs can assert marker presence.
 func TruncationMarkerForTest() string {
 	return truncationDetector
+}
+
+// OverflowRecoveryCompactionsForTestingE2E exposes the per-session
+// Stream-level overflow-recovery compaction counter so the ctx-loss
+// BDD scenarios can pin the exactly-once compact-and-retry contract
+// (child session refused by the context gate compacts once before the
+// gate-skipped retry).
+//
+// Expected: sessionID identifies the session.
+// Returns: The overflow-recovery compaction count.
+// Side effects: None.
+func (e *Engine) OverflowRecoveryCompactionsForTestingE2E(sessionID string) int {
+	e.buildStateMu.Lock()
+	defer e.buildStateMu.Unlock()
+	return e.sessionOverflowRecoveryCompactions[sessionID]
+}
+
+// CheckContextWindowOverflowForTestingE2E exposes the pre-flight gate
+// verdict so scenarios can seed a transcript that provably overflows
+// the LOCAL gate (the gate-refusal seam the ctx-loss bug exercised).
+//
+// Expected: req carries the assembled request.
+// Returns: A non-nil *provider.Error when the gate refuses the request.
+// Side effects: None.
+func (e *Engine) CheckContextWindowOverflowForTestingE2E(req *provider.ChatRequest) *provider.Error {
+	return e.checkContextWindowOverflow(req)
+}
+
+// CompactSessionForOverflowRecoveryForTestingE2E exposes the
+// Stream-level overflow-recovery compaction so the storm-cap scenario
+// can assert compaction fires for the child session.
+//
+// Expected: ctx carries provider/model resolution; sessionID is the
+// child session; req carries the overflowing messages.
+// Returns: None.
+// Side effects: Same as compactSessionForOverflowRecovery.
+func (e *Engine) CompactSessionForOverflowRecoveryForTestingE2E(ctx context.Context, sessionID string, req *provider.ChatRequest) {
+	e.compactSessionForOverflowRecovery(ctx, sessionID, req)
+}
+
+// ErrCompactionInsufficientForE2E exposes the terminal compaction
+// error text so e2e step definitions can match the surfaced chunk.
+func ErrCompactionInsufficientForE2E() error {
+	return ErrCompactionInsufficient
+}
+
+// ToolLoopRetryStormThresholdForE2E exposes the tool_loop_retry storm
+// compaction threshold helper (fix 3, ctx-loss) so e2e scenarios can
+// drive the mid-loop compaction seam deterministically.
+func ToolLoopRetryStormThresholdForE2E() ToolLoopRetryStormThreshold {
+	return ToolLoopRetryStormThreshold{threshold: toolLoopRetryStormThreshold}
 }

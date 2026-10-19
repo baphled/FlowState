@@ -617,6 +617,13 @@ func buildP3RefusalEngine(script []overflowProviderTurn) (*engine.Engine, contex
 		AutoCompactor:     ctxstore.NewAutoCompactor(summariser),
 		CompressionConfig: cfg,
 		FailoverManager:   failoverMgr,
+		// The Oct 2026 engine-parity recovery contract re-checks
+		// the usable-limit gate after compaction instead of skipping
+		// it. With the default 4096 reserve against the 4000 fallback
+		// limit the usable budget clamps to 1 and no compacted window
+		// can ever fit, so the P3 suite pins the gate with a reserve
+		// the limit can actually accommodate.
+		OutputReserveForTests: 1024,
 	})
 	eng.SetTodoStoreForTest(todoStore)
 

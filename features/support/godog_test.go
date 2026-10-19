@@ -95,6 +95,8 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterReliabilityFixSteps(ctx)
 	RegisterSummaryKeepListSteps(ctx)
 	RegisterContextLossGuardSteps(ctx)
+	RegisterChildOverflowRecoverySteps(ctx)
+	RegisterParentChildOverflowParitySteps(ctx)
 	RegisterSessionMemorySteps(ctx)
 	RegisterCompressionE2ESteps(ctx)
 	RegisterCompactionUsageFeedbackSteps(ctx)

@@ -45,6 +45,12 @@ Feature: Session failure reason capture with provider health CLI (S5)
     Then the session status is demoted to "active"
     And failure_reason is cleared
 
+  Scenario: A tool-loop capped turn stamps failure_reason tool_loop_exceeded in meta.json
+    Given a session is in "active" status
+    When an assistant message arrives with StopReason "StopReasonToolLoopExceeded"
+    Then the session status is "failed"
+    And the meta.json contains "failure_reason" set to "StopReasonToolLoopExceeded"
+
   Scenario: Health CLI shows no cooldowns when healthy
     Given no providers are rate-limited
     When the user runs "flowstate health status"

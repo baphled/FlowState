@@ -1166,6 +1166,9 @@ func (d *DelegateTool) runStreamWithLegacyBreaker(delegateCtx context.Context, t
 	chunks = d.wrapWithAccumulator(delegateCtx, chunks, sessionIDFromContext(delegateCtx), target.agentID)
 	res, collectErr := d.collectWithPolicy(delegateCtx, chunks, time.Now())
 	*result = res
+	if collectErr != nil && recoverableChildOverflow(collectErr) {
+		collectErr = d.recoverChildOverflow(delegateCtx, target, result)
+	}
 	if collectErr != nil {
 		d.circuitBreaker.RecordFailure()
 		return collectErr
@@ -1227,6 +1230,9 @@ func (d *DelegateTool) streamAndCollect(ctx context.Context, target delegationTa
 	chunks = d.wrapWithAccumulator(ctx, chunks, sessionIDFromContext(ctx), target.agentID)
 	res, collectErr := d.collectWithPolicy(ctx, chunks, time.Now())
 	*result = res
+	if collectErr != nil && recoverableChildOverflow(collectErr) {
+		return d.recoverChildOverflow(ctx, target, result)
+	}
 	return collectErr
 }
 

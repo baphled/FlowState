@@ -203,9 +203,25 @@ func (d *DelegateTool) createChildSession(ctx context.Context, agentID, chainID 
 // Side effects:
 //   - May call sessionManager.GetSession or createChildSession.
 func (d *DelegateTool) resolveOrCreateSession(ctx context.Context, agentID, sessionID, chainID string) string {
-	if sessionID != "" && d.sessionManager != nil {
-		if sess, err := d.sessionManager.GetSession(sessionID); err == nil {
-			return sess.ID
+	if sessionID != "" {
+		if d.sessionManager != nil {
+			if sess, err := d.sessionManager.GetSession(sessionID); err == nil {
+				return sess.ID
+			}
+		} else {
+			// No session manager wired (legacy test constructors and
+			// minimal compositions): trust the caller-supplied
+			// session_id instead of minting a synthetic child. Pre-fix,
+			// a resume request was silently rewritten to
+			// "delegate-<agent>-<ts>", so the child stream ran under a
+			// session the caller never named — its transcript landed
+			// under the synthetic id and overflow-recovery bookkeeping
+			// (sessionOverflowRecoveryCompactions) keyed on a session
+			// nobody could observe. Parity contract "engines are
+			// engines": the child session id must be the one the
+			// caller asked to resume when there is no manager to
+			// overrule it.
+			return sessionID
 		}
 	}
 	return d.createChildSession(ctx, agentID, chainID)

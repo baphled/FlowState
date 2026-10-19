@@ -98,6 +98,33 @@ func bookkeepingOnlyBatch(toolCalls []*provider.ToolCall) bool {
 // terminal ErrCompactionInsufficient error.
 const maxOverflowRetries = 2
 
+// toolLoopRetryStormThreshold caps how many tool_loop_retry attempts
+// can accumulate WITHOUT a mid-loop compaction before the loop force-
+// compacts the session (fix 3, ctx-loss Oct 2026: a 33-attempt
+// tool_loop_retry storm grew a child transcript to 86 messages with
+// no per-turn compaction until the overflow gate terminated the
+// delegation chain). Once the attempt counter crosses the threshold
+// the loop compacts every toolLoopRetryStormCompactEvery attempts so
+// storms can never compound transcript growth unbounded.
+const toolLoopRetryStormThreshold = 10
+
+// toolLoopRetryStormCompactEvery is the compaction cadence once the
+// storm threshold is crossed: compact, then retry, on every Nth
+// attempt.
+const toolLoopRetryStormCompactEvery = 5
+
+// ToolLoopRetryStormThreshold carries the storm-compaction threshold
+// so the e2e harness can observe it without duplicating the constant.
+type ToolLoopRetryStormThreshold struct {
+	threshold int
+}
+
+// Reached reports whether the given attempt count crosses the storm
+// compaction threshold.
+func (t ToolLoopRetryStormThreshold) Reached(_ *Engine, _ string) bool {
+	return t.threshold > 0 && t.threshold <= toolLoopRetryStormThreshold
+}
+
 // toolLoopWallClockMultiplier scales the duration cap into an absolute
 // wall-clock bound on a single tool-loop budget window. The elapsed
 // backstop subtracts tool execution time (so slow legitimate tools do
@@ -961,6 +988,36 @@ func (e *Engine) streamWithToolLoop(
 	// maybeCompactForRetry compacts the session if the context is large before retrying.
 	// This prevents timeout-based failures when retrying with large contexts.
 	maybeCompactForRetry := func(reason string) bool {
+		// Fix 3 (ctx-loss, Oct 2026): cap tool_loop_retry storms.
+		// Once the attempt counter crosses toolLoopRetryStormThreshold
+		// the loop force-compacts every toolLoopRetryStormCompactEvery
+		// attempts even when the LOCAL gate still says the request
+		// fits — the reserve-inflated estimate under-counts a storm's
+		// compounding transcript growth (33-attempt storm observed
+		// growing a child to 86 messages with zero compactions). The
+		// force flag bypasses maybeCompactForRetry's gate-clear
+		// precondition for the storm cadence only.
+		if attempt >= toolLoopRetryStormThreshold && attempt%toolLoopRetryStormCompactEvery == 0 {
+			manifestCopy := e.Manifest()
+			tokenBudget := e.ResolveContextLength(e.lastProviderCtx(ctx), e.lastModelCtx(ctx))
+			if tokenBudget <= 0 {
+				tokenBudget = e.ModelContextLimit()
+			}
+			if tokenBudget > 0 {
+				slog.Warn("tool_loop_retry storm threshold reached, force-compacting before next retry",
+					"session", sessionID,
+					"attempt", attempt,
+					"messages", len(messages),
+				)
+				if summary := e.maybeAutoCompactExplicit(ctx, sessionID, &manifestCopy, tokenBudget, "tool_loop_retry_storm", messages); summary != "" {
+					if rebuilt := e.rebuildContextWindowTokenBounded(ctx, sessionID, messages, summary); rebuilt != nil {
+						messages = rebuilt
+					}
+					pendingSkipOverflow = true
+					return true
+				}
+			}
+		}
 		pendingSkipOverflow = false
 		if e == nil || e.store == nil || e.tokenCounter == nil {
 			return false

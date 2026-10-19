@@ -190,6 +190,12 @@ type Engine struct {
 	// sessionFallbackEmissions counts naive-truncation-fallback fires
 	// per session so the fallback is observable, not silent loss.
 	sessionFallbackEmissions map[string]int
+	// sessionOverflowRecoveryCompactions counts Stream-level
+	// overflow-recovery compactions per session (ctx-loss fix, Oct
+	// 2026). It observably pins the exactly-once contract: a child
+	// session refused by the context gate compacts once before the
+	// gate-skipped retry, never unboundedly.
+	sessionOverflowRecoveryCompactions map[string]int
 
 	// sessionActivePlans holds the per-session active plan text the
 	// Phase 3 structural-context rebuild re-injects after compaction
@@ -1403,7 +1409,8 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		sessionCompactionSummaries:       make(map[string]*ctxstore.CompactionSummary),
 		sessionRehydrated:                make(map[string]string),
 		sessionCompactionSummary:         make(map[string]*ctxstore.CompactionSummary),
-		sessionFallbackEmissions:         make(map[string]int),
+		sessionFallbackEmissions:          make(map[string]int),
+		sessionOverflowRecoveryCompactions: make(map[string]int),
 		seededSessions:                   make(map[string]struct{}),
 		sessionLookup:                    cfg.SessionLookup,
 		permissionPrompter:               cfg.PermissionPrompter,

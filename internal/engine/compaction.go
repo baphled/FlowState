@@ -1707,6 +1707,76 @@ func (e *Engine) lastCompactionSummaryText() string {
 	return autoCompactedSummaryPrefix + string(b)
 }
 
+// compactSessionForOverflowRecovery performs the exactly-once session
+// compaction the Stream-level first-chunk overflow recovery (ctx-loss
+// fix, Oct 2026) requires. When the engine's own pre-flight gate (or a
+// provider) refused the request with context_window_exceeded, the turn
+// must compact the SESSION's transcript once before the single
+// gate-skipped retry — a delegated child that grew its transcript in a
+// tool_loop_retry storm previously hard-failed because the recovery
+// condition required the local gate to clear, a contradiction on the
+// gate-refusal path. When the summariser chain is unavailable the
+// maybeAutoCompactExplicit force-fire path applies the naive truncation
+// fallback (token-proportional tail), so recovery never silently
+// no-ops.
+//
+// Expected:
+//   - ctx is the stream context carrying provider/model resolution keys.
+//   - sessionID identifies the child session whose transcript compacted.
+//   - req is the refused request (used only for the message slice).
+//
+// Returns:
+//   - None; the compaction's side effects (summary memo, session
+//     summary slot, ContextCompactedEvent) are observable.
+//
+// Side effects:
+//   - May invoke maybeAutoCompactExplicit (one summariser call or the
+//     truncation fallback) and update the session's compaction memo.
+func (e *Engine) compactSessionForOverflowRecovery(ctx context.Context, sessionID string, req *provider.ChatRequest) {
+	e.compactSessionForOverflowRecoveryWithResult(ctx, sessionID, req)
+}
+
+// compactSessionForOverflowRecoveryWithResult mirrors
+// compactSessionForOverflowRecovery but returns the compaction
+// summary text ("" when no compaction fired) so the caller can decide
+// whether a rebuild is warranted before retrying.
+func (e *Engine) compactSessionForOverflowRecoveryWithResult(ctx context.Context, sessionID string, req *provider.ChatRequest) string {
+	if e == nil || req == nil || len(req.Messages) == 0 {
+		return ""
+	}
+	manifestCopy, ok := manifestFromContext(ctx)
+	if !ok {
+		manifestCopy = e.manifest
+	}
+	tokenBudget := e.ResolveContextLength(req.Provider, req.Model)
+	if tokenBudget <= 0 {
+		tokenBudget = e.ModelContextLimit()
+	}
+	if tokenBudget <= 0 {
+		return ""
+	}
+	slog.Debug("overflow recovery compaction probe",
+		"session", sessionID,
+		"tokenBudget", tokenBudget,
+		"provider", req.Provider,
+		"model", req.Model,
+		"messages", len(req.Messages),
+		"autoCompactor", e.autoCompactor != nil,
+		"enabled", e.compressionConfig.AutoCompaction.Enabled,
+	)
+	summary := e.maybeAutoCompactExplicit(ctx, sessionID, &manifestCopy, tokenBudget, "overflow_recovery", req.Messages)
+	e.buildStateMu.Lock()
+	e.sessionOverflowRecoveryCompactions[sessionID]++
+	e.buildStateMu.Unlock()
+	if summary == "" {
+		slog.Warn("overflow recovery compaction did not fire; relying on tool-result budget compaction only",
+			"session", sessionID,
+			"messages", len(req.Messages),
+		)
+	}
+	return summary
+}
+
 // rebuildContextWindowTokenBounded rebuilds the mid-tool-loop message
 // slice after a compaction has fired: system prompt + todo context +
 // compaction summary + a token-bounded hot tail. The tail is the newest

@@ -581,6 +581,7 @@ func AccumulateStream(
 					// the same predicates as the Done path —
 					// content-only and thinking-then-tool-call turns are
 					// untouched.
+					flushCappedTerminalAssistant(appender, s, s.turnStopReason)
 					synthesizePlaceholderAssistant(appender, s)
 					return
 				}
@@ -676,9 +677,13 @@ func applyChunk(appender MessageAppender, s *streamAccumState, chunk provider.St
 		if chunk.StopReason == "" && errors.Is(chunk.Error, context.Canceled) {
 			s.turnUserCancelled = true
 		}
+		if chunk.StopReason != "" {
+			s.turnStopReason = chunk.StopReason
+		}
 		flushThinking(appender, s)
 		flushContent(appender, s)
 		flushUserCancelledAssistant(appender, s)
+		flushCappedTerminalAssistant(appender, s, s.turnStopReason)
 		synthesizePlaceholderAssistant(appender, s)
 	default:
 		if chunk.EventType != "" {
@@ -753,6 +758,8 @@ func applyToolCall(appender MessageAppender, s *streamAccumState, tc *provider.T
 	s.turnHadToolCall = true
 	flushThinking(appender, s)
 	flushContent(appender, s)
+	s.turnStopReason = ""
+	s.turnSawDone = false
 	input := tooldisplay.WholeArgsJSON(tc.Arguments)
 	appender.AppendMessage(s.sessionID, Message{
 		Role:      "tool_call",
@@ -1219,6 +1226,53 @@ func flushUserCancelledAssistant(appender MessageAppender, s *streamAccumState) 
 	s.thinkingBlocks = nil
 	s.turnStopReason = ""
 	s.turnUserCancelled = false
+	s.turnPlaceholderEmitted = true
+	s.contentFlushed = true
+}
+
+// flushCappedTerminalAssistant persists a terminal assistant sentinel
+// for turns that end with a non-empty stop reason outside the Done
+// path. The Done path already stamps StopReason, but capped turns
+// (StopReasonToolLoopExceeded) close without Done, so without this
+// dedicated flush no assistant message carrying the cap sentinel is
+// appended and the session manager never records failure_reason
+// "tool_loop_exceeded". Thinking blocks staged for the turn ride
+// along on the sentinel, mirroring flushUserCancelledAssistant.
+//
+// Expected:
+//   - appender is the message sink.
+//   - s holds the current accumulation state for the turn's exit.
+//   - stopReason is the terminal sentinel to stamp.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Appends a minimal assistant message stamped with stopReason
+//     when stopReason is non-empty.
+//   - Marks the turn's placeholder slot filled so the subsequent
+//     synthesizePlaceholderAssistant call is a no-op.
+func flushCappedTerminalAssistant(appender MessageAppender, s *streamAccumState, stopReason string) {
+	if stopReason == "" {
+		return
+	}
+	msg := Message{
+		Role:         "assistant",
+		Content:      "",
+		AgentID:      s.agentID,
+		ModelName:    s.lastModelID,
+		ProviderName: s.lastProviderID,
+		DurationMs:   time.Since(s.startedAt).Milliseconds(),
+		StopReason:   stopReason,
+	}
+	if len(s.thinkingBlocks) > 0 {
+		blocks := make([]provider.ThinkingBlock, len(s.thinkingBlocks))
+		copy(blocks, s.thinkingBlocks)
+		msg.ThinkingBlocks = blocks
+	}
+	appender.AppendMessage(s.sessionID, msg)
+	s.thinkingBlocks = nil
+	s.turnStopReason = ""
 	s.turnPlaceholderEmitted = true
 	s.contentFlushed = true
 }

@@ -285,15 +285,51 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 			overflowed = true
 		}
 	}
-	if overflowed && (e.tokenCounter == nil || e.ModelContextLimit() <= 0 || e.checkContextWindowOverflow(&req) == nil) {
+	// Overflow recovery (Oct 2026 engine-parity fix). Contract, per
+	// the superseding recovery design: on a first-chunk
+	// context_window_exceeded — including the engine's own pre-flight
+	// gate refusal — compact the session once, RE-CHECK the gate on
+	// the compacted request, and re-dispatch ONLY when the compacted
+	// window now fits the usable limit. The gate is never skipped:
+	// the legacy specs in engine_test.go pin "provider must not be
+	// called when over budget", and a skip-gate retry would send the
+	// identical overflowing request. When compaction cannot make the
+	// request fit (e.g. a single oversized newest message), the turn
+	// fails closed with ErrCompactionInsufficient instead.
+	//
+	// The recovery path requires a session store AND a token counter:
+	// without them no compaction can shrink the window. Engines wired
+	// without compaction dependencies keep the hard-refusal
+	// behaviour (firstChunk forwarded, tool loop terminal).
+	recoveryCapable := e.store != nil && e.tokenCounter != nil
+	if overflowed && recoveryCapable {
+		e.compactSessionForOverflowRecovery(streamCtx, sessionID, &req)
 		req.Messages = compactOldToolResultsForBudget(req.Messages, e.toolMessageCompactionThreshold, e.toolMessageCompactionKeepRecent, e.tokenCounter, e.ModelContextLimit())
-		loopCtx = withPendingNaiveOverflow(withPendingOverflowRecovery(streamCtx))
-		retryChunks, retryErr := e.streamFromProvider(session.WithSkipContextWindowOverflowCheck(initialCtx), &req)
-		e.publishProviderRequestEventCtx(streamCtx, sessionID, req)
-		if retryErr == nil {
-			providerChunks = retryChunks
+		if rebuilt := e.rebuildContextWindowTokenBounded(streamCtx, sessionID, req.Messages, e.lastCompactionSummaryText()); rebuilt != nil && e.contextEstimateDropped(req.Messages, rebuilt) {
+			req.Messages = rebuilt
+		}
+		gateErr := e.checkContextWindowOverflow(&req)
+		if gateErr == nil {
+			loopCtx = withPendingOverflowRecovery(streamCtx)
+			retryChunks, retryErr := e.streamFromProvider(initialCtx, &req)
+			e.publishProviderRequestEventCtx(streamCtx, sessionID, req)
+			if retryErr == nil {
+				providerChunks = retryChunks
+			} else {
+				providerChunks = prependStreamChunk(firstChunk, nil)
+			}
 		} else {
+			slog.Error("post-compaction request still over usable context window, failing closed",
+				"session", sessionID,
+				"estimated_input_tokens", gateErr.EstimatedInputTokens,
+				"limit", gateErr.ContextLimit,
+				"usable_limit", gateErr.ContextLimit - e.outputReserveFor(&req),
+				"messages", len(req.Messages),
+			)
+			firstChunk.Error = fmt.Errorf("%w", ErrCompactionInsufficient)
+			firstChunk.Content = ErrCompactionInsufficient.Error()
 			providerChunks = prependStreamChunk(firstChunk, nil)
+			overflowed = false
 		}
 	} else if hasFirst {
 		providerChunks = prependStreamChunk(firstChunk, providerChunks)
