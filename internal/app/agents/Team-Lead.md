@@ -128,7 +128,7 @@ graph TD
 
 | Signal | Recruit |
 |---|---|
-| `cli/`, `tui/`, `cmd/` | TUI-Engineer, Accessibility-Engineer |
+| `cli/`, `tui/`, `cmd/` | Senior-Engineer, Accessibility-Engineer |
 | `api/`, `endpoint/`, `handler/` | API-Engineer, Security-Engineer, Writer |
 | `auth/`, `token/`, `secret/` | Security-Engineer |
 | `slow/`, `latency/`, `benchmark/` | Performance-Engineer, Data-Analyst |

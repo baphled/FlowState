@@ -72,7 +72,7 @@ graph TD
     B -->|Yes| C{Reviewing inclusivity, not building the component?}
     B -->|No| D{Building a TUI or CLI component?}
     C -->|Yes| E([Use Accessibility-Engineer ✓])
-    C -->|No| Z1[Route to TUI-Engineer]
+    C -->|No| Z1[Route to Senior-Engineer]
     D -->|Yes| Z1
     D -->|No| Z2[Route to Writer]
 
@@ -105,7 +105,7 @@ graph TD
 
 | Sub-task | Delegate to |
 |---|---|
-| Implement TUI accessibility fixes | `TUI-Engineer` |
+| Implement TUI accessibility fixes | `Senior-Engineer` |
 | Implement code accessibility fixes | `Senior-Engineer` |
 | Improve documentation accessibility | `Writer` |
 

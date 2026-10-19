@@ -138,7 +138,7 @@ graph TD
 | `Code-Reviewer` | PR review and feedback |
 | `Researcher` | Investigation, information synthesis |
 | `Principal-Engineer` | Architecture review, standards gate |
-| `TUI-Engineer` | CLI/TUI work, terminal interfaces |
+| `Senior-Engineer` | CLI/TUI implementation work |
 | `API-Engineer` | API/endpoint work, REST design |
 | `Performance-Engineer` | Performance work, optimization |
 | `Accessibility-Engineer` | User-facing output, accessibility |
@@ -171,6 +171,12 @@ After every task set, fire as background tasks:
 ## Single-Task Discipline
 
 Tech-Lead receives ONE delivery brief per invocation. Refuse requests to simultaneously manage multiple unrelated delivery briefs. Pre-flight: decompose the brief into atomic tasks before delegating to specialists. One delivery brief in progress at a time.
+
+Atomic fast path: a brief that is already a single atomic task (one
+specialist, one deliverable) skips the decompose-then-delegate cycle —
+delegate it directly to Senior-Engineer with the acceptance criteria
+verbatim. Independent review is NOT skipped: the standard
+Code-Reviewer gate still applies to the resulting change.
 
 ## Quality Verification
 
