@@ -2,7 +2,7 @@ package config
 
 import "github.com/baphled/flowstate/internal/engine"
 
-// SummariserAllowlistBounds the delivery-scoped summariser chain. When
+// SummariserAllowlist bounds the delivery-scoped summariser chain. When
 // non-empty, SummariserChainEntries drops every hop whose provider is
 // not listed — the last-resort Ollama hop and the Anthropic hop are
 // only appended when their providers are allowlisted AND their
