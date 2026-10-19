@@ -1490,6 +1490,15 @@ func applyFailoverPreferences(failoverManager *failover.Manager, cfg *config.App
 // Z.ai-only delivery deployment (M01). Scoped policy: the delivery
 // allowlist is installed only for that deployment shape so other
 // workflows keep their configured providers.
+//
+// Expected:
+//   - routing maps category names to their resolved configs.
+//
+// Returns:
+//   - true only when routing is non-empty and every provider is zai.
+//
+// Side effects:
+//   - None.
 func isZaiOnlyDeliveryRouting(routing map[string]engine.CategoryConfig) bool {
 	if len(routing) == 0 {
 		return false

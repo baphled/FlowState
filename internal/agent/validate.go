@@ -66,6 +66,16 @@ func ValidateManifestSet(root fs.FS, dir string) ([]Violation, error) {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
 			continue
 		}
+		// Skip non-agent documentation files (M08). All-uppercase
+		// basenames before the .md extension — OVERRIDES.md,
+		// README.md, CHANGELOG.md — are operator documentation that
+		// conventionally lives alongside agent manifests. Validating
+		// them as manifests produced a false tools-empty violation on
+		// OVERRIDES.md. Agent manifests are Title-Case (Senior-
+		// Engineer.md) or lower-case (analyst.md), never all-caps.
+		if isDocumentationMarkdown(e.Name()) {
+			continue
+		}
 		// fs.ReadFile contract requires unrooted, forward-slash paths
 		// per io/fs.ValidPath: callers cannot pass "./X" or "/X".
 		// When dir == "." we read the entry name directly; otherwise
@@ -90,6 +100,24 @@ func ValidateManifestSet(root fs.FS, dir string) ([]Violation, error) {
 		return violations[i].Rule < violations[j].Rule
 	})
 	return violations, nil
+}
+
+// isDocumentationMarkdown reports whether name is an all-uppercase
+// documentation markdown file (OVERRIDES.md, README.md) rather than
+// an agent manifest. Exclusion is name-shape based and narrow: the
+// rule table still applies to every Title-Case or lower-case .md file.
+//
+// Expected:
+//   - name is a directory entry basename.
+//
+// Returns:
+//   - true iff the .md stem is all-uppercase (README, OVERRIDES).
+//
+// Side effects:
+//   - None.
+func isDocumentationMarkdown(name string) bool {
+	stem := strings.TrimSuffix(name, ".md")
+	return stem != "" && stem == strings.ToUpper(stem) && strings.ToLower(stem) != stem
 }
 
 // ValidateAlwaysActiveSkillsOnDisk reports every manifest whose
@@ -121,6 +149,16 @@ func ValidateAlwaysActiveSkillsOnDisk(root fs.FS, dir, skillsDir string) ([]Viol
 	var violations []Violation
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		// Skip non-agent documentation files (M08). All-uppercase
+		// basenames before the .md extension — OVERRIDES.md,
+		// README.md, CHANGELOG.md — are operator documentation that
+		// conventionally lives alongside agent manifests. Validating
+		// them as manifests produced a false tools-empty violation on
+		// OVERRIDES.md. Agent manifests are Title-Case (Senior-
+		// Engineer.md) or lower-case (analyst.md), never all-caps.
+		if isDocumentationMarkdown(e.Name()) {
 			continue
 		}
 		var path string

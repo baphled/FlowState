@@ -15,12 +15,27 @@ type SummariserAllowlist []string
 
 // DefaultSummariserDeliveryAllowlist is the recorded delivery policy:
 // Z.ai only (glm-5.2 primary, glm-4-flash quick tier).
+//
+// Returns:
+//   - The default zai-only allowlist.
+//
+// Side effects:
+//   - None.
 func DefaultSummariserDeliveryAllowlist() SummariserAllowlist {
 	return SummariserAllowlist{"zai"}
 }
 
 // contains reports whether the provider is allowlisted. Empty list =
 // legacy behaviour (everything allowed).
+//
+// Expected:
+//   - provider is a provider name, compared exactly.
+//
+// Returns:
+//   - true when the provider is allowlisted or the list is empty.
+//
+// Side effects:
+//   - None.
 func (a SummariserAllowlist) contains(provider string) bool {
 	if len(a) == 0 {
 		return true
@@ -41,6 +56,12 @@ var summariserAllowlist SummariserAllowlist
 
 // SetSummariserAllowlist installs the delivery scope. Passing an empty
 // list resets to the legacy unscoped behaviour.
+//
+// Expected:
+//   - a is the provider allowlist for the compaction summariser chain.
+//
+// Side effects:
+//   - Replaces the process-wide summariserAllowlist.
 func SetSummariserAllowlist(a SummariserAllowlist) { summariserAllowlist = a }
 
 // SummariserChainEntriesScoped is SummariserChainEntries with the
@@ -49,6 +70,15 @@ func SetSummariserAllowlist(a SummariserAllowlist) { summariserAllowlist = a }
 // that is the explicit durable unavailable outcome for compaction
 // (engine.NewSummariserChain treats an empty chain as
 // ErrSummariserUnavailable at first use), not a crossing.
+//
+// Expected:
+//   - c is the app config; the delivery scope must be installed.
+//
+// Returns:
+//   - Scoped chain entries; possibly empty (explicit unavailable).
+//
+// Side effects:
+//   - Reads the process-wide summariserAllowlist.
 func (c *AppConfig) SummariserChainEntriesScoped() []engine.SummariserChainEntry {
 	raw := c.SummariserChainEntries()
 	if len(summariserAllowlist) == 0 {

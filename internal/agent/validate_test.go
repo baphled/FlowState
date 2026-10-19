@@ -22,6 +22,7 @@ package agent_test
 import (
 	"os"
 	"path/filepath"
+	"testing"
 	"testing/fstest"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -535,3 +536,41 @@ var _ = Describe("ValidateAlwaysActiveSkillsOnDisk", func() {
 		Expect(violations).To(BeEmpty())
 	})
 })
+
+// TestValidateManifestSetSkipsNonAgentMarkdown proves the M08 fix:
+// non-agent documentation markdown living alongside agent manifests
+// (uppercase OVERRIDES.md) is skipped by validation, while the same
+// frontmatter shape in a lowercase agent-style name is still validated.
+//
+// Pre-fix behaviour: OVERRIDES.md was parsed as an agent manifest,
+// producing a tools-empty violation for a pure documentation file.
+// The fix skips all-uppercase .MD documentation names — a narrow,
+// documented convention (README.md, OVERRIDES.md, CHANGELOG.md) —
+// without weakening tools-empty for real agent manifests.
+func TestValidateManifestSetSkipsNonAgentMarkdown(t *testing.T) {
+	overrides := "---\nname: overrides\ncapabilities:\n  tools: []\n---\nNotes only.\n"
+	agentManifest := "---\nname: tester\ncapabilities:\n  tools: []\n---\nbody\n"
+	fsys := fstest.MapFS{
+		"OVERRIDES.md": {Data: []byte(overrides)},
+		"README.md":    {Data: []byte("docs, no frontmatter")},
+		"tester.md":    {Data: []byte(agentManifest)},
+	}
+	violations, err := agent.ValidateManifestSet(fsys, ".")
+	if err != nil {
+		t.Fatalf("ValidateManifestSet: %v", err)
+	}
+	for _, v := range violations {
+		if v.Manifest == "OVERRIDES.md" || v.Manifest == "README.md" {
+			t.Errorf("documentation file %s flagged as %s — must be excluded from agent validation", v.Manifest, v.Rule)
+		}
+	}
+	found := false
+	for _, v := range violations {
+		if v.Manifest == "tester.md" && v.Rule == "tools-empty" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("tools-empty must still fire for real agent manifest tester.md; got %+v", violations)
+	}
+}
