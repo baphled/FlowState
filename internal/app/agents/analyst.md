@@ -15,6 +15,7 @@ capabilities:
   tools:
     - file
     - coordination_store
+    - delegate
     - skill_load
   delivery_tools:
     - coordination_store
@@ -43,7 +44,7 @@ context_management:
   compaction_threshold: 0.75
   embedding_model: nomic-embed-text
 delegation:
-  can_delegate: false
+  can_delegate: true
   delegation_table: {}
 hooks:
   before: []

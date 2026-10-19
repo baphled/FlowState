@@ -18,13 +18,13 @@ description: >
   lists this swarm as a member and needs no gate-aggregate change.
 
 # `analyst` leads the section roster. It is a registered planning-loop
-# agent (internal/app/agents/analyst.md) that already holds the
+# agent (internal/app/agents/analyst.md) that holds the
 # coordination_store tool, the chain-id-resolution always-active skill,
-# and the evidence-led multi-provider failover chain — everything a
-# coordinating lead needs to resolve the run's chainID and orchestrate
-# section writes without inventing a namespace. Tech-Lead was the other
-# candidate but lacks the coordination_store tool, so it would fail
-# closed on any section write.
+# and the evidence-led multi-provider failover chain. 2026-10-19:
+# analyst.md was fixed to also carry the `delegate` tool with
+# delegation.can_delegate: true (previously false, contradicting this
+# lead contract), so analyst-level orchestration inside the sub-swarm
+# now works as designed.
 lead: analyst
 
 # NOT auto-dispatched on lead name: this swarm is composed as a MEMBER
