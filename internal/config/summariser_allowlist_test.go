@@ -75,7 +75,7 @@ func TestSummariserChainNoCredentialsYieldsTypedUnavailability(t *testing.T) {
 // models configured.
 func TestSummariserChainScopedEmptyFailsClosed(t *testing.T) {
 	config.SetSummariserAllowlist(config.DefaultSummariserDeliveryAllowlist())
-	t.Cleanup(func() { config.SetSummariserAllowlist(nil) })
+	t.Cleanup(func() { config.ClearSummariserDeliveryScope() })
 	cfg := &config.AppConfig{}
 	cfg.Providers.Anthropic.Model = "claude-live"
 	cfg.Providers.Ollama.Model = "llama3.2-live"
