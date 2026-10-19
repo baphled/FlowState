@@ -16,11 +16,9 @@ import (
 // only the policy — not health — prevents the crossing.
 
 // dispatchRecorder records every downstream attempt the StreamHook
-// makes; calls are dispatched immediately (nil channel, explicit error
-// is irrelevant unless asserted).
+// makes.
 type dispatchRecorder struct {
 	calls []provider.ModelPreference
-	fail  func(p provider.ModelPreference) error
 }
 
 func (r *dispatchRecorder) handler(nextErr func(p provider.ModelPreference) error) hookHandler {

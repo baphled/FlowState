@@ -99,6 +99,11 @@ func TestR205UnscopedProductModePreserved(t *testing.T) {
 // and must never observe a torn scope.
 func TestR205ConcurrentScopeAccessIsolated(t *testing.T) {
 	t.Cleanup(config.ClearSummariserDeliveryScope)
+	// Install BEFORE spawning goroutines: the isolation property is
+	// that a scoped process never emits an unscoped (crossing) hop
+	// while concurrent re-installs and resolutions interleave — an
+	// uninstalled scope legitimately emits the legacy chain.
+	config.SetSummariserAllowlist(config.DefaultSummariserDeliveryAllowlist())
 	cfg := &config.AppConfig{}
 	cfg.Providers.ZAI.APIKey = "k"
 	cfg.Summariser.Provider = "zai"
