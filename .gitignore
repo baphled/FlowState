@@ -45,3 +45,4 @@ debug.log
 # Test artifacts
 test-results/
 *.log
+.omo/

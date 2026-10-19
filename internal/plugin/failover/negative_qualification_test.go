@@ -8,12 +8,11 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 )
 
-// M07/M01 negative-case qualification suite. Every scenario proves the
-// same invariant from a different failure angle: under the Z.ai
-// delivery allowlist, no failure mode (rate-limit, hard-down,
-// summariser failure, stale candidate, chain exhaustion) can cause a
-// dispatch to a non-Z.ai provider. A dispatch-attempt recorder
-// captures every downstream call the hook would have made.
+// M07/M01 negative-case qualification suite. Adversarial scenarios
+// where NON-Z.ai providers are healthy and tempting: under the Z.ai
+// delivery allowlist, rate-limit, hard-down, staleness and chain
+// exhaustion must never admit a non-Z.ai dispatch. The exhaustion test
+// uses a dispatch recorder to prove zero downstream calls.
 
 func newQualifiedManager(t *testing.T) *Manager {
 	t.Helper()
@@ -26,8 +25,9 @@ func newQualifiedManager(t *testing.T) *Manager {
 	return m
 }
 
-// Qualified-rate-limit: every allowed pair rate-limited AND non-Z.ai
-// providers healthy — pool must be empty, not cross.
+// Qualified-rate-limit: only the allowlisted zai pairs are
+// rate-limited while openai/anthropic are healthy — the pool must be
+// empty, not fall across to the healthy non-Z.ai providers.
 func TestQualifiedRateLimitDoesNotCross(t *testing.T) {
 	m := newQualifiedManager(t)
 	base := []provider.ModelPreference{
@@ -38,7 +38,7 @@ func TestQualifiedRateLimitDoesNotCross(t *testing.T) {
 	}
 	m.SetBasePreferences(base)
 	now := time.Now()
-	for _, p := range base {
+	for _, p := range base[:2] { // rate-limit ONLY the zai pairs; openai/anthropic stay healthy
 		m.Health().MarkRateLimited(p.Provider, p.Model, now.Add(time.Hour))
 	}
 	cands := m.Candidates()
@@ -62,8 +62,14 @@ func TestQualifiedHardDownDoesNotCross(t *testing.T) {
 		{Provider: "anthropic", Model: "claude-opus"},
 	}
 	chain := StrictChainWithHealthyFallbackDelivery(strict, global, m.Health(), DefaultDeliveryAllowlist())
-	if len(chain) == 0 {
-		t.Fatal("healthy zai quick-tier fallback must remain")
+	sawQuickTier := false
+	for _, hop := range chain {
+		if hop.Provider == "zai" && hop.Model == "glm-4-flash" {
+			sawQuickTier = true
+		}
+	}
+	if !sawQuickTier {
+		t.Fatalf("healthy zai quick-tier fallback must remain in chain: %+v", chain)
 	}
 	for _, hop := range chain {
 		if !DefaultDeliveryAllowlist().Allowed(hop.Provider, hop.Model) {
@@ -74,12 +80,14 @@ func TestQualifiedHardDownDoesNotCross(t *testing.T) {
 
 // Qualified-stale-candidate: a stale (now-unhealthy) allowlisted
 // candidate must not be admitted by the retry hook after its health
-// flips; non-Z.ai rescue is prohibited.
+// flips, and a healthy non-Z.ai preference must NOT be admitted as a
+// rescue.
 func TestQualifiedStaleCandidateNotAdmitted(t *testing.T) {
 	m := newQualifiedManager(t)
 	prefs := []provider.ModelPreference{
 		{Provider: "zai", Model: "glm-5.2"},
 		{Provider: "zai", Model: "glm-4-flash"},
+		{Provider: "openai", Model: "gpt-5"}, // healthy non-Z.ai rescue probe
 	}
 	m.SetBasePreferences(prefs)
 	m.Health().MarkRateLimited("zai", "glm-5.2", time.Now().Add(time.Hour))
@@ -89,12 +97,16 @@ func TestQualifiedStaleCandidateNotAdmitted(t *testing.T) {
 	}
 }
 
-// Qualified-summariser-failure (engine side is pinned in
-// internal/config); failover side: exhausted chain must fail with the
-// explicit unavailable error and zero downstream dispatch attempts.
+// Qualified-exhaustion: with the only allowlisted pair rate-limited
+// and a healthy openai preference present, the chain must fail with
+// the explicit unavailable error and zero downstream dispatch
+// attempts — exhaustion attributable to the allowlist, not health.
 func TestQualifiedExhaustionFailsClosedNoDispatch(t *testing.T) {
 	m := newQualifiedManager(t)
-	prefs := []provider.ModelPreference{{Provider: "zai", Model: "glm-5.2"}}
+	prefs := []provider.ModelPreference{
+		{Provider: "zai", Model: "glm-5.2"},
+		{Provider: "openai", Model: "gpt-5"}, // healthy non-Z.ai rescue probe
+	}
 	m.SetBasePreferences(prefs)
 	m.Health().MarkRateLimited("zai", "glm-5.2", time.Now().Add(time.Hour))
 	h := NewStreamHook(m, nil, "qualification")
