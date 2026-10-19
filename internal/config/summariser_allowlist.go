@@ -48,7 +48,8 @@ func SetSummariserAllowlist(a SummariserAllowlist) { summariserAllowlist = a }
 // non-empty resolved model are emitted. May return an EMPTY slice —
 // that is the explicit durable unavailable outcome for compaction
 // (engine.NewSummariserChain treats an empty chain as
-// ErrSummariserUnavailable at first use), not a crossing.
+// ErrSummariserUnavailable at first use), never a crossing: fail
+// closed, mirroring the failover package's policy.
 func (c *AppConfig) SummariserChainEntriesScoped() []engine.SummariserChainEntry {
 	raw := c.SummariserChainEntries()
 	if len(summariserAllowlist) == 0 {
@@ -64,11 +65,5 @@ func (c *AppConfig) SummariserChainEntriesScoped() []engine.SummariserChainEntry
 		}
 		scoped = append(scoped, e)
 	}
-	if len(scoped) > 0 {
-		return scoped
-	}
-	// Empty scoped chain would silently disable compaction for callers
-	// that did not opt into the delivery scope; fall back to the legacy
-	// matrix and let attempt-time health filtering surface failures.
-	return raw
+	return scoped
 }

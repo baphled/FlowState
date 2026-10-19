@@ -67,3 +67,20 @@ func TestSummariserChainNoCredentialsYieldsTypedUnavailability(t *testing.T) {
 		}
 	}
 }
+
+// TestSummariserChainScopedEmptyFailsClosed pins the M01 fail-closed
+// fix: with the delivery scope installed and no zai credential, the
+// scoped chain must be EMPTY (durable unavailable), never the legacy
+// anthropic/ollama matrix — even when those providers have live
+// models configured.
+func TestSummariserChainScopedEmptyFailsClosed(t *testing.T) {
+	config.SetSummariserAllowlist(config.DefaultSummariserDeliveryAllowlist())
+	t.Cleanup(func() { config.SetSummariserAllowlist(nil) })
+	cfg := &config.AppConfig{}
+	cfg.Providers.Anthropic.Model = "claude-live"
+	cfg.Providers.Ollama.Model = "llama3.2-live"
+	entries := cfg.SummariserChainEntriesScoped()
+	if len(entries) != 0 {
+		t.Fatalf("scoped chain must be empty (fail closed), got %v", entries)
+	}
+}
