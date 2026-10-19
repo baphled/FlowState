@@ -37,7 +37,7 @@ func NewWithOAuth(clientID string, storage oauth.TokenStorage) (*Provider, error
 
 func (p *Provider) Chat(ctx context.Context, req *provider.ChatRequest) (*provider.ChatResponse, error) {
 	return &provider.ChatResponse{
-		Content: "OAuth implementation pending",
+		Message: provider.Message{Role: "assistant", Content: "OAuth implementation pending"},
 	}, nil
 }
 
