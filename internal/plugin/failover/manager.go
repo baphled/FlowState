@@ -44,6 +44,13 @@ type Manager struct {
 	// "no capability filtering" (the legacy behaviour), so existing
 	// callers and tests that never wire a filter are unaffected.
 	capabilityFilter func(providerName, model string) bool
+	// deliveryAllowlist, when non-nil, is the delivery-scoped
+	// provider/model admission predicate (M01). It gates the candidate
+	// pool (Candidates/healthyCandidates) and — unlike the capability
+	// filter — FAILS CLOSED: when filtering empties the pool the empty
+	// result stands, because crossing to an out-of-scope provider is a
+	// policy violation, not a degradation. nil = legacy unfiltered.
+	deliveryAllowlist *DeliveryAllowlist
 	// contextFallback is the token cap returned when the registered
 	// provider/model lookup fails. Defaults to defaultManagerFallback
 	// (16K). App.New overrides this from cfg.SystemPromptBudget so
@@ -227,6 +234,21 @@ func (m *Manager) SetBasePreferences(prefs []provider.ModelPreference) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.basePreferences = prefs
+}
+
+// SetDeliveryAllowlist installs the delivery-scoped provider/model
+// allowlist on the Manager. Once set, Candidates() (and therefore every
+// retry / mid-stream-failover surface reading it) admits only allowlisted
+// pairs, failing closed on exhaustion. nil removes the allowlist
+// (legacy behaviour).
+//
+// Expected: allow may be nil (disable).
+// Returns: none.
+// Side effects: mutates the receiver under its write lock.
+func (m *Manager) SetDeliveryAllowlist(allow *DeliveryAllowlist) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deliveryAllowlist = allow
 }
 
 // SetModelTiers replaces the tier lookup used to keep equivalent candidates
@@ -480,6 +502,35 @@ func (m *Manager) healthyCandidates() []provider.ModelPreference {
 	return rankCandidatesByHealth(m.health, m.modelTiers, m.attempts, m.capabilityFilteredPreferences())
 }
 
+// deliveryAllowlisted filters prefs against the installed delivery
+// allowlist, failing closed (an all-rejected list STAYS empty — the
+// empty-guard rationale that applies to tool capability does not apply
+// to policy). The head is retained when it is the caller's explicit
+// override: a pinned pair is the caller's deliberate choice and its
+// health is evaluated at attempt time, mirroring the capability
+// filter's override semantics.
+//
+// Expected: called under at least an RLock on m.mu.
+// Returns: prefs unchanged when no allowlist is installed; otherwise
+// the allowlisted subset.
+// Side effects: none.
+func (m *Manager) deliveryAllowlisted(prefs []provider.ModelPreference, retainHead bool) []provider.ModelPreference {
+	if m.deliveryAllowlist == nil || len(prefs) == 0 {
+		return prefs
+	}
+	out := make([]provider.ModelPreference, 0, len(prefs))
+	for i, pref := range prefs {
+		if i == 0 && retainHead {
+			out = append(out, pref)
+			continue
+		}
+		if m.deliveryAllowlist.Allowed(pref.Provider, pref.Model) {
+			out = append(out, pref)
+		}
+	}
+	return out
+}
+
 // rankCandidates ...
 //
 // Expected: parameters for rankCandidates.
@@ -508,6 +559,7 @@ func (m *Manager) rankCandidates(candidates []provider.ModelPreference) []provid
 // Side effects: none.
 func (m *Manager) capabilityFilteredPreferences() []provider.ModelPreference {
 	base := m.capabilityFilteredBase()
+	base = m.deliveryAllowlisted(base, false)
 	if m.override == nil {
 		return base
 	}

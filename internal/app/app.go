@@ -1467,9 +1467,39 @@ func applyFailoverPreferences(failoverManager *failover.Manager, cfg *config.App
 	}
 	failoverManager.SetModelTiers(resolveFailoverTiers(cfg.Plugins.Failover.Tiers))
 	failoverManager.SetCapabilityFilter(capabilityFilterFor(cfg))
+	// M01 delivery scope: gate the failover candidate pool (retries,
+	// mid-stream failover, strict hard-down tails) and the compaction
+	// summariser chain to the recorded Z.ai-only delivery policy when
+	// the deployment IS the delivery scope — detected as every
+	// configured category route resolving to zai (the operator's
+	// recorded delivery config; see docs/manifest-audit-2026-10-19/
+	// evidence). Non-delivery deployments (any non-zai route, e.g.
+	// dev/test fixtures on ollama/anthropic) keep the legacy unscoped
+	// pool: full provider parity outside the delivery chain.
+	if isZaiOnlyDeliveryRouting(cfg.CategoryRouting) && len(cfg.SummariserChainEntriesScoped()) > 0 {
+		failoverManager.SetDeliveryAllowlist(failover.DefaultDeliveryAllowlist())
+		config.SetSummariserAllowlist(config.DefaultSummariserDeliveryAllowlist())
+	}
 	if prefs := providers.BuildConfigPreferences(cfg); len(prefs) > 0 {
 		failoverManager.SetBasePreferences(prefs)
 	}
+}
+
+// isZaiOnlyDeliveryRouting reports whether every configured category
+// route resolves to the zai provider — the recorded marker of the
+// Z.ai-only delivery deployment (M01). Scoped policy: the delivery
+// allowlist is installed only for that deployment shape so other
+// workflows keep their configured providers.
+func isZaiOnlyDeliveryRouting(routing map[string]engine.CategoryConfig) bool {
+	if len(routing) == 0 {
+		return false
+	}
+	for _, rc := range routing {
+		if !strings.EqualFold(rc.Provider, "zai") {
+			return false
+		}
+	}
+	return true
 }
 
 // capabilityFilterFor returns a predicate that reports whether a
@@ -2866,7 +2896,7 @@ func (a *App) buildDelegateCompression(manifest agent.Manifest) compressionCompo
 	adapter := engine.NewProviderSummariser(a.defaultProvider, summariserResolver, fallbackModel, a.Config.ProviderFallback).
 		WithProviderRegistry(a.providerRegistry).
 		WithManifest(&manifest)
-	chain := engine.NewSummariserChain(a.providerRegistry, a.Config.SummariserChainEntries())
+	chain := engine.NewSummariserChain(a.providerRegistry, a.Config.SummariserChainEntriesScoped())
 	a.compression.summariserChain = chain
 	out.summariserAdapter = adapter
 	out.autoCompactor = ctxstore.NewAutoCompactor(chain)
@@ -4761,7 +4791,7 @@ func buildCompressionComponents(
 		fallbackModel := cfg.Providers.Ollama.Model
 		adapter := engine.NewProviderSummariser(chatProvider, summariserResolver, fallbackModel, cfg.ProviderFallback).
 			WithProviderRegistry(providerRegistry)
-		chain := engine.NewSummariserChain(providerRegistry, cfg.SummariserChainEntries())
+		chain := engine.NewSummariserChain(providerRegistry, cfg.SummariserChainEntriesScoped())
 		out.summariserAdapter = adapter
 		out.autoCompactor = ctxstore.NewAutoCompactor(chain)
 	}
