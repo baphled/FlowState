@@ -1740,6 +1740,18 @@ func (e *Engine) compactSessionForOverflowRecovery(ctx context.Context, sessionI
 // compactSessionForOverflowRecovery but returns the compaction
 // summary text ("" when no compaction fired) so the caller can decide
 // whether a rebuild is warranted before retrying.
+//
+// Expected:
+//   - ctx is the stream context carrying provider/model resolution keys.
+//   - sessionID identifies the child session whose transcript compacted.
+//   - req is the refused request (used only for the message slice).
+//
+// Returns:
+//   - The compaction summary text, "" when no compaction fired.
+//
+// Side effects:
+//   - May invoke maybeAutoCompactExplicit and update the session's
+//     compaction memo and overflow-recovery compaction counter.
 func (e *Engine) compactSessionForOverflowRecoveryWithResult(ctx context.Context, sessionID string, req *provider.ChatRequest) string {
 	if e == nil || req == nil || len(req.Messages) == 0 {
 		return ""

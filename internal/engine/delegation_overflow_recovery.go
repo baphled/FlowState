@@ -4,22 +4,25 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/baphled/flowstate/internal/provider"
-	"time"
 )
-
-// maxChildOverflowRecoveryRetries bounds the delegation child-spawn
-// overflow-recovery re-dispatches, mirroring the parent tool-loop's
-// maxOverflowRetries contract: one compact-then-retry earns the turn a
-// rescue; a second consecutive overflow is terminal
-// (ErrCompactionInsufficient).
-const maxChildOverflowRecoveryRetries = 1
 
 // recoverableChildOverflow reports whether err is a
 // context_window_exceeded provider error that the delegation child
 // path should treat as recoverable — the same classification the
 // parent streamFromProvider path applies before its compact-and-retry.
+//
+// Expected:
+//   - err is the collected delegate failure.
+//
+// Returns:
+//   - True when err wraps a provider.Error of type
+//     context_window_exceeded.
+//
+// Side effects:
+//   - None.
 func recoverableChildOverflow(err error) bool {
 	var pErr *provider.Error
 	return errors.As(err, &pErr) && pErr != nil && pErr.ErrorType == provider.ErrorTypeContextWindowExceeded

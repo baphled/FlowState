@@ -323,7 +323,7 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 				"session", sessionID,
 				"estimated_input_tokens", gateErr.EstimatedInputTokens,
 				"limit", gateErr.ContextLimit,
-				"usable_limit", gateErr.ContextLimit - e.outputReserveFor(&req),
+				"usable_limit", gateErr.ContextLimit-e.outputReserveFor(&req),
 				"messages", len(req.Messages),
 			)
 			firstChunk.Error = fmt.Errorf("%w", ErrCompactionInsufficient)

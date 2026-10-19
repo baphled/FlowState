@@ -121,6 +121,17 @@ type ToolLoopRetryStormThreshold struct {
 
 // Reached reports whether the given attempt count crosses the storm
 // compaction threshold.
+//
+// Expected:
+//   - t carries the exported threshold constant.
+//   - The engine and session arguments are unused.
+//
+// Returns:
+//   - True when a positive threshold sits at or below the compiled
+//     storm threshold.
+//
+// Side effects:
+//   - None.
 func (t ToolLoopRetryStormThreshold) Reached(_ *Engine, _ string) bool {
 	return t.threshold > 0 && t.threshold <= toolLoopRetryStormThreshold
 }
@@ -254,25 +265,8 @@ func pendingOverflowRecoveryFromContext(ctx context.Context) bool {
 // overflow recovery taint.
 type pendingNaiveOverflowKey struct{}
 
-// withPendingNaiveOverflow returns a child context flagged as tainted by
-// a naive-truncation overflow recovery retry. Per the BDD contract, this
-// taint must survive a clean retry turn; continuation resumes only after
-// proven compaction.
-//
-// Expected:
-//   - ctx is a valid context to extend.
-//
-// Returns:
-//   - A child context carrying the naive-overflow taint flag.
-//
-// Side effects:
-//   - Stores the flag in the returned context for later retrieval.
-func withPendingNaiveOverflow(ctx context.Context) context.Context {
-	return context.WithValue(ctx, pendingNaiveOverflowKey{}, true)
-}
-
 // pendingNaiveOverflowFromContext reports whether the context was
-// flagged by withPendingNaiveOverflow.
+// flagged by a naive-truncation overflow recovery retry.
 //
 // Expected:
 //   - ctx may carry the naive-overflow taint flag.
