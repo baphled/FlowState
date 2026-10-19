@@ -208,19 +208,20 @@ func (m *Manager) effectivePreferences() []provider.ModelPreference {
 }
 
 // capabilityFilteredPreferences composes the effective preference list
-// with the capability filter and the delivery allowlist applied to the
-// BASE tail only. The override (the caller's explicit head choice) is
-// preserved unfiltered and prepended.
+// with the capability filter and the delivery allowlist applied to
+// EVERY entry — the override and every base preference alike. R2-01:
+// there is a SINGLE final admission policy. An explicit model pin is
+// not authority to escape the installed delivery policy, so the
+// override passes the same allowlist filter as the base tail; a
+// disallowed override is dropped (fail closed), never prepended
+// unfiltered. Nested child managers reusing SetOverride inherit the
+// same behaviour because the filter lives here, at admission.
 func (m *Manager) capabilityFilteredPreferences() []provider.ModelPreference {
 	base := m.capabilityFilteredBase()
-	base = m.deliveryAllowlisted(base, false)
-	if m.override == nil {
-		return base
+	if m.override != nil {
+		base = append([]provider.ModelPreference{*m.override}, base...)
 	}
-	result := make([]provider.ModelPreference, 0, 1+len(base))
-	result = append(result, *m.override)
-	result = append(result, base...)
-	return result
+	return m.deliveryAllowlisted(base)
 }
 
 // capabilityFilteredBase returns base preferences with tool-incapable
@@ -246,24 +247,38 @@ func (m *Manager) capabilityFilteredBase() []provider.ModelPreference {
 // deliveryAllowlisted filters prefs against the installed delivery
 // allowlist, failing closed (an all-rejected list STAYS empty — the
 // empty-guard rationale that applies to tool capability does not apply
-// to policy). The head is retained when it is the caller's explicit
-// override: a pinned pair is the caller's deliberate choice and its
-// health is evaluated at attempt time.
-func (m *Manager) deliveryAllowlisted(prefs []provider.ModelPreference, retainHead bool) []provider.ModelPreference {
+// to policy). R2-01: no head retention — the override and every base
+// preference pass the same single admission policy.
+func (m *Manager) deliveryAllowlisted(prefs []provider.ModelPreference) []provider.ModelPreference {
 	if m.deliveryAllowlist == nil || len(prefs) == 0 {
 		return prefs
 	}
 	out := make([]provider.ModelPreference, 0, len(prefs))
-	for i, pref := range prefs {
-		if i == 0 && retainHead {
-			out = append(out, pref)
-			continue
-		}
+	for _, pref := range prefs {
 		if m.deliveryAllowlist.Allowed(pref.Provider, pref.Model) {
 			out = append(out, pref)
 		}
 	}
 	return out
+}
+
+// IsAdmitted reports whether a pair passes the single admission policy
+// RIGHT NOW: the delivery allowlist (when installed) and current
+// health (rate-limit + hard-down). The StreamHook consults this at
+// attempt time (R2-03) so a candidate that went stale or became
+// policy-forbidden after the round's pool was resolved is skipped.
+func (m *Manager) IsAdmitted(providerName, model string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.deliveryAllowlist != nil && !m.deliveryAllowlist.Allowed(providerName, model) {
+		return false
+	}
+	if m.health != nil {
+		if m.health.IsRateLimited(providerName, model) || m.health.IsHardDown(providerName, model) {
+			return false
+		}
+	}
+	return true
 }
 
 // attemptRecord tracks attempt/success timestamps for LRU rotation

@@ -46,20 +46,18 @@ func (d *DeliveryAllowlist) Allowed(providerName, model string) bool {
 }
 
 // filterAllowlisted returns prefs filtered to allowlisted pairs. A nil
-// allowlist returns prefs unchanged. The strict head (index 0) is
-// retained when retainHead is set — its health filtering happens at
-// attempt time, and dropping it would change the manifest-declared
-// chain semantics.
-func filterAllowlisted(prefs []provider.ModelPreference, allow *DeliveryAllowlist, retainHead bool) []provider.ModelPreference {
+// allowlist returns prefs unchanged. R2-01: NO head retention — strict
+// declared entries pass the same single admission policy as the
+// appended tail. A forbidden strict head is dropped here; when that
+// empties the chain the attempt-time pool fails closed with the
+// explicit unavailable/policy outcome instead of dispatching the
+// forbidden pair.
+func filterAllowlisted(prefs []provider.ModelPreference, allow *DeliveryAllowlist) []provider.ModelPreference {
 	if allow == nil || len(prefs) == 0 {
 		return prefs
 	}
 	out := make([]provider.ModelPreference, 0, len(prefs))
-	for i, pref := range prefs {
-		if retainHead && i == 0 {
-			out = append(out, pref)
-			continue
-		}
+	for _, pref := range prefs {
 		if allow.Allowed(pref.Provider, pref.Model) {
 			out = append(out, pref)
 		}
@@ -68,17 +66,19 @@ func filterAllowlisted(prefs []provider.ModelPreference, allow *DeliveryAllowlis
 }
 
 // StrictChainWithHealthyFallbackDelivery is
-// StrictChainWithHealthyFallback with the delivery allowlist applied to
-// the appended fallback tail: only allowlisted, healthy, non-duplicate
-// global entries are appended. The strict head is preserved verbatim so
-// re-resolution can un-fallback after an operator reset. When no
-// allowlisted route exists the returned chain contains only the strict
-// entries — attempt-time filtering then produces the explicit
-// "no healthy providers available" terminal outcome instead of
-// silently crossing to an out-of-scope provider.
+// StrictChainWithHealthyFallback with the delivery allowlist applied as
+// the SINGLE final admission policy: the appended fallback tail is
+// filtered before resolution AND the resolved chain (including every
+// declared strict entry — the head included) is filtered after, so a
+// forbidden strict head cannot bypass final admission. When no
+// allowlisted route exists the returned chain is EMPTY — attempt-time
+// filtering then produces the explicit "no healthy providers available"
+// terminal outcome instead of silently crossing to an out-of-scope
+// provider.
 func StrictChainWithHealthyFallbackDelivery(strict, global []provider.ModelPreference, health *HealthManager, allow *DeliveryAllowlist) []provider.ModelPreference {
 	if allow == nil {
 		return StrictChainWithHealthyFallback(strict, global, health)
 	}
-	return StrictChainWithHealthyFallback(strict, filterAllowlisted(global, allow, false), health)
+	resolved := StrictChainWithHealthyFallback(strict, filterAllowlisted(global, allow), health)
+	return filterAllowlisted(resolved, allow)
 }
