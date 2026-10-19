@@ -230,13 +230,17 @@ if [ -z "$MODEL_NAME" ]; then
     exit 1
 fi
 
-# Get reviewer name from git config
-REVIEWER_NAME=$(git config user.name)
+# R2-04: Reviewed-By is ONLY stamped when a real human review is
+# explicitly evidenced via the REVIEWED_BY environment variable. Git
+# committer identity is NOT evidence of review — the seven published
+# glm52 commits wrongly credited the committer, which the Round-2
+# review rejected. Leave REVIEWED_BY unset for AI-only candidates.
+REVIEWER_NAME="${REVIEWED_BY:-}"
 
-if [ -z "$REVIEWER_NAME" ]; then
-    echo -e "${YELLOW}Warning: git user.name not set${NC}"
-    echo "Set it with: git config user.name \"Your Name\""
-    REVIEWER_NAME="Unknown"
+if [ -n "$REVIEWER_NAME" ]; then
+    echo -e "${GREEN}Human reviewer evidenced via REVIEWED_BY: ${REVIEWER_NAME}${NC}"
+else
+    echo -e "${YELLOW}No REVIEWED_BY evidence: committing WITHOUT a Reviewed-By trailer (AI-only candidate)${NC}"
 fi
 
 # ============================================================================
@@ -248,7 +252,7 @@ echo -e "${BLUE}Creating AI-attributed commit...${NC}"
 echo ""
 echo "Agent:    ${AGENT_NAME}"
 echo "Model:    ${MODEL_NAME}"
-echo "Reviewer: ${REVIEWER_NAME}"
+echo "Reviewer: ${REVIEWER_NAME:-<none — AI-only>}"
 echo ""
 
 # Build full commit message with attribution
@@ -258,8 +262,11 @@ cat > "$FINAL_MSG_FILE" << EOF
 ${COMMIT_MSG}
 
 AI-Generated-By: ${AGENT_NAME} (${MODEL_NAME})
-Reviewed-By: ${REVIEWER_NAME}
 EOF
+
+if [ -n "$REVIEWER_NAME" ]; then
+    echo "Reviewed-By: ${REVIEWER_NAME}" >> "$FINAL_MSG_FILE"
+fi
 
 # Create the commit using the temp file
 COMMIT_FLAGS="-F $FINAL_MSG_FILE"
