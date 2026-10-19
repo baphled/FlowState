@@ -46,3 +46,6 @@ debug.log
 test-results/
 *.log
 .omo/
+
+# review log lives in Dropbox notes dir, not the repo
+REVIEW-PROGRESS.md
