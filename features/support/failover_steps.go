@@ -367,6 +367,15 @@ func RegisterFailoverSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the failover chain is "([^"]*)" / "([^"]*)" then "([^"]*)" / "([^"]*)"$`, fs.theFailoverChainIsTwo)
 	ctx.Step(`^the failover hook executes a chat request with a long message history$`, fs.failoverHookExecutesChatRequestWithLongHistory)
 	ctx.Step(`^the succeeding candidate should receive fewer messages than the failed candidate$`, fs.succeedingCandidateReceivesFewerMessages)
+	ctx.Step(`^no local provider should be in the resolved chain$`, fs.noLocalProviderShouldBeInResolvedChain)
+	ctx.Step(`^a failover manager armed with base preferences "([^"]*)" / "([^"]*)"$`, fs.aFailoverManagerArmedWithBasePreferences)
+	ctx.Step(`^the capability filter rejects every candidate$`, fs.theCapabilityFilterRejectsEveryCandidate)
+	ctx.Step(`^the manager is fail-closed$`, fs.theManagerIsFailClosed)
+	ctx.Step(`^the manager candidates are listed$`, fs.theManagerCandidatesAreListed)
+	ctx.Step(`^the candidate list should be empty$`, fs.theCandidateListShouldBeEmpty)
+	ctx.Step(`^the candidate list should contain "([^"]*)" / "([^"]*)"$`, fs.theCandidateListShouldContain)
+	ctx.Step(`^the pair "([^"]*)" / "([^"]*)" is hard-down$`, fs.thePairIsHardDown)
+	ctx.Step(`^the local fallback provider should never be attempted$`, fs.theLocalFallbackProviderShouldNeverBeAttempted)
 }
 
 // aFailoverHookWithSingleCandidate sets up the failover infrastructure
@@ -1999,6 +2008,129 @@ func (fs *FailoverSteps) thePinnedProviderShouldNeverBeAttempted() error {
 	for _, p := range fs.attemptedProviders {
 		if p == providerName {
 			return fmt.Errorf("the hard-down pin %q must never be attempted", providerName)
+		}
+	}
+	return nil
+}
+
+// noLocalProviderShouldBeInResolvedChain asserts the strict fallback
+// never placed a local provider (e.g. ollama) into the resolved chain —
+// strict-policy agents must not degrade onto local models.
+//
+// Expected: the resolved chain was recorded by a resolution step.
+// Returns: an error when any resolved entry is a local provider.
+// Side effects: None.
+func (fs *FailoverSteps) noLocalProviderShouldBeInResolvedChain() error {
+	for _, pref := range fs.resolvedChain {
+		if failover.IsLocalProvider(pref.Provider) {
+			return fmt.Errorf("local provider %q leaked into the strict fallback chain: %v", pref.Provider, fs.resolvedChain)
+		}
+	}
+	return nil
+}
+
+// aFailoverManagerArmedWithBasePreferences arms the manager's base
+// preference pool with a single pair for fail-closed scenarios.
+//
+// Expected: providerName and model name the base pair.
+// Returns: None.
+// Side effects: resets failover state, installs the base pool, and
+// clears any capability filter so scenario steps can install their own.
+func (fs *FailoverSteps) aFailoverManagerArmedWithBasePreferences(providerName, model string) error {
+	fs.ensureFailoverState()
+	fs.manager.SetCapabilityFilter(nil)
+	fs.manager.SetBasePreferences([]provider.ModelPreference{{Provider: providerName, Model: model}})
+	fs.manager.ClearOverride()
+	return nil
+}
+
+// theCapabilityFilterRejectsEveryCandidate installs a capability filter
+// that rejects every pair, driving the empty-filter guard.
+//
+// Expected: None.
+// Returns: None.
+// Side effects: installs an always-false capability filter.
+func (fs *FailoverSteps) theCapabilityFilterRejectsEveryCandidate() error {
+	fs.manager.SetCapabilityFilter(func(_, _ string) bool { return false })
+	return nil
+}
+
+// theManagerIsFailClosed puts the manager into fail-closed mode — the
+// strict-policy stance where an emptied capability-filtered base pool
+// yields no candidates instead of silently falling back to weak models.
+//
+// Expected: the manager was armed.
+// Returns: None.
+// Side effects: mutates the manager's fail-closed flag.
+func (fs *FailoverSteps) theManagerIsFailClosed() error {
+	fs.manager.SetFailClosed(true)
+	return nil
+}
+
+// theManagerCandidatesAreListed snapshots the manager's healthy
+// candidate list.
+//
+// Expected: the manager was armed.
+// Returns: None.
+// Side effects: records the candidate list.
+func (fs *FailoverSteps) theManagerCandidatesAreListed() error {
+	fs.chain = fs.manager.Candidates()
+	return nil
+}
+
+// theCandidateListShouldBeEmpty asserts the snapshot contains no
+// candidates — the fail-closed outcome.
+//
+// Expected: candidates were listed.
+// Returns: an error when the list is non-empty.
+// Side effects: None.
+func (fs *FailoverSteps) theCandidateListShouldBeEmpty() error {
+	if len(fs.chain) != 0 {
+		return fmt.Errorf("expected an empty candidate list, got %v", fs.chain)
+	}
+	return nil
+}
+
+// theCandidateListShouldContain asserts the snapshot holds exactly the
+// named pair.
+//
+// Expected: candidates were listed.
+// Returns: an error when the pair is absent.
+// Side effects: None.
+func (fs *FailoverSteps) theCandidateListShouldContain(providerName, model string) error {
+	for _, pref := range fs.chain {
+		if pref.Provider == providerName && pref.Model == model {
+			return nil
+		}
+	}
+	return fmt.Errorf("expected %q / %q in the candidate list, got %v", providerName, model, fs.chain)
+}
+
+// thePairIsHardDown trips the hard-down breaker on an arbitrary pair —
+// used to exhaust every non-local fallback entry so only locals remain.
+//
+// Expected: providerName and model identify the pair.
+// Returns: None.
+// Side effects: mutates health state.
+func (fs *FailoverSteps) thePairIsHardDown(providerName, model string) error {
+	fs.ensureFailoverState()
+	fs.health.MarkHardDown(providerName, model, "scenario")
+	return nil
+}
+
+// theLocalFallbackProviderShouldNeverBeAttempted asserts no local
+// provider (e.g. ollama) received an attempt — the fail-closed outcome
+// for a strict agent whose only remaining fallbacks are local.
+//
+// Expected: attempts were recorded.
+// Returns: an error when any local provider was attempted.
+// Side effects: None.
+func (fs *FailoverSteps) theLocalFallbackProviderShouldNeverBeAttempted() error {
+	fs.attemptedMu.Lock()
+	defer fs.attemptedMu.Unlock()
+	for _, p := range fs.attemptedProviders {
+		if failover.IsLocalProvider(p) {
+			return fmt.Errorf("local provider %q was attempted; strict chain must fail closed instead", p)
 		}
 	}
 	return nil
