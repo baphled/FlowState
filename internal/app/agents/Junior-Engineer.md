@@ -10,6 +10,7 @@ complexity: standard
 uses_recall: false
 capabilities:
   tools:
+    - coordination_store
     - skill_load
     - search_nodes
     - open_nodes

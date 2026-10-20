@@ -10,6 +10,7 @@ complexity: deep
 uses_recall: false
 capabilities:
   tools:
+    - coordination_store
     - delegate
     - skill_load
     - search_nodes
