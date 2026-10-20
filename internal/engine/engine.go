@@ -2452,6 +2452,13 @@ func (e *Engine) ReseedFailoverBasePreferences(manifest agent.Manifest, provider
 	if e.failoverManager == nil {
 		return
 	}
+	// The fail-closed stance is per-manifest: a permissive (or empty)
+	// manifest on a shared engine must disarm any stance armed by a
+	// previous strict manifest, or a later permissive turn would
+	// inherit strict fail-closed behaviour.
+	if manifest.ModelPolicy != agent.ModelPolicyStrict {
+		e.failoverManager.SetFailClosed(false)
+	}
 
 	fingerprint := reseedFingerprint(manifest, providerName, modelName)
 
@@ -2509,6 +2516,9 @@ func (e *Engine) ReseedFailoverBasePreferences(manifest agent.Manifest, provider
 			e.preferredModel = modelName
 			e.mu.Unlock()
 			e.failoverManager.SetBasePreferences(filterSelected(configBaseline))
+			// Strict agents fail closed even with a user-selected head:
+			// the selection governs the head, not the exhaustion policy.
+			e.failoverManager.SetFailClosed(manifest.ModelPolicy == agent.ModelPolicyStrict)
 			e.failoverManager.SetOverride(selected)
 		} else {
 			e.mu.Lock()
@@ -2516,6 +2526,7 @@ func (e *Engine) ReseedFailoverBasePreferences(manifest agent.Manifest, provider
 			e.preferredModel = baselineModel
 			e.mu.Unlock()
 			e.failoverManager.SetBasePreferences(configBaseline)
+			e.failoverManager.SetFailClosed(manifest.ModelPolicy == agent.ModelPolicyStrict)
 			if baselineProvider != "" {
 				e.failoverManager.SetOverride(provider.ModelPreference{
 					Provider: baselineProvider, Model: baselineModel,
@@ -2555,7 +2566,13 @@ func (e *Engine) ReseedFailoverBasePreferences(manifest agent.Manifest, provider
 			prefs = append(prefs, p)
 		}
 	} else if e.failoverManager != nil {
+		// Strict-policy agent: the fallback tail skips local providers
+		// (see StrictChainWithHealthyFallback), and the manager is
+		// armed fail-closed so the capabilityFilteredBase empty-guard
+		// cannot silently land the agent on a weak/local model — the
+		// turn fails loudly with "all providers failed" instead.
 		prefs = failover.StrictChainWithHealthyFallback(prefs, configBaseline, e.failoverManager.Health())
+		e.failoverManager.SetFailClosed(true)
 	}
 
 	manifestHead := prefs[0]
@@ -2587,6 +2604,11 @@ func (e *Engine) ReseedFailoverBasePreferences(manifest agent.Manifest, provider
 	// chain is exactly prefs: manifest head → manifest tail → config tail,
 	// deduped, cascading on the head's error.
 	e.failoverManager.SetBasePreferences(prefs)
+	// Fail-closed stance mirrors the manifest policy: a strict agent
+	// whose capability-filtered candidates are exhausted must fail
+	// loudly ("all providers failed") instead of silently degrading to
+	// the unfiltered base — which can include local ollama pairs.
+	e.failoverManager.SetFailClosed(manifest.ModelPolicy == agent.ModelPolicyStrict)
 	e.failoverManager.ClearOverride()
 }
 
