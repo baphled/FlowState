@@ -2639,6 +2639,11 @@ func (a *App) createDelegateEngine(
 		// base pool, so this only governs the fallback tail (see
 		// Manager.SetCapabilityFilter guards).
 		childFailoverMgr.SetCapabilityFilter(capabilityFilterFor(a.Config))
+		// Strict-policy delegate children fail closed: when every
+		// capability-filtered candidate is exhausted the child surfaces
+		// "all providers failed" instead of silently degrading onto the
+		// unfiltered base (which can include local ollama pairs).
+		childFailoverMgr.SetFailClosed(manifest.ModelPolicy == agent.ModelPolicyStrict)
 		if len(manifest.PreferredModels) > 0 {
 			prefs := agentToProviderPreferences(manifest.PreferredModels)
 			// For permissive/empty policy, append parent preferences as fallback so
@@ -2659,7 +2664,13 @@ func (a *App) createDelegateEngine(
 					}
 				}
 			} else if manifest.ModelPolicy == agent.ModelPolicyStrict && a.plugins.failoverManager != nil {
+				// Strict delegate: the tail skips local providers, and
+				// the child manager is armed fail-closed so the
+				// capabilityFilteredBase empty-guard cannot silently
+				// land the child on a weak/local model — the child
+				// fails loudly with "all providers failed" instead.
 				prefs = failover.StrictChainWithHealthyFallback(prefs, a.plugins.failoverManager.Preferences(), a.plugins.healthManager)
+				childFailoverMgr.SetFailClosed(true)
 			}
 			childFailoverMgr.SetBasePreferences(prefs)
 		} else if a.plugins.failoverManager != nil {
