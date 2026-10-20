@@ -21,6 +21,16 @@ import "strings"
 // today — so future scoping like "anthropic claude-* is fine but
 // ollama claude-3-haiku-clone isn't" can land without a callsite churn.
 //
+// RC3 judgement call (failback-fix, Oct 2026): the provider argument
+// remains deliberately unused. Provider-scoping the allow/deny glob
+// lists would change matching semantics for every existing operator
+// config (patterns today are model-only), and the local-provider
+// exclusion concern is already handled one layer up by
+// failover.IsLocalProvider in the strict fallback tail — duplicating
+// that here would give two sources of truth for "is this pair
+// acceptable". Left as a documented seam, not a warning at runtime
+// (a per-call WARN would be pure noise at delegation volume).
+//
 // Expected: parameters for IsToolCapableModel.
 // Returns: result of IsToolCapableModel.
 // Side effects: None.

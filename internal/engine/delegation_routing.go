@@ -249,6 +249,15 @@ func (d *DelegateTool) resolveChildModelOverride(parentSessionID string, target 
 // Expected: parameters for resolveChildModelChain.
 // Returns: result of resolveChildModelChain.
 func (d *DelegateTool) resolveChildModelChain(parentSessionID string, target delegationTarget) []provider.ModelPreference {
+	// RC4 judgement call (failback-fix, Oct 2026): the parent-pinned
+	// pair IS prepended ahead of the child's own manifest chain, even
+	// for a strict child. This is intentional, not a bug: the pin is an
+	// explicit operator/user selection on the parent session, which
+	// outranks the manifest's static chain the same way a session-level
+	// /model override outranks config. The strict local-exclusion
+	// guarantee is unaffected — the pin rides the head of the chain and
+	// the strict tail logic (withHealthyStrictFallback /
+	// StrictChainWithHealthyFallback) still governs the fallback entries.
 	if pinnedProv, pinnedModel := d.parentPinnedModelPair(parentSessionID); pinnedProv != "" || pinnedModel != "" {
 		pinned := provider.ModelPreference{Provider: pinnedProv, Model: pinnedModel}
 		rest := d.resolveChildModelChain("", target)
