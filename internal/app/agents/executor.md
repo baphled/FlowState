@@ -13,6 +13,7 @@ complexity: deep
 uses_recall: false
 capabilities:
   tools:
+    - coordination_store
     - bash
     - file
     - web
