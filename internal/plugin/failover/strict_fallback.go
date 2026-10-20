@@ -64,6 +64,14 @@ func StrictChainWithHealthyFallback(strict, global []provider.ModelPreference, h
 		if health.IsRateLimited(pref.Provider, pref.Model) {
 			continue
 		}
+		// Local providers (e.g. ollama) never back a strict-policy
+		// chain: the manifest pins hosted tool-calling-grade providers,
+		// and a local stand-in silently degrades the agent below its
+		// declared bar. Skip them here even when healthy — better a
+		// loud "all providers failed" than a quiet llama.
+		if IsLocalProvider(pref.Provider) {
+			continue
+		}
 		seen[key] = true
 		resolved = append(resolved, pref)
 	}

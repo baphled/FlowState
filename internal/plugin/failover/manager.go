@@ -44,6 +44,15 @@ type Manager struct {
 	// "no capability filtering" (the legacy behaviour), so existing
 	// callers and tests that never wire a filter are unaffected.
 	capabilityFilter func(providerName, model string) bool
+	// failClosed inverts capabilityFilteredBase's empty-guard: when the
+	// capability filter removes every base candidate, the filtered
+	// (empty) list is returned instead of the unfiltered base, so a
+	// strict-policy agent fails loudly ("all providers failed") rather
+	// than silently landing on a weak — possibly local — model. Wired
+	// from the layer above alongside SetBasePreferences using the
+	// agent manifest's ModelPolicy; false preserves the legacy
+	// weak-model-beats-nil guard for permissive agents.
+	failClosed bool
 	// contextFallback is the token cap returned when the registered
 	// provider/model lookup fails. Defaults to defaultManagerFallback
 	// (16K). App.New overrides this from cfg.SystemPromptBudget so
@@ -103,6 +112,24 @@ func (m *Manager) SetCapabilityFilter(filter func(providerName, model string) bo
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.capabilityFilter = filter
+}
+
+// SetFailClosed arms or disarms the fail-closed stance for the
+// capability-filter empty-guard. Set true for strict-policy agents
+// (manifest ModelPolicy == strict): when every base candidate fails the
+// capability filter the manager returns no candidates so the agent
+// fails loudly with "all providers failed" instead of silently falling
+// back to an unfiltered — possibly local — model. Set false (the
+// default) for permissive agents, preserving the legacy
+// weak-model-beats-nil empty-guard.
+//
+// Expected: v is the desired fail-closed stance.
+// Returns: result of SetFailClosed.
+// Side effects: mutates the receiver under its write lock.
+func (m *Manager) SetFailClosed(v bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.failClosed = v
 }
 
 // ResolveContextLength returns the context length for a given provider/model.
@@ -536,6 +563,14 @@ func (m *Manager) capabilityFilteredBase() []provider.ModelPreference {
 		}
 	}
 	if len(filtered) == 0 {
+		if m.failClosed {
+			// Strict-policy agent: every base candidate is
+			// tool-incapable, and an unfiltered fallback could land the
+			// agent on a local model below its declared bar. Fail
+			// closed — return the empty list so the caller surfaces
+			// "all providers failed" instead of a silent degradation.
+			return nil
+		}
 		// Every base candidate is tool-incapable. Better a last-resort
 		// weak model than nil — fall back to the unfiltered base.
 		return m.basePreferences
