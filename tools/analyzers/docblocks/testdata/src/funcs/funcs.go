@@ -52,25 +52,21 @@ func unexportedNoDoc() {} // want `doc comment for unexportedNoDoc should start 
 //
 // Side effects:
 //   - None.
-//
 func unexportedBadNameStart() {} // want `doc comment for unexportedBadNameStart should start with "unexportedBadNameStart"`
 
 // unexportedReturnsValue does nothing special.
 //
 // Side effects:
 //   - None.
-//
 func unexportedReturnsValue() int { return 0 } // want `unexported function unexportedReturnsValue missing Returns: section`
 
 // unexportedTakesParams does something with input.
 //
 // Side effects:
 //   - None.
-//
 func unexportedTakesParams(x int) {} // want `unexported function unexportedTakesParams missing Expected: section`
 
 // unexportedNoSideEffects does something.
-//
 func unexportedNoSideEffects() {} // want `unexported function unexportedNoSideEffects missing Side effects: section`
 
 // unexportedFullyDocumented validates all sections are present.
@@ -83,5 +79,4 @@ func unexportedNoSideEffects() {} // want `unexported function unexportedNoSideE
 //
 // Side effects:
 //   - None.
-//
 func unexportedFullyDocumented(x int) int { return x * 2 }

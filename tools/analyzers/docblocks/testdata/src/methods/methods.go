@@ -45,14 +45,12 @@ func (r *Receiver) unexportedMethod() {} // want `doc comment for unexportedMeth
 //
 // Side effects:
 //   - None.
-//
 func (r *Receiver) unexportedBadMethodStart() {} // want `doc comment for unexportedBadMethodStart should start with "unexportedBadMethodStart"`
 
 // unexportedMethodMissingReturns does something on the receiver.
 //
 // Side effects:
 //   - None.
-//
 func (r *Receiver) unexportedMethodMissingReturns() int { return 0 } // want `unexported method unexportedMethodMissingReturns missing Returns: section`
 
 // unexportedMethodFullyDocumented validates all sections.
@@ -65,5 +63,4 @@ func (r *Receiver) unexportedMethodMissingReturns() int { return 0 } // want `un
 //
 // Side effects:
 //   - None.
-//
 func (r *Receiver) unexportedMethodFullyDocumented(x int) int { return x }
