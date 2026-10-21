@@ -15,9 +15,13 @@ func fakeCaptureScript(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	script := filepath.Join(dir, "fake-capture")
+	// Emit 44-byte header + 2 bytes of silence. The header is written
+	// via printf %b escapes so the payload survives /bin/sh printf
+	// implementations that treat \xNN in the format string differently
+	// (dash printf emits literal "\x24" bytes, corrupting the RIFF
+	// header and failing the WAV validation below on ubuntu CI).
 	body := "#!/bin/sh\n# usage: fake-capture <file>\n"
-	// Emit 44-byte header + 2 bytes of silence via printf-safe bytes.
-	body += "printf 'RIFF\\x24\\x00\\x00\\x00WAVEfmt \\x10\\x00\\x00\\x00\\x01\\x00\\x01\\x00\\x80\\x3e\\x00\\x00\\x80\\x3e\\x00\\x00\\x02\\x00\\x10\\x00data\\x02\\x00\\x00\\x00\\x00\\x00' > \"$1\"\n"
+	body += "printf '%b' '\\x52\\x49\\x46\\x46\\x24\\x00\\x00\\x00\\x57\\x41\\x56\\x45\\x66\\x6d\\x74\\x20\\x10\\x00\\x00\\x00\\x01\\x00\\x01\\x00\\x80\\x3e\\x00\\x00\\x80\\x3e\\x00\\x00\\x02\\x00\\x10\\x00\\x64\\x61\\x74\\x61\\x02\\x00\\x00\\x00\\x00\\x00' > \"$1\"\n"
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatalf("write fake capture: %v", err)
 	}
