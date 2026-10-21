@@ -146,6 +146,16 @@ func failingPeerRunner(failingMember string, peerCancelled chan<- string) swarm.
 				return nil
 			}
 		case <-ctx.Done():
+			// A sibling may fail (closing failGate and cancelling the
+			// dispatch context) before this goroutine is ever scheduled;
+			// both select cases are then ready and the runtime can pick
+			// either. Cancellation via this branch is just as much a
+			// dispatched-and-cancelled observation, so report it too —
+			// otherwise the "cancels in-flight peers" expectation flakes
+			// on scheduling order (observed on CI, ubuntu, 2026-10-21).
+			failOnce.Do(func() {
+				peerCancelled <- member
+			})
 			return ctx.Err()
 		}
 	}
