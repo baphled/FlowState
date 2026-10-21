@@ -2,6 +2,14 @@
 
 **Quick reference for AI coding agents working on FlowState - a Go TUI application using Bubble Tea framework.**
 
+## Branch Policy (MANDATORY)
+
+**Working directly against `main` is ILLEGAL.** All development MUST target the
+`next` branch (or a feature worktree created FROM `next`). Never commit to
+`main`, never check out `main` for editing. Follow the CI process on every
+change: `make check` must pass, pre-commit hooks must run (never `--no-verify`),
+and all commits must go through `make ai-commit`.
+
 ## Git Worktree Setup
 
 FlowState uses git worktrees. The structure is:
