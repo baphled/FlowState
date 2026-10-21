@@ -108,6 +108,7 @@ type DelegateTool struct {
 	sessionsDir        string // sessionsDir is the directory for session metadata persistence.
 	streamers          map[string]streaming.Streamer
 	rejectionTracker   *delegation.RejectionTracker
+	targetFactory      DelegateTargetFactory
 	// failoverManager is the app-level failover manager consulted when
 	// resolving a child's model chain: a strict manifest whose head has
 	// tripped the hard-down breaker gets the healthy global chain
@@ -630,8 +631,17 @@ func (d *DelegateTool) Execute(ctx context.Context, input tool.Input) (tool.Resu
 	// is a read, can_delegate is a read, and checkSpawnLimits has no
 	// state mutation. The duplication keeps the agent-target path's
 	// error ordering unchanged and avoids a wider refactor.
-	if gateErr := d.preFlightSharedGates(input); gateErr != nil {
+	if gateErr := d.preFlightSharedGates(ctx, input); gateErr != nil {
 		return tool.Result{}, gateErr
+	}
+
+	// Nested (lazy) wiring: resolve the target engine only after the
+	// shared gates — circuit, can-delegate, spawn limits, background
+	// rejection — have accepted the call, and only for a target that
+	// passes the allowlist/scope/cycle gates. Forbidden calls never
+	// construct a child engine (no spawn before rejection).
+	if lazyErr := d.lazyEnsureTarget(ctx, input); lazyErr != nil {
+		return tool.Result{}, lazyErr
 	}
 
 	if result, handled, dispErr := d.tryDispatchSwarmTarget(ctx, input); handled {
@@ -725,6 +735,19 @@ func (d *DelegateTool) Execute(ctx context.Context, input tool.Input) (tool.Resu
 		}
 	}
 
+	// Nested-delegation repair (DELEGATION-RUNTIME-BLOCKER-2026-10-21):
+	// background delegation from a LAZY (nested) delegate tool is
+	// refused BEFORE any spawn. The lazy factory contract only
+	// sanctions synchronous, engine-owned-lineage dispatch — an async
+	// detached child would escape shared budget/deadline/cancellation
+	// propagation and re-enable detached work. The rejection fires
+	// here, before executeAsync could launch a goroutine or mint a
+	// child session.
+	if params.runAsync && d.targetFactory != nil {
+		return tool.Result{}, fmt.Errorf(
+			"background delegation not permitted from nested delegation: run_in_background is disabled for delegated leads; use foreground delegation")
+	}
+
 	if params.runAsync {
 		return d.executeAsync(ctx, target, baseInfo, outChan, hasOutput)
 	}
@@ -763,7 +786,7 @@ func (d *DelegateTool) Execute(ctx context.Context, input tool.Input) (tool.Resu
 // Side effects:
 //   - circuitBreaker.Allow() is a read; no breaker-state mutation here.
 //   - checkSpawnLimits is a read against d.backgroundManager.ActiveCount().
-func (d *DelegateTool) preFlightSharedGates(input tool.Input) error {
+func (d *DelegateTool) preFlightSharedGates(ctx context.Context, input tool.Input) error {
 	if !d.circuitBreaker.Allow() {
 		return errCircuitBreakerOpen
 	}
@@ -783,7 +806,7 @@ func (d *DelegateTool) preFlightSharedGates(input tool.Input) error {
 		}
 		handoff = h
 	}
-	return d.checkSpawnLimits(handoff)
+	return d.checkSpawnLimits(ctx, handoff)
 }
 
 // buildDelegationInfo assembles the provider.DelegationInfo emitted on

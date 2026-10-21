@@ -1508,7 +1508,7 @@ var _ = Describe("SwarmDepthResolution", func() {
 			dt := minimalDelegateTool(reg)
 			installSwarmCtxOnLead(dt, manifest)
 
-			err := dt.CheckSpawnLimitsForTest(handoffAtDepth(10))
+			err := dt.CheckSpawnLimitsForTest(context.TODO(), handoffAtDepth(10))
 
 			Expect(err).NotTo(HaveOccurred())
 		})
@@ -1522,7 +1522,7 @@ var _ = Describe("SwarmDepthResolution", func() {
 			dt := minimalDelegateTool(reg)
 			installSwarmCtxOnLead(dt, manifest)
 
-			err := dt.CheckSpawnLimitsForTest(handoffAtDepth(8))
+			err := dt.CheckSpawnLimitsForTest(context.TODO(), handoffAtDepth(8))
 
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("depth limit"))
@@ -1533,7 +1533,7 @@ var _ = Describe("SwarmDepthResolution", func() {
 		It("falls back to the historical SpawnLimits.MaxDepth=5", func() {
 			dt := minimalDelegateTool(nil)
 
-			err := dt.CheckSpawnLimitsForTest(handoffAtDepth(5))
+			err := dt.CheckSpawnLimitsForTest(context.TODO(), handoffAtDepth(5))
 
 			Expect(err).To(HaveOccurred())
 		})

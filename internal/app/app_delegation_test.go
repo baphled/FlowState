@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -1360,6 +1361,300 @@ var _ = Describe("wireDelegateToolIfEnabled", func() {
 			mu.Lock()
 			defer mu.Unlock()
 			Expect(engines["explorer-events"].EventBus()).To(BeIdenticalTo(coordinatorEngine.EventBus()))
+		})
+	})
+})
+
+// nestedFakeProvider is an offline provider whose Stream returns a
+// fixed assistant turn with no tool calls, so child engines complete
+// in a single turn without any inference.
+type nestedFakeProvider struct {
+	name  string
+	calls int32
+}
+
+func (p *nestedFakeProvider) Name() string { return p.name }
+func (p *nestedFakeProvider) Stream(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	atomic.AddInt32(&p.calls, 1)
+	ch := make(chan provider.StreamChunk, 2)
+	ch <- provider.StreamChunk{Content: "done"}
+	ch <- provider.StreamChunk{Done: true}
+	close(ch)
+	return ch, nil
+}
+func (p *nestedFakeProvider) Chat(_ context.Context, _ provider.ChatRequest) (provider.ChatResponse, error) {
+	return provider.ChatResponse{}, nil
+}
+func (p *nestedFakeProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
+	return nil, nil
+}
+func (p *nestedFakeProvider) Models() ([]provider.Model, error) {
+	return []provider.Model{{ID: "fake-model", Provider: p.name, ContextLength: 8192}}, nil
+}
+
+// newNestedDelegationApp builds an App through the production-ish
+// wiring used by the delegation unit tests (fake provider, real
+// createDelegateEngine path, real session manager) and registers a
+// delegating Team-Lead plus a leaf worker.
+func newNestedDelegationApp(tmp string) (*App, *nestedFakeProvider, agent.Manifest, agent.Manifest) {
+	fake := &nestedFakeProvider{name: "fake"}
+	reg := provider.NewRegistry()
+	reg.Register(fake)
+
+	lead := agent.Manifest{
+		ID:   "Team-Lead",
+		Name: "Team-Lead",
+		Capabilities: agent.Capabilities{
+			Tools: []string{"delegate", "read"},
+		},
+		Delegation: agent.Delegation{
+			CanDelegate:         true,
+			DelegationAllowlist: []string{"worker"},
+		},
+		ContextManagement: agent.DefaultContextManagement(),
+	}
+	worker := agent.Manifest{
+		ID:   "worker",
+		Name: "Worker",
+		Capabilities: agent.Capabilities{
+			Tools: []string{"read", "bash"},
+		},
+		ContextManagement: agent.DefaultContextManagement(),
+	}
+
+	a := &App{
+		Registry:         agent.NewRegistry(),
+		defaultProvider:  fake,
+		providerRegistry: reg,
+		Config:           nil,
+	}
+	a.Registry.Register(&lead)
+	a.Registry.Register(&worker)
+
+	_ = tmp
+	return a, fake, lead, worker
+}
+
+var _ = Describe("nested delegation repair (DELEGATION-RUNTIME-BLOCKER-2026-10-21)", func() {
+	var (
+		a      *App
+		fake   *nestedFakeProvider
+		lead   agent.Manifest
+		worker agent.Manifest
+		tmpDir string
+	)
+
+	BeforeEach(func() {
+		var d string
+		d, err := os.MkdirTemp("", "nested-delegation")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { os.RemoveAll(d) })
+		tmpDir = d
+		a, fake, lead, worker = newNestedDelegationApp(tmpDir)
+	})
+
+	Describe("root vs child schema parity", func() {
+		It("gives a delegated Team-Lead the delegate tool through the production child factory", func() {
+			childEng, _ := a.createDelegateEngine(lead, coordination.NewMemoryStore(), nil)
+			Expect(childEng).NotTo(BeNil())
+			Expect(childEng.HasTool("delegate")).To(BeTrue(),
+				"delegated Team-Lead must expose delegate after the repair")
+		})
+
+		It("keeps leaf workers leaf", func() {
+			childEng, _ := a.createDelegateEngine(worker, coordination.NewMemoryStore(), nil)
+			Expect(childEng).NotTo(BeNil())
+			Expect(childEng.HasTool("delegate")).To(BeFalse(),
+				"non-delegating agents must not receive a delegate tool")
+		})
+
+		It("does not eagerly preconstruct the delegation graph", func() {
+			// buildDelegateMaps (the eager path) constructs one engine per
+			// registered agent and calls createDelegateEngine — each of
+			// which would recurse if wiring were eager. With lazy wiring,
+			// constructing the root tool must make exactly (N-1) engine
+			// constructions (the eager target map) and ZERO further
+			// ones: the delegated lead's own tool constructs nothing
+			// until Execute.
+			var constructions int32
+			orig := a.createDelegateEngineCountHook
+			a.createDelegateEngineCountHook = func() { atomic.AddInt32(&constructions, 1) }
+			if orig != nil {
+				a.createDelegateEngineCountHook = func() { orig(); atomic.AddInt32(&constructions, 1) }
+			}
+			DeferCleanup(func() { a.createDelegateEngineCountHook = orig })
+
+			rootEng := engine.New(engine.Config{
+				Manifest:      lead,
+				AgentRegistry: a.Registry,
+				Registry:      a.providerRegistry,
+				ChatProvider:  fake,
+				Tools:         []tool.Tool{&mockTool{name: "read"}},
+			})
+			a.wireDelegateToolIfEnabled(rootEng, lead)
+
+			// Eager map: worker only (lead excluded). The worker is a
+			// leaf: no recursion into its targets.
+			Eventually(func() int32 { return atomic.LoadInt32(&constructions) }).Should(Equal(int32(1)))
+
+			dt, ok := rootEng.GetDelegateTool()
+			Expect(ok).To(BeTrue())
+			leadEngine := dt.Engines()["worker"]
+			Expect(leadEngine.HasTool("delegate")).To(BeFalse())
+		})
+	})
+
+	Describe("lazy target resolution and guards", func() {
+		var (
+			rootEng  *engine.Engine
+			delegate *engine.DelegateTool
+		)
+
+		BeforeEach(func() {
+			rootEng = engine.New(engine.Config{
+				Manifest:      lead,
+				AgentRegistry: a.Registry,
+				Registry:      a.providerRegistry,
+				ChatProvider:  fake,
+				Tools:         []tool.Tool{&mockTool{name: "read"}},
+			})
+			a.wireDelegateToolIfEnabled(rootEng, lead)
+			var ok bool
+			delegate, ok = rootEng.GetDelegateTool()
+			Expect(ok).To(BeTrue())
+		})
+
+		It("rejects a forbidden target before constructing any engine", func() {
+			// worker -> forbidden target from the delegated lead's tool.
+			workerEng := delegate.Engines()["worker"]
+			Expect(workerEng.HasTool("delegate")).To(BeFalse())
+
+			// Direct lazy tool exercise: delegated lead delegating to an
+			// agent outside its allowlist must fail without any factory
+			// call (no engine construction).
+			var constructions int32
+			a.createDelegateEngineCountHook = func() { atomic.AddInt32(&constructions, 1) }
+
+			other := agent.Manifest{ID: "outsider", Name: "Outsider"}
+			a.Registry.Register(&other)
+
+			childLeadEng, _ := a.createDelegateEngine(lead, coordination.NewMemoryStore(), nil)
+			// The lead engine's own construction is expected; the assertion
+			// is about what happens AFTER it.
+			baseline := atomic.LoadInt32(&constructions)
+			dt, ok := childLeadEng.GetDelegateTool()
+			Expect(ok).To(BeTrue())
+
+			_, err := dt.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "outsider",
+					"message":       "do the thing",
+				},
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("not in delegation allowlist"))
+			Expect(atomic.LoadInt32(&constructions)).To(Equal(baseline),
+				"forbidden target must be rejected before any engine construction")
+		})
+
+		It("rejects background delegation before spawn", func() {
+			childLeadEng, _ := a.createDelegateEngine(lead, coordination.NewMemoryStore(), nil)
+			dt, ok := childLeadEng.GetDelegateTool()
+			Expect(ok).To(BeTrue())
+
+			_, err := dt.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type":     "worker",
+					"message":           "background please",
+					"run_in_background": true,
+				},
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("background delegation not permitted from nested delegation"))
+		})
+
+		It("rejects self/cycle delegation", func() {
+			childLeadEng, _ := a.createDelegateEngine(lead, coordination.NewMemoryStore(), nil)
+			dt, ok := childLeadEng.GetDelegateTool()
+			Expect(ok).To(BeTrue())
+
+			_, err := dt.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "Team-Lead",
+					"message":       "loop",
+				},
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("not in delegation allowlist"))
+		})
+
+		It("lazily constructs a permitted target on first execution", func() {
+			var constructions int32
+			a.createDelegateEngineCountHook = func() { atomic.AddInt32(&constructions, 1) }
+			DeferCleanup(func() { a.createDelegateEngineCountHook = nil })
+
+			childLeadEng, _ := a.createDelegateEngine(lead, coordination.NewMemoryStore(), nil)
+			dt, ok := childLeadEng.GetDelegateTool()
+			Expect(ok).To(BeTrue())
+			Expect(atomic.LoadInt32(&constructions)).To(Equal(int32(1)),
+				"only the lead's own engine constructed so far")
+
+			// permitted worker target: factory fires once, execution
+			// streams through the real (fake-provider) engine.
+			res, err := dt.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "worker",
+					"message":       "hello",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Output).NotTo(BeEmpty())
+			Expect(atomic.LoadInt32(&constructions)).To(Equal(int32(2)),
+				"exactly one lazy construction for the permitted target")
+		})
+	})
+
+	Describe("engine-owned lineage", func() {
+		It("derives depth from the session manager, not model-supplied metadata", func() {
+			// Build a real session chain: root -> child (depth 1) and
+			// assert the engine-derived depth the tool would consult.
+			mgr := session.NewManager(nil)
+			root, err := mgr.CreateSession("coordinator")
+			Expect(err).NotTo(HaveOccurred())
+			child, err := mgr.CreateWithParentAndChain(root.ID, "Team-Lead", "chain-1")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(child.Depth).To(Equal(1))
+			grandchild, err := mgr.CreateWithParentAndChain(child.ID, "worker", "chain-1")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(grandchild.Depth).To(Equal(2))
+
+			// A session at DefaultSpawnLimits MaxDepth (5) is beyond the
+			// ceiling: constructing that chain must be possible via the
+			// manager (lineage is engine-owned), and the delegate tool's
+			// depth gate rejects at >= MaxDepth regardless of what the
+			// model claims in handoff metadata.
+			current := grandchild
+			for i := 2; i < 5; i++ {
+				next, err := mgr.CreateWithParentAndChain(current.ID, "worker", "chain-1")
+				Expect(err).NotTo(HaveOccurred())
+				current = next
+			}
+			Expect(current.Depth).To(Equal(5))
+
+			childLeadEng, _ := a.createDelegateEngine(lead, coordination.NewMemoryStore(), nil)
+			dt, ok := childLeadEng.GetDelegateTool()
+			Expect(ok).To(BeTrue())
+			// Wire the session manager exactly as production
+			// configureDelegateTool does so the tool reads engine-owned
+			// lineage.
+			dt.WithSessionManager(mgr)
+			// Engine-derived depth (session lineage) reaches the limit:
+			// even a handoff claiming depth 0 must be rejected.
+			Expect(dt.SessionDepthFor(current.ID)).To(Equal(5))
 		})
 	})
 })

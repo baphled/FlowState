@@ -132,6 +132,12 @@ type App struct {
 	// artifact-published honesty gate bounds its containment check by.
 	// Resolved once at boot alongside gateRunner.
 	planOutputDir string
+	// createDelegateEngineCountHook is a test-only hook invoked at the
+	// top of createDelegateEngine so tests can count engine
+	// constructions (e.g. proving lazy — not eager — delegation graph
+	// expansion). Nil in production; guard-free call because a nil
+	// func cannot be invoked.
+	createDelegateEngineCountHook func()
 	// compression is the shared compression wiring for both the root
 	// engine and every delegate engine. Retained on App so
 	// createDelegateEngine can reuse the same CompressionConfig, metrics,
@@ -2606,13 +2612,19 @@ func (a *App) wireSuggestDelegateToolIfDisabled(eng *engine.Engine, manifest age
 //
 // Returns:
 //   - An Engine instance configured for the target agent.
-//   - The engine does NOT have a delegate tool (prevents recursive delegation).
+//   - When the target manifest explicitly permits delegation
+//     (can_delegate true), the engine additionally carries a scoped
+//     DelegateTool with LAZY target resolution (wireScopedDelegateTool);
+//     leaves (can_delegate false) still get no delegate tool.
 //
 // Side effects:
 //   - Creates a new engine with the target's manifest, providers, and tools.
 func (a *App) createDelegateEngine(
 	manifest agent.Manifest, store coordination.Store, bus *eventbus.EventBus,
 ) (*engine.Engine, streaming.Streamer) {
+	if a.createDelegateEngineCountHook != nil {
+		a.createDelegateEngineCountHook()
+	}
 	delegateSkillDir, delegateLoadedSkills := a.resolveDelegateSkills(manifest)
 
 	var chainStore recall.ChainContextStore
@@ -2772,6 +2784,12 @@ func (a *App) createDelegateEngine(
 		// store instance would read a stale, never-refreshed in-memory map.
 		str = createHarnessStreamer(eng, a.Registry, a.Config.Harness, a.defaultProvider, store)
 	}
+	// Nested-delegation repair (DELEGATION-RUNTIME-BLOCKER-2026-10-21):
+	// a child whose manifest explicitly permits delegation gets a scoped
+	// DelegateTool through the LAZY target factory — never an eager
+	// wireDelegateToolIfEnabled call, which would recursively preconstruct
+	// the whole delegation graph via buildDelegateMaps. Leaves stay leaves.
+	a.wireScopedDelegateTool(eng, manifest, store, bus)
 	return eng, str
 }
 

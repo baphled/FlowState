@@ -33,7 +33,14 @@ func (d *DelegateTool) resolveStreamer(agentID string, eng *Engine) streaming.St
 
 // checkSpawnLimits validates that delegation respects configured depth and budget limits.
 //
+// Depth is ENGINE-OWNED, derived from the session manager's authoritative
+// ParentID lineage (session.IDKey{} on ctx) — never trusted from
+// model-supplied handoff metadata (DELEGATION-RUNTIME-BLOCKER-2026-10-21:
+// a model omitting or lying about handoff depth must not reset lineage).
+// Handoff depth is only used as a conservative floor (the larger of the two).
+//
 // Expected:
+//   - ctx may carry the owning session id via session.IDKey{}.
 //   - handoff may be nil or contain depth metadata.
 //
 // Returns:
@@ -41,15 +48,10 @@ func (d *DelegateTool) resolveStreamer(agentID string, eng *Engine) streaming.St
 //
 // Side effects:
 //   - None.
-func (d *DelegateTool) checkSpawnLimits(handoff *delegation.Handoff) error {
-	depth := 0
-	if handoff != nil && handoff.Metadata != nil {
-		if depthStr, ok := handoff.Metadata["depth"]; ok {
-			var depthVal int
-			if _, err := fmt.Sscanf(depthStr, "%d", &depthVal); err == nil {
-				depth = depthVal
-			}
-		}
+func (d *DelegateTool) checkSpawnLimits(ctx context.Context, handoff *delegation.Handoff) error {
+	depth := d.SessionDepthFor(sessionIDFromContext(ctx))
+	if handoffDepth, ok := handoffDepthMetadata(handoff); ok && handoffDepth > depth {
+		depth = handoffDepth
 	}
 
 	effectiveLimits := d.spawnLimits
@@ -136,7 +138,7 @@ func (d *DelegateTool) prepareExecution(
 	if err != nil {
 		return delegationParams{}, delegationTarget{}, err
 	}
-	if err := d.checkSpawnLimits(params.handoff); err != nil {
+	if err := d.checkSpawnLimits(ctx, params.handoff); err != nil {
 		return delegationParams{}, delegationTarget{}, err
 	}
 

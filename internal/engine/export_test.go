@@ -287,8 +287,8 @@ func (d *DelegateTool) DelegateTimeoutForTest() time.Duration {
 // CheckSpawnLimitsForTest exposes checkSpawnLimits so the depth-
 // resolution test can assert the manifest-aware ceiling without
 // driving Execute end-to-end.
-func (d *DelegateTool) CheckSpawnLimitsForTest(handoff *delegation.Handoff) error {
-	return d.checkSpawnLimits(handoff)
+func (d *DelegateTool) CheckSpawnLimitsForTest(ctx context.Context, handoff *delegation.Handoff) error {
+	return d.checkSpawnLimits(ctx, handoff)
 }
 
 // DispatchPostMemberGatesForTest exposes dispatchPostMemberGates so
