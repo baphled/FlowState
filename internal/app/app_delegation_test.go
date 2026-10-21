@@ -16,11 +16,13 @@ import (
 	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/coordination"
 
+	"github.com/baphled/flowstate/internal/delegation"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
+	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/tool"
 	todotool "github.com/baphled/flowstate/internal/tool/todo"
 )
@@ -1658,3 +1660,311 @@ var _ = Describe("nested delegation repair (DELEGATION-RUNTIME-BLOCKER-2026-10-2
 		})
 	})
 })
+
+// Qualification suite for the nested-delegation repair
+// (DELEGATION-RUNTIME-BLOCKER-2026-10-21). Complements the repair
+// suite in app_delegation_test.go: foreground chain completion with
+// real session parentage + lifecycle events, the remaining rejection
+// matrix BEFORE any spawn/model effect, cancellation reaching
+// descendants, and cross-session policy isolation.
+var _ = Describe("nested delegation repair qualification", func() {
+	var (
+		a      *App
+		fake   *nestedFakeProvider
+		lead   agent.Manifest
+		worker agent.Manifest
+	)
+
+	BeforeEach(func() {
+		tmpDir, err := os.MkdirTemp("", "nested-delegation-qual")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { os.RemoveAll(tmpDir) })
+		a, fake, lead, worker = newNestedDelegationApp(tmpDir)
+	})
+
+	// buildChildLeadTool builds a delegated Team-Lead through the
+	// production createDelegateEngine path, wiring the App's session
+	// manager and shared event bus exactly as the root wiring does so
+	// lifecycle events and engine-owned lineage behave as in prod.
+	buildChildLeadTool := func() (*engine.DelegateTool, *eventbus.EventBus, *session.Manager) {
+		bus := eventbus.NewEventBus()
+		rootEng := engine.New(engine.Config{
+			Manifest:      lead,
+			AgentRegistry: a.Registry,
+			Registry:      a.providerRegistry,
+			ChatProvider:  fake,
+			Tools:         []tool.Tool{&mockTool{name: "read"}},
+			EventBus:      bus,
+		})
+		a.Engine = rootEng
+		mgr := session.NewManager(nil)
+		a.sessionManager = mgr
+		childEng, _ := a.createDelegateEngine(lead, coordination.NewMemoryStore(), bus)
+		Expect(childEng).NotTo(BeNil())
+		dt, ok := childEng.GetDelegateTool()
+		Expect(ok).To(BeTrue())
+		return dt, bus, mgr
+	}
+
+	Describe("coordinator → delegated Team-Lead → worker foreground completion", func() {
+		It("completes with real session parentage and lifecycle events", func() {
+			dt, bus, mgr := buildChildLeadTool()
+
+			root, err := mgr.CreateSession("coordinator")
+			Expect(err).NotTo(HaveOccurred())
+			// The delegated lead's session, parented on the coordinator —
+			// the lineage executeSync establishes in production.
+			leadSession, err := mgr.CreateWithParentAndChain(root.ID, "Team-Lead", "chain-1")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(leadSession.Depth).To(Equal(1))
+
+			var startedCount, completedCount int
+			bus.Subscribe(engine.DelegationStartedEventNameForTest(), func(_ any) { startedCount++ })
+			bus.Subscribe(engine.DelegationCompletedEventNameForTest(), func(_ any) { completedCount++ })
+
+			ctx := context.WithValue(context.Background(), session.IDKey{}, leadSession.ID)
+			res, err := dt.Execute(ctx, tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "worker",
+					"message":       "qualify the chain",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Output).NotTo(BeEmpty())
+			Expect(atomic.LoadInt32(&fake.calls)).To(BeNumerically(">", 0),
+				"the foreground chain ran the child model")
+
+			// Lifecycle events on the shared bus.
+			Eventually(func() int { return startedCount }).Should(Equal(1),
+				"exactly one delegation.started lifecycle event")
+			Eventually(func() int { return completedCount }).Should(Equal(1),
+				"exactly one delegation.completed lifecycle event")
+
+			// Real session parentage: the worker's child session is
+			// parented under the delegated lead's session.
+			child := dt.LastChildSessionIDForTest()
+			Expect(child).NotTo(BeEmpty())
+			sess, err := mgr.GetSession(child)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(sess.ParentID).To(Equal(leadSession.ID),
+				"worker session must be parented on the delegated lead's session")
+			Expect(sess.Depth).To(Equal(2), "root(0) → delegated lead(1) → worker(2)")
+		})
+	})
+
+	Describe("rejection matrix fires before spawn/model effects", func() {
+		It("rejects can_delegate=false agents before any construction or inference", func() {
+			leaf := agent.Manifest{
+				ID:                "no-delegate-lead",
+				Name:              "NoDelegateLead",
+				Capabilities:      agent.Capabilities{Tools: []string{"read"}},
+				ContextManagement: agent.DefaultContextManagement(),
+			}
+			a.Registry.Register(&leaf)
+			childEng, _ := a.createDelegateEngine(leaf, coordination.NewMemoryStore(), nil)
+			Expect(childEng.HasTool("delegate")).To(BeFalse(),
+				"can_delegate=false must yield no delegate tool at all")
+
+			// Tool-level gate: a lazy tool whose config says
+			// CanDelegate=false must refuse BEFORE the factory is
+			// consulted (no spawn, no model call).
+			var factoryCalls int32
+			dt := engine.NewLazyDelegateTool(
+				func(id string) (*engine.Engine, streaming.Streamer, error) {
+					atomic.AddInt32(&factoryCalls, 1)
+					eng, str := a.createDelegateEngine(worker, coordination.NewMemoryStore(), nil)
+					return eng, str, nil
+				},
+				agent.Delegation{CanDelegate: false}, leaf.ID, nil,
+				coordination.NewMemoryStore(),
+			)
+			_, err := dt.Execute(context.Background(), tool.Input{
+				Name:      "delegate",
+				Arguments: map[string]interface{}{"subagent_type": "worker", "message": "x"},
+			})
+			Expect(err).To(MatchError(engine.ErrDelegationNotAllowedForTest()))
+			Expect(atomic.LoadInt32(&factoryCalls)).To(Equal(int32(0)),
+				"can_delegate=false rejection fires before any factory (spawn) call")
+			Expect(atomic.LoadInt32(&fake.calls)).To(Equal(int32(0)),
+				"no model inference may run for a rejected delegation")
+		})
+
+		It("rejects a target outside the delegating lead's allowlist before spawn", func() {
+			dt, _, _ := buildChildLeadTool()
+			other := agent.Manifest{ID: "chain-b-agent", Name: "ChainBAgent"}
+			a.Registry.Register(&other)
+
+			// The model fabricates a handoff claiming sanction from a
+			// different chain; the lazy gate must still apply THIS
+			// lead's allowlist (no cross-session policy borrowing).
+			_, err := dt.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "chain-b-agent",
+					"message":       "borrowed authority",
+					"handoff": map[string]interface{}{
+						"from_agent": "Team-Lead",
+						"metadata": map[string]interface{}{
+							"chain": "other-chain", "sanctioned": "true", "depth": "0",
+						},
+					},
+				},
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("not in delegation allowlist"))
+			Expect(atomic.LoadInt32(&fake.calls)).To(Equal(int32(0)),
+				"no model effect for policy-borrowing attempts")
+		})
+
+		It("rejects depth-exhausted delegation before spawn using engine-owned lineage", func() {
+			dt, _, mgr := buildChildLeadTool()
+
+			root, err := mgr.CreateSession("coordinator")
+			Expect(err).NotTo(HaveOccurred())
+			current := root
+			for i := 0; i < delegation.DefaultSpawnLimits().MaxDepth; i++ {
+				next, err := mgr.CreateWithParentAndChain(current.ID, "Team-Lead", "chain-1")
+				Expect(err).NotTo(HaveOccurred())
+				current = next
+			}
+			Expect(current.Depth).To(Equal(delegation.DefaultSpawnLimits().MaxDepth))
+
+			var factoryCalls int32
+			orig := a.createDelegateEngineCountHook
+			a.createDelegateEngineCountHook = func() { atomic.AddInt32(&factoryCalls, 1) }
+			DeferCleanup(func() { a.createDelegateEngineCountHook = orig })
+
+			ctx := context.WithValue(context.Background(), session.IDKey{}, current.ID)
+			_, err = dt.Execute(ctx, tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "worker",
+					"message":       "too deep",
+					// The model lies: engine-owned lineage must win.
+					"handoff": map[string]interface{}{
+						"metadata": map[string]interface{}{"depth": "0"},
+					},
+				},
+			})
+			Expect(err).To(MatchError(engine.ErrDepthLimitExceededForTest()))
+			Expect(atomic.LoadInt32(&factoryCalls)).To(Equal(int32(0)),
+				"depth rejection fires before any engine construction")
+			Expect(atomic.LoadInt32(&fake.calls)).To(Equal(int32(0)))
+		})
+
+		It("rejects budget-exhausted delegation before spawn", func() {
+			dt, _, _ := buildChildLeadTool()
+			dt.WithSpawnLimits(delegation.SpawnLimits{
+				MaxDepth: 5, MaxConcurrentPerSession: 1, MaxTotalBudget: 1,
+				StaleTimeout: time.Minute,
+			})
+			// Saturate a manager with one pending task so the tool's
+			// budget gate (ActiveCount >= MaxTotalBudget=1) rejects.
+			busy := engine.NewBackgroundTaskManager()
+			busy.Launch(context.Background(), "occupied", "worker", "busy", func(context.Context) (string, error) {
+				time.Sleep(2 * time.Minute)
+				return "", nil
+			})
+			dt.WithBackgroundManagerForTest(busy)
+
+			var factoryCalls int32
+			orig := a.createDelegateEngineCountHook
+			a.createDelegateEngineCountHook = func() { atomic.AddInt32(&factoryCalls, 1) }
+			DeferCleanup(func() { a.createDelegateEngineCountHook = orig })
+
+			_, err := dt.Execute(context.Background(), tool.Input{
+				Name:      "delegate",
+				Arguments: map[string]interface{}{"subagent_type": "worker", "message": "x"},
+			})
+			Expect(err).To(MatchError(engine.ErrBudgetLimitExceededForTest()))
+			Expect(atomic.LoadInt32(&factoryCalls)).To(Equal(int32(0)))
+		})
+	})
+
+	Describe("cancellation reaches descendants", func() {
+		It("propagates parent context cancellation into the child engine run", func() {
+			blocker := &blockingProvider{name: "blocker"}
+			a.providerRegistry.Register(blocker)
+			a.defaultProvider = blocker
+
+			bus := eventbus.NewEventBus()
+			rootEng := engine.New(engine.Config{
+				Manifest:      lead,
+				AgentRegistry: a.Registry,
+				Registry:      a.providerRegistry,
+				ChatProvider:  blocker,
+				Tools:         []tool.Tool{&mockTool{name: "read"}},
+				EventBus:      bus,
+			})
+			a.Engine = rootEng
+			mgr := session.NewManager(nil)
+			a.sessionManager = mgr
+			childEng, _ := a.createDelegateEngine(lead, coordination.NewMemoryStore(), bus)
+			dt, ok := childEng.GetDelegateTool()
+			Expect(ok).To(BeTrue())
+
+			root, err := mgr.CreateSession("coordinator")
+			Expect(err).NotTo(HaveOccurred())
+			leadSession, err := mgr.CreateWithParentAndChain(root.ID, "Team-Lead", "chain-1")
+			Expect(err).NotTo(HaveOccurred())
+
+			ctx, cancel := context.WithCancel(
+				context.WithValue(context.Background(), session.IDKey{}, leadSession.ID))
+			done := make(chan error, 1)
+			go func() {
+				_, execErr := dt.Execute(ctx, tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"subagent_type": "worker", "message": "block",
+					},
+				})
+				done <- execErr
+			}()
+
+			Eventually(blocker.Started, 10*time.Second, 50*time.Millisecond).
+				Should(BeTrue(), "child engine must reach the provider")
+			cancel()
+			select {
+			case execErr := <-done:
+				Expect(execErr).To(HaveOccurred(),
+					"cancelled delegation must surface an error")
+				Expect(execErr.Error()).To(SatisfyAny(
+					ContainSubstring("context canceled"),
+					ContainSubstring("context deadline"),
+				))
+			case <-time.After(15 * time.Second):
+				Fail("delegation did not observe parent cancellation within 15s")
+			}
+		})
+	})
+})
+
+// blockingProvider blocks in Stream until the request context is
+// cancelled, proving parent cancellation reaches descendant engines.
+type blockingProvider struct {
+	name    string
+	started int32
+}
+
+func (p *blockingProvider) Name() string { return p.name }
+
+func (p *blockingProvider) Stream(ctx context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	atomic.AddInt32(&p.started, 1)
+	ch := make(chan provider.StreamChunk)
+	go func() {
+		<-ctx.Done()
+		close(ch)
+	}()
+	return ch, nil
+}
+func (p *blockingProvider) Chat(context.Context, provider.ChatRequest) (provider.ChatResponse, error) {
+	return provider.ChatResponse{}, nil
+}
+func (p *blockingProvider) Embed(context.Context, provider.EmbedRequest) ([]float64, error) {
+	return nil, nil
+}
+func (p *blockingProvider) Models() ([]provider.Model, error) { return nil, nil }
+
+// Started reports whether the provider has been entered.
+func (p *blockingProvider) Started() bool { return atomic.LoadInt32(&p.started) > 0 }

@@ -244,6 +244,9 @@ func (d *DelegateTool) publishNotification(typ string, data events.DelegationEve
 //
 // Returns: result of publishDelegationEvent.
 func (d *DelegateTool) publishDelegationEvent(status string, data events.DelegationEventData) {
+	if status == "started" {
+		d.lastChildSessionID = data.ChildSessionID
+	}
 	if d.eventBus == nil {
 		return
 	}

@@ -109,6 +109,12 @@ type DelegateTool struct {
 	streamers          map[string]streaming.Streamer
 	rejectionTracker   *delegation.RejectionTracker
 	targetFactory      DelegateTargetFactory
+	// lastChildSessionID is the child session id from the most recent
+	// delegation.started publish. Test-only surface
+	// (LastChildSessionIDForTest); production readers use the bus event.
+	// Written only from publishDelegationEvent (single event goroutine
+	// per delegation), read by tests post-Execute.
+	lastChildSessionID string
 	// failoverManager is the app-level failover manager consulted when
 	// resolving a child's model chain: a strict manifest whose head has
 	// tripped the hard-down breaker gets the healthy global chain

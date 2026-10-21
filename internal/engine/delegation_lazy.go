@@ -192,5 +192,3 @@ func handoffDepthMetadata(handoff *delegation.Handoff) (int, bool) {
 	}
 	return depthVal, true
 }
-
-
