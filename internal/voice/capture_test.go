@@ -15,13 +15,13 @@ func fakeCaptureScript(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	script := filepath.Join(dir, "fake-capture")
-	// Emit 44-byte header + 2 bytes of silence. The header is written
-	// via printf %b escapes so the payload survives /bin/sh printf
-	// implementations that treat \xNN in the format string differently
-	// (dash printf emits literal "\x24" bytes, corrupting the RIFF
-	// header and failing the WAV validation below on ubuntu CI).
+	// Emit 44-byte header + 2 bytes of silence. The payload uses
+	// POSIX-mandated OCTAL \NNN escapes under printf '%b' so every
+	// /bin/sh (dash on ubuntu CI, bash elsewhere) expands it to the
+	// same bytes; dash does not honour \xNN escapes in %b, which
+	// corrupted the RIFF header and failed WAV validation in CI.
 	body := "#!/bin/sh\n# usage: fake-capture <file>\n"
-	body += "printf '%b' '\\x52\\x49\\x46\\x46\\x24\\x00\\x00\\x00\\x57\\x41\\x56\\x45\\x66\\x6d\\x74\\x20\\x10\\x00\\x00\\x00\\x01\\x00\\x01\\x00\\x80\\x3e\\x00\\x00\\x80\\x3e\\x00\\x00\\x02\\x00\\x10\\x00\\x64\\x61\\x74\\x61\\x02\\x00\\x00\\x00\\x00\\x00' > \"$1\"\n"
+	body += "printf '%b' '\\122\\111\\106\\106\\044\\000\\000\\000\\127\\101\\126\\105\\146\\155\\164\\040\\020\\000\\000\\000\\001\\000\\001\\000\\200\\076\\000\\000\\200\\076\\000\\000\\002\\000\\020\\000\\144\\141\\164\\141\\002\\000\\000\\000\\000\\000' > \"$1\"\n"
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatalf("write fake capture: %v", err)
 	}
