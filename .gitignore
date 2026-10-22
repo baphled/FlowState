@@ -45,3 +45,6 @@ debug.log
 # Test artifacts
 test-results/
 *.log
+
+# Build artifacts (fresh harness)
+build/
