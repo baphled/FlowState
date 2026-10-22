@@ -42,7 +42,15 @@ var (
 	errAgentNotInAllowlist      = errors.New("agent not in delegation allowlist")
 	errMaxRejectionsExhausted   = errors.New("max rejections exhausted: plan reviewer rejected too many times")
 	errModelNotToolCapable      = errors.New("delegate refused: target model not in tool-capable allowlist")
+	errBackgroundNestedRejected = errors.New("background delegation rejected: nested (delegated) sessions may only delegate in the foreground")
 )
+
+// parseRunAsyncFlag extracts the boolean run_in_background argument
+// without a full params parse, for pre-spawn gates.
+func parseRunAsyncFlag(input tool.Input) bool {
+	v, _ := input.Arguments["run_in_background"].(bool)
+	return v
+}
 
 const maxDelegationFailures = 3
 
@@ -90,9 +98,23 @@ func streamOutputFromContext(ctx context.Context) (chan<- provider.StreamChunk, 
 
 // DelegateTool enables an engine to delegate tasks to other agents.
 type DelegateTool struct {
-	engines            map[string]*Engine
-	delegation         agent.Delegation
-	sourceAgentID      string
+	engines map[string]*Engine
+	// engineFactory lazily resolves a target engine on first use
+	// (Nested-Delegation Repair, Oct 2026). When set, lookupEngineByID
+	// consults it instead of (or after) the static engines map, so child
+	// engines need NOT be eagerly constructed at wiring time — closing
+	// the recursive buildDelegateMaps→createDelegateEngine→wire… loop
+	// that made eager nested wiring exponential. The factory is invoked
+	// at most once per agent ID and its result memoised into engines.
+	engineFactory func(agentID string) (*Engine, bool)
+	delegation    agent.Delegation
+	sourceAgentID string
+	// ctx / ctxMu hold the in-flight Execute call's context so
+	// engine-owned lineage helpers (currentDepth, ctxLineage) can read
+	// the context-scoped delegation lineage without threading ctx
+	// through every legacy helper signature.
+	ctx                context.Context
+	ctxMu              sync.RWMutex
 	backgroundManager  *BackgroundTaskManager
 	coordinationStore  coordination.Store
 	embeddingDiscovery *discovery.EmbeddingDiscovery
@@ -634,6 +656,23 @@ func (d *DelegateTool) Execute(ctx context.Context, input tool.Input) (tool.Resu
 		return tool.Result{}, gateErr
 	}
 
+	// Nested background rejection (Nested-Delegation Repair, Oct 2026):
+	// a turn that is ITSELF a delegated child must never spawn detached
+	// background work — the async path carries neither gates nor
+	// lifecycle flush and detaches from the parent's cancellation.
+	// Rejected BEFORE target resolution, spawn and any model call, on
+	// every path (this gate runs ahead of both the swarm-target and
+	// agent-target branches). Foreground nested delegation remains the
+	// only sanctioned nesting mode.
+	d.ctxMu.Lock()
+	d.ctx = ctx
+	d.ctxMu.Unlock()
+	if paramsAsync := parseRunAsyncFlag(input); paramsAsync {
+		if _, nested := lineageFromContext(ctx); nested {
+			return tool.Result{}, errBackgroundNestedRejected
+		}
+	}
+
 	if result, handled, dispErr := d.tryDispatchSwarmTarget(ctx, input); handled {
 		return result, dispErr
 	}
@@ -770,20 +809,16 @@ func (d *DelegateTool) preFlightSharedGates(input tool.Input) error {
 	if !d.delegation.CanDelegate {
 		return errDelegationNotAllowed
 	}
-	// The handoff parse is needed only for depth extraction. Mirror
-	// parseDelegationParams's narrow handoff-only path: skip the full
-	// params parse so swarm-target callers (which deliberately don't
-	// parse handoff fields, per tryDispatchSwarmTarget's documented
-	// contract) don't surface a routing-required error from this helper.
-	var handoff *delegation.Handoff
+	// The handoff parse is kept only to surface malformed-handoff
+	// errors early (same failure shape both dispatch branches).
+	// Depth authority is engine-owned lineage — never the parsed
+	// metadata (Nested-Delegation Repair, Oct 2026).
 	if raw, ok := input.Arguments["handoff"]; ok && raw != nil {
-		h, parseErr := d.parseHandoff(raw)
-		if parseErr != nil {
+		if _, parseErr := d.parseHandoff(raw); parseErr != nil {
 			return fmt.Errorf("parsing handoff: %w", parseErr)
 		}
-		handoff = h
 	}
-	return d.checkSpawnLimits(handoff)
+	return d.checkSpawnLimits(nil)
 }
 
 // buildDelegationInfo assembles the provider.DelegationInfo emitted on

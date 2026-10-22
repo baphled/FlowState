@@ -42,15 +42,14 @@ func (d *DelegateTool) resolveStreamer(agentID string, eng *Engine) streaming.St
 // Side effects:
 //   - None.
 func (d *DelegateTool) checkSpawnLimits(handoff *delegation.Handoff) error {
-	depth := 0
-	if handoff != nil && handoff.Metadata != nil {
-		if depthStr, ok := handoff.Metadata["depth"]; ok {
-			var depthVal int
-			if _, err := fmt.Sscanf(depthStr, "%d", &depthVal); err == nil {
-				depth = depthVal
-			}
-		}
-	}
+	// Engine-owned lineage depth (Nested-Delegation Repair, Oct 2026):
+	// the handoff parameter is retained for signature compatibility but
+	// is deliberately NOT consulted — a model can forge or omit its
+	// metadata, so depth authority moved to the context-scoped lineage
+	// stamped by each delegate hop (WithDelegationLineage). Root turns
+	// (no lineage) are depth 0. Never trust model-supplied depth.
+	_ = handoff
+	depth := d.currentDepth()
 
 	effectiveLimits := d.spawnLimits
 	if maxDepth := d.swarmAwareMaxDepth(); maxDepth > 0 {
@@ -68,6 +67,22 @@ func (d *DelegateTool) checkSpawnLimits(handoff *delegation.Handoff) error {
 	}
 
 	return nil
+}
+
+// currentDepth returns the engine-owned delegation depth for the
+// in-flight Execute call (stored from prepareExecution's ctx).
+// Returns 0 for a root turn.
+func (d *DelegateTool) currentDepth() int {
+	d.ctxMu.RLock()
+	defer d.ctxMu.RUnlock()
+	return engineOwnedDepth(d.ctx)
+}
+
+// ctxLineage returns the engine-owned lineage of the in-flight call, if any.
+func (d *DelegateTool) ctxLineage() (*delegationLineage, bool) {
+	d.ctxMu.RLock()
+	defer d.ctxMu.RUnlock()
+	return lineageFromContext(d.ctx)
 }
 
 // swarmAwareMaxDepth returns the manifest-resolved depth ceiling for
@@ -125,6 +140,7 @@ func (d *DelegateTool) swarmAwareMaxDepth() int {
 func (d *DelegateTool) prepareExecution(
 	ctx context.Context, input tool.Input,
 ) (delegationParams, delegationTarget, error) {
+	d.ctx = ctx
 	if !d.circuitBreaker.Allow() {
 		return delegationParams{}, delegationTarget{}, errCircuitBreakerOpen
 	}
@@ -366,6 +382,16 @@ func (d *DelegateTool) resolveTargetWithOptions(ctx context.Context, params dele
 	if err := checkDelegationCycle(d.sourceAgentID, targetAgentID, params.handoff); err != nil {
 		return delegationTarget{}, err
 	}
+	// Engine-owned cycle check (Nested-Delegation Repair, Oct 2026):
+	// authoritative supplement to the handoff-metadata check above. The
+	// lineage lives in the context chain stamped by each delegate hop,
+	// so a model cannot reset or forge the visited set.
+	if lin, ok := d.ctxLineage(); ok {
+		if err := engineOwnedCycleCheck(d.ctx, d.sourceAgentID, targetAgentID); err != nil {
+			return delegationTarget{}, err
+		}
+		_ = lin
+	}
 
 	callerChainID := params.chainID
 	if callerChainID == "" && params.handoff != nil {
@@ -533,6 +559,20 @@ func (d *DelegateTool) parseHandoff(handoffArg interface{}) (*delegation.Handoff
 func (d *DelegateTool) lookupEngineByID(agentID string) (string, *Engine, bool) {
 	if eng, ok := d.engines[agentID]; ok && eng != nil {
 		return agentID, eng, true
+	}
+	// Lazy resolution (Nested-Delegation Repair, Oct 2026): consult the
+	// engine factory only on a static-map miss. The factory memoises its
+	// own construction; storing the result back into d.engines keeps
+	// subsequent lookups O(1) and preserves the existing resolution
+	// semantics for case-insensitive matching below.
+	if d.engineFactory != nil {
+		if eng, ok := d.engineFactory(agentID); ok && eng != nil {
+			if d.engines == nil {
+				d.engines = make(map[string]*Engine)
+			}
+			d.engines[agentID] = eng
+			return agentID, eng, true
+		}
 	}
 	for id, eng := range d.engines {
 		if eng == nil {
