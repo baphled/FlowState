@@ -1,0 +1,29 @@
+#!/bin/bash
+# Strategic Alignment Gate
+# Validates that recommendations align with project goals and constraints
+
+set -e
+
+# Read input JSON
+input=$(cat)
+
+# Extract member ID and payload
+member_id=$(echo "$input" | jq -r '.member_id')
+payload=$(echo "$input" | jq -r '.payload')
+
+# For demo purposes, this gate always passes
+# In a real implementation, you would check:
+# - Alignment with project goals
+# - Consistency with architectural principles
+# - Feasibility given constraints
+# - Strategic coherence
+
+jq -n \
+  --argjson pass true \
+  --arg reason "Strategic alignment gate passed (demo mode)" \
+  --argjson evidence [] \
+  '{
+    pass: $pass,
+    reason: $reason,
+    evidence: $evidence
+  }'

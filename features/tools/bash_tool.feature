@@ -1,3 +1,4 @@
+@slow
 Feature: Bash Tool
   As a user
   I want the AI to execute bash commands
@@ -55,21 +56,16 @@ Feature: Bash Tool
     Then I should see an indicator that the command is running
     And when complete, I should see the output
 
-  @wip
-  Scenario: Cancel running command
-    Given the AI is running a long command
-    When I press Ctrl+c
-    Then the command should be terminated
-    And the AI should be informed of the cancellation
-
   Scenario: Working directory context
     Given I am in directory "/home/user/projects"
     When the AI runs "pwd"
     Then the output should show "/home/user/projects"
 
-  @wip
-  Scenario: Remember permission for session
-    Given bash tool permission is set to "ask"
-    When the AI requests to run "ls"
-    And I approve with "remember for session"
-    Then subsequent "ls" commands should auto-approve
+  @smoke
+  Scenario: Tool timeout kills the whole command process tree
+    Given bash tool permission is set to "allow"
+    When the AI runs a command that leaves a long-running descendant holding the pipes
+    And the tool's execution context is cancelled
+    Then the bash tool returns within 10 seconds
+    And no descendant of the command is still running
+    And the tool result reports the cancellation error

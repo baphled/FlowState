@@ -1,0 +1,10 @@
+name: quorum-gate
+description: >
+  Validates that all five analyst positions are present in the payload and that
+  the bull and bear decisions genuinely diverge. Returns pass:false with a
+  specific reason if any analyst is missing or if bull and bear both recommend
+  the same outcome (collapsed adversarial review).
+version: "0.1.0"
+exec: ./gate.py
+timeout: 5s
+policy: {}

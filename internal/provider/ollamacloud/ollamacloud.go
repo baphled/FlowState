@@ -1,0 +1,304 @@
+// Package ollamacloud provides an Ollama Cloud provider implementation.
+//
+// Ollama Cloud exposes an OpenAI-compatible API at https://ollama.com/api.
+// This provider uses the openaicompat shared layer so it benefits from the
+// same streaming, tool-call, and error-classification infrastructure as the
+// other OpenAI-compatible providers (OpenAI, OpenZen, Z.AI).
+//
+// Configuration is read from config.yaml under providers.ollamacloud or the
+// OLLAMA_CLOUD_API_KEY environment variable. An optional base_url override
+// is supported for testing or custom endpoints.
+package ollamacloud
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+
+	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/provider/openaicompat"
+	"github.com/baphled/flowstate/internal/provider/shared"
+	openaiAPI "github.com/openai/openai-go"
+	"github.com/openai/openai-go/option"
+)
+
+const (
+	providerName         = "ollamacloud"
+	defaultBaseURL       = "https://ollama.com/api"
+	defaultContextLength = 131072
+	// defaultOutputLimit is the conservative per-model output budget the
+	// registry advertises for Ollama Cloud entries. The hosted models
+	// vary widely; 4096 matches the smallest plausible non-empty
+	// response. Slice 1 of the Phase-4 follow-ups added the field so
+	// the engine's overflow gate can size its output reserve per-model.
+	defaultOutputLimit = 4096
+	defaultEmbedModel  = "text-embedding-3-small"
+)
+
+var errAPIKeyRequired = errors.New("ollama Cloud API key is required")
+
+// streamGuardHeaderTimeout is the time-to-first-byte (response-header) ceiling
+// applied to the Ollama Cloud client via shared.StreamGuardHTTPClient. Ollama
+// Cloud is served through the openai-go SDK, which passes NO per-attempt
+// request timeout — so without this a flapping endpoint that never responds
+// hangs the caller indefinitely. It does NOT cap total stream duration.
+// Overridable in tests via SetStreamGuardHeaderTimeoutForTest (export_test.go).
+var streamGuardHeaderTimeout = shared.DefaultResponseHeaderTimeout
+
+// Provider implements the provider.Provider interface for Ollama Cloud.
+type Provider struct {
+	client openaiAPI.Client
+
+	// responseObserver — see openai.Provider.responseObserver (PR3
+	// success-path lift; live-key smoke test in quota_live_test.go
+	// confirms the Ollama Cloud proxy actually emits the headers).
+	responseObserver func(http.Header)
+}
+
+// SetResponseObserver — see openai.Provider.SetResponseObserver.
+//
+// Expected: parameters for SetResponseObserver.
+// Returns: result of SetResponseObserver.
+// Side effects: None.
+func (p *Provider) SetResponseObserver(fn func(http.Header)) {
+	p.responseObserver = fn
+}
+
+// notifyResponseObserver — see openai.Provider.notifyResponseObserver.
+//
+// Expected: parameters for notifyResponseObserver.
+// Returns: result of notifyResponseObserver.
+// Side effects: None.
+func (p *Provider) notifyResponseObserver(raw *http.Response) {
+	if p.responseObserver == nil || raw == nil {
+		return
+	}
+	p.responseObserver(raw.Header)
+}
+
+// New creates a new Ollama Cloud provider with the given API key.
+//
+// Expected:
+//   - apiKey is a valid Ollama Cloud API key.
+//
+// Returns:
+//   - A configured Provider on success.
+//   - An error if the API key is empty.
+//
+// Side effects:
+//   - None.
+func New(apiKey string) (*Provider, error) {
+	return NewWithOptions(apiKey, option.WithBaseURL(defaultBaseURL))
+}
+
+// NewWithOptions creates a new Ollama Cloud provider with custom request options.
+//
+// Expected:
+//   - apiKey is a valid Ollama Cloud API key.
+//   - opts is a variadic list of request options for the client.
+//
+// Returns:
+//   - A configured Provider on success.
+//   - An error if the API key is empty.
+//
+// Side effects:
+//   - None.
+func NewWithOptions(apiKey string, opts ...option.RequestOption) (*Provider, error) {
+	if apiKey == "" {
+		return nil, errAPIKeyRequired
+	}
+
+	allOpts := append([]option.RequestOption{
+		option.WithAPIKey(apiKey),
+		option.WithBaseURL(defaultBaseURL),
+		// Stream-guard client first so caller opts (and tests passing
+		// their own WithHTTPClient) override it.
+		option.WithHTTPClient(shared.StreamGuardHTTPClient(streamGuardHeaderTimeout)),
+	}, opts...)
+	client := openaiAPI.NewClient(allOpts...)
+	return &Provider{client: client}, nil
+}
+
+// NewFromConfig creates a new Ollama Cloud provider from configuration.
+//
+// Expected:
+//   - apiKey is the API key from config.yaml or the OLLAMA_CLOUD_API_KEY env var.
+//   - baseURL is an optional override for the API endpoint; empty uses the default.
+//
+// Returns:
+//   - A configured Provider on success.
+//   - errAPIKeyRequired when apiKey is empty.
+//
+// Side effects:
+//   - None.
+func NewFromConfig(apiKey, baseURL string) (*Provider, error) {
+	if apiKey == "" {
+		return nil, errAPIKeyRequired
+	}
+	if baseURL == "" {
+		baseURL = defaultBaseURL
+	}
+	return NewWithOptions(apiKey, option.WithBaseURL(baseURL))
+}
+
+// Name returns the provider name.
+//
+// Returns:
+//   - The string "ollamacloud".
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for Name.
+func (p *Provider) Name() string {
+	return providerName
+}
+
+// Stream sends a streaming chat request to the Ollama Cloud API.
+//
+// Expected:
+//   - ctx is a valid context for the API call.
+//   - req contains the messages, model, and optional tools to use.
+//
+// Returns:
+//   - A channel of StreamChunk values containing the streamed response.
+//   - An error if the request cannot be initiated.
+//
+// Side effects:
+//   - Spawns a goroutine to read from the Ollama Cloud streaming API.
+func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	params := openaicompat.BuildParams(req)
+	// PR3 success-path lift — observer is nil-safe.
+	return openaicompat.RunStreamWithObserver(ctx, p.client, params, p.Name(), p.responseObserver), nil
+}
+
+// Chat sends a non-streaming chat request to the Ollama Cloud API.
+//
+// Expected:
+//   - ctx is a valid context for the API call.
+//   - req contains the messages and model to use.
+//
+// Returns:
+//   - A ChatResponse with the assistant's reply and token usage.
+//   - An error if the API call fails or no choices are returned.
+//
+// Side effects:
+//   - Makes an HTTP request to the Ollama Cloud API.
+func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
+	params := openaicompat.BuildParams(req)
+
+	// PR3 success-path lift — see openai.Provider.Chat.
+	var rawResp *http.Response
+	var chatOpts []option.RequestOption
+	if p.responseObserver != nil {
+		chatOpts = append(chatOpts, option.WithResponseInto(&rawResp))
+	}
+
+	resp, err := p.client.Chat.Completions.New(ctx, params, chatOpts...)
+	if err != nil {
+		return provider.ChatResponse{}, openaicompat.WrapChatError(p.Name(), err)
+	}
+	p.notifyResponseObserver(rawResp)
+	return openaicompat.ParseChatResponse(resp)
+}
+
+// Embed generates embeddings for the given input text via the Ollama Cloud API.
+//
+// Expected:
+//   - ctx is a valid context for the API call.
+//   - req contains the input text and optional model override.
+//
+// Returns:
+//   - A float64 slice containing the embedding vector.
+//   - An error if the API call fails or no embeddings are returned.
+//
+// Side effects:
+//   - Makes an HTTP request to the Ollama Cloud embeddings API.
+func (p *Provider) Embed(ctx context.Context, req provider.EmbedRequest) ([]float64, error) {
+	model := req.Model
+	if model == "" {
+		model = defaultEmbedModel
+	}
+
+	resp, err := p.client.Embeddings.New(ctx, openaiAPI.EmbeddingNewParams{
+		Model: model,
+		Input: openaiAPI.EmbeddingNewParamsInputUnion{
+			OfString: openaiAPI.String(req.Input),
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ollamacloud embed failed: %w", err)
+	}
+
+	if len(resp.Data) == 0 {
+		return nil, errors.New("no embeddings returned")
+	}
+
+	return resp.Data[0].Embedding, nil
+}
+
+// Models returns the list of available Ollama Cloud models.
+//
+// Returns:
+//   - A slice of supported Ollama Cloud model definitions.
+//   - A hardcoded fallback list if the API call fails.
+//
+// Side effects:
+//   - Makes an HTTP request to the Ollama Cloud models API.
+//
+// Expected: parameters for Models.
+func (p *Provider) Models() ([]provider.Model, error) {
+	models, err := p.fetchModels()
+	if err == nil {
+		return models, nil
+	}
+	return fallbackModels(), nil
+}
+
+// fetchModels retrieves the available model list from the Ollama Cloud API.
+//
+// Returns:
+//   - ([]provider.Model, nil) on success.
+//   - (nil, error) if the API call fails.
+//
+// Side effects:
+//   - Makes an HTTP request to the provider's Models API.
+//
+// Expected: parameters for fetchModels.
+func (p *Provider) fetchModels() ([]provider.Model, error) {
+	ctx := context.Background()
+	modelsPage, err := p.client.Models.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing %s models: %w", providerName, err)
+	}
+
+	models := make([]provider.Model, 0, len(modelsPage.Data))
+	for i := range modelsPage.Data {
+		models = append(models, provider.Model{
+			ID:            modelsPage.Data[i].ID,
+			Provider:      providerName,
+			ContextLength: defaultContextLength,
+			OutputLimit:   defaultOutputLimit,
+		})
+	}
+
+	return models, nil
+}
+
+// fallbackModels returns a hardcoded list of known Ollama Cloud models.
+//
+// Returns:
+//   - A slice of commonly available Ollama Cloud models.
+//
+// Side effects:
+//   - None.
+func fallbackModels() []provider.Model {
+	return []provider.Model{
+		{ID: "llama3.3:70b", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
+		{ID: "llama3.2:latest", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
+		{ID: "qwen2.5:72b", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
+		{ID: "mistral:latest", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
+		{ID: "phi3:latest", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
+	}
+}

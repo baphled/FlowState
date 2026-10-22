@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -e
+
+echo "Running make check before commit..."
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+# Filesystem pollution guard: block untracked stray reports/notes/
+# scratch JSON/MD files at the repo root. The policy (pattern list,
+# repo-root scoping, exemptions) lives in ONE place — the exported Go
+# swarm.PreCommitPollutionCheck — and this hook invokes it via the
+# hidden `flowstate precommit-pollution` subcommand. The previous
+# inline shell reimplementation had diverged (e.g. exempting
+# *.feature files the Go policy does not).
+if command -v flowstate >/dev/null 2>&1; then
+  flowstate precommit-pollution --repo-root "$REPO_ROOT"
+else
+  # Development fallback: run from the module so the same shared
+  # policy is applied before `flowstate` is installed on PATH.
+  (cd "$REPO_ROOT" && go run ./cmd/flowstate precommit-pollution --repo-root "$REPO_ROOT")
+fi
+
+if make -C "$REPO_ROOT" check; then
+    echo "make check passed — proceeding with commit"
+else
+    echo "make check FAILED — commit blocked. Fix issues above and retry."
+    exit 1
+fi

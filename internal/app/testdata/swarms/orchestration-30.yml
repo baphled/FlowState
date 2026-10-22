@@ -1,0 +1,8 @@
+schema_version: "1.0.0"
+id: orchestration-30
+description: orchestration swarm pinned to depth 30 for app-wiring test
+lead: orch-lead
+swarm_type: orchestration
+max_depth: 30
+members:
+  - orch-worker

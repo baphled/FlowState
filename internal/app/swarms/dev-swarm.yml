@@ -1,0 +1,147 @@
+schema_version: "1.0.0"
+id: dev-swarm
+description: >
+  Full-lifecycle development swarm. The Team-Lead receives a delivery
+  brief (feature, bug, refactor, review), assembles the squad required
+  for the SDLC stage in scope, and routes through Tech-Lead for task
+  decomposition, the engineer-swarm sub-swarm for implementation
+  (Senior-Engineer leads Mid/Junior through TDD cycles with
+  Principal-Engineer standards gating and QA adversarial verification),
+  Code-Reviewer / Security-Engineer / Performance-Engineer / Writer /
+  DevOps as triggered by the change surface. Researcher precedes any
+  work entering unknown territory; Knowledge-Base-Curator records
+  lasting decisions after merge readiness is declared.
+
+  The swarm honours FlowState's BDD-first discipline (acceptance
+  scenarios before code), the App → Intents → UIKit dependency
+  hierarchy, `make ai-commit` for every commit, and the worktree
+  safety rules that protect `main` and `next`. Quality gates fire on
+  the canonical sign-off points so a malformed verdict halts the
+  swarm with a GateError instead of cascading into a false merge-ready
+  declaration. See `~/vaults/baphled/3. Resources/Knowledge Base/AI
+  Development System/Swarms/Dev Swarm.md` for the full SDLC flow,
+  per-stage responsibilities, gate semantics, and the flexibility
+  rules that govern when specialists may be skipped.
+
+lead: Team-Lead
+
+# Auto-dispatch this swarm when the user invokes `@Team-Lead` by name.
+# Without this, `@Team-Lead` resolves to KindAgent and the Team-Lead
+# runs solo — the regression on session b62472a2 (184 messages, 173
+# bash calls, zero delegate calls) is the canonical evidence. See
+# internal/swarm/registry.go::AutoDispatchSwarmFor.
+auto_dispatch_on_lead: true
+
+# Explicit roster — agent ids and sub-swarm ids. Order is
+# dispatch-irrelevant (Team-Lead delegates dynamically); the roster
+# is the delegation allowlist for the run.
+#
+# engineer-swarm replaces the flat Senior/Mid/Junior entries with a
+# composed sub-swarm. Team-Lead delegates "implementation" as a
+# single unit; Senior-Engineer orchestrates the TDD hierarchy
+# internally with ext: gates on Mid/Junior output.
+members:
+  - Researcher
+  - Tech-Lead
+  - engineer-swarm
+  - Code-Reviewer
+  - Security-Engineer
+  - Performance-Engineer
+  - Accessibility-Engineer
+  - DevOps
+  - Writer
+  - Knowledge-Base-Curator
+
+swarm_type: codegen
+
+harness:
+  parallel: false
+
+  gates:
+    # Code-Reviewer gate: evidence-grounding pass over the agent's
+    # bug-findings-v1 output. The Code-Reviewer manifest (internal/
+    # app/agents/Code-Reviewer.md) tells the agent to emit
+    # `bug-findings-v1` (summary + findings[] with file/line/evidence);
+    # the builtin:evidence-grounding runner projects that shape
+    # natively and additionally verifies each finding's evidence
+    # snippet appears verbatim in the cited file. This replaces the
+    # `builtin:result-schema` + `code-review-verdict-v1` gate
+    # introduced by dff52884, which required a `verdict` field the
+    # Code-Reviewer manifest never promised to emit and failed every
+    # dev-swarm run (vault note: "Code-Reviewer Not Found After
+    # Recent Changes (May 2026)"). The Researcher gate that shipped
+    # in dff52884 (`post-member-researcher-evidence-bundle`,
+    # schema_ref evidence-bundle-v1) is intentionally dropped — the
+    # researcher manifest emits markdown at
+    # `a-team/{chainID}/output`, not JSON at
+    # `dev-swarm/{chainID}/output`, so any structured gate against
+    # this target is contract-drift; downstream consumers
+    # (Tech-Lead, Senior-Engineer) read the prose conversationally.
+    - name: post-member-code-reviewer-evidence-grounding
+      kind: builtin:evidence-grounding
+      when: post-member
+      target: Code-Reviewer
+      output_key: output
+      precedence: HIGH
+      failurePolicy: halt
+    # Security-Engineer gate: same evidence-grounding contract as
+    # Code-Reviewer — the Security-Engineer manifest promises the
+    # `bug-findings-v1` shape with verbatim evidence snippets (see
+    # internal/app/agents/Security-Engineer.md "Where to write"),
+    # so the runner validates each finding's snippet appears in the
+    # cited file. Previously Security-Engineer output flowed
+    # un-gated in dev-swarm despite being gated elsewhere.
+    - name: post-member-security-engineer-evidence-grounding
+      kind: builtin:evidence-grounding
+      when: post-member
+      target: Security-Engineer
+      output_key: security-findings
+      precedence: HIGH
+      failurePolicy: halt
+    # Filesystem pollution guard: fires post-member for the
+    # write-capable engineer members (Mid/Junior inside
+    # engineer-swarm carry their own entries; this covers the
+    # Senior-Engineer lead of that sub-swarm and the Writer, the
+    # two write-capable members whose output flows at dev-swarm
+    # level). The member publishes an fs-write report
+    # ({"writes":[{path,content_type,role}]}) under "fs-writes";
+    # the builtin runner validates every reported write against
+    # the allow-list policy (worktree source only, vault writes
+    # for the kb-curator role). Non-reporting members pass.
+    - name: post-member-senior-engineer-fs-pollution
+      kind: builtin:fs-pollution-guard
+      when: post-member
+      target: Senior-Engineer
+      output_key: fs-writes
+      precedence: MEDIUM
+      failurePolicy: halt
+    - name: post-member-writer-fs-pollution
+      kind: builtin:fs-pollution-guard
+      when: post-member
+      target: Writer
+      output_key: fs-writes
+      precedence: MEDIUM
+      failurePolicy: halt
+    - name: post-member-kb-curator-fs-pollution
+      kind: builtin:fs-pollution-guard
+      when: post-member
+      target: Knowledge-Base-Curator
+      output_key: fs-writes
+      precedence: MEDIUM
+      failurePolicy: halt
+    # Knowledge-Base-Curator gate: `vault-findings-v1` result
+    # schema — the same registered schema due-diligence-swarm and
+    # mental-health-swarm already gate KB-Curator-class output with.
+    # dev-swarm simply omitted it; reusing the reference keeps the
+    # contract identical across swarms.
+    - name: post-member-kb-curator-vault-findings
+      kind: builtin:result-schema
+      schema_ref: vault-findings-v1
+      when: post-member
+      target: Knowledge-Base-Curator
+      output_key: vault-findings
+      precedence: MEDIUM
+      failurePolicy: halt
+
+context:
+  chain_prefix: dev-swarm

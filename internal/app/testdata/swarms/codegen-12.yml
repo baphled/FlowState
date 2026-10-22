@@ -1,0 +1,8 @@
+schema_version: "1.0.0"
+id: codegen-12
+description: codegen swarm pinned to depth 12 for app-wiring test
+lead: codegen-lead
+swarm_type: codegen
+max_depth: 12
+members:
+  - codegen-worker

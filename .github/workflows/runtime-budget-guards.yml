@@ -1,0 +1,25 @@
+name: Runtime Budget Guards
+
+on:
+  pull_request:
+    branches: [feature/agent-platform]
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Engine regression tests
+        run: go test ./internal/engine/...
+      - name: Budget acceptance scenarios
+        env:
+          GODOG_PATHS: ../engine/tool_loop_budgets.feature
+        run: go test -tags e2e ./features/support -run TestFeatures -count=1
+      - name: Required repository checks
+        run: make check

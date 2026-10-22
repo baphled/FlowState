@@ -1,0 +1,138 @@
+{
+  "version": "v1",
+  "updated_at": "2026-05-13",
+  "default_currency": "USD",
+  "models": {
+    "anthropic/claude-opus-4-7": {
+      "currency": "USD",
+      "input_per_million": 15.00,
+      "output_per_million": 75.00,
+      "cache_read_per_million": 1.50,
+      "cache_creation_per_million": 18.75
+    },
+    "anthropic/claude-opus-4-6": {
+      "currency": "USD",
+      "input_per_million": 15.00,
+      "output_per_million": 75.00,
+      "cache_read_per_million": 1.50,
+      "cache_creation_per_million": 18.75
+    },
+    "anthropic/claude-opus-4-5": {
+      "currency": "USD",
+      "input_per_million": 15.00,
+      "output_per_million": 75.00,
+      "cache_read_per_million": 1.50,
+      "cache_creation_per_million": 18.75
+    },
+    "anthropic/claude-opus-4-1": {
+      "currency": "USD",
+      "input_per_million": 15.00,
+      "output_per_million": 75.00,
+      "cache_read_per_million": 1.50,
+      "cache_creation_per_million": 18.75
+    },
+    "anthropic/claude-opus-4-20250514": {
+      "currency": "USD",
+      "input_per_million": 15.00,
+      "output_per_million": 75.00,
+      "cache_read_per_million": 1.50,
+      "cache_creation_per_million": 18.75
+    },
+    "anthropic/claude-sonnet-4-7": {
+      "currency": "USD",
+      "input_per_million": 3.00,
+      "output_per_million": 15.00,
+      "cache_read_per_million": 0.30,
+      "cache_creation_per_million": 3.75
+    },
+    "anthropic/claude-sonnet-4-6": {
+      "currency": "USD",
+      "input_per_million": 3.00,
+      "output_per_million": 15.00,
+      "cache_read_per_million": 0.30,
+      "cache_creation_per_million": 3.75
+    },
+    "anthropic/claude-sonnet-4-5": {
+      "currency": "USD",
+      "input_per_million": 3.00,
+      "output_per_million": 15.00,
+      "cache_read_per_million": 0.30,
+      "cache_creation_per_million": 3.75
+    },
+    "anthropic/claude-sonnet-4-20250514": {
+      "currency": "USD",
+      "input_per_million": 3.00,
+      "output_per_million": 15.00,
+      "cache_read_per_million": 0.30,
+      "cache_creation_per_million": 3.75
+    },
+    "anthropic/claude-haiku-4-5": {
+      "currency": "USD",
+      "input_per_million": 1.00,
+      "output_per_million": 5.00,
+      "cache_read_per_million": 0.10,
+      "cache_creation_per_million": 1.25
+    },
+    "anthropic/claude-3-5-sonnet-20241022": {
+      "currency": "USD",
+      "input_per_million": 3.00,
+      "output_per_million": 15.00,
+      "cache_read_per_million": 0.30,
+      "cache_creation_per_million": 3.75
+    },
+    "anthropic/claude-3-5-haiku-latest": {
+      "currency": "USD",
+      "input_per_million": 1.00,
+      "output_per_million": 5.00,
+      "cache_read_per_million": 0.10,
+      "cache_creation_per_million": 1.25
+    },
+    "anthropic/claude-3-7-sonnet": {
+      "currency": "USD",
+      "input_per_million": 3.00,
+      "output_per_million": 15.00,
+      "cache_read_per_million": 0.30,
+      "cache_creation_per_million": 3.75
+    },
+    "openai/gpt-4o": {
+      "currency": "USD",
+      "input_per_million": 2.50,
+      "output_per_million": 10.00
+    },
+    "openai/gpt-4o-mini": {
+      "currency": "USD",
+      "input_per_million": 0.15,
+      "output_per_million": 0.60
+    },
+    "openai/gpt-4-turbo": {
+      "currency": "USD",
+      "input_per_million": 10.00,
+      "output_per_million": 30.00
+    },
+    "openai/gpt-3.5-turbo": {
+      "currency": "USD",
+      "input_per_million": 0.50,
+      "output_per_million": 1.50
+    },
+    "zai/glm-4.6": {
+      "currency": "CNY",
+      "input_per_million": 5.00,
+      "output_per_million": 20.00
+    },
+    "zai/glm-4.7": {
+      "currency": "CNY",
+      "input_per_million": 5.00,
+      "output_per_million": 20.00
+    },
+    "zai/glm-4.7-flash": {
+      "currency": "CNY",
+      "input_per_million": 1.00,
+      "output_per_million": 4.00
+    },
+    "zai/glm-5": {
+      "currency": "CNY",
+      "input_per_million": 5.00,
+      "output_per_million": 20.00
+    }
+  }
+}

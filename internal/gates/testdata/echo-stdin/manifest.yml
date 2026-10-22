@@ -1,0 +1,4 @@
+name: echo-stdin
+description: Test fixture — echoes the JSON type of stdin's `payload` field as the response reason.
+exec: ./gate.sh
+timeout: 5s

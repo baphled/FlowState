@@ -1,0 +1,8 @@
+name: vault-fact-check
+description: Score a swarm member's claim against the operator's Obsidian vault via Qdrant + Ollama.
+version: "0.1.0"
+exec: ./gate.py
+timeout: 10s
+policy:
+  threshold: 0.65
+  top_k: 3

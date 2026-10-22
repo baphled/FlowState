@@ -1,0 +1,31 @@
+schema_version: "1.0.0"
+id: ehcp
+description: >
+  EHCP Annual Review swarm. An LA EHCP Coordinator leads six specialist agents through
+  the complete 10-step statutory Annual Review workflow under the Children and Families
+  Act 2014. Produces a legally compliant outcome letter and updated draft EHCP (sections
+  A–K) with adversarial compliance checking and family advocacy built in.
+lead: ehcp-coordinator
+members:
+  - ehcp-school-liaison
+  - ehcp-family-advocate
+  - ehcp-specialist-reviewer
+  - ehcp-drafter
+  - ehcp-compliance-checker
+
+harness:
+  parallel: false
+  gates:
+    - name: ehcp-completeness
+      kind: ext:ehcp-completeness
+      when: post-member
+      target: ehcp-drafter
+      output_key: output
+    - name: personal-data-security
+      kind: ext:personal-data-security
+      when: post
+      policy:
+        mode: block
+
+context:
+  chain_prefix: ehcp

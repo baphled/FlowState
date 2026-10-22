@@ -1,0 +1,158 @@
+package app_test
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
+	"github.com/baphled/flowstate/internal/app"
+	"github.com/baphled/flowstate/internal/config"
+	"github.com/baphled/flowstate/internal/swarm"
+)
+
+var _ = Describe("App gate registration", func() {
+	BeforeEach(func() {
+		swarm.ResetExtGateRegistryForTest()
+	})
+
+	It("registers each gate manifest discovered under gates_dir", func() {
+		root := writeGate("alpha", "alpha-pass.sh", `#!/bin/bash
+cat > /dev/null
+echo '{"pass": true}'
+`)
+
+		errs := app.RegisterDiscoveredGates(context.Background(), &config.AppConfig{GatesDir: root})
+
+		Expect(errs).To(BeEmpty())
+		_, ok := swarm.LookupExtGate("alpha")
+		Expect(ok).To(BeTrue())
+	})
+
+	It("does not error when gates_dir is empty / missing", func() {
+		errs := app.RegisterDiscoveredGates(context.Background(), &config.AppConfig{GatesDir: "/tmp/does-not-exist-gates"})
+		Expect(errs).To(BeEmpty())
+	})
+
+	It("returns per-gate errors without aborting boot", func() {
+		root := writeGate("broken", "missing-exec.sh", `#!/bin/bash
+echo nope
+`)
+		Expect(os.Remove(filepath.Join(root, "broken", "missing-exec.sh"))).To(Succeed())
+
+		errs := app.RegisterDiscoveredGates(context.Background(), &config.AppConfig{GatesDir: root})
+
+		Expect(errs).To(HaveLen(1))
+		_, ok := swarm.LookupExtGate("broken")
+		Expect(ok).To(BeFalse())
+	})
+
+	It("registers the valid gate when a sibling manifest is malformed", func() {
+		root := writeGate("good", "good.sh", `#!/bin/bash
+echo '{"pass": true}'
+`)
+		bad := filepath.Join(root, "broken")
+		Expect(os.MkdirAll(bad, 0o700)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(bad, "manifest.yml"), []byte("name: [unclosed"), 0o600)).To(Succeed())
+
+		errs := app.RegisterDiscoveredGates(context.Background(), &config.AppConfig{GatesDir: root})
+
+		Expect(errs).To(HaveLen(1))
+		Expect(errs[0].Error()).To(ContainSubstring("broken"),
+			"the boot failure must name the offending gate dir")
+		_, ok := swarm.LookupExtGate("good")
+		Expect(ok).To(BeTrue(),
+			"a malformed sibling manifest must not unregister valid gates")
+	})
+
+	It("summarises registration failures naming every offending gate", func() {
+		root := writeGate("broken", "missing-exec.sh", `#!/bin/bash
+echo nope
+`)
+		Expect(os.Remove(filepath.Join(root, "broken", "missing-exec.sh"))).To(Succeed())
+
+		errs := app.RegisterDiscoveredGates(context.Background(), &config.AppConfig{GatesDir: root})
+
+		Expect(app.SummariseGateRegistrationFailures(nil)).To(BeEmpty())
+		summary := app.SummariseGateRegistrationFailures(errs)
+		Expect(summary).To(ContainSubstring("1 failure(s)"))
+		Expect(summary).To(ContainSubstring("broken"))
+	})
+})
+
+var _ = Describe("ValidateDiscoveredGateReferences", func() {
+	BeforeEach(func() {
+		swarm.ResetExtGateRegistryForTest()
+	})
+
+	It("rejects a swarm gate referencing an ext kind with no discovered manifest", func() {
+		root := writeGate("present-gate", "present.sh", `#!/bin/bash
+echo '{"pass": true}'
+`)
+
+		reg := swarm.NewRegistry()
+		reg.Register(&swarm.Manifest{
+			ID: "swarm-dangling-gate",
+			Harness: swarm.HarnessConfig{Gates: []swarm.GateSpec{{
+				Name: "dangling",
+				Kind: "ext:not-discovered",
+				When: "pre",
+			}}},
+		})
+
+		err := app.ValidateDiscoveredGateReferences(context.Background(), &config.AppConfig{GatesDir: root}, reg)
+
+		Expect(err).To(MatchError(ContainSubstring("ext:not-discovered")))
+	})
+
+	It("accepts ext kinds backed by a discovered manifest", func() {
+		root := writeGate("present-gate", "present.sh", `#!/bin/bash
+echo '{"pass": true}'
+`)
+
+		reg := swarm.NewRegistry()
+		reg.Register(&swarm.Manifest{
+			ID: "swarm-ok-gate",
+			Harness: swarm.HarnessConfig{Gates: []swarm.GateSpec{{
+				Name: "ok",
+				Kind: "ext:present-gate",
+				When: "pre",
+			}}},
+		})
+
+		err := app.ValidateDiscoveredGateReferences(context.Background(), &config.AppConfig{GatesDir: root}, reg)
+
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("is a no-op with an empty gates dir and no ext references", func() {
+		reg := swarm.NewRegistry()
+		reg.Register(&swarm.Manifest{
+			ID: "swarm-builtin-only",
+			Harness: swarm.HarnessConfig{Gates: []swarm.GateSpec{{
+				Name: "schema",
+				Kind: "builtin:result-schema",
+				When: "post",
+			}}},
+		})
+
+		err := app.ValidateDiscoveredGateReferences(context.Background(), &config.AppConfig{GatesDir: "/tmp/does-not-exist-gates"}, reg)
+
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
+func writeGate(name, execName, body string) string {
+	root, err := os.MkdirTemp("", "gates-boot-*")
+	Expect(err).ToNot(HaveOccurred())
+	DeferCleanup(func() { _ = os.RemoveAll(root) })
+
+	dir := filepath.Join(root, name)
+	Expect(os.MkdirAll(dir, 0o700)).To(Succeed())
+	Expect(os.WriteFile(filepath.Join(dir, execName), []byte(body), 0o755)).To(Succeed())
+	manifest := "name: " + name + "\nexec: ./" + execName + "\n"
+	Expect(os.WriteFile(filepath.Join(dir, "manifest.yml"), []byte(manifest), 0o600)).To(Succeed())
+	return root
+}

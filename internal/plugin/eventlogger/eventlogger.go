@@ -1,0 +1,481 @@
+package eventlogger
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/events"
+)
+
+// SubscribedEventTypes returns the authoritative list of event topic strings
+// this plugin subscribes to. Exposed so the events.Catalog accuracy audit can
+// cross-check declared Subscribers against real subscription wiring without
+// resorting to source-level grep at test time.
+//
+// Returns: a fresh slice copy so callers cannot mutate the package-level list.
+// Side effects: none.
+func SubscribedEventTypes() []string {
+	out := make([]string, len(subscribedEventTypes))
+	copy(out, subscribedEventTypes)
+	return out
+}
+
+// subscribedEventTypes lists all event type strings the logger subscribes to.
+// These must match the exact event names published by the engine and plugin
+// subsystems (e.g. "session.created", not "session").
+//
+// Bug Hunt #63 (May 11 2026): two low-frequency recall events were
+// added back after the F4 audit found four recall topics with zero
+// non-test subscribers. EventRecallEmbeddingStored (per-store
+// diagnostic — dimensions / latency, complements the silent
+// dimension-mismatch failure mode) and EventRecallSummarized (per
+// compaction, rare, token-before/after signal) carry diagnostic
+// value worth the log volume. The high-frequency
+// EventRecallSearched and EventRecallChainSearched were retired
+// instead — tool-level latency / args / result count are already
+// captured by EventToolExecuteResult which is subscribed.
+var subscribedEventTypes = []string{
+	events.EventSessionCreated,
+	events.EventSessionEnded,
+	events.EventSessionResumed,
+	events.EventToolExecuteBefore,
+	events.EventToolExecuteResult,
+	events.EventToolExecuteError,
+	events.EventProviderError,
+	events.EventProviderRateLimited,
+	events.EventPromptGenerated,
+	events.EventContextWindowBuilt,
+	events.EventToolReasoning,
+	events.EventProviderRequest,
+	events.EventProviderResponse,
+	events.EventProviderRequestRetry,
+	events.EventAgentSwitched,
+	events.EventBackgroundTaskStarted,
+	events.EventBackgroundTaskCompleted,
+	events.EventBackgroundTaskFailed,
+	events.EventBackgroundTaskCancelled,
+	events.EventDiscoveryPublished,
+	events.EventLearningRecorded,
+	events.EventRecallEmbeddingStored,
+	events.EventRecallSummarized,
+	// Tool-args validation failures (May 2026). Low-frequency
+	// (one event per validator rejection — bug 235d321 cured the
+	// silent-strip path so this fires only on genuine schema /
+	// XML-bleed failures, not on every tool call) with
+	// dashboard-grade diagnostic value: provider/model/tool/error-class
+	// per failure. Recommendation E from the codebase-explorer
+	// investigation of the glm-4.6 `librarian` mis-call. Real
+	// subscriber here closes the catalog Subscribers claim so the
+	// new event is not "published but unsubscribed" dead surface.
+	events.EventToolArgsValidationFailed,
+	// Permission Mode ModeAskUser Extension (May 2026) Slice 2.
+	// All four lifecycle events land in events.jsonl so audits can
+	// reconstruct suspended-call traces post-hoc. Low-frequency
+	// (interactive — at most one event per operator click) so the
+	// JSONL volume cost is trivial. Catalog claims eventlogger
+	// subscribes here; this is the matching wire-up (memory:
+	// feedback_eventlogger_catalog_subscriber_is_dead_comment).
+	events.EventPermissionRequired,
+	events.EventPermissionGranted,
+	events.EventPermissionDenied,
+	events.EventPermissionTimeout,
+}
+
+// defaultMaxRotated defines the maximum number of rotated files to keep.
+const defaultMaxRotated = 5
+
+// logEntry is the JSONL wrapper written to the output file for each event.
+//
+// Expected: marshalled to JSON and written as a single line.
+// Returns: struct for JSON marshalling.
+// Side effects: none.
+type logEntry struct {
+	Type      string    `json:"type"`
+	Timestamp time.Time `json:"timestamp"`
+	Data      any       `json:"data"`
+}
+
+// EventLogger subscribes to an EventBus and writes all events as JSONL lines
+// to a file with size-based rotation.
+//
+// Expected:
+//   - Created via New with a file path and maximum file size.
+//   - Start must be called to begin subscribing and writing.
+//   - Close must be called to release the file handle.
+//
+// Returns: struct for event logging.
+// Side effects: writes to the filesystem.
+type EventLogger struct {
+	path    string
+	maxSize int64
+	mu      sync.Mutex
+	file    *os.File
+}
+
+// Init initialises the event logger.
+//
+// Returns: nil.
+// Side effects: none.
+//
+// Expected: parameters for Init.
+func (l *EventLogger) Init() error {
+	return nil
+}
+
+// Name returns the plugin name.
+//
+// Returns: the builtin plugin name.
+// Side effects: none.
+//
+// Expected: parameters for Name.
+func (l *EventLogger) Name() string {
+	return "event-logger"
+}
+
+// Version returns the plugin version.
+//
+// Returns: the builtin plugin version string.
+// Side effects: none.
+//
+// Expected: parameters for Version.
+func (l *EventLogger) Version() string {
+	return "v0.0.0"
+}
+
+// New creates a new EventLogger targeting the given path with a maximum file
+// size in bytes before rotation.
+//
+// Expected:
+//   - path is a valid filesystem path for the JSONL output file.
+//   - maxSize is the byte threshold that triggers rotation.
+//
+// Returns: pointer to a new EventLogger.
+// Side effects: none.
+func New(path string, maxSize int64) *EventLogger {
+	return &EventLogger{
+		path:    path,
+		maxSize: maxSize,
+	}
+}
+
+// Start subscribes the logger to all event types on the given EventBus and
+// opens the output file for writing.
+//
+// Expected:
+//   - bus is a non-nil EventBus.
+//   - The parent directory for path exists or is creatable.
+//
+// Returns: error if the file cannot be opened.
+// Side effects: opens a file handle; subscribes handlers on the bus.
+func (l *EventLogger) Start(bus *eventbus.EventBus) error {
+	if err := os.MkdirAll(filepath.Dir(l.path), 0o750); err != nil {
+		return fmt.Errorf("creating log directory: %w", err)
+	}
+
+	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
+	if err != nil {
+		return fmt.Errorf("opening log file: %w", err)
+	}
+	l.file = f
+
+	for _, eventType := range subscribedEventTypes {
+		et := eventType
+		bus.Subscribe(et, func(event any) {
+			l.handleEvent(event)
+		})
+	}
+
+	return nil
+}
+
+// Close releases the underlying file handle.
+//
+// Expected:
+//   - Called after Start; safe to call multiple times.
+//
+// Returns: error if the file cannot be closed.
+// Side effects: closes the file handle.
+func (l *EventLogger) Close() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.file == nil {
+		return nil
+	}
+
+	err := l.file.Close()
+	l.file = nil
+
+	if err != nil {
+		return fmt.Errorf("closing log file: %w", err)
+	}
+
+	return nil
+}
+
+// handleEvent marshals an event as JSONL, appends it to the output file, and
+// triggers rotation if the file exceeds the maximum size. Errors are
+// silently discarded because the EventBus handler cannot propagate them.
+//
+// Expected: event implements events.Event or is any serialisable value.
+// Returns: none.
+// Side effects: writes to the file; may rotate the file.
+func (l *EventLogger) handleEvent(event any) {
+	entry := buildLogEntry(event)
+
+	line, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+	line = append(line, '\n')
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.file == nil {
+		return
+	}
+
+	if _, err := l.file.Write(line); err != nil {
+		return
+	}
+
+	l.rotateIfNeeded()
+}
+
+// buildLogEntry constructs a logEntry from an event, extracting type,
+// timestamp, and data fields where available.
+//
+// Expected: event may implement events.Event or be any value.
+// Returns: logEntry ready for JSON marshalling.
+// Side effects: none.
+func buildLogEntry(event any) logEntry {
+	entry := logEntry{
+		Timestamp: time.Now(),
+		Data:      event,
+	}
+
+	if ev, ok := event.(events.Event); ok {
+		entry.Type = ev.EventType()
+		entry.Timestamp = ev.Timestamp()
+		entry.Data = extractEventData(ev)
+	}
+
+	return entry
+}
+
+// extractEventData returns the typed data payload from a known event type,
+// or the event itself for unknown types.
+//
+// Expected: ev is a non-nil events.Event.
+// Returns: the event's data payload.
+// Side effects: none.
+func extractEventData(ev events.Event) any {
+	if data, ok := extractToolExecuteData(ev); ok {
+		return data
+	}
+	if data, ok := extractBackgroundTaskData(ev); ok {
+		return data
+	}
+	if data, ok := extractProviderEventData(ev); ok {
+		return data
+	}
+	if data, ok := extractRecallEventData(ev); ok {
+		return data
+	}
+	switch e := ev.(type) {
+	case *events.SessionEvent:
+		return e.Data
+	case *events.SessionResumedEvent:
+		return e.Data
+	case *events.ToolEvent:
+		return e.Data
+	case *events.ProviderEvent:
+		return e.Data
+	case *events.PromptEvent:
+		return e.Data
+	case *events.ContextWindowEvent:
+		return e.Data
+	case *events.ToolReasoningEvent:
+		return e.Data
+	case *events.AgentSwitchedEvent:
+		return e.Data
+	case *events.DiscoveryPublishedEvent:
+		return e.Data
+	case *events.LearningRecordedEvent:
+		return e.Data
+	default:
+		return ev
+	}
+}
+
+// extractRecallEventData returns the data payload from kept recall
+// events (Bug Hunt #63, May 11 2026), returning (data, true) when
+// matched and (nil, false) otherwise. Only the two re-added topics
+// (recall.embedding.stored and recall.summarized) are handled here —
+// recall.searched and recall.chain.searched were retired as dead
+// surface area.
+//
+// Expected: ev is a non-nil events.Event.
+// Returns: data payload and whether the event was a recognised recall type.
+// Side effects: none.
+func extractRecallEventData(ev events.Event) (any, bool) {
+	switch e := ev.(type) {
+	case *events.RecallEmbeddingStoredEvent:
+		return e.Data, true
+	case *events.RecallSummarizedEvent:
+		return e.Data, true
+	default:
+		return nil, false
+	}
+}
+
+// extractProviderEventData returns the data payload from provider request, response,
+// retry, and error events, returning (data, true) when matched and (nil, false) otherwise.
+//
+// Expected: ev is a non-nil events.Event.
+// Returns: data payload and whether the event was a recognised provider event type.
+// Side effects: none.
+func extractProviderEventData(ev events.Event) (any, bool) {
+	switch e := ev.(type) {
+	case *events.ProviderRequestEvent:
+		return e.Data, true
+	case *events.ProviderResponseEvent:
+		return e.Data, true
+	case *events.ProviderRequestRetryEvent:
+		return e.Data, true
+	case *events.ProviderErrorEvent:
+		return e.Data, true
+	default:
+		return nil, false
+	}
+}
+
+// extractToolExecuteData returns the data payload from tool execution result and error
+// events, returning (data, true) when matched and (nil, false) otherwise.
+//
+// Expected: ev is a non-nil events.Event.
+// Returns: data payload and whether the event was a recognised tool execution type.
+// Side effects: none.
+func extractToolExecuteData(ev events.Event) (any, bool) {
+	switch e := ev.(type) {
+	case *events.ToolExecuteResultEvent:
+		return e.Data, true
+	case *events.ToolExecuteErrorEvent:
+		return e.Data, true
+	default:
+		return nil, false
+	}
+}
+
+// extractBackgroundTaskData returns the data payload from background task events,
+// returning (data, true) when matched and (nil, false) otherwise.
+//
+// Expected: ev is a non-nil events.Event.
+// Returns: data payload and whether the event was a recognised background task type.
+// Side effects: none.
+func extractBackgroundTaskData(ev events.Event) (any, bool) {
+	switch e := ev.(type) {
+	case *events.BackgroundTaskStartedEvent:
+		return e.Data, true
+	case *events.BackgroundTaskCompletedEvent:
+		return e.Data, true
+	case *events.BackgroundTaskFailedEvent:
+		return e.Data, true
+	case *events.BackgroundTaskCancelledEvent:
+		return e.Data, true
+	default:
+		return nil, false
+	}
+}
+
+// rotateIfNeeded checks the current file size and rotates if it exceeds the
+// configured maximum. Must be called while holding l.mu.
+//
+// Expected: l.mu is held by the caller; l.file is non-nil.
+// Returns: none.
+// Side effects: may rename the current file and open a fresh one.
+func (l *EventLogger) rotateIfNeeded() {
+	info, err := l.file.Stat()
+	if err != nil {
+		return
+	}
+
+	if info.Size() < l.maxSize {
+		return
+	}
+
+	l.rotate()
+}
+
+// rotate closes the current file, shifts existing rotated files, renames the
+// current file to .1, and opens a fresh output file. Must be called while
+// holding l.mu.
+//
+// Expected: l.mu is held by the caller; l.file is non-nil.
+// Returns: none.
+// Side effects: renames files on disk; opens a new file handle.
+func (l *EventLogger) rotate() {
+	if err := l.file.Close(); err != nil {
+		return
+	}
+
+	shiftRotatedFiles(l.path, defaultMaxRotated)
+
+	if err := os.Rename(l.path, l.path+".1"); err != nil {
+		return
+	}
+
+	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
+	if err != nil {
+		return
+	}
+	l.file = f
+}
+
+// shiftRotatedFiles moves existing rotated files up by one index, discarding
+// the oldest if it exceeds maxKeep. Missing files are silently skipped.
+//
+// Expected: basePath is the base log file path; maxKeep >= 1.
+// Returns: none.
+// Side effects: renames or removes files on disk.
+func shiftRotatedFiles(basePath string, maxKeep int) {
+	oldest := fmt.Sprintf("%s.%d", basePath, maxKeep)
+	removeIfExists(oldest)
+
+	for i := maxKeep - 1; i >= 1; i-- {
+		src := fmt.Sprintf("%s.%d", basePath, i)
+		dst := fmt.Sprintf("%s.%d", basePath, i+1)
+		renameIfExists(src, dst)
+	}
+}
+
+// removeIfExists removes a file, ignoring errors when the file does not exist.
+//
+// Expected: path is a filesystem path.
+// Returns: none.
+// Side effects: removes the file if it exists.
+func removeIfExists(path string) {
+	err := os.Remove(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return
+	}
+}
+
+// renameIfExists renames a file, ignoring errors when the source does not exist.
+//
+// Expected: src and dst are filesystem paths.
+// Returns: none.
+// Side effects: renames the file if it exists.
+func renameIfExists(src, dst string) {
+	err := os.Rename(src, dst)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return
+	}
+}

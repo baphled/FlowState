@@ -1,0 +1,182 @@
+package recall
+
+import (
+	"context"
+
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/tool"
+)
+
+// ChainSearchTool provides search functionality across message chains.
+type ChainSearchTool struct {
+	chainStore ChainContextStore
+	embedder   provider.Provider
+	store      *FileContextStore
+	topK       int
+	bus        *eventbus.EventBus
+}
+
+// NewChainSearchTool creates a new ChainSearchTool.
+//
+// Expected:
+//   - chainStore provides chain access.
+//   - embedder provides embedding support.
+//   - store provides context access.
+//
+// Returns:
+//   - A chain search tool.
+//
+// Side effects:
+//   - None.
+func NewChainSearchTool(
+	chainStore ChainContextStore, embedder provider.Provider,
+	store *FileContextStore, bus *eventbus.EventBus,
+) *ChainSearchTool {
+	return &ChainSearchTool{
+		chainStore: chainStore,
+		embedder:   embedder,
+		store:      store,
+		topK:       5,
+		bus:        bus,
+	}
+}
+
+// Name returns the name of the tool.
+//
+// Expected:
+//   - The receiver is a valid ChainSearchTool.
+//
+// Returns:
+//   - The tool name.
+//
+// Side effects:
+//   - None.
+func (t *ChainSearchTool) Name() string {
+	return "chain_search"
+}
+
+// Description returns a description of the tool.
+//
+// Expected:
+//   - The receiver is a valid ChainSearchTool.
+//
+// Returns:
+//   - A short tool description.
+//
+// Side effects:
+//   - None.
+func (t *ChainSearchTool) Description() string {
+	return "Search cross-agent context from the delegation chain"
+}
+
+// Schema returns the JSON schema for the tool parameters.
+//
+// Expected:
+//   - The receiver is a valid ChainSearchTool.
+//
+// Returns:
+//   - The tool parameter schema.
+//
+// Side effects:
+//   - None.
+func (t *ChainSearchTool) Schema() tool.Schema {
+	return tool.Schema{
+		Type: "object",
+		Properties: map[string]tool.Property{
+			"query":    {Type: "string", Description: "Search query"},
+			"agent_id": {Type: "string", Description: "Filter by agent ID (optional)"},
+		},
+		Required: []string{"query"},
+	}
+}
+
+// Execute performs the chain search operation.
+//
+// Expected:
+//   - ctx is valid for chain lookups.
+//   - input contains a query string.
+//
+// Returns:
+//   - A tool result containing formatted chain messages. On a genuine
+//     Search failure the Output still carries the recency-fallback
+//     text so the engine's tool loop continues to have something to
+//     hand the model, but the second return is non-nil so the engine
+//     publishes tool.execute.error and consumers can surface the
+//     real failure on the wire.
+//   - An error when the underlying Search call fails. Zero-result
+//     queries on a healthy Search path are NOT errors — only genuine
+//     failures (Qdrant unavailable, embedding-model dimension
+//     mismatch, network timeout, broker fan-out exhaustion) are
+//     surfaced this way. See M9 in Bug Hunt Findings (May 2026).
+//
+// Side effects:
+//   - Reads from the chain store.
+//   - Publishes a recall.chain.searched event for every call (success
+//     or zero-result). The dedicated `recall.chain.search.failed`
+//     event was removed in F4 (Bug Hunt Findings May 11 2026) — it
+//     had zero non-test subscribers, making it dead surface area.
+//     The typed ErrAllSourcesFailed sentinel and the engine's existing
+//     `tool.execute.error` propagation (via result.Error = err at
+//     engine.go:3825) remain the canonical failure signals.
+func (t *ChainSearchTool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
+	query, ok := input.Arguments["query"].(string)
+	if !ok || query == "" {
+		return t.fallbackToRecent()
+	}
+
+	results, err := t.chainStore.Search(ctx, query, t.topK)
+
+	// Bug Hunt #63 (May 11 2026): the recall.chain.searched bus
+	// event was retired here — high-frequency (every chain search)
+	// with zero non-test subscribers anywhere in the tree. The
+	// engine's existing tool.execute.result event already carries
+	// the tool-level latency / args / result count for
+	// chain_search tool invocations and IS subscribed by
+	// eventlogger.
+
+	// M9: genuine Search failure must be observable separately from
+	// "zero results". The pre-M9 code branched on
+	// `err != nil || len(results) == 0` into the same silent
+	// recency fallback, masking Qdrant outages and dimension
+	// mismatches as benign empty queries.
+	//
+	// F4 (May 11 2026): the dedicated bus event was removed —
+	// nothing subscribed to it. The non-nil err return below
+	// reaches engine.go:3825 (`result.Error = err`) which the
+	// engine's tool.execute.error bus path forwards to all live
+	// observers.
+	if err != nil {
+		// Still hand the model recency-fallback output so the
+		// historical UX (no hard runtime error reaching the model)
+		// is preserved.
+		fallback, _ := t.fallbackToRecent()
+		fallback.Error = err
+		return fallback, err
+	}
+
+	if len(results) == 0 {
+		return t.fallbackToRecent()
+	}
+
+	return tool.Result{Output: formatMessages(extractMessages(results))}, nil
+}
+
+// fallbackToRecent returns recent chain messages when a query cannot be used.
+//
+// Expected:
+//   - The receiver is a valid ChainSearchTool.
+//
+// Returns:
+//   - A tool result containing recent messages when available.
+//   - An error when retrieving recent messages fails.
+//
+// Side effects:
+//   - Reads from the chain store.
+func (t *ChainSearchTool) fallbackToRecent() (tool.Result, error) {
+	messages, err := t.chainStore.GetByAgent("", t.topK)
+	if err != nil || len(messages) == 0 {
+		return tool.Result{Output: ""}, err
+	}
+	return tool.Result{Output: formatMessages(messages)}, nil
+}

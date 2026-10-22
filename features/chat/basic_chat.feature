@@ -1,3 +1,4 @@
+@slow
 Feature: Basic Chat
   As a user
   I want to chat with an AI assistant
@@ -41,11 +42,3 @@ Feature: Basic Chat
     When I press Escape
     Then I should be in normal mode
     And the input should be cleared
-
-  @wip
-  Scenario: Edit message in external editor
-    Given I am in insert mode
-    When I press Ctrl+e
-    Then my $EDITOR should open
-    And when I save and exit
-    Then the editor content should appear in the input

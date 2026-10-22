@@ -1,0 +1,6 @@
+Plan adding a /health endpoint to a Go HTTP service (~200 LOC, existing chi router).
+Scope is narrow: one handler + one test; no DB, no auth.
+Constraints: must return 200 with JSON body {"status":"ok"}; no new dependencies.
+Success: reviewer approves the plan.
+This is a learning exercise — proceed directly to the planning loop, skip the requirements interview.
+Start by delegating evidence gathering to explorer and librarian in parallel.

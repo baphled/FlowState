@@ -1,0 +1,203 @@
+// Package permissionmode carries the per-session permission-mode value
+// across the engine → tool dispatch boundary via context.
+//
+// Permission modes are the user-facing safety dial on a FlowState
+// session. The valid set is fixed at five values:
+//
+//   - ModePlan         — read-only; the engine filters write tools out
+//     of the schema list and the assistant cannot
+//     mutate the workspace. Enforcement for Plan
+//     lives engine-side (schema filter), NOT here.
+//   - ModeDefault      — current behaviour: permissions.yaml + the
+//     legacy denied-roots check both apply.
+//   - ModeAcceptEdits  — Write/Edit/MultiEdit prompts auto-accept;
+//     pathguard still enforces deny rules.
+//   - ModeAskUser      — interactive: pathguard denial publishes a
+//     permission_required event and suspends the
+//     tool call until the operator grants or denies.
+//     Slice 1 of the Permission Mode ModeAskUser
+//     Extension plan (May 2026) ships only the
+//     enum extension — the interactive plumbing
+//     lands in Slices 2-5. Until then ModeAskUser
+//     behaves identically to ModeDefault at the
+//     pathguard + engine seams.
+//   - ModeYolo         — full bypass: every pathguard *ForTool check
+//     short-circuits to PASS. Reserved for trusted
+//     sandboxes (e.g. ephemeral worktree agents).
+//
+// This package owns the canonical context key + accessors so that the
+// session manager (the producer) and pathguard (the consumer) can
+// share the value without either pulling in the engine package — the
+// engine→session import chain would otherwise close into a cycle.
+// The engine re-exports the same surface under engine.WithPermissionMode
+// / engine.PermissionModeFromContext to honour the Permission Modes
+// plan's stated API contract.
+package permissionmode
+
+import "context"
+
+// Mode is one of the four canonical permission-mode values. A typed
+// string (rather than an iota) keeps the value JSON-friendly for
+// persistence on Session and forward-compatible if a future mode is
+// introduced without renumbering.
+type Mode = string
+
+const (
+	// ModePlan denotes a planning-only session. Engine schema
+	// filtering enforces it — pathguard treats Plan identically to
+	// Default (Plan is NOT a YOLO bypass).
+	ModePlan Mode = "plan"
+	// ModeDefault is the standard configuration. permissions.yaml +
+	// legacy denied-roots both apply.
+	ModeDefault Mode = "default"
+	// ModeAcceptEdits auto-accepts permission prompts for the
+	// Write/Edit/MultiEdit family. Pathguard deny rules still fire;
+	// the auto-accept lives in the prompt layer, not here.
+	ModeAcceptEdits Mode = "accept_edits"
+	// ModeAskUser is the interactive mode. Pathguard denial under
+	// ModeAskUser is expected (Slices 2-5 of the Permission Mode
+	// ModeAskUser Extension plan, May 2026) to publish a
+	// permission_required event and suspend the goroutine until
+	// the operator grants or denies via the inline UI prompt. Slice
+	// 1 ships only the enum extension — the closed vocabulary now
+	// admits "ask" through session.Manager.UpdatePermissionMode (the
+	// canonical gatekeeper at internal/session/manager.go:1612-1625
+	// UpdatePermissionMode), but every consumer that reads the mode
+	// today (pathguard.go:CheckForTool / CheckCommandForTool, engine.go
+	// effectiveAllowedToolsForCtxLocked) ignores any value that is
+	// not ModeYolo or ModePlan and falls through to the safe Default
+	// path. Slice 1 acceptance bullet 4 explicitly pins that no
+	// behaviour change ships in this slice.
+	ModeAskUser Mode = "ask"
+	// ModeYolo is the full-bypass mode. Pathguard's *ForTool
+	// methods short-circuit to PASS at the top of the function
+	// body before any permissions-matcher or denied-roots check
+	// runs.
+	ModeYolo Mode = "yolo"
+)
+
+// modeKey is the unexported context key type. Using an unexported
+// struct guarantees no accidental collision with other packages that
+// might key contexts on a string literal.
+type modeKey struct{}
+
+// WithMode returns a derived context carrying the supplied permission
+// mode. Empty input short-circuits to the input context unchanged so
+// callers can opt out by passing "" — this preserves the "default
+// behaviour when the key is absent" semantic and avoids stamping a
+// zero value that downstream consumers would treat as the same as
+// ModeDefault anyway.
+//
+// Expected: parameters for WithMode.
+// Returns: result of WithMode.
+// Side effects: None.
+func WithMode(ctx context.Context, mode Mode) context.Context {
+	if mode == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, modeKey{}, mode)
+}
+
+// FromContext extracts the permission mode bound to ctx, returning
+// ModeDefault when no key is present (or when the value bound is the
+// empty string). Callers MUST treat ModeDefault as the safe fall-back
+// — a missing mode means "behave as Default", never "bypass".
+//
+// Expected: parameters for FromContext.
+// Returns: result of FromContext.
+// Side effects: None.
+func FromContext(ctx context.Context) Mode {
+	if ctx == nil {
+		return ModeDefault
+	}
+	v, _ := ctx.Value(modeKey{}).(Mode)
+	if v == "" {
+		return ModeDefault
+	}
+	return v
+}
+
+// MutatingTools is the canonical set of tool names considered mutating
+// for Plan-mode filtering. The engine's shared allowed-set seam
+// (effectiveAllowedToolsForCtx, consulted by BOTH the schema
+// assembly path and the runtime tool gate at executeToolCall) removes
+// every entry in this set from the per-call tool registry when the
+// active mode is ModePlan, so the LLM never sees the schema AND a
+// hallucinated out-of-schema tool_use returns a tool-not-found
+// surface from the runtime gate instead of executing. Slice 4 follow-
+// up: the subtraction was hoisted out of the schema-build call site so
+// the schema-visible surface and the runtime-dispatchable surface
+// stay identical — a permissive provider's hallucinated `write` no
+// longer slips past the dispatch path.
+//
+// The set is enumerated explicitly rather than derived from a tool
+// interface flag because:
+//
+//  1. The pathguard *ForTool wires gate a broader surface — file I/O
+//     under Default mode still flows through permissions.yaml. The
+//     Plan-mode filter is a strict SUBSET (the five tools whose only
+//     purpose is workspace mutation) so deriving it from "anything
+//     pathguard gates" would over-filter (e.g. it would block `read`,
+//     which is read-only but still gated for denied-roots).
+//
+//  2. Adding a new mutating tool is a deliberate trust decision. The
+//     plan calls out that "if unsure, default to include" — keeping
+//     the list in one well-known spot makes the audit step explicit.
+//
+// Future additions: any tool whose Execute body writes the filesystem,
+// shells out, or otherwise mutates external state. Grep
+// internal/tool/<name>/<name>.go for write-like side effects when
+// promoting a new tool through the registry.
+var MutatingTools = map[string]struct{}{
+	"bash":        {},
+	"write":       {},
+	"edit":        {},
+	"multiedit":   {},
+	"apply_patch": {},
+}
+
+// IsMutating reports whether the named tool is in the MutatingTools
+// set. Provided so engine-side callers don't have to import the map
+// directly (and so a future move to a richer predicate — e.g. one
+// that consults a tool-side flag — is non-breaking).
+//
+// Expected: parameters for IsMutating.
+// Returns: result of IsMutating.
+// Side effects: None.
+func IsMutating(toolName string) bool {
+	_, ok := MutatingTools[toolName]
+	return ok
+}
+
+// PlanModeStrippedTools is the SUBSET of MutatingTools that Plan mode
+// removes entirely from the schema. Tools in this set have no
+// path-scoping option (bash executes arbitrary commands; restricting
+// it to "writes only under plan_output_dir" is meaningless because
+// the shell can do anything), so the only safe handling under Plan
+// mode is full removal at the engine schema seam.
+//
+// The other four mutating tools (write/edit/multiedit/apply_patch)
+// remain in the schema under Plan mode and are instead path-scoped
+// at the pathguard layer to the operator's plan_output_dir. This is
+// the Plan-Mode Output Directory plan (May 2026) §3 Slice 1.
+//
+// Kept as the same map[string]struct{} shape as MutatingTools so the
+// predicate helper (IsStrippedUnderPlan) and any future scope-membership
+// rewrites stay uniform with IsMutating.
+var PlanModeStrippedTools = map[string]struct{}{
+	"bash": {},
+}
+
+// IsStrippedUnderPlan reports whether the named tool is in the
+// PlanModeStrippedTools set. The engine's effectiveAllowedToolsForCtx
+// seam consults this predicate when subtracting tools under Plan mode;
+// callers in other packages can use it without importing the map
+// directly.
+//
+// Expected: parameters for IsStrippedUnderPlan.
+// Returns: result of IsStrippedUnderPlan.
+// Side effects: None.
+func IsStrippedUnderPlan(toolName string) bool {
+	_, ok := PlanModeStrippedTools[toolName]
+	return ok
+}

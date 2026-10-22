@@ -1,0 +1,7 @@
+name: personal-data-security
+description: Detects and handles UK personal data (NI numbers, NHS numbers, postcodes, email, phone, DOB, IBAN) — strip or block mode.
+version: "0.1.0"
+exec: ./gate.py
+timeout: 5s
+policy:
+  mode: strip    # default mode — overridden per swarm to "block" for EHCP

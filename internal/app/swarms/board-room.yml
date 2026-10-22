@@ -1,0 +1,82 @@
+schema_version: "1.0.0"
+id: board-room
+description: >
+  Adversarial pitch-committee swarm. The Chair facilitates a 3-round
+  investment-review protocol: (1) five specialist analysts (bull, bear,
+  market, financial, technical) write independent positions to the
+  coordination_store; (2) the Chair anonymises the bundle and the
+  analysts critique each other; (3) the Chair synthesises an investment
+  memo with preserved dissent and a structured decision. The post-member
+  quorum-gate enforces the contract that drives the whole protocol —
+  all five analyst positions must be present and the bull and bear
+  analysts must reach divergent decisions, otherwise adversarial review
+  has collapsed and the swarm halts.
+
+# `chair` is the registered lead agent (internal/app/agents/chair.md).
+# The five analyst members resolve via the agent registry's
+# case-insensitive name+alias lookup against the bundled analyst
+# manifests (bull-analyst.md, bear-analyst.md, market-analyst.md,
+# financial-analyst.md, technical-analyst.md).
+lead: chair
+
+# Auto-dispatch this swarm when the user invokes `@chair` by name.
+# Without this, `@chair` resolves to KindAgent and the lead's swarm-
+# leadership prompt block silently no-ops — see internal/swarm/
+# registry.go::AutoDispatchSwarmFor for the resolver rule.
+auto_dispatch_on_lead: true
+
+members:
+  - bull-analyst
+  - bear-analyst
+  - market-analyst
+  - financial-analyst
+  - technical-analyst
+
+harness:
+  # Sequential dispatch — HarnessConfig.Parallel is a single boolean
+  # today with no per-member or per-round override, so flipping it on
+  # would cascade to every analyst and race the coord-store. Sequential
+  # roster-order dispatch (bull → bear → market → financial → technical)
+  # guarantees all five position keys are present in the coord-store
+  # by the time the post-technical-analyst quorum-gate fires. The
+  # Chair's runtime can still orchestrate parallel delegation in
+  # Round 2 (peer-review) and Round 3 (synthesis) via its own
+  # delegate-with-run_in_background instructions; that's an agent-level
+  # concern, not a harness-level one. See Features/Board Room Swarm
+  # Integration (May 2026) for the full tradeoff write-up.
+  parallel: false
+
+  # Post-member quorum-gate around the technical-analyst (the last
+  # analyst in roster order). The gate's ext-manifest declares five
+  # coord-store inputs (one per analyst output_key=output) which the
+  # host composes into a flat multi-key JSON payload before invoking
+  # the gate executable — see internal/app/gates/quorum-gate/manifest
+  # .yml. Naming convention follows planning-loop.yml's
+  # `post-member-<member>-<concern>` shape so log readers can scan the
+  # swarm catalogue uniformly.
+  gates:
+    - name: post-member-technical-analyst-quorum
+      kind: ext:quorum-gate
+      when: post-member
+      target: technical-analyst
+      output_key: output
+    # Chair synthesis gate — the Chair's final structured decision at
+    # `board-room/{chainID}/decision` was previously enforced only by
+    # Chair discipline. This gate validates it against the
+    # `board-decision-v1` schema (the exact JSON shape the chair
+    # manifest already documents: decision / confidence / dissents /
+    # conditions / dealbreaker_risks), so rounds 2–3 cannot close
+    # without a machine-checkable decision with preserved dissent.
+    - name: post-swarm-chair-decision
+      kind: builtin:result-schema
+      schema_ref: board-decision-v1
+      when: post
+      output_key: "{chainID}/decision"
+
+context:
+  # Coordination_store namespace for this swarm's runs. Pinned so the
+  # Chair's documented chain keys (`board-room/{chainID}/positions/*`,
+  # `board-room/{chainID}/critiques/*`, `board-room/{chainID}/
+  # investment-memo`, `board-room/{chainID}/decision`) are stable
+  # across reboots.
+  chain_prefix: board-room

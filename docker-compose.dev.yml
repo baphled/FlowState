@@ -1,0 +1,67 @@
+# Local development Compose file for Qdrant.
+#
+# This file mounts the host's existing Qdrant data directory at
+# ~/.local/share/qdrant/. Do NOT run `docker compose down -v` or
+# `docker volume rm` against this stack — those operations will not
+# touch the bind mount, but the container will run against ~5.8 GB of
+# pre-synced vault collections that are canonical and irreplaceable.
+#
+# Usage:
+#   make qdrant-up        # bring Qdrant up in the background
+#   make qdrant-down      # stop the container (data persists on host)
+#   make qdrant-logs      # tail Qdrant logs
+#   make qdrant-status    # health + collection list
+#
+# Or directly:
+#   docker compose -f docker-compose.dev.yml up -d qdrant
+#   docker compose -f docker-compose.dev.yml down
+#
+# Qdrant is exposed on 127.0.0.1 only (REST :6333, gRPC :6334) so the
+# host firewall is the only access boundary. The container runs as
+# UID:GID 1000:1000 to match the host data directory ownership.
+#
+# Image is pinned to the version that last wrote the data directory.
+# When the host data dir was last touched by Qdrant 1.16.3, do not
+# downgrade — Qdrant tolerates forward upgrades but not arbitrary
+# downgrades on persisted state.
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.16.3
+    container_name: flowstate-qdrant
+    user: "1000:1000"
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6333:6333"  # REST
+      - "127.0.0.1:6334:6334"  # gRPC
+    volumes:
+      # Canonical vault collections — DO NOT replace with a named volume.
+      - ${HOME}/.local/share/qdrant/storage:/qdrant/storage:rw
+      # User's tuning (200 MB segments, 50 MB memmap, 4 search threads,
+      # on-disk payload, WARN logging). Mounted read-only at the path
+      # Qdrant looks at for production overrides.
+      - ${HOME}/.local/share/qdrant/config/config.yaml:/qdrant/config/production.yaml:ro
+      # Snapshots persist alongside storage on the host.
+      - ${HOME}/.local/share/qdrant/snapshots:/qdrant/snapshots:rw
+    environment:
+      # Run Qdrant under the production profile so the mounted
+      # production.yaml is the active config layer.
+      QDRANT__SERVICE__HTTP_PORT: "6333"
+      QDRANT__SERVICE__GRPC_PORT: "6334"
+      # Inside the container, bind to all interfaces — the host port
+      # mapping above is what restricts external access to 127.0.0.1.
+      QDRANT__SERVICE__HOST: "0.0.0.0"
+      # The mounted production.yaml has host-absolute storage paths
+      # (~/.local/share/qdrant/...) that point outside the container.
+      # Override them to the in-container bind-mount paths so Qdrant
+      # finds the canonical data without us editing the host config.
+      QDRANT__STORAGE__STORAGE_PATH: "/qdrant/storage"
+      QDRANT__STORAGE__SNAPSHOTS_PATH: "/qdrant/snapshots"
+      QDRANT__STORAGE__TEMP_PATH: "/qdrant/storage/tmp"
+    healthcheck:
+      # Qdrant 1.16.x exposes liveness on /healthz.
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:6333/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 15s

@@ -1,0 +1,143 @@
+# Full-stack Compose for FlowState (backend + UI + Qdrant + Ollama).
+#
+# docker-compose.dev.yml is UNTOUCHED — it stays the dev-loop Qdrant-only
+# stack bound to the canonical host data dir. This file is self-contained
+# with named volumes so it can never touch the host's irreplaceable vault
+# collections.
+#
+# Defaults come from `.env` (COMPOSE_PROFILES=all) so a plain
+#   docker compose up -d
+# starts EVERY service. Profiles remain for selective runs:
+#   docker compose --profile backend up -d     # backend (+ qdrant, ollama)
+#   docker compose --profile qdrant up -d      # qdrant + ollama only
+#   docker compose --profile ui up -d          # ui (+ backend, qdrant, ollama)
+#
+# Branch overrides (staged into the build context by `make docker-build`):
+#   make docker-up BE_BRANCH=feature/agent-platform FE_BRANCH=feature/swarm-ui
+
+services:
+  qdrant-init:
+    # One-shot: chowns the fresh named volumes so qdrant (user 1000:1000)
+    # can write to them on first run. Root-owned volumes would otherwise
+    # cause permission errors.
+    image: alpine:3.20
+    container_name: flowstate-qdrant-init
+    profiles: ["qdrant", "backend", "ui", "all"]
+    volumes:
+      - qdrant-storage:/qdrant/storage
+      - qdrant-snapshots:/qdrant/snapshots
+    command: ["sh", "-c", "chown -R 1000:1000 /qdrant/storage /qdrant/snapshots"]
+    restart: "no"
+
+  qdrant:
+    image: qdrant/qdrant:v1.16.3
+    container_name: flowstate-qdrant-full
+    user: "1000:1000"
+    profiles: ["qdrant", "backend", "ui", "all"]
+    restart: unless-stopped
+    depends_on:
+      qdrant-init:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:6333:6333"  # REST
+      - "127.0.0.1:6334:6334"  # gRPC
+    volumes:
+      # Named volume — deliberately NOT the dev compose's canonical host bind.
+      - qdrant-storage:/qdrant/storage:rw
+      - qdrant-snapshots:/qdrant/snapshots:rw
+    environment:
+      QDRANT__SERVICE__HTTP_PORT: "6333"
+      QDRANT__SERVICE__GRPC_PORT: "6334"
+      QDRANT__SERVICE__HOST: "0.0.0.0"
+      QDRANT__STORAGE__STORAGE_PATH: "/qdrant/storage"
+      QDRANT__STORAGE__SNAPSHOTS_PATH: "/qdrant/snapshots"
+      QDRANT__STORAGE__TEMP_PATH: "/qdrant/storage/tmp"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:6333/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 15s
+
+  ollama:
+    image: ollama/ollama:0.12
+    container_name: flowstate-ollama
+    profiles: ["qdrant", "backend", "ui", "all"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # One-shot: pulls the embedding model FlowState defaults to
+  # (config DefaultEmbeddingModel = "nomic-embed-text").
+  ollama-pull:
+    image: ollama/ollama:0.12
+    container_name: flowstate-ollama-pull
+    profiles: ["qdrant", "backend", "ui", "all"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    volumes:
+      - ollama-models:/root/.ollama
+    entrypoint: ["ollama", "pull", "nomic-embed-text"]
+    restart: "no"
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    image: flowstate-backend:latest
+    container_name: flowstate-backend
+    profiles: ["backend", "ui", "all"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      OLLAMA_HOST: http://ollama:11434
+      # Credentials/providers come from the host config, mounted read-only.
+      # Override per-provider API keys here if preferred.
+      XDG_CONFIG_HOME: /config
+      XDG_DATA_HOME: /data
+    volumes:
+      # Mount host flowstate config (config.yaml, agents, skills) read-only.
+      - ${HOME}/.config/flowstate:/config/flowstate:ro
+      - flowstate-data:/data
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:8080/metrics >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.ui
+    image: flowstate-ui:latest
+    container_name: flowstate-ui
+    profiles: ["ui", "all"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5173:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  qdrant-storage:
+  qdrant-snapshots:
+  ollama-models:
+  flowstate-data:

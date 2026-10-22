@@ -1,0 +1,20 @@
+schema_version: "1.0.0"
+id: solo
+description: >
+  Minimal swarm template — single-member, no gates, executor as lead.
+  Copy this file as `~/.config/flowstate/swarms/<my-swarm>.yml` and
+  edit the lead, members, and gates to suit. A swarm of one is
+  intentionally supported so users can opt into the swarm runtime
+  surface (gates, harness wrapping) without forcing a multi-agent
+  shape.
+
+lead: executor
+members: []
+
+harness:
+  parallel: false
+  gates: []
+
+context:
+  # Defaults to the swarm id; left explicit here as a copy-edit hint.
+  chain_prefix: solo

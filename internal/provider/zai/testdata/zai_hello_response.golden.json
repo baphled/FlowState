@@ -1,0 +1,19 @@
+{
+  "chunks": [
+    {
+      "content": "Hello! I'm an AI assistant from Z.AI."
+    },
+    {
+      "content": " I'm here to help you with a wide range of tasks"
+    },
+    {
+      "content": " including answering questions, providing information, and assisting with analysis."
+    },
+    {
+      "content": " What can I help you with today?"
+    },
+    {
+      "done": true
+    }
+  ]
+}

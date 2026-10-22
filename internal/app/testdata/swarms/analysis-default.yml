@@ -1,0 +1,7 @@
+schema_version: "1.0.0"
+id: analysis-default
+description: analysis swarm with no override (default 8) for app-wiring test
+lead: analysis-lead
+swarm_type: analysis
+members:
+  - analysis-worker

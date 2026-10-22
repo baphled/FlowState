@@ -1,0 +1,5 @@
+Delivery brief from Team-Lead: add a /healthz endpoint to the existing chi-based Go service (~200 LOC). One handler returning 200 with JSON {"status":"ok"}, one Ginkgo spec, no new dependencies, no auth.
+
+Squad is staffed (Senior-Engineer, QA-Engineer, Code-Reviewer available). Acceptance criteria, scope, and constraints are already agreed — do NOT re-interview.
+
+Decompose into atomic work units now and delegate the implementation to Senior-Engineer as your first action. Issue the delegate tool call immediately as your first response; do not announce skill loading or run a preflight summary first.

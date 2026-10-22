@@ -1,0 +1,22 @@
+# Python dependencies for the bundled vault tool scripts (sync-vault, query-vault, mcp-vault-server).
+#
+# Install via pipx (recommended — keeps the environment isolated):
+#
+#   pipx install llama-index
+#   pipx inject llama-index \
+#       llama-index-vector-stores-qdrant \
+#       llama-index-embeddings-fastembed \
+#       fastembed \
+#       onnxruntime \
+#       qdrant-client
+#
+# Or via pip into an existing virtual environment:
+#
+#   pip install -r requirements.txt
+
+llama-index
+llama-index-vector-stores-qdrant
+llama-index-embeddings-fastembed
+fastembed
+onnxruntime
+qdrant-client

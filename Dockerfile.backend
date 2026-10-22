@@ -1,0 +1,41 @@
+# Multi-stage Dockerfile for the FlowState HTTP API server.
+#
+# Source is NOT cloned inside the container: `make docker-build` clones the
+# requested branch into build/backend-src (worktree-local) and this image
+# simply COPYs it in. See Makefile target `docker-src`.
+#
+# Build:
+#   make docker-build BE_BRANCH=feature/agent-platform
+
+FROM golang:1.25-bookworm AS builder
+
+COPY backend-src /src
+WORKDIR /src
+
+# Pure-Go module (CGO not required) — static build for a minimal runtime.
+ENV CGO_ENABLED=0 GOOS=linux
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go build -trimpath -ldflags "-s -w" -o /out/flowstate ./cmd/flowstate
+
+# ---------------------------------------------------------------------------
+# Runtime — minimal alpine (busybox wget for the compose healthcheck),
+# non-root user, ca-certificates for outbound HTTPS (Ollama/Qdrant remotes).
+FROM alpine:3.20
+
+RUN addgroup -S -g 10001 flowstate \
+    && adduser -S -u 10001 -G flowstate flowstate \
+    && apk add --no-cache ca-certificates tzdata
+
+WORKDIR /app
+COPY --from=builder /out/flowstate /app/flowstate
+
+# Config is mounted at /config; the binary resolves it via XDG_CONFIG_HOME.
+ENV XDG_CONFIG_HOME=/config \
+    XDG_DATA_HOME=/data \
+    QDRANT_URL=http://qdrant:6333
+
+EXPOSE 8080
+USER flowstate
+ENTRYPOINT ["/app/flowstate"]
+CMD ["serve", "--host", "0.0.0.0", "--port", "8080"]

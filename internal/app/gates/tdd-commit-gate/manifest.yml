@@ -1,0 +1,17 @@
+name: tdd-commit-gate
+description: >
+  Validates that an engineer's output follows TDD discipline (failing test
+  written before implementation) and includes a commit SHA from `make
+  ai-commit`. Reads the member's coord-store output, checks for RED/GREEN
+  phase evidence, and verifies the commit was made through the mandated
+  commit path. Rejects output that skips the test-first step or commits
+  through raw `git commit`.
+version: "0.1.0"
+exec: ./gate.py
+timeout: 30s
+policy:
+  require_red_phase: true
+  require_green_phase: true
+  require_commit_sha: true
+  require_ai_commit: true
+  max_files_per_commit: 5

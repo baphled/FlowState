@@ -1,0 +1,183 @@
+//go:build e2e
+
+// Package support provides BDD test step definitions and helpers.
+package support
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/cucumber/godog"
+	"github.com/cucumber/godog/colors"
+)
+
+// defaultTagFilter is applied when GODOG_TAGS is unset. It excludes
+// scenarios tagged @wip (work-in-progress specifications whose product
+// code may exist but whose BDD step glue has not yet been wired). Those
+// scenarios are still runnable explicitly via `GODOG_TAGS=@wip` or the
+// `make bdd-wip` target, which keeps them findable without breaking the
+// default `go test ./features/...` gate under Strict:true.
+const defaultTagFilter = "~@wip && ~@frontend"
+
+func getOptions() *godog.Options {
+	opts := &godog.Options{
+		Output: colors.Colored(os.Stdout),
+		Format: "progress",
+		Strict: true,
+	}
+	if tags := os.Getenv("GODOG_TAGS"); tags != "" {
+		opts.Tags = tags
+	} else {
+		opts.Tags = defaultTagFilter
+	}
+	if f := os.Getenv("GODOG_FORMAT"); f != "" {
+		opts.Format = f
+	}
+	return opts
+}
+
+func TestFeatures(t *testing.T) {
+	opts := getOptions()
+	opts.Paths = []string{"../"}
+	if p := os.Getenv("GODOG_PATHS"); p != "" {
+		opts.Paths = []string{p}
+	}
+	opts.TestingT = t
+
+	suite := godog.TestSuite{
+		Name:                "flowstate",
+		ScenarioInitializer: InitializeScenario,
+		Options:             opts,
+	}
+
+	if suite.Run() != 0 {
+		t.Fatal("non-zero status returned, failed to run feature tests")
+	}
+}
+
+func InitializeScenario(ctx *godog.ScenarioContext) {
+	s := &StepDefinitions{}
+	RegisterOAuthSteps(ctx, s)
+	RegisterSkillSteps(ctx, s)
+	RegisterMemorySteps(ctx)
+	RegisterSkillAutoloadingSteps(ctx)
+	RegisterHarnessSteps(ctx)
+	RegisterSessionEnrichmentSteps(ctx, s)
+	RegisterSessionForkSteps(ctx, s)
+	RegisterMultilineInputSteps(ctx, s)
+	si := &SessionIsolationSteps{}
+	RegisterSessionIsolationSteps(ctx, si)
+	RegisterSessionVisibilitySteps(ctx, si)
+	sto := &StreamingToolOutputSteps{}
+	RegisterStreamingToolOutputSteps(ctx, sto)
+	// Planning steps are in the same package
+	RegisterPlanningSteps(ctx)
+	RegisterOrchestratorMetadataSteps(ctx)
+	RegisterConfigSteps(ctx)
+	RegisterPluginSteps(ctx)
+	RegisterFailoverSteps(ctx)
+	RegisterDelegationSessionSteps(ctx)
+	s.RegisterSteps(ctx)
+	s.RegisterAgentLayeringSteps(ctx)
+	RegisterStreamingCancelSteps(ctx, s)
+	initPlanHarnessE2ESteps(ctx)
+	initPlanRejectionLoopSteps(ctx)
+	RegisterExecutionLoopSteps(ctx)
+	RegisterLearningLoopSteps(ctx)
+	RegisterCompressionSteps(ctx)
+	RegisterAutoCompactionSteps(ctx)
+	RegisterSummariserChainSteps(ctx)
+	RegisterHotTailBudgetSteps(ctx)
+	RegisterMemoInvalidationSteps(ctx)
+	RegisterPhase3RehydrationSteps(ctx)
+	RegisterReliabilityFixSteps(ctx)
+	RegisterSummaryKeepListSteps(ctx)
+	RegisterContextLossGuardSteps(ctx)
+	RegisterChildOverflowRecoverySteps(ctx)
+	RegisterParentChildOverflowParitySteps(ctx)
+	RegisterSessionMemorySteps(ctx)
+	RegisterCompressionE2ESteps(ctx)
+	RegisterCompactionUsageFeedbackSteps(ctx)
+	RegisterTokenBudgetedWindowSteps(ctx)
+	RegisterRecallLearningSteps(ctx)
+	RegisterRecallToolsEffectiveConfigSteps(ctx)
+	RegisterAdultingMemorySteps(ctx)
+	RegisterFSPollutionSteps(ctx)
+	RegisterAdultingDeadlineSteps(ctx)
+	RegisterVaultIndexSyncSteps(ctx)
+	RegisterVaultSyncPerfSteps(ctx)
+	RegisterVaultQueryCollectionSteps(ctx)
+	RegisterVaultQueryScriptSteps(ctx)
+	RegisterTodoSteps(ctx)
+	RegisterQuestionSteps(ctx)
+	RegisterMCPServerLifecycleSteps(ctx)
+	RegisterGateAmendmentSteps(ctx)
+	RegisterGateFailureBlockingSteps(ctx)
+	RegisterDiscoveryResilienceSteps(ctx)
+	RegisterParallelGateRetrySteps(ctx)
+	RegisterEngineSteps(ctx)
+	RegisterBatchedPersistenceSteps(ctx)
+	RegisterToolLoopBudgetSteps(ctx)
+	RegisterLeanSkillInjectionSteps(ctx)
+	RegisterInFlightToolResultCapSteps(ctx)
+	RegisterTranscriptToolResultCapSteps(ctx)
+	RegisterLoopGuardSteps(ctx)
+	RegisterSoftContinuationSteps(ctx)
+	RegisterTodoCompletionSteps(ctx)
+	RegisterTruncationClassificationSteps(ctx)
+	RegisterSessionResilienceSteps(ctx)
+	RegisterTurnWatchdogSteps(ctx)
+	RegisterTurnCompletesSteps(ctx)
+	RegisterNoCallsStreakSteps(ctx)
+	RegisterSessionBoundedSteps(ctx)
+	RegisterSkillsGuaranteeSteps(ctx)
+	registerOpenAICompatClassificationSteps(ctx)
+	registerTurnDeadlineSteps(ctx)
+	RegisterBashProcessKillSteps(ctx, &BashProcessKillSteps{})
+	frs := &failureReasonSteps{}
+	removeHealthSandboxes := func() {
+		for _, pat := range []string{"/tmp/flowstate-health-cache-*", "/tmp/flowstate-health-home-*",
+			"/tmp/flowstate-failure-reason-*", "/tmp/flowstate-cli-home-*"} {
+			matches, err := filepath.Glob(pat)
+			if err != nil {
+				continue
+			}
+			for _, m := range matches {
+				_ = os.RemoveAll(m)
+			}
+		}
+	}
+	ctx.Before(func(sctx context.Context, _ *godog.Scenario) (context.Context, error) {
+		removeHealthSandboxes()
+		frs.resetEnv()
+		return sctx, nil
+	})
+	ctx.After(func(sctx context.Context, _ *godog.Scenario, _ error) (context.Context, error) {
+		removeHealthSandboxes()
+		return sctx, nil
+	})
+	RegisterFailureReasonSteps(ctx, frs)
+	RegisterStopButtonSteps(ctx, &stopButtonSteps{})
+	RegisterDelegationIntegritySteps(ctx)
+	RegisterDelegationCoordinationSteps(ctx)
+	RegisterTurnEventsSSESteps(ctx)
+	RegisterTargetSpecificitySteps(ctx)
+	RegisterFailoverBudgetSteps(ctx)
+	RegisterNotificationStreamSteps(ctx)
+	RegisterPprofSteps(ctx)
+	RegisterPrometheusRuntimeSteps(ctx)
+	RegisterAlwaysActiveSkillSteps(ctx)
+	RegisterPersistenceCompletenessSteps(ctx)
+	VoiceTTSContext(ctx)
+	VoiceAPIContext(ctx)
+	VoiceConversationContext(ctx)
+	VoiceFEContext(ctx)
+	ComposerVoiceContext(ctx)
+	VoiceWiringContext(ctx)
+	VoiceSTTContext(ctx)
+	VoiceServeContext(ctx)
+	NarrationContext(ctx)
+	RegisterQuitSteps(ctx)
+}

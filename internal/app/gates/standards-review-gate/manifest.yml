@@ -1,0 +1,14 @@
+name: standards-review-gate
+description: >
+  Validates Principal-Engineer standards review output. Ensures the
+  verdict is one of approve/revise/abort, lists specific files reviewed,
+  documents any issues found with file+line references, and confirms
+  TDD-cycle compliance was checked. Rejects unstructured "looks fine"
+  approvals and verdicts missing evidence.
+version: "0.1.0"
+exec: ./gate.py
+timeout: 15s
+policy:
+  require_files_reviewed: true
+  require_tdd_compliance_check: true
+  require_issues_list: true

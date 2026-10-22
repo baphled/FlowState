@@ -240,6 +240,25 @@ if [ -z "$REVIEWER_NAME" ]; then
 fi
 
 # ============================================================================
+# Step 4b: Guard 2 — Behaviour-Pinned trailer required when a func+test
+# pair lands in the same commit. See scripts/check-behaviour-pinned.sh
+# for the full rationale.
+# ============================================================================
+
+SCRIPT_DIR_FOR_GUARD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BEHAVIOUR_PINNED_GUARD="${SCRIPT_DIR_FOR_GUARD}/check-behaviour-pinned.sh"
+
+if [ -x "$BEHAVIOUR_PINNED_GUARD" ]; then
+    echo ""
+    echo -e "${BLUE}Checking Behaviour-Pinned trailer (Guard 2)...${NC}"
+    if ! "$BEHAVIOUR_PINNED_GUARD" --message-file "$COMMIT_FILE"; then
+        echo -e "${RED}Guard 2 blocked the commit. See message above.${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}Guard 2 passed${NC}"
+fi
+
+# ============================================================================
 # Step 5: Create commit with AI attribution
 # ============================================================================
 
