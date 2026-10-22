@@ -11,13 +11,18 @@ Deliver an externally configured SDLC swarm using the fresh Go runtime that can 
 3. **SDLC cycle:** test-first behavioural development (no mandatory Godog), small commits/PRs targeting `next`, actual CI results, fresh context-isolated review of the exact diff/SHA, and a policy gate over requirements, objective evidence and independent findings. Review comments in COMMENTED submissions can block.
 4. **Dogfood and generality:** one real self-improvement PR, including the feedback/correction loop if needed; then a minimal second non-SDLC workflow configured on the same execution/gate machinery.
 
+## Core capability before parity: conversational voice
+**Sequence: first SDLC dogfood MVP → focused voice spike → usable two-way voice implementation → feature-parity milestone.** Voice is a core product capability and **must not be deferred beyond parity**, but it is not a blocker for the initial dogfood MVP.
+
+The first pass may be deliberately narrow. It must demonstrate audible agent responses, natural multi-turn interaction and context continuity using the shared session engine—not merely transcription or a separate text-only voice service. Investigate the existing implementation before deciding whether to reuse it. Subsequent refinement (latency, interruption, reconnect, broad surface/device support) should follow measured experience and explicit acceptance rather than an over-specified upfront design. See [the voice spike brief](POST-MVP-CONVERSATIONAL-VOICE-SPIKE.md) for evaluation questions; the requirement and ordering here are binding roadmap scope.
+
 ## Map to existing plan — avoid invented duplicate subsystems
 - P03: shared versioned contracts for evidence, evaluation criteria, findings, outcome and provenance; record configured/requested vs observed model identity.
 - P04–P07: lifecycle, events, persistence, provider/tool execution, permissions and resource budgets.
 - P08: external agent and extension discovery, replaceable evaluation adapters, gates and hooks.
 - P09: externally configured swarm graphs, isolated/ephemeral or retained worker context, supervisor-driven delegation, checkpoints, recovery and outcome gates.
 - P10: minimally sufficient attributable API/event stream and CLI; full UI parity deferred.
-- P11–P19: retain on the full roadmap, do not make completion of these plans a prerequisite for first dogfood.
+- P11–P19: retain on the full roadmap, do not make completion of these plans a prerequisite for first dogfood. Conversational voice must be delivered before declaring full parity.
 
 ## Coordinator execution contract
 Given an authorised milestone and explicit overall budget, the coordinator must continue the eligible work **without repeatedly prompting the owner**. After each accepted task/merge, select the next eligible bounded packet and dispatch it, preserving task authority and branch discipline.
