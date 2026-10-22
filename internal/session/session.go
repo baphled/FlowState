@@ -7,6 +7,7 @@ package session
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -110,6 +111,9 @@ func (s *Session) Events() []Event {
 	for _, t := range s.turns {
 		out = append(out, t.Events...)
 	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Seq < out[j].Seq
+	})
 	return out
 }
 

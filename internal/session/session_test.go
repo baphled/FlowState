@@ -50,6 +50,44 @@ func TestTurnLifecycleOrderedEvents(t *testing.T) {
 	}
 }
 
+func TestEventsReturnsInterleavedTurnsInSequenceOrder(t *testing.T) {
+	s := newTestSession(t)
+	first, err := s.StartTurn("first")
+	if err != nil {
+		t.Fatalf("StartTurn first: %v", err)
+	}
+	second, err := s.StartTurn("second")
+	if err != nil {
+		t.Fatalf("StartTurn second: %v", err)
+	}
+	if err := s.RecordToolResult(first, "first-result"); err != nil {
+		t.Fatalf("RecordToolResult: %v", err)
+	}
+	if err := s.Complete(second, "second-complete"); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if err := s.Cancel(first); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	want := []Event{
+		{Seq: 1, Kind: EventTurnAdmitted, Payload: "id=first"},
+		{Seq: 2, Kind: EventTurnAdmitted, Payload: "id=second"},
+		{Seq: 3, Kind: EventToolResult, Payload: "first-result"},
+		{Seq: 4, Kind: EventTurnComplete, Payload: "second-complete"},
+		{Seq: 5, Kind: EventTurnCancelled, Payload: ""},
+	}
+	got := s.Events()
+	if len(got) != len(want) {
+		t.Fatalf("got %d events, want %d", len(got), len(want))
+	}
+	for i, event := range got {
+		if event.Seq != want[i].Seq || event.Kind != want[i].Kind || event.Payload != want[i].Payload {
+			t.Errorf("event %d = {Seq:%d Kind:%q Payload:%q}, want {Seq:%d Kind:%q Payload:%q}",
+				i, event.Seq, event.Kind, event.Payload, want[i].Seq, want[i].Kind, want[i].Payload)
+		}
+	}
+}
+
 func TestCancelIsTerminal(t *testing.T) {
 	s := newTestSession(t)
 	turn, _ := s.StartTurn("turn-1")
