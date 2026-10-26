@@ -28,15 +28,15 @@ Always work in a worktree, never in the bare repo directly.
 
 ```bash
 cd /home/baphled/Projects/FlowState.git
-git worktree add -b feature/my-feature ../my-feature next
-cd ../my-feature
+git worktree add -b feature/my-feature my-feature next
+cd my-feature
 ```
 
 ### Cleaning Up
 
 ```bash
 cd /home/baphled/Projects/FlowState.git
-git worktree remove ../my-feature
+git worktree remove my-feature
 git branch -d feature/my-feature
 ```
 
