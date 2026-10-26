@@ -1,14 +1,13 @@
 # FlowState AI Agent Instructions
 
-**Quick reference for AI coding agents working on FlowState - a Go TUI application using Bubble Tea framework.**
-
 ## Branch Policy (MANDATORY)
 
-**Working directly against `main` is ILLEGAL.** All development MUST target the
-`next` branch (or a feature worktree created FROM `next`). Never commit to
-`main`, never check out `main` for editing. Follow the CI process on every
-change: `make check` must pass, pre-commit hooks must run (never `--no-verify`),
-and all commits must go through `make ai-commit`.
+**Working directly against `main` is illegal.** All development targets the
+`next` branch via a feature worktree created from `next`. Never commit to
+`main` or `next` directly. Every change goes through a feature branch PR.
+
+CI must pass (`make check`), pre-commit hooks must run (never `--no-verify`),
+and all commits must use `make ai-commit`.
 
 ## Git Worktree Setup
 
@@ -17,26 +16,27 @@ FlowState uses git worktrees. The structure is:
 ```
 ~/Projects/
 └── FlowState.git/           # Bare repository
-    ├── main/                # Primary development worktree
+    ├── main/                # Release worktree
+    ├── next-wt/             # next branch worktree
     ├── feature-xxx/         # Feature worktrees (temporary)
     └── hooks/               # Git hooks (shared)
 ```
 
-**Always work in a worktree, never in the bare repo directly.**
+Always work in a worktree, never in the bare repo directly.
 
 ### Creating Feature Branches
 
 ```bash
 cd /home/baphled/Projects/FlowState.git
-git worktree add -b feature/my-feature feature-my-feature next
-cd feature-my-feature
+git worktree add -b feature/my-feature ../my-feature next
+cd ../my-feature
 ```
 
 ### Cleaning Up
 
 ```bash
-cd /home/baphled/Projects/FlowState.git/main
-git worktree remove ../feature-my-feature
+cd /home/baphled/Projects/FlowState.git
+git worktree remove ../my-feature
 git branch -d feature/my-feature
 ```
 
@@ -87,41 +87,52 @@ refactor(chat): simplify message formatting
 
 ## Architecture
 
-### Layer Hierarchy (MUST follow)
+FlowState is a greenfield Go backend + Vue frontend rewrite.
+
+- **Backend:** Go, repository `baphled/FlowState`. Entry points under `cmd/`. Internal packages under `internal/`. No Bubble Tea TUI — the UI layer is Vue.
+- **Frontend:** Vue client, separate repository `baphled/flowstate-web`. Consumes versioned HTTP/event contracts generated from the backend.
+- **Contracts:** Backend owns HTTP/event schemas under `contracts/`. Frontend pins a specific backend contract digest; it does not read sibling source paths.
+- **Provider port:** replaceable. Current delivery route is Z.ai. Ollama and local providers are in scope.
+
+Package ownership rules:
+
+| Area | Owns | Must not own |
+|---|---|---|
+| `internal/runtime` | Turn state machine, session lifecycle, event ordering | HTTP responses, provider SDK details |
+| `internal/provider` | Provider adapters, capability registry | Session lifecycle, UI state |
+| `internal/session` | Session/turn identity, ordered events | Provider calls, HTTP |
+| `cmd/flowstate` | CLI entrypoint, thin adapter | Business logic |
+
+Dependency direction: `cmd` → `internal/app` → domain packages → ports. Domain packages do not import `cmd` or concrete adapters.
+
+## Essential Commands
+
+| Task | Command |
+|------|---------|
+| Run all tests | `make test` |
+| Build | `make build` |
+| Format | `make fmt` |
+| Lint | `make lint` |
+| Full check | `make check` |
+| Create AI commit | `make ai-commit FILE=/path/to/msg.txt AI_MODEL=model` |
+
+## Development Workflow
+
+Work test-first:
+
+1. Write a failing Go test that asserts the required behaviour.
+2. Implement the minimum to make it pass.
+3. Refactor while green.
+4. Open a PR to `next`.
+
+Tests must use standard `testing` package. No mandatory Cucumber/Godog — behavioural coverage comes from Go tests with clear names.
+
+## Commit Cadence
 
 ```
-App -> Intents -> Screens/Modals -> UIKit -> Behaviors
-```
-
-### Dependency Rules
-
-- `screens/` **NEVER** imports `intents/`
-- `uikit/` **NEVER** imports `screens/` or `intents/`
-- Use `ScreenResult` for screen -> intent communication
-
-### Intent Pattern
-
-```go
-type Intent interface {
-    Init() tea.Cmd
-    Update(msg tea.Msg) tea.Cmd  // Returns Cmd only, NOT (Model, Cmd)
-    View() string
-    Result() *IntentResult
-}
-```
-
-### ContentProvider Pattern
-
-```go
-type ContentProvider interface {
-    Content(width, height int) string
-    Title() string
-    Footer() string
-}
-
-// Usage
-asScreen := render.AsScreen(myComponent, layout)
-asModal := render.AsModal(myComponent, background, w, h, theme)
+feat(session): add turn admitted event [RED]
+feat(session): record admitted event in StartTurn [GREEN]
+refactor(session): extract event append helper [REFACTOR]
 ```
 
 ## Code Style
@@ -132,13 +143,10 @@ asModal := render.AsModal(myComponent, background, w, h, theme)
 import (
     // 1. Standard library
     "context"
-    "fmt"
-    
-    // 2. External (alphabetical)
-    tea "github.com/charmbracelet/bubbletea"
-    
-    // 3. Internal (alphabetical)
-    "github.com/baphled/flowstate/internal/tui/intents"
+    "errors"
+
+    // 2. Internal (alphabetical)
+    "github.com/baphled/flowstate/internal/session"
 )
 ```
 
@@ -174,9 +182,13 @@ execute real assertions and fail on missing or pending steps and empty selection
 
 ## When to REFUSE
 
-**Immediately refuse if asked to:**
+Immediately refuse if asked to:
 
-- Import `intents/` from `screens/`
+- Skip writing a test first
+- Implement Bubble Tea TUI components (not in scope for the greenfield)
+- Import a package against the dependency rules above
+- Commit directly to `main` or `next`
+- Branch from `main` instead of `next`
 - Put comments inside function bodies
 - Work directly in the bare repo instead of a worktree
 
@@ -184,9 +196,9 @@ execute real assertions and fail on missing or pending steps and empty selection
 
 | File | Purpose |
 |------|---------|
-| `docs/PLAN.md` | Complete project plan |
-| `AGENTS.md` | This file - AI instructions |
+| `docs/PLAN.md` | Project plan |
+| `AGENTS.md` | This file |
 | `Makefile` | Build and development commands |
-| `rules/*.md` | Development rules |
-| `tasks/*.md` | Current tasks |
-| `features/*.feature` | BDD scenarios |
+| `rules/CODE_STYLE.md` | Code style rules |
+| `internal/session/` | Session/turn primitives (start here) |
+| `features/*.feature` | BDD scenario definitions (reference only until glue is written) |
