@@ -77,9 +77,9 @@ fmt: ## Format code
 lint: ## Run linters
 	@echo "Running linters..."
 	$(GOVET) ./...
-	@if command -v staticcheck &> /dev/null; then staticcheck ./...; fi
+	@if command -v staticcheck >/dev/null 2>&1; then staticcheck ./...; fi
 	@if command -v golangci-lint >/dev/null 2>&1; then golangci-lint run; fi
-	@if command -v deadcode &> /dev/null && go list -f '{{if eq .Name "main"}}{{.ImportPath}}{{end}}' ./... 2>/dev/null | grep -q .; then deadcode ./...; fi
+	@if command -v deadcode >/dev/null 2>&1 && go list -f '{{if eq .Name "main"}}{{.ImportPath}}{{end}}' ./... 2>/dev/null | grep -q .; then deadcode ./...; fi
 
 check: fmt lint test ## Run all checks
 
