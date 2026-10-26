@@ -28,7 +28,7 @@ FlowState uses git worktrees. The structure is:
 
 ```bash
 cd /home/baphled/Projects/FlowState.git
-git worktree add -b feature/my-feature feature-my-feature main
+git worktree add -b feature/my-feature feature-my-feature next
 cd feature-my-feature
 ```
 
@@ -47,8 +47,7 @@ git branch -d feature/my-feature
 | Task | Command |
 |------|---------|
 | **Run all tests** | `make test` |
-| **Run BDD tests** | `make bdd` |
-| **Run smoke tests** | `make bdd-smoke` |
+| **Run race checks** | `go test -race -count=1 ./...` |
 | **Build** | `make build` |
 | **Format** | `make fmt` |
 | **Lint** | `make lint` |
@@ -56,26 +55,18 @@ git branch -d feature/my-feature
 
 ## Development Workflow
 
-### BDD-Driven Development (MANDATORY)
+### Choose Tests for the Change
 
-**ALWAYS develop from the outside-in:**
+Use focused Go unit and integration tests by default. For a bug fix, reproduce
+the failure with a regression test before changing the implementation. Reuse
+existing coverage when it already validates the change.
 
-1. **Write Cucumber scenario FIRST** - Start with acceptance test
-2. **Watch it fail** - Verify it fails for the right reason
-3. **Smallest change** - Implement just enough to pass ONE step
-4. **Run scenario** - See next failure
-5. **Repeat** - Until scenario passes
-6. **Refactor** - Clean up while green
+Cucumber is optional. Reserve it for a small number of acceptance flows where
+the shared scenario adds value beyond a Go test. Do not add a feature file or
+Godog dependency just to satisfy a process rule, or require Cucumber for routine
+code, configuration, CI, or documentation changes.
 
-```gherkin
-# Example: features/chat/basic_chat.feature
-Feature: Basic Chat
-  Scenario: Send message and receive response
-    Given FlowState is running
-    When I type "Hello"
-    And I press Enter
-    Then I should see a response from the AI
-```
+See [the testing workflow](rules/BDD_WORKFLOW.md) for test selection and CI gates.
 
 ### The Smallest Change
 
@@ -89,12 +80,9 @@ Feature: Basic Chat
 ### Commit Cadence
 
 ```
-feat(chat): add scenario for basic chat [RED]
-feat(chat): create app struct [GREEN step 1]
-feat(chat): add input handling [GREEN step 2]
-feat(chat): implement provider call [GREEN step 3]
-feat(chat): display response [GREEN all steps]
-refactor(chat): extract message formatting [REFACTOR]
+test(chat): reproduce missing response
+fix(chat): preserve response events
+refactor(chat): simplify message formatting
 ```
 
 ## Architecture
@@ -171,30 +159,23 @@ import (
 
 ## Testing
 
-### BDD Tags
-
-```gherkin
-@smoke       # Critical path, always run
-@wip         # Work in progress
-@navigation  # Navigation tests
-@chat        # Chat functionality
-```
-
 ### Running Tests
 
 ```bash
-make bdd           # All BDD tests
-make bdd-smoke     # Smoke tests only
-make bdd-wip       # WIP tests only
-make test          # Go tests
+make test                          # Go tests
+go test -race -count=1 ./...         # Uncached tests with race detection
+make check                         # Format, lint, and test
 ```
+
+The checked-in Gherkin files describe planned acceptance behaviour. There is
+currently no runnable Godog suite, so `make bdd*` is not a CI gate and those files
+are not evidence of passing tests. Any future required acceptance suite must
+execute real assertions and fail on missing or pending steps and empty selection.
 
 ## When to REFUSE
 
 **Immediately refuse if asked to:**
 
-- Skip writing scenario/test first (BDD violation)
-- Build components bottom-up without acceptance test
 - Import `intents/` from `screens/`
 - Put comments inside function bodies
 - Work directly in the bare repo instead of a worktree

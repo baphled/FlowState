@@ -89,11 +89,14 @@ make worktree-new NAME=my-feature
 ### Testing
 
 ```bash
-make test        # Run all tests
-make bdd         # Run BDD tests
-make bdd-smoke   # Run smoke tests
-make check       # Full check (fmt, lint, test)
+make test                         # Go tests
+go test -race -count=1 ./...        # Uncached tests with race detection
+make check                        # Full check (fmt, lint, test)
 ```
+
+Use focused Go unit and integration tests by default. Cucumber is optional for
+selected acceptance flows; the checked-in Gherkin files currently have no runnable
+suite and are not CI gates. See [the testing workflow](rules/BDD_WORKFLOW.md).
 
 See [AGENTS.md](AGENTS.md) for AI development instructions.
 
