@@ -27,46 +27,26 @@ jobs:
       - name: Validate PR title
         run: echo "${{ github.event.pull_request.title }}" | npx commitlint
 
-  check-ai-attribution:
-    name: Check AI Attribution
+  project-metadata:
+    name: Project Metadata Policy
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Check AI attribution on Go file commits
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Exercise metadata guards
+        run: make test-project-metadata
+      - name: Reject run records and commit identity claims
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          echo "Checking AI attribution for commits touching Go files..."
-          missing_attribution=()
-
-          for commit in $(git rev-list ${BASE_SHA}..${HEAD_SHA}); do
-            go_files=$(git diff-tree --no-commit-id --name-only -r "$commit" | grep '\.go$' || true)
-
-            if [ -n "$go_files" ]; then
-              if ! git log -1 --format=%B "$commit" | grep -q "AI-Generated-By:"; then
-                short=$(git log -1 --format="%h %s" "$commit")
-                echo "::warning::Missing AI attribution: $short"
-                missing_attribution+=("$short")
-              fi
-            fi
-          done
-
-          if [ ${#missing_attribution[@]} -gt 0 ]; then
-            echo ""
-            echo "⚠️  ${#missing_attribution[@]} commit(s) touching .go files lack AI attribution:"
-            printf '  - %s\n' "${missing_attribution[@]}"
-            echo ""
-            echo "If these commits were AI-generated, please amend with:"
-            echo "  AI-Generated-By: <Agent> (<model>)"
-            echo "  Reviewed-By: <Your Name>"
-            echo "Note: Not all commits require AI attribution. Only AI-generated code needs the trailer."
-          fi
-
-          echo "✅ All Go file commits have proper AI attribution"
+        run: python3 -B scripts/project_metadata.py --base "$BASE_SHA" --head "$HEAD_SHA"
 
   conventional-commits:
     name: Conventional Commits

@@ -69,7 +69,8 @@ type ChatIntent struct {
 
 Never use: `TODO`, `FIXME`, `HACK`, `XXX`
 
-Track work items in `tasks/` directory instead.
+Track work items in Dropbox `/FlowState/Metadata/attempts/`; read the current
+`/FlowState/Metadata/ACTIVE.json` pointer. Never create repository-local task records.
 
 ## Error Handling
 
@@ -107,8 +108,8 @@ intent := &ChatIntent{provider, session, textinput.New()} // BAD
 ## Testing
 
 - Test files: `*_test.go`
-- BDD features: `features/*.feature`
-- Step definitions: `features/steps/*_steps.go`
+- Standard Go `testing` unit/integration/headless CLI tests only
+- No Cucumber, Godog, Gherkin feature files or step-definition suites
 - Use table-driven tests for unit tests
 
 ## Formatting

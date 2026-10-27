@@ -1,204 +1,99 @@
-# FlowState AI Agent Instructions
+# FlowState repository rules
 
-## Branch Policy (MANDATORY)
+## Dropbox checkpoint — mandatory before work and resumption
 
-**Working directly against `main` is illegal.** All development targets the
-`next` branch via a feature worktree created from `next`. Never commit to
-`main` or `next` directly. Every change goes through a feature branch PR.
+Read the actual current Dropbox files, using available Dropbox tools:
 
-CI must pass (`make check`), pre-commit hooks must run (never `--no-verify`),
-and all commits must use `make ai-commit`.
+1. `/FlowState/Dev/00-AGENT-READ-FIRST.md`
+2. `/FlowState/Dev/AGENTS.md`
+3. `/FlowState/Dev/governance/OWNER-DECISIONS-AND-OPEN-QUESTIONS.md`
+4. `/FlowState/Metadata/ACTIVE.json`, then only the assigned packet and referenced
+   attribution/qualification/receipt evidence under `/FlowState/Metadata/attempts/`.
 
-## Git Worktree Setup
+Verify paths, revisions, hashes and candidate/prerequisite evidence. Read only the
+relevant current M1 contracts from `/FlowState/Dev`. Old repository plans, tasks,
+handoffs and copied pack files are not execution authority. If Dropbox cannot be
+read or evidence conflicts, stop the affected work with a checkpoint. Do not
+substitute memory or a stale checkout. Pass verified source text and hashes to
+children; do not assume they inherit these instructions.
 
-FlowState uses git worktrees. The structure is:
+## Project metadata — repository storage is forbidden
 
-```
-~/Projects/
-└── FlowState.git/           # Bare repository
-    ├── main/                # Release worktree
-    ├── next-wt/             # next branch worktree
-    ├── feature-xxx/         # Feature worktrees (temporary)
-    └── hooks/               # Git hooks (shared)
-```
+Store project packets, progress, AI attribution, qualifications, acceptance/review
+receipts and captured evidence in Dropbox `/FlowState/Metadata`, never in this
+checkout, commits or PR descriptions. Keep one immutable attempt directory.
+Only a neutral `Project-Metadata: dropbox:/FlowState/Metadata/attempts/<attempt>/<record>.json`
+reference belongs in a commit. Read that record in Dropbox before relying on it.
 
-Always work in a worktree, never in the bare repo directly.
+Never guess a provider/model/harness or copy a requested model into observed
+identity. Record observable facts and their evidence source in Dropbox; otherwise
+use `unverified`. Git user.name, environment overrides and a login are not evidence
+of model identity, authorship or review. Do not add AI-Generated-By, Reviewed-By or
+Co-authored-by trailers. Native Git identity, GitHub CI and actual GitHub reviews
+remain native facts; do not synthesize human approval or rewrite shared history.
 
-### Creating Feature Branches
+Reusable source code, qualification tests, schema definitions and explicitly
+synthetic test fixtures belong in Git. Actual run reports, logs, databases and
+qualification/receipt JSON do not. Store temporary capture files outside the
+checkout and current Dev pack; upload and read back before accepting evidence.
+Application runtime data also lives outside the code checkout; this policy does
+not require the application to use Dropbox as its event database.
 
-```bash
-cd /home/baphled/Projects/FlowState.git
-git worktree add -b feature/my-feature my-feature next
-cd my-feature
-```
+## Delivery
 
-### Cleaning Up
+- Fetch actual origin/next; create an isolated feature worktree from that SHA.
+  Never work in the bare repo, commit to main/next, branch from main or transplant
+  prototype runtime. Open one bounded PR to next.
+- Follow the assigned current Dropbox packet's scope, allowed paths and cumulative
+  budget. Read the current Dropbox role manifest and AGENT-WORK-POLICY.md. Each
+  agent has one active item; seniors focus on complex work and delegate bounded
+  parts to mid/junior engineers. The coordinator arranges separate review.
+- Use focused Go unit/headless integration tests, failing regression assertions
+  for bugs, and real available commands. Cucumber, Godog and Gherkin are forbidden. Preserve Go package
+  boundaries: cmd → internal/app → domain → ports; no concrete adapters in domain.
+- Run `make check` and hooks. Never use --no-verify. Commit using
+  `PROJECT_METADATA_FILE=/outside/checkout/record.json make ai-commit FILE=/outside/checkout/message.txt`.
+  This external file must be a read-back copy of the current Dropbox record.
+- `make check-project-metadata` checks indexed paths/content. CI also checks new
+  commit references/trailers. These are offline structural guards, not proof that
+  a Dropbox record, serving model or independent review is authentic.
+- Re-query actual GitHub CI/reviews for the exact candidate before merge. Resolve
+  material findings including COMMENTED reviews. Record evidence in Dropbox.
 
-```bash
-cd /home/baphled/Projects/FlowState.git
-git worktree remove my-feature
-git branch -d feature/my-feature
-```
+Go files use snake_case names, lowercase packages and standard testing. Keep
+imports grouped standard/internal. No inline/function-body comments or TODO/FIXME
+markers (E2E tests may use inline comments). Product scope and done criteria live
+in the current Dropbox contracts, not this bootstrap file.
 
-## Getting Started
+A delegator's claimed model/harness is not the worker's observed identity.
+Handoffs must not prefill AI_AGENT/AI_MODEL or command a child to claim a particular
+serving identity. The commit helper ignores such overrides and adds only the
+external record reference. `coordination_store` and chat summaries are transient
+messages, not durable project evidence; publish/read back the actual metadata in
+Dropbox and pass its reference in coordination messages.
 
-### Essential Commands
+Worktrees must be immediate directories inside the actual registered bare
+repository (normally `~/Projects/FlowState.git`), resolved from Git's common dir;
+never create a separate `~/flowstate-work` clone or a sibling outside that root.
+Validate that it is bare, fetch/record actual origin/next and create a feature
+worktree inside that root. Read the actual repository helper, not a remembered
+command. Do not substitute an unmerged prerequisite branch without a newly
+accepted scoped dependency disposition.
 
-| Task | Command |
-|------|---------|
-| **Run all tests** | `make test` |
-| **Run race checks** | `go test -race -count=1 ./...` |
-| **Build** | `make build` |
-| **Format** | `make fmt` |
-| **Lint** | `make lint` |
-| **Full check** | `make check` |
+PR approval triggers a cleanup checkpoint: re-query actual GitHub approval for
+the exact current head, publish/read back an approval record in Dropbox Metadata,
+then remove the clean, registered, safely pushed feature worktree. Preserve dirty,
+untracked, ignored and unpushed work. Keep an unmerged local branch; delete it
+only after verified merge and ancestry, without force. Preserve remote PR/commit
+history. Cleanup is not an excuse to bypass review or merge protection.
 
-## Development Workflow
+Use standard Go `testing` for behavioural unit/integration/headless CLI coverage.
+Do not add .feature files, Godog/Cucumber dependencies or step-definition suites.
+Handoffs must not request Cucumber. Test-first behaviour uses Go assertions.
 
-### Choose Tests for the Change
-
-Use focused Go unit and integration tests by default. For a bug fix, reproduce
-the failure with a regression test before changing the implementation. Reuse
-existing coverage when it already validates the change.
-
-Cucumber is optional. Reserve it for a small number of acceptance flows where
-the shared scenario adds value beyond a Go test. Do not add a feature file or
-Godog dependency just to satisfy a process rule, or require Cucumber for routine
-code, configuration, CI, or documentation changes.
-
-See [the testing workflow](rules/BDD_WORKFLOW.md) for test selection and CI gates.
-
-### The Smallest Change
-
-| Situation | Smallest Change | NOT Smallest Change |
-|-----------|-----------------|---------------------|
-| Need a function | Create empty function returning nil | Implement full logic |
-| Need a struct | Create struct with needed field | Add all possible fields |
-| Need validation | Add one validation rule | Add all validations |
-| Need UI element | Add minimal element | Full styled component |
-
-### Commit Cadence
-
-```
-test(chat): reproduce missing response
-fix(chat): preserve response events
-refactor(chat): simplify message formatting
-```
-
-## Architecture
-
-FlowState is a greenfield Go backend + Vue frontend rewrite.
-
-- **Backend:** Go, repository `baphled/FlowState`. Entry points under `cmd/`. Internal packages under `internal/`. No Bubble Tea TUI — the UI layer is Vue.
-- **Frontend:** Vue client, separate repository `baphled/flowstate-web`. Consumes versioned HTTP/event contracts generated from the backend.
-- **Contracts:** Backend owns HTTP/event schemas under `contracts/`. Frontend pins a specific backend contract digest; it does not read sibling source paths.
-- **Provider port:** replaceable. Current delivery route is Z.ai. Ollama and local providers are in scope.
-
-Package ownership rules:
-
-| Area | Owns | Must not own |
-|---|---|---|
-| `internal/runtime` | Turn state machine, session lifecycle, event ordering | HTTP responses, provider SDK details |
-| `internal/provider` | Provider adapters, capability registry | Session lifecycle, UI state |
-| `internal/session` | Session/turn identity, ordered events | Provider calls, HTTP |
-| `cmd/flowstate` | CLI entrypoint, thin adapter | Business logic |
-
-Dependency direction: `cmd` → `internal/app` → domain packages → ports. Domain packages do not import `cmd` or concrete adapters.
-
-## Essential Commands
-
-| Task | Command |
-|------|---------|
-| Run all tests | `make test` |
-| Build | `make build` |
-| Format | `make fmt` |
-| Lint | `make lint` |
-| Full check | `make check` |
-| Create AI commit | `make ai-commit FILE=/path/to/msg.txt AI_MODEL=model` |
-
-## Development Workflow
-
-Work test-first:
-
-1. Write a failing Go test that asserts the required behaviour.
-2. Implement the minimum to make it pass.
-3. Refactor while green.
-4. Open a PR to `next`.
-
-Tests must use standard `testing` package. No mandatory Cucumber/Godog — behavioural coverage comes from Go tests with clear names.
-
-## Commit Cadence
-
-```
-feat(session): add turn admitted event [RED]
-feat(session): record admitted event in StartTurn [GREEN]
-refactor(session): extract event append helper [REFACTOR]
-```
-
-## Code Style
-
-### Imports
-
-```go
-import (
-    // 1. Standard library
-    "context"
-    "errors"
-
-    // 2. Internal (alphabetical)
-    "github.com/baphled/flowstate/internal/session"
-)
-```
-
-### Naming
-
-- **Files:** `snake_case.go`
-- **Packages:** `lowercase` (single word)
-- **Types:** `PascalCase`
-- **Private:** `camelCase`
-
-### Comments (FORBIDDEN inside functions)
-
-- **NO** comments inside function bodies
-- **NO** inline comments
-- **NO** markers: `TODO`, `FIXME`, `HACK`
-
-**Exception:** E2E tests may have inline comments.
-
-## Testing
-
-### Running Tests
-
-```bash
-make test                          # Go tests
-go test -race -count=1 ./...         # Uncached tests with race detection
-make check                         # Format, lint, and test
-```
-
-The checked-in Gherkin files describe planned acceptance behaviour. There is
-currently no runnable Godog suite, so `make bdd*` is not a CI gate and those files
-are not evidence of passing tests. Any future required acceptance suite must
-execute real assertions and fail on missing or pending steps and empty selection.
-
-## When to REFUSE
-
-Immediately refuse if asked to:
-
-- Skip writing a test first
-- Implement Bubble Tea TUI components (not in scope for the greenfield)
-- Import a package against the dependency rules above
-- Commit directly to `main` or `next`
-- Branch from `main` instead of `next`
-- Put comments inside function bodies
-- Work directly in the bare repo instead of a worktree
-
-## Key Files
-
-| File | Purpose |
-|------|---------|
-| `docs/PLAN.md` | Project plan |
-| `AGENTS.md` | This file |
-| `Makefile` | Build and development commands |
-| `rules/CODE_STYLE.md` | Code style rules |
-| `internal/session/` | Session/turn primitives (start here) |
-| `features/*.feature` | BDD scenario definitions (reference only until glue is written) |
+Validate a proposed allocation with `python3 -B scripts/agent_work.py --roles
+/outside/checkout/current-agent-roles.json --plan /outside/checkout/read-back-plan.json`.
+Both inputs come from current Dropbox records, not guessed role/model names.
+The helper checks declared constraints only. The new harness must bind actual
+actors, enforce atomic leases and shared budgets, and verify real separate review
+sessions; current runtime installation/enforcement is not claimed.

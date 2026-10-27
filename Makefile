@@ -1,4 +1,4 @@
-.PHONY: all build run test bdd bdd-smoke bdd-wip fmt lint check clean help ai-commit check-ai-attribution list-ai-commits install-tools
+.PHONY: all build run test bdd bdd-smoke bdd-wip fmt lint check clean help ai-commit check-project-metadata test-project-metadata install-tools
 
 # Binary name
 BINARY_NAME=flowstate
@@ -46,25 +46,10 @@ test-coverage: ## Run tests with coverage
 	$(GOTEST) -v -coverprofile=coverage.out ./...
 	$(GOCMD) tool cover -html=coverage.out
 
-#
-# BDD Testing (Godog/Cucumber)
-#
-
-bdd: ## Run all BDD tests
-	@echo "Running BDD tests..."
-	godog run ./features/
-
-bdd-smoke: ## Run smoke BDD tests
-	@echo "Running smoke tests..."
-	godog run --tags=@smoke ./features/
-
-bdd-wip: ## Run WIP BDD tests
-	@echo "Running WIP tests..."
-	godog run --tags=@wip ./features/
-
-bdd-feature: ## Run specific feature (FEATURE=chat/basic_chat)
-	@echo "Running feature: $(FEATURE)"
-	godog run ./features/$(FEATURE).feature
+# Legacy commands intentionally fail instead of installing or running Cucumber.
+bdd bdd-smoke bdd-wip bdd-feature:
+	@echo "Cucumber/Godog/Gherkin execution is forbidden. Use standard Go unit/integration tests." >&2
+	@exit 1
 
 #
 # Code Quality
@@ -81,7 +66,7 @@ lint: ## Run linters
 	@if command -v golangci-lint >/dev/null 2>&1; then golangci-lint run; fi
 	@if command -v deadcode >/dev/null 2>&1 && go list -f '{{if eq .Name "main"}}{{.ImportPath}}{{end}}' ./... 2>/dev/null | grep -q .; then deadcode ./...; fi
 
-check: fmt lint test ## Run all checks
+check: check-project-metadata test-project-metadata fmt lint test ## Run all checks
 
 #
 # Dependencies
@@ -104,17 +89,11 @@ install-tools: ## Install development tools
 worktree-list: ## List all worktrees
 	@git worktree list
 
-worktree-new: ## Create new feature worktree (NAME=feature-name)
-	@echo "Creating worktree for feature/$(NAME)..."
-	@cd .. && git worktree add -b feature/$(NAME) $(NAME) next
-	@echo "Worktree created at ../$(NAME)"
-	@echo "Run: cd ../$(NAME)"
+worktree-new: ## Create feature worktree inside the actual registered bare root (NAME=...)
+	@python3 -B scripts/worktree_policy.py new "$(NAME)"
 
-worktree-remove: ## Remove feature worktree (NAME=feature-name)
-	@echo "Removing worktree $(NAME)..."
-	@cd .. && git worktree remove $(NAME) 2>/dev/null || true
-	@cd .. && git branch -d feature/$(NAME) 2>/dev/null || true
-	@echo "Worktree removed"
+worktree-remove: ## Cleanup a clean pushed worktree after verified PR approval (NAME=... APPROVAL_RECORD=...)
+	@python3 -B scripts/worktree_policy.py cleanup "$(NAME)" --approval-record "$(APPROVAL_RECORD)"
 
 #
 # Development
@@ -134,74 +113,39 @@ session-start: ## Start development session
 	else \
 		echo "Ollama: not installed"; \
 	fi
-	@if command -v godog &> /dev/null; then \
-		echo "Godog: installed"; \
-	else \
-		echo "Godog: not installed - run: go install github.com/cucumber/godog/cmd/godog@latest"; \
-	fi
 	@echo ""
-	@echo "Ready! See docs/PLAN.md for tasks."
+	@echo "Read current Dropbox /FlowState/Dev and /FlowState/Metadata/ACTIVE.json before work."
 
 #
-# AI Attribution
+# External project metadata
 #
 
-ai-commit: ## Create AI-attributed commit (FILE=/path/to/msg.txt AI_MODEL=model)
-	@if [ -z "$(FILE)" ]; then \
-		echo "Usage:"; \
-		echo "  AI_MODEL=claude-opus-4-5 make ai-commit FILE=/path/to/commit-msg.txt"; \
-		echo ""; \
-		echo "Required: AI_MODEL must be set (agent auto-detected from OPENCODE env)"; \
-		echo ""; \
-		echo "Create your commit message file:"; \
-		echo "  cat > /tmp/commit.txt << 'EOF'"; \
-		echo "  feat(scope): short description"; \
-		echo "  "; \
-		echo "  Optional longer explanation..."; \
-		echo "  EOF"; \
-		echo ""; \
-		echo "  AI_MODEL=claude-opus-4-5 make ai-commit FILE=/tmp/commit.txt"; \
-		echo ""; \
-		exit 1; \
-	fi
-	@bash scripts/ai-commit.sh "$(FILE)" "$(NO_VERIFY)"
+ai-commit: ## Commit with an external Dropbox metadata record (FILE=... PROJECT_METADATA_FILE=...)
+	@bash scripts/ai-commit.sh "$(FILE)"
 
-check-ai-attribution: ## Check latest commit for AI attribution
-	@echo "Checking latest commit for AI attribution..."
-	@git log -1 --pretty=%B | grep "AI-Generated-By:" || \
-		echo "Warning: No AI attribution found in latest commit"
+check-project-metadata: ## Reject repository-stored project run records
+	@python3 -B scripts/project_metadata.py --staged
 
-list-ai-commits: ## List all AI-generated commits
-	@echo "AI-Generated Commits:"
-	@git log --all --grep="AI-Generated-By:" --oneline
+test-project-metadata: ## Exercise metadata and truthful-commit guards
+	@python3 -B -m unittest discover -s scripts/tests -p 'test_*.py'
 
 #
 # Task Management
 #
 
-new-task: ## Create a new task (TASK="task description")
-	@echo "# Task: $(TASK)" > tasks/$$(date +%Y%m%d)-$$(echo "$(TASK)" | tr ' ' '-' | tr '[:upper:]' '[:lower:]' | head -c 30).md
-	@echo "" >> tasks/$$(date +%Y%m%d)-*.md
-	@echo "Created: $$(date)" >> tasks/$$(date +%Y%m%d)-*.md
-	@echo "Status: pending" >> tasks/$$(date +%Y%m%d)-*.md
-	@echo "Task created!"
+new-task: ## Task records belong in Dropbox Metadata
+	@echo "Create the assigned packet under Dropbox /FlowState/Metadata/attempts/, outside this checkout."
+	@exit 1
 
-list-tasks: ## List all tasks
-	@echo "Tasks:"
-	@for f in tasks/*.md; do \
-		if [ -f "$$f" ]; then \
-			name=$$(basename "$$f" .md); \
-			status=$$(grep -m1 "Status:" "$$f" 2>/dev/null | cut -d: -f2 | tr -d ' '); \
-			echo "[$${status:-unknown}] $$name"; \
-		fi \
-	done
+list-tasks: ## Find the current assigned Dropbox packet
+	@echo "Read Dropbox /FlowState/Metadata/ACTIVE.json and the assigned packet."
 
 #
 # Help
 #
 
 help: ## Show this help
-	@echo "FlowState - AI Assistant TUI"
+	@echo "FlowState - AI Assistant"
 	@echo ""
 	@echo "Usage: make [target]"
 	@echo ""
