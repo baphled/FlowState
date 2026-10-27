@@ -89,17 +89,11 @@ install-tools: ## Install development tools
 worktree-list: ## List all worktrees
 	@git worktree list
 
-worktree-new: ## Create new feature worktree (NAME=feature-name)
-	@echo "Creating worktree for feature/$(NAME)..."
-	@cd .. && git worktree add -b feature/$(NAME) $(NAME) next
-	@echo "Worktree created at ../$(NAME)"
-	@echo "Run: cd ../$(NAME)"
+worktree-new: ## Create feature worktree inside the actual registered bare root (NAME=...)
+	@python3 -B scripts/worktree_policy.py new "$(NAME)"
 
-worktree-remove: ## Remove feature worktree (NAME=feature-name)
-	@echo "Removing worktree $(NAME)..."
-	@cd .. && git worktree remove $(NAME) 2>/dev/null || true
-	@cd .. && git branch -d feature/$(NAME) 2>/dev/null || true
-	@echo "Worktree removed"
+worktree-remove: ## Cleanup a clean pushed worktree after verified PR approval (NAME=... APPROVAL_RECORD=...)
+	@python3 -B scripts/worktree_policy.py cleanup "$(NAME)" --approval-record "$(APPROVAL_RECORD)"
 
 #
 # Development

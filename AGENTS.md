@@ -69,6 +69,20 @@ external record reference. `coordination_store` and chat summaries are transient
 messages, not durable project evidence; publish/read back the actual metadata in
 Dropbox and pass its reference in coordination messages.
 
+Worktrees must be immediate directories inside the actual registered bare
+repository (normally `~/Projects/FlowState.git`), resolved from Git's common dir;
+never create a separate `~/flowstate-work` clone or a sibling outside that root.
+Validate that it is bare, fetch/record actual origin/next and create a feature
+worktree inside that root. Read the actual repository helper, not a remembered
+command. Do not substitute an unmerged prerequisite branch without a newly
+accepted scoped dependency disposition.
+
+PR approval triggers a cleanup checkpoint: re-query actual GitHub approval for
+the exact current head, publish/read back an approval record in Dropbox Metadata,
+then remove the clean, registered, safely pushed feature worktree. Preserve dirty,
+untracked, ignored and unpushed work. Keep an unmerged local branch; delete it
+only after verified merge and ancestry, without force. Preserve remote PR/commit
+history. Cleanup is not an excuse to bypass review or merge protection.
 
 Use standard Go `testing` for behavioural unit/integration/headless CLI coverage.
 Do not add .feature files, Godog/Cucumber dependencies or step-definition suites.
