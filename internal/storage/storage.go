@@ -9,7 +9,6 @@ package storage
 import (
 	"database/sql"
 	"fmt"
-	"path/filepath"
 	"runtime"
 	"time"
 
@@ -33,7 +32,6 @@ type OpenInfo struct {
 // embeds the pragmas so every pooled connection gets them; the returned info
 // is read back from the live database.
 func Open(path string) (*sql.DB, OpenInfo, error) {
-	dir := filepath.Dir(path)
 	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=synchronous(1)&_pragma=busy_timeout(10000)", path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -64,7 +62,6 @@ func Open(path string) (*sql.DB, OpenInfo, error) {
 		return nil, OpenInfo{}, fmt.Errorf("read sqlite_version: %w", err)
 	}
 	info.SQLiteVersion = sv
-	_ = dir
 	return db, info, nil
 }
 

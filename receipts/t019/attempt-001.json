@@ -1,6 +1,7 @@
 {
   "schema_version": "t019-qualification-receipt-v1",
-  "candidate_sha": "ff9deda5722f50aefb248b5332a3068bdcfd12d4",
+  "base_sha": "ff9deda5722f50aefb248b5332a3068bdcfd12d4",
+  "candidate_sha": "2e3b3f1739d41f1b84d1b648141a9ddd95eb49f9",
   "driver": "modernc.org/sqlite v1.61.0 (pure Go, CGO-free)",
   "sqlite_version": "3.54.1",
   "go_version": "go1.27.2-X:nodwarf5 linux/amd64",

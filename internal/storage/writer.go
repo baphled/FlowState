@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"sync"
@@ -404,5 +403,3 @@ func RestoreFixtureDigests(ctx context.Context, db *sql.DB, sessionID string) (i
 	}
 	return n, nil
 }
-
-var _ = hex.EncodeToString

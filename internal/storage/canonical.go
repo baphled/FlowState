@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"sort"
 )
 
@@ -168,4 +167,3 @@ func PayloadDigest(payload string) (string, error) {
 }
 
 // Compile-time guard: formatting choice documented.
-var _ = fmt.Sprintf
