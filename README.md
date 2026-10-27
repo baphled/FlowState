@@ -94,15 +94,15 @@ go test -race -count=1 ./...        # Uncached tests with race detection
 make check                        # Full check (fmt, lint, test)
 ```
 
-Use focused Go unit and integration tests by default. Cucumber is optional for
-selected acceptance flows; the checked-in Gherkin files currently have no runnable
-suite and are not CI gates. See [the testing workflow](rules/BDD_WORKFLOW.md).
+Use focused Go unit and integration tests. Cucumber/Godog/Gherkin is
+prohibited in this repository; behavioural coverage comes from scenario-style
+named Go tests. See [the testing workflow](rules/BDD_WORKFLOW.md).
 
 See [AGENTS.md](AGENTS.md) for AI development instructions.
 
 ## Documentation
 
-- [Project Plan](docs/PLAN.md)
+- [M1 Build Spec](https://github.com/baphled/FlowState) — current spec lives in the Dropbox Dev pack
 - [Architecture Overview](docs/architecture/OVERVIEW.md)
 - [Development Rules](rules/)
 

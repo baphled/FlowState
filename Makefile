@@ -1,4 +1,4 @@
-.PHONY: all build run test bdd bdd-smoke bdd-wip fmt lint check clean help ai-commit check-ai-attribution list-ai-commits install-tools
+.PHONY: all build run test fmt lint check clean help ai-commit check-ai-attribution list-ai-commits install-tools
 
 # Binary name
 BINARY_NAME=flowstate
@@ -45,26 +45,6 @@ test-coverage: ## Run tests with coverage
 	@echo "Running tests with coverage..."
 	$(GOTEST) -v -coverprofile=coverage.out ./...
 	$(GOCMD) tool cover -html=coverage.out
-
-#
-# BDD Testing (Godog/Cucumber)
-#
-
-bdd: ## Run all BDD tests
-	@echo "Running BDD tests..."
-	godog run ./features/
-
-bdd-smoke: ## Run smoke BDD tests
-	@echo "Running smoke tests..."
-	godog run --tags=@smoke ./features/
-
-bdd-wip: ## Run WIP BDD tests
-	@echo "Running WIP tests..."
-	godog run --tags=@wip ./features/
-
-bdd-feature: ## Run specific feature (FEATURE=chat/basic_chat)
-	@echo "Running feature: $(FEATURE)"
-	godog run ./features/$(FEATURE).feature
 
 #
 # Code Quality
@@ -134,13 +114,8 @@ session-start: ## Start development session
 	else \
 		echo "Ollama: not installed"; \
 	fi
-	@if command -v godog &> /dev/null; then \
-		echo "Godog: installed"; \
-	else \
-		echo "Godog: not installed - run: go install github.com/cucumber/godog/cmd/godog@latest"; \
-	fi
 	@echo ""
-	@echo "Ready! See docs/PLAN.md for tasks."
+	
 
 #
 # AI Attribution
