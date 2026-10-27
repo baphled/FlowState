@@ -10,8 +10,8 @@ and run it to green. Reuse coverage rather than duplicating assertions. Use loca
 fake providers, temporary databases and httptest servers; real inference is not
 routine CI proof. Validate workflows/configuration directly for tooling changes.
 
-`make check` runs formatting, vet/lint and Go tests. The following metadata-guard
-slice adds policy checks and Python regression tests. Run Go race checks
+`make check` includes the project metadata/testing-policy guard and its Python
+regression tests, followed by formatting, vet/lint and Go tests. Run Go race checks
 where required by the actual packet. Existing `make bdd*` aliases fail explicitly.
 CI must pass for the exact candidate before merge. Raw output and acceptance
 records are published/read back in Dropbox Metadata, not committed into Git.

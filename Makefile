@@ -1,4 +1,4 @@
-.PHONY: all build run test bdd bdd-smoke bdd-wip fmt lint check clean help ai-commit check-ai-attribution list-ai-commits install-tools
+.PHONY: all build run test bdd bdd-smoke bdd-wip fmt lint check clean help ai-commit check-project-metadata test-project-metadata install-tools
 
 # Binary name
 BINARY_NAME=flowstate
@@ -66,7 +66,7 @@ lint: ## Run linters
 	@if command -v golangci-lint >/dev/null 2>&1; then golangci-lint run; fi
 	@if command -v deadcode >/dev/null 2>&1 && go list -f '{{if eq .Name "main"}}{{.ImportPath}}{{end}}' ./... 2>/dev/null | grep -q .; then deadcode ./...; fi
 
-check: fmt lint test ## Run all checks
+check: check-project-metadata test-project-metadata fmt lint test ## Run all checks
 
 #
 # Dependencies
@@ -130,14 +130,11 @@ ai-commit: ## Paused until the external Dropbox commit helper is available
 	@echo "The previous helper invents AI/reviewer claims. Use the corrected external-record helper before agent commits." >&2
 	@exit 1
 
-check-ai-attribution: ## Check latest commit for AI attribution
-	@echo "Checking latest commit for AI attribution..."
-	@git log -1 --pretty=%B | grep "AI-Generated-By:" || \
-		echo "Warning: No AI attribution found in latest commit"
+check-project-metadata: ## Reject repository-stored project run records
+	@python3 -B scripts/project_metadata.py --staged
 
-list-ai-commits: ## List all AI-generated commits
-	@echo "AI-Generated Commits:"
-	@git log --all --grep="AI-Generated-By:" --oneline
+test-project-metadata: ## Exercise metadata and truthful-commit guards
+	@python3 -B -m unittest discover -s scripts/tests -p 'test_*.py'
 
 #
 # Task Management

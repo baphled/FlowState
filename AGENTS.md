@@ -50,6 +50,9 @@ not require the application to use Dropbox as its event database.
   boundaries: cmd → internal/app → domain → ports; no concrete adapters in domain.
 - Run `make check` and hooks; never skip hooks. The former attribution helper
   is paused until its external-record replacement is available.
+- `make check-project-metadata` checks indexed paths/content. CI also checks new
+  commit references/trailers. These are offline structural guards, not proof that
+  a Dropbox record, serving model or independent review is authentic.
 - Re-query actual GitHub CI/reviews for the exact candidate before merge. Resolve
   material findings including COMMENTED reviews. Record evidence in Dropbox.
 
