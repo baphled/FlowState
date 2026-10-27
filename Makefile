@@ -46,25 +46,10 @@ test-coverage: ## Run tests with coverage
 	$(GOTEST) -v -coverprofile=coverage.out ./...
 	$(GOCMD) tool cover -html=coverage.out
 
-#
-# BDD Testing (Godog/Cucumber)
-#
-
-bdd: ## Run all BDD tests
-	@echo "Running BDD tests..."
-	godog run ./features/
-
-bdd-smoke: ## Run smoke BDD tests
-	@echo "Running smoke tests..."
-	godog run --tags=@smoke ./features/
-
-bdd-wip: ## Run WIP BDD tests
-	@echo "Running WIP tests..."
-	godog run --tags=@wip ./features/
-
-bdd-feature: ## Run specific feature (FEATURE=chat/basic_chat)
-	@echo "Running feature: $(FEATURE)"
-	godog run ./features/$(FEATURE).feature
+# Legacy commands intentionally fail instead of installing or running Cucumber.
+bdd bdd-smoke bdd-wip bdd-feature:
+	@echo "Cucumber/Godog/Gherkin execution is forbidden. Use standard Go unit/integration tests." >&2
+	@exit 1
 
 #
 # Code Quality
@@ -133,11 +118,6 @@ session-start: ## Start development session
 		echo "Ollama: installed"; \
 	else \
 		echo "Ollama: not installed"; \
-	fi
-	@if command -v godog &> /dev/null; then \
-		echo "Godog: installed"; \
-	else \
-		echo "Godog: not installed - run: go install github.com/cucumber/godog/cmd/godog@latest"; \
 	fi
 	@echo ""
 	@echo "Read current Dropbox /FlowState/Dev and /FlowState/Metadata/ACTIVE.json before work."
