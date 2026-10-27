@@ -116,6 +116,18 @@ jobs:
       - name: Run gosec
         run: gosec -fmt sarif -out gosec-results.sarif ./...
 
+      - name: Show security findings
+        if: always()
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          from pathlib import Path
+          report = json.loads(Path("gosec-results.sarif").read_text())
+          for run in report["runs"]:
+              for finding in run.get("results", []):
+                  print(json.dumps({"rule": finding["ruleId"], "message": finding["message"]["text"], "locations": finding.get("locations", [])}))
+          PYTHON
+
       - name: Upload SARIF results
         uses: github/codeql-action/upload-sarif@v3
         if: always()
