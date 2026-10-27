@@ -107,8 +107,7 @@ intent := &ChatIntent{provider, session, textinput.New()} // BAD
 ## Testing
 
 - Test files: `*_test.go`
-- BDD features: `features/*.feature`
-- Step definitions: `features/steps/*_steps.go`
+- Scenario-style named Go tests (`TestGivenXWhenYThenZ`) are the acceptance vocabulary
 - Use table-driven tests for unit tests
 
 ## Formatting

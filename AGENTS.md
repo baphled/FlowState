@@ -61,10 +61,9 @@ Use focused Go unit and integration tests by default. For a bug fix, reproduce
 the failure with a regression test before changing the implementation. Reuse
 existing coverage when it already validates the change.
 
-Cucumber is optional. Reserve it for a small number of acceptance flows where
-the shared scenario adds value beyond a Go test. Do not add a feature file or
-Godog dependency just to satisfy a process rule, or require Cucumber for routine
-code, configuration, CI, or documentation changes.
+Cucumber/Godog/Gherkin is prohibited (owner decision 2026-10-27). Do not add
+feature files, Godog dependencies, step definitions, or workflow steps. All
+behavioural coverage comes from scenario-style named Go tests.
 
 See [the testing workflow](rules/BDD_WORKFLOW.md) for test selection and CI gates.
 
@@ -125,7 +124,7 @@ Work test-first:
 3. Refactor while green.
 4. Open a PR to `next`.
 
-Tests must use standard `testing` package. No mandatory Cucumber/Godog — behavioural coverage comes from Go tests with clear names.
+Tests must use standard `testing` package. Cucumber/Godog/Gherkin is prohibited; behavioural coverage comes from Go tests with clear names.
 
 ## Commit Cadence
 
@@ -196,9 +195,9 @@ Immediately refuse if asked to:
 
 | File | Purpose |
 |------|---------|
-| `docs/PLAN.md` | Project plan |
+| `docs/architecture/OVERVIEW.md` | Architecture overview |
 | `AGENTS.md` | This file |
 | `Makefile` | Build and development commands |
 | `rules/CODE_STYLE.md` | Code style rules |
 | `internal/session/` | Session/turn primitives (start here) |
-| `features/*.feature` | BDD scenario definitions (reference only until glue is written) |
+| `internal/app/` | Composition root (explicit wiring) |
