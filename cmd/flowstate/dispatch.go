@@ -22,6 +22,11 @@ type flags struct {
 	provider string
 	model    string
 	task     string
+	// session tool
+	tool      string
+	toolArg   string
+	allow     []string
+	allowFile string
 }
 
 // dispatch routes one CLI invocation and returns its exit code.
@@ -80,6 +85,8 @@ func dispatch(args []string, stdout, stderr *os.File) int {
 		return cmdEvents(ctx, st, id, stdout, stderr)
 	case "close":
 		return cmdClose(ctx, st, id, stdout, stderr)
+	case "tool":
+		return cmdTool(ctx, st, fl, id, stdout, stderr)
 	default:
 		writeError(stderr, fmt.Errorf("%w: unknown session subcommand %q", errUsageCmd, args[1]))
 		return exitUsage
@@ -145,6 +152,30 @@ func parseFlags(args []string) (*flags, []string, error) {
 				return nil, nil, err
 			}
 			fl.task = v
+		case a == "--tool":
+			v, err := take()
+			if err != nil {
+				return nil, nil, err
+			}
+			fl.tool = v
+		case a == "--tool-arg" || a == "--tool-arg=json.RawMessage":
+			v, err := flagValue(a, take)
+			if err != nil {
+				return nil, nil, err
+			}
+			fl.toolArg = v
+		case a == "--allow":
+			v, err := flagValue(a, take)
+			if err != nil {
+				return nil, nil, err
+			}
+			fl.allow = append(fl.allow, v)
+		case a == "--allow-file":
+			v, err := flagValue(a, take)
+			if err != nil {
+				return nil, nil, err
+			}
+			fl.allowFile = v
 		case strings.HasPrefix(a, "--"):
 			return nil, nil, fmt.Errorf("unknown flag %s", a)
 		default:
@@ -181,6 +212,7 @@ session new    --provider <p> --model <m> --task <text|@file> [--db path]
 session list   [--status <s>] [--db path]
 session events <id> [--db path]
 session close  <id> [--db path]
+session tool   <id> --tool <name> [--tool-arg <json>] [--allow <name>]... [--allow-file <manifest>] [--db path]
 
 common flags: --db <path> (default ./flowstate.db), --json
 `)
