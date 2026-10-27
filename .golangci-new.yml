@@ -1,0 +1,25 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - ineffassign
+    - gocyclo
+    - funlen
+    - bodyclose
+    - rowserrcheck
+    - sqlclosecheck
+    - nolintlint
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+    gocyclo:
+      min-complexity: 15
+    funlen:
+      lines: 60
+      statements: 40
+    nolintlint:
+      require-explanation: true
+      require-specific: true
