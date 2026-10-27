@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""Reject project run records in Git; keep only a neutral Dropbox reference."""
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path, PurePosixPath
+
+
+REFERENCE = re.compile(r'dropbox:/FlowState/Metadata/attempts/[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*\.json')
+CLAIM = re.compile(r'^(?:AI-Generated-By|AI-Agent|AI-Model|Reviewed-By|Co-authored-by):', re.I | re.M)
+RECORD_PATH = re.compile(r'(^|/)(?:receipts?|qualifications?|evidence|reports?|agent-metadata|project-metadata|tasks?|plans?|handoffs?|progress)(?:/|[._-])|(?:^|/)[^/]*(?:qualification|receipt|attestation|validation-evidence|review-result)[^/]*\.(?:md|json|ya?ml|txt|log|zip|db|sqlite)$', re.I)
+LEGACY_RECORD = re.compile(r'(^|/)(?:HANDOFF|PROGRESS|PLAN)\.md$', re.I)
+CODE_SUFFIXES = {'.go', '.py', '.sh', '.js', '.ts', '.tsx', '.vue'}
+
+
+def git(*args, cwd=None):
+    return subprocess.check_output(['git', *args], cwd=cwd)
+
+
+def message_errors(message):
+    errors = []
+    if CLAIM.search(message):
+        errors.append('identity/review trailers belong in Dropbox, not commit messages')
+    references = re.findall(r'^Project-Metadata: (.+)$', message, re.M)
+    if len(references) != 1 or not REFERENCE.fullmatch(references[0]):
+        errors.append('one valid Project-Metadata: dropbox:/FlowState/Metadata/attempts/<attempt>/<record>.json is required')
+    return errors
+
+
+def record_errors(path, content):
+    item = PurePosixPath(path)
+    if item.suffix == '.feature':
+        return ['Cucumber/Gherkin feature files are forbidden: ' + path]
+    if item.name in ('go.mod', 'go.sum') or item.suffix == '.go':
+        if re.search(rb'github\.com/(?:cucumber/|DATA-DOG/godog)', content, re.I):
+            return ['Cucumber/Godog dependencies and imports are forbidden: ' + path]
+    if '.github/workflows/' in path and item.suffix in ('.yml', '.yaml'):
+        if re.search(rb'(?:\bgodog\b|\bcucumber-js\b|make[ \t]+bdd(?:[-\s;]|$))', content, re.I):
+            return ['Cucumber/Godog workflow execution is forbidden: ' + path]
+    if item.suffix in CODE_SUFFIXES or item.name.endswith('.schema.json'):
+        return []
+    value = None
+    if item.suffix == '.json':
+        try:
+            value = json.loads(content)
+        except (ValueError, UnicodeError):
+            pass
+    if {'testdata', 'fixtures'} & set(item.parts) and isinstance(value, dict) and value.get('synthetic_fixture') is True:
+        return []
+    if RECORD_PATH.search(path) or LEGACY_RECORD.search(path):
+        return ['project metadata file must be stored in Dropbox: ' + path]
+    if isinstance(value, dict):
+        version = str(value.get('schema_version', value.get('record_type', '')))
+        if re.search(r'(?:acceptance-receipt|work-packet|qualification|project-metadata)', version):
+            return ['project metadata content must be stored in Dropbox: ' + path]
+        if {'gate_outcome', 'repo_state', 'evidence'} <= value.keys():
+            return ['executed evidence receipt must be stored in Dropbox: ' + path]
+    return []
+
+
+def tree_errors(tree=None):
+    if tree:
+        rows = git('ls-tree', '-r', '-z', tree).split(b'\0')
+    else:
+        rows = git('ls-files', '--stage', '-z').split(b'\0')
+    errors = []
+    for row in filter(None, rows):
+        attributes, name = row.split(b'\t', 1)
+        fields = attributes.decode().split()
+        if not tree and fields[2] != '0':
+            errors.append('unmerged index entry: ' + name.decode())
+            continue
+        oid = fields[2] if tree else fields[1]
+        if tree and fields[1] != 'blob':
+            continue
+        path = name.decode('utf-8', 'surrogateescape')
+        content = git('cat-file', 'blob', oid)
+        errors.extend(record_errors(path, content))
+    return errors
+
+
+def external_record_errors(path):
+    root = Path(git('rev-parse', '--show-toplevel').decode().strip()).resolve()
+    if path.resolve().is_relative_to(root):
+        return ['metadata record/cache must be outside the code checkout']
+    value = json.loads(path.read_text())
+    errors = []
+    if value.get('record_type') != 'flowstate-project-metadata-v1' or not REFERENCE.fullmatch(value.get('metadata_ref', '')):
+        errors.append('invalid external project metadata record/reference')
+    if value.get('base_sha') != git('rev-parse', 'HEAD').decode().strip():
+        errors.append('external record base differs from current HEAD')
+    required = {'/FlowState/Dev/00-AGENT-READ-FIRST.md', '/FlowState/Dev/AGENTS.md',
+                '/FlowState/Dev/governance/OWNER-DECISIONS-AND-OPEN-QUESTIONS.md',
+                '/FlowState/Metadata/ACTIVE.json'}
+    reads = value.get('dropbox_reads', [])
+    observed = {r.get('path') for r in reads if isinstance(r, dict) and
+                re.fullmatch('[0-9a-f]{64}', str(r.get('sha256', ''))) and r.get('file_id')}
+    if not required <= observed:
+        errors.append('current Dropbox entry/rules/decisions/ACTIVE reads and hashes are required')
+    if not re.fullmatch('[0-9a-f]{64}', str(value.get('docs_pack_manifest_sha256', ''))):
+        errors.append('current pack manifest digest is required')
+    attribution = value.get('attribution', {})
+    if not isinstance(attribution, dict) or not all(attribution.get(k) for k in ('agent', 'provider', 'model', 'harness', 'source')):
+        errors.append('observed attribution or explicit unverified values and source are required')
+    return errors
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--base')
+    parser.add_argument('--head', default='HEAD')
+    parser.add_argument('--staged', action='store_true')
+    parser.add_argument('--message-file', type=Path)
+    parser.add_argument('--external-record', type=Path)
+    parser.add_argument('--receipt', type=Path,
+                        help='validate an external attempt receipt against the schema')
+    args = parser.parse_args()
+    if args.receipt:
+        return validate_receipt(RECEIPT_SCHEMA, args.receipt)
+    try:
+        errors = tree_errors(None if args.staged or not args.base else args.head)
+        if args.base:
+            commits = git('rev-list', f'{args.base}..{args.head}').decode().splitlines()
+            for commit in commits:
+                errors.extend(f'{commit[:12]}: {e}' for e in tree_errors(commit))
+                errors.extend(f'{commit[:12]}: {e}' for e in message_errors(git('show', '-s', '--format=%B', commit).decode()))
+        if args.message_file:
+            errors.extend(message_errors(args.message_file.read_text()))
+        if args.external_record:
+            errors.extend(external_record_errors(args.external_record))
+        for error in errors:
+            print('FAIL: ' + error, file=sys.stderr)
+        if not errors:
+            print('PASS: no project run records in Git; reference checks passed')
+            print('LIMIT: offline checks cannot authenticate Dropbox reads, serving identity or review')
+        return bool(errors)
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        print('FAIL: ' + str(error), file=sys.stderr)
+        return 1
+
+
+RECEIPT_SCHEMA = {
+    '$schema': 'https://json-schema.org/draft/2020-12/schema',
+    'title': 'FlowState attempt record',
+    'type': 'object',
+    'required': ['record_type', 'metadata_ref', 'dropbox_reads',
+                 'docs_pack_manifest_sha256', 'attribution'],
+    'properties': {
+        'record_type': {'const': 'flowstate-project-metadata-v1'},
+        'metadata_ref': {
+            'type': 'string',
+            'pattern': r'^dropbox:/FlowState/Metadata/attempts/'
+                       r'[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*\.json$'},
+        'base_sha': {'type': 'string', 'pattern': '^[0-9a-f]{40,64}$'},
+        'dropbox_reads': {
+            'type': 'array',
+            'minItems': 1,
+            'items': {
+                'type': 'object',
+                'required': ['path', 'sha256', 'file_id'],
+                'properties': {
+                    'path': {'type': 'string', 'pattern': '^/FlowState/'},
+                    'sha256': {'type': 'string', 'pattern': '^[0-9a-f]{64}$'},
+                    'file_id': {'type': ['integer', 'string']},
+                }}},
+        'docs_pack_manifest_sha256': {'type': 'string', 'pattern': '^[0-9a-f]{64}$'},
+        'attribution': {
+            'type': 'object',
+            'required': ['agent', 'provider', 'model', 'harness', 'source'],
+            'properties': {
+                'agent': {'type': 'string', 'minLength': 1},
+                'provider': {'type': 'string', 'minLength': 1},
+                'model': {'type': 'string', 'minLength': 1},
+                'harness': {'type': 'string', 'minLength': 1},
+                'source': {'type': 'string', 'minLength': 1},
+            }},
+    },
+}
+
+
+def validate_receipt(schema, path):
+    value = json.loads(Path(path).read_text())
+    try:
+        import jsonschema
+    except ImportError:
+        # Dependency-free structural validation.
+        def check():
+            for key in schema['required']:
+                if key not in value:
+                    yield 'missing required key: ' + key
+            if value.get('record_type') != 'flowstate-project-metadata-v1':
+                yield 'record_type must be flowstate-project-metadata-v1'
+            if not REFERENCE.fullmatch(str(value.get('metadata_ref', ''))):
+                yield 'metadata_ref must be a valid Dropbox attempt reference'
+            if not re.fullmatch('[0-9a-f]{64}', str(value.get('docs_pack_manifest_sha256', ''))):
+                yield 'docs_pack_manifest_sha256 must be a 64-hex digest'
+            attribution = value.get('attribution')
+            if not isinstance(attribution, dict) or not all(
+                    attribution.get(k) for k in ('agent', 'provider', 'model', 'harness', 'source')):
+                yield 'attribution requires agent/provider/model/harness/source'
+            for read in value.get('dropbox_reads', []):
+                if not re.fullmatch('[0-9a-f]{64}', str(read.get('sha256', ''))):
+                    yield 'dropbox_read sha256 must be 64-hex: ' + str(read.get('path'))
+    else:
+        def check():
+            yield from ('%s: %s' % (list(e.absolute_path)[0] if e.absolute_path else '<root>', e.message)
+                        for e in jsonschema.Draft202012Validator(schema).iter_errors(value))
+    errors = list(check())
+    for error in errors:
+        print('FAIL: ' + error, file=sys.stderr)
+    if not errors:
+        print('PASS: receipt conforms to flowstate-project-metadata-v1 schema')
+    return bool(errors)
+
+
+if __name__ == '__main__':
+    sys.exit(main())

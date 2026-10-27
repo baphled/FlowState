@@ -14,6 +14,24 @@ env:
   GO_VERSION: "1.25.7"
 
 jobs:
+  metadata:
+    name: Project Metadata Guard
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Guard project metadata in commits and tree
+        run: |
+          set -euo pipefail
+          python3 scripts/project_metadata.py --base "${{ github.event.pull_request.base.sha }}" --head "${{ github.event.pull_request.head.sha }}"
+          if git grep -q 'dropbox:/FlowState/Metadata/attempts' -- . ':!scripts/project_metadata.py'; then
+            echo "::error::live Dropbox attempt references must not be committed outside the guard tooling"
+            exit 1
+          fi
+          echo "PASS: no project run records in Git history under review"
   commitlint:
     name: Lint Commits
     runs-on: ubuntu-latest
