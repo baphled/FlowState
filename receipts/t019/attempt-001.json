@@ -1,0 +1,31 @@
+{
+  "schema_version": "t019-qualification-receipt-v1",
+  "candidate_sha": "ff9deda5722f50aefb248b5332a3068bdcfd12d4",
+  "driver": "modernc.org/sqlite v1.61.0 (pure Go, CGO-free)",
+  "sqlite_version": "3.54.1",
+  "go_version": "go1.27.2-X:nodwarf5 linux/amd64",
+  "commands": [
+    {"command": "go test ./internal/storage/ ./features/qualification/ -count=1", "exit": 0},
+    {"command": "go test -race ./internal/storage/... ./features/qualification/ -count=1", "exit": 0},
+    {"command": "make check", "exit": 0},
+    {"command": "godog run ./features/ (CLI mode)", "exit": 0, "note": "CLI mode has no bound step defs repo-wide (pre-existing); T019 scenarios run green via features/qualification TestQualification (godog testing.T suite)"}
+  ],
+  "outcomes": {
+    "pragmas": "journal_mode=wal, foreign_keys=1 (enforced verified), synchronous=1 (NORMAL), busy_timeout=10000 — recorded live from the opened DB",
+    "migrations": "versioned forward-only v1 from DATA-MODEL §2; reapply is a no-op (PASS)",
+    "single_writer": "serialized EventWriter: 200 fake provider deltas + interleaved tool.call/tool.result (8 tool pairs), 4 concurrent reader goroutines; seq contiguous 0..215, no dupes/reorder, session+actor attribution asserted (PASS, also under -race with 8 concurrent append goroutines)",
+    "cancel_mid_turn": "cancel.checkpoint + terminal session.cancelled + status=cancelled committed in one transaction; late provider delta and tool result rejected (ErrTerminal); contiguous after close/reopen (PASS)",
+    "budget_pause_resume": "session.paused event (reason/consumed_budget/next_safe_op/uncertain_tool) + status=paused nonterminal, no turn.end; after reopen, AttachWriter+Resume appends session.resumed, status=active, uncertain tool effect reported not repeated (0 re-executions) (PASS)",
+    "canonical_json": "declared encoder: Go encoding/json values re-encoded with sorted map keys, compact, SetEscapeHTML(false) (no HTML escaping; UTF-8 preserved, U+2028/9 escaped by encoder), Go shortest-round-trip number encoding; frozen fixtures in internal/storage/testdata (key_order, unicode, numbers, nested) verify byte-exact",
+    "replay_oracle": "reopen + Replay verifies seq contiguity 0..max, sha256(payload_json)==payload_sha256, canonical bytes; corrupted digest and deleted seq both fail the oracle (negative tests PASS)"
+  },
+  "verdict": "pass",
+  "evidence": {
+    "capture": "qualification/t019/capture.txt",
+    "bdd_red_baseline": "qualification/t019/bdd-red.txt",
+    "feature": "features/qualification/t019_sqlite_qualification.feature",
+    "unit_tests": "internal/storage/storage_test.go",
+    "fixtures": "internal/storage/testdata/*.json"
+  },
+  "notes": "Verdict reflects executed tests only; independent review is a separate step outside this receipt."
+}

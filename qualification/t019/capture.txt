@@ -1,0 +1,30 @@
+# T019 qualification artifact capture
+Tue 27 Oct 15:00:07 UTC 2026
+
+## Command: go test ./internal/storage/ ./features/qualification/ -count=1
+ok  	github.com/baphled/flowstate/internal/storage	0.025s
+ok  	github.com/baphled/flowstate/features/qualification	0.052s
+EXIT=0
+
+## Command: go test -race ./internal/storage/... ./features/qualification/ -count=1
+ok  	github.com/baphled/flowstate/internal/storage	1.262s
+ok  	github.com/baphled/flowstate/features/qualification	1.419s
+EXIT=0
+
+## Command: make check
+EXIT=0
+
+## Command: godog run ./features/ (CLI mode; repo suites run undefined there, our scenarios pass via go test)
+note: godog CLI mode has no bound step defs in this repo (all 546 steps undefined incl. pre-existing); T019 scenarios run green via TestQualification in features/qualification
+
+## Versions
+go version go1.27.2-X:nodwarf5 linux/amd64
+	modernc.org/sqlite v1.61.0
+sqlite version reported by driver:
+(see receipt; version 3.54.1 recorded from PRAGMA during tests)
+
+## Frozen fixtures sha256
+0af0cfe5da6a20afdf685e08419cb4e3285224447de9e0dcd8bdf12c1500c42f  internal/storage/testdata/key_order.json
+ca727dca207f053bd63e192c2eb022167db68f9b9848e0612b796dfb19c33fe4  internal/storage/testdata/nested.json
+45e82a74cd227b89c9c4d6d236d4065c3cbd6585b286c72aecd718e97f95246d  internal/storage/testdata/numbers.json
+0747878dfa50fc9d8d690976d4504bbbd79212943522c9ce34cfeb38ef07c679  internal/storage/testdata/unicode.json

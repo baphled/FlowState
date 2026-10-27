@@ -1,0 +1,5 @@
+# github.com/baphled/flowstate/features/qualification
+features/qualification/steps_test.go:15:2: no required module provides package github.com/baphled/flowstate/internal/storage; to add it:
+	go get github.com/baphled/flowstate/internal/storage
+FAIL	github.com/baphled/flowstate/features/qualification [setup failed]
+FAIL
