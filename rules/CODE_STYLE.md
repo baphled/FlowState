@@ -105,6 +105,25 @@ intent := &ChatIntent{
 intent := &ChatIntent{provider, session, textinput.New()} // BAD
 ```
 
+## Type ownership and quality gates
+
+Package-level production Go structs, interfaces, aliases and other named types live
+in `types.go` or `*_types.go` within the package that owns them. Keep methods,
+constructors, other functions and mutable variables in implementation files.
+Related constants may stay with their types. Do not move domain types into a
+generic shared package to satisfy a filename check. Test fixture types may stay
+in `*_test.go`.
+
+GitHub Actions checks every added or modified production Go file against its
+committed source, using the actual PR base SHA. Generated-file comments do not
+waive this rule. Untouched legacy files are not rewritten by this gate; when a
+production file is touched, separate its types as part of that bounded change.
+
+The existing full-project static checks remain required. New-code lint adds
+checked errors, bounded function size/complexity and resource cleanup checks.
+Security findings fail CI and block the required Build job. No paid AI reviewer
+is needed to execute these gates; independent review is still required.
+
 ## Testing
 
 - Test files: `*_test.go`

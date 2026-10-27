@@ -65,6 +65,14 @@ imports grouped standard/internal. No inline/function-body comments or TODO/FIXM
 markers (E2E tests may use inline comments). Product scope and done criteria live
 in the current Dropbox contracts, not this bootstrap file.
 
+Keep package-level named Go types in `types.go` or `*_types.go` inside their owning
+package; keep functions, methods and mutable variables in implementation files.
+Do not create a generic shared types package. CI checks changed production files;
+test fixture types may remain in test files. Use the actual PR base SHA with
+`go run ./scripts/check-go-layout --base <base-sha>` to reproduce the rule.
+Deterministic Actions quality checks are mandatory and do not depend on Copilot
+or another model quota. Passing CI does not substitute for independent review.
+
 A delegator's claimed model/harness is not the worker's observed identity.
 Handoffs must not prefill AI_AGENT/AI_MODEL or command a child to claim a particular
 serving identity. The commit helper ignores such overrides and adds only the

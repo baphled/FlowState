@@ -51,6 +51,12 @@ jobs:
             exit 1
           fi
 
+      - name: Enforce Go type separation
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: go run ./scripts/check-go-layout --base "$BASE_SHA"
+
       - name: Run make check
         run: make check
 
