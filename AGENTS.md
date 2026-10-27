@@ -44,7 +44,10 @@ not require the application to use Dropbox as its event database.
 - Fetch actual origin/next; create an isolated feature worktree from that SHA.
   Never work in the bare repo, commit to main/next, branch from main or transplant
   prototype runtime. Open one bounded PR to next.
-- Follow the current Dropbox packet scope, allowed paths and cumulative budget.
+- Follow the assigned current Dropbox packet's scope, allowed paths and cumulative
+  budget. Read the current Dropbox role manifest and AGENT-WORK-POLICY.md. Each
+  agent has one active item; seniors focus on complex work and delegate bounded
+  parts to mid/junior engineers. The coordinator arranges separate review.
 - Use focused Go unit/headless integration tests, failing regression assertions
   for bugs, and real available commands. Cucumber, Godog and Gherkin are forbidden. Preserve Go package
   boundaries: cmd → internal/app → domain → ports; no concrete adapters in domain.
@@ -87,3 +90,10 @@ history. Cleanup is not an excuse to bypass review or merge protection.
 Use standard Go `testing` for behavioural unit/integration/headless CLI coverage.
 Do not add .feature files, Godog/Cucumber dependencies or step-definition suites.
 Handoffs must not request Cucumber. Test-first behaviour uses Go assertions.
+
+Validate a proposed allocation with `python3 -B scripts/agent_work.py --roles
+/outside/checkout/current-agent-roles.json --plan /outside/checkout/read-back-plan.json`.
+Both inputs come from current Dropbox records, not guessed role/model names.
+The helper checks declared constraints only. The new harness must bind actual
+actors, enforce atomic leases and shared budgets, and verify real separate review
+sessions; current runtime installation/enforcement is not claimed.
