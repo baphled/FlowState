@@ -85,9 +85,20 @@ jobs:
 
   build:
     name: Build
+    if: always()
     runs-on: ubuntu-latest
     needs: [lint, test, security]
     steps:
+      - name: Require prerequisite success
+        env:
+          LINT_RESULT: ${{ needs.lint.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+        run: |
+          test "$LINT_RESULT" = success
+          test "$TEST_RESULT" = success
+          test "$SECURITY_RESULT" = success
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
