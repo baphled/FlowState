@@ -20,6 +20,9 @@ const (
 	exitConfigInvalid  = 4
 	exitTerminal       = 6
 	exitReplayMismatch = 7
+	// exitCancelled is the SIGINT-style interrupted-run exit (130 per
+	// CLI contract §1: cancelled run).
+	exitCancelled = 130
 )
 
 // Error codes of the closed set in the contract §2.
@@ -30,6 +33,7 @@ const (
 	codeSessionTerm    = "session_terminal"
 	codeSessionMissing = "session_not_found"
 	codeReplayMismatch = "replay_mismatch"
+	codeCancelled      = "cancelled"
 )
 
 // cliError is a failure carrying one of the closed error codes; it
@@ -61,6 +65,8 @@ func asCliError(err error) *cliError {
 		return &cliError{Code: codeSessionMissing, Message: err.Error()}
 	case errors.Is(err, store.ErrHashMismatch), errors.Is(err, store.ErrSeqGap):
 		return &cliError{Code: codeReplayMismatch, Message: err.Error()}
+	case errors.Is(err, session.ErrContextCancelled):
+		return &cliError{Code: codeCancelled, Message: err.Error()}
 	default:
 		return &cliError{Code: codeInternal, Message: err.Error()}
 	}
@@ -89,6 +95,8 @@ func exitCodeFor(err error) int {
 		return exitUnknownSession
 	case codeReplayMismatch:
 		return exitReplayMismatch
+	case codeCancelled:
+		return exitCancelled
 	default:
 		return exitUnknownSession
 	}
