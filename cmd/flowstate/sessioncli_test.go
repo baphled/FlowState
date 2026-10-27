@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/baphled/flowstate/internal/store"
@@ -103,7 +104,16 @@ func TestGivenUnreadableTaskFileWhenNewThenUsageExit2(t *testing.T) {
 }
 
 func TestGivenBadDBPathWhenInvokedThenConfigInvalidExit4(t *testing.T) {
-	r := runArgv(t, []string{"session", "list", "--db", "/proc/definitely/not/writable.db"})
+	// A directory component that is actually a regular file is an
+	// invalid DB path on every platform (Linux and Windows alike),
+	// unlike /proc paths, which modernc.org/sqlite happily creates on
+	// Windows.
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("file"), 0o644); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+	r := runArgv(t, []string{"session", "list", "--db", filepath.Join(blocker, "x.db")})
 	if r.exit != 4 {
 		t.Fatalf("exit %d, want 4", r.exit)
 	}
