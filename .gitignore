@@ -50,3 +50,8 @@ test-results/
 build/
 
 /coordination_store/
+# Node
+node_modules/
+bun.lock
+coverage.out
+coverage-func.txt
