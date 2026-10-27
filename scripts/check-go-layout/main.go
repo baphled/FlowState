@@ -60,6 +60,10 @@ func changedFiles(base string) ([]string, error) {
 	if !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(base) {
 		return nil, errors.New("an exact 40-character base commit SHA is required")
 	}
+	prefix, err := exec.Command("git", "rev-parse", "--show-prefix").Output()
+	if err != nil || strings.TrimSpace(string(prefix)) != "" {
+		return nil, errors.New("run the Go layout check from the repository root")
+	}
 	baseTree, headTree, err := ancestorTrees(base)
 	if err != nil {
 		return nil, err

@@ -77,3 +77,18 @@ func TestGitTypeChangeCannotHideCommittedGoPath(t *testing.T) {
 		})
 	}
 }
+
+func TestSubdirectoryCannotReduceTheCheckedScope(t *testing.T) {
+	t.Chdir(t.TempDir())
+	fixtureGit(t, "init", "-b", "feature/fixture")
+	fixtureSource(t, "readme.txt", "synthetic fixture")
+	base := fixtureGit(t, "rev-parse", "HEAD")
+	fixtureSource(t, "client.go", "package fixture; type Client struct{}\n")
+	if err := os.Mkdir("nested", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir("nested")
+	if err := checkRevision(base, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "repository root") {
+		t.Fatalf("subdirectory scope reduction was not rejected: %v", err)
+	}
+}
