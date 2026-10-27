@@ -123,12 +123,11 @@ session-start: ## Start development session
 	@echo "Read current Dropbox /FlowState/Dev and /FlowState/Metadata/ACTIVE.json before work."
 
 #
-# AI Attribution
+# External project metadata
 #
 
-ai-commit: ## Paused until the external Dropbox commit helper is available
-	@echo "The previous helper invents AI/reviewer claims. Use the corrected external-record helper before agent commits." >&2
-	@exit 1
+ai-commit: ## Commit with an external Dropbox metadata record (FILE=... PROJECT_METADATA_FILE=...)
+	@bash scripts/ai-commit.sh "$(FILE)"
 
 check-project-metadata: ## Reject repository-stored project run records
 	@python3 -B scripts/project_metadata.py --staged

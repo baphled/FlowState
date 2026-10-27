@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -61,6 +62,17 @@ class MetadataTests(unittest.TestCase):
                                              '/FlowState/Metadata/ACTIVE.json']]}
         dest.write_text(json.dumps(value))
         return dest
+
+    def helper(self, message='chore(tools): exercise helper', **env):
+        self.write('main.go', 'package main\n// fixture changed\n')
+        self.run_git('add', 'main.go')
+        (self.repo / 'scripts').mkdir(exist_ok=True)
+        shutil.copy(ROOT / 'scripts/project_metadata.py', self.repo / 'scripts')
+        msg = self.root / 'commit.txt'
+        msg.write_text(message)
+        return subprocess.run(['bash', str(ROOT / 'scripts/ai-commit.sh'), str(msg)],
+                              cwd=self.repo, env=dict(self.env, PROJECT_METADATA_FILE=str(self.record()), **env),
+                              text=True, capture_output=True)
 
     def test_rejects_qualification_report_in_index_even_after_working_copy_deleted(self):
         self.write('docs/T019-qualification.md', '# Actual run report')
@@ -144,6 +156,28 @@ class MetadataTests(unittest.TestCase):
     def test_record_cache_inside_checkout_is_rejected(self):
         path = self.record(self.repo / 'record.json')
         self.assertNotEqual(self.guard('--external-record', str(path)).returncode, 0)
+
+    def test_helper_never_invents_attribution_or_human_review(self):
+        result = self.helper(AI_AGENT='FlowState Tech-Lead delegation (Claude Code harness)', AI_MODEL='claude-sonnet-4.5')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        message = self.run_git('log', '-1', '--format=%B').stdout
+        self.assertIn('Project-Metadata: ' + REF, message)
+        self.assertNotIn('Claude Code harness', message)
+        self.assertNotIn('claude-sonnet-4.5', message)
+        self.assertNotIn('Not a Reviewer', message)
+        self.assertNotIn('Reviewed-By:', message)
+        self.assertNotIn('AI-Generated-By:', message)
+
+    def test_helper_rejects_supplied_review_claim(self):
+        self.assertNotEqual(self.helper('chore(tools): change\n\nReviewed-By: Fiction').returncode, 0)
+
+    def test_helper_keeps_hooks_active(self):
+        hook = self.repo / '.git/hooks/pre-commit'
+        hook.write_text('#!/bin/sh\nexit 42\n')
+        hook.chmod(0o755)
+        self.assertNotEqual(self.helper().returncode, 0)
+        self.assertEqual(self.run_git('rev-parse', 'HEAD').stdout.strip(), self.base)
+        self.assertNotEqual(self.helper(NO_VERIFY='1').returncode, 0)
 
 
 if __name__ == '__main__':

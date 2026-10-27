@@ -48,8 +48,9 @@ not require the application to use Dropbox as its event database.
 - Use focused Go unit/headless integration tests, failing regression assertions
   for bugs, and real available commands. Cucumber, Godog and Gherkin are forbidden. Preserve Go package
   boundaries: cmd → internal/app → domain → ports; no concrete adapters in domain.
-- Run `make check` and hooks; never skip hooks. The former attribution helper
-  is paused until its external-record replacement is available.
+- Run `make check` and hooks. Never use --no-verify. Commit using
+  `PROJECT_METADATA_FILE=/outside/checkout/record.json make ai-commit FILE=/outside/checkout/message.txt`.
+  This external file must be a read-back copy of the current Dropbox record.
 - `make check-project-metadata` checks indexed paths/content. CI also checks new
   commit references/trailers. These are offline structural guards, not proof that
   a Dropbox record, serving model or independent review is authentic.
@@ -60,6 +61,14 @@ Go files use snake_case names, lowercase packages and standard testing. Keep
 imports grouped standard/internal. No inline/function-body comments or TODO/FIXME
 markers (E2E tests may use inline comments). Product scope and done criteria live
 in the current Dropbox contracts, not this bootstrap file.
+
+A delegator's claimed model/harness is not the worker's observed identity.
+Handoffs must not prefill AI_AGENT/AI_MODEL or command a child to claim a particular
+serving identity. The commit helper ignores such overrides and adds only the
+external record reference. `coordination_store` and chat summaries are transient
+messages, not durable project evidence; publish/read back the actual metadata in
+Dropbox and pass its reference in coordination messages.
+
 
 Use standard Go `testing` for behavioural unit/integration/headless CLI coverage.
 Do not add .feature files, Godog/Cucumber dependencies or step-definition suites.

@@ -14,7 +14,7 @@ qualification evidence. Documentation readiness is not a T019 or runtime pass.
 
 Use an isolated feature worktree from freshly fetched origin/next and open a
 bounded PR to next. Do not commit to main/next or copy the prototype runtime.
-Use the Go version declared by go.mod and CI; Python 3.11+ is required by the policy helpers as they land.
+Use the Go version declared by go.mod and CI; Python 3.11+ runs metadata guards.
 
 ```bash
 make test
