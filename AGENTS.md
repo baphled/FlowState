@@ -1,211 +1,27 @@
-# FlowState AI Agent Instructions
+# FlowState — greenfield agent instructions
 
-**Quick reference for AI coding agents working on FlowState - a Go TUI application using Bubble Tea framework.**
+## Source of truth
+The active execution pack is in Dropbox at `/Development Notes/FlowState-Rewrite-2026-10-19/`. Read `00-START-GREENFIELD.md`, `BUILD-SCOPE.md`, `DELIVERY-AND-CI.md` and the assigned task packet. Archived plans and prototype instructions are historical evidence, not execution authority. Retrieve only the context necessary for the assigned task; report inaccessible sources rather than improvising.
 
-## Branch Policy (MANDATORY)
+## Branch and PR rules
+- `main` is release-only. Never edit it or branch implementation work from it.
+- `next` is protected integration. Never implement directly on it.
+- Fetch/verify the actual `origin/next` SHA and create a new isolated feature branch/worktree **from origin/next**. Every implementation PR targets `next`.
+- Before merge, require the actual required CI checks, an independent review of the candidate SHA, and resolution of material findings. Never bypass protection with admin privileges.
+- When waiting on CI or review, checkpoint PR number, candidate SHA and remaining work; release execution resources. Upon resumption re-query GitHub for checks, approval and unresolved threads, including findings in COMMENTED reviews. Changed candidates require reassessment.
 
-**Working directly against `main` is ILLEGAL.** All development MUST target the
-`next` branch (or a feature worktree created FROM `next`). Never commit to
-`main`, never check out `main` for editing. Follow the CI process on every
-change: `make check` must pass, pre-commit hooks must run (never `--no-verify`),
-and all commits must go through `make ai-commit`.
+## Scope and engineering
+Build a composable, provider-neutral Go runtime with the separate Vue frontend (`flowstate-web`). External definitions configure agents, swarms, tools, evaluation and gates. The old Bubble Tea/TUI architecture does not constrain the rewrite and prototype code must not be transplanted. Prioritise the smallest dogfoodable new runtime slice, not broad repairs of the old harness.
 
-## Git Worktree Setup
+Define observable behaviour first, produce an appropriate failing unit/contract/integration test, then implement and verify green. **BDD is not synonymous with Godog or Cucumber.** Avoid unnecessary feature suites, inference and browser tests. Deterministic CI checks mechanics; independent review considers requirements, missed behaviour, architecture and test sufficiency against the actual change.
 
-FlowState uses git worktrees. The structure is:
+## Attribution and review provenance
+- Record the actual agent role, harness, provider, and **observed serving model** per authoring session. Distinguish observed from configured/requested identities; when the serving model cannot be verified, state that explicitly rather than copying stale routing labels.
+- Use truthful `AI-Generated-By` metadata, with task/run/session identifiers and candidate SHA retained in evidence. Git author identity does not establish human authorship or review.
+- Do not add a human `Reviewed-By` or `Co-authored-by` unless the contribution really occurred. Capture separate reviewer identity, reviewed SHA, verdict and findings.
+- Prefer a reusable session-attestation/commit-metadata adapter; trailer-presence checks alone do not verify true attribution.
 
-```
-~/Projects/
-└── FlowState.git/           # Bare repository
-    ├── main/                # Primary development worktree
-    ├── feature-xxx/         # Feature worktrees (temporary)
-    └── hooks/               # Git hooks (shared)
-```
+## Reusable workflow MVP
+The SDLC swarm is a configurable example, not hardcoded orchestration. The generic execution/evidence/evaluation/gate/outcome flow must support an additional minimal non-SDLC workflow unchanged. The first dogfood milestone exercises delegation, tools, attributable events, bounded recovery, real CI and independent review. Model-assisted evaluators remain replaceable and cannot substitute for deterministic facts or configured merge policy.
 
-**Always work in a worktree, never in the bare repo directly.**
-
-### Creating Feature Branches
-
-```bash
-cd /home/baphled/Projects/FlowState.git
-git worktree add -b feature/my-feature feature-my-feature main
-cd feature-my-feature
-```
-
-### Cleaning Up
-
-```bash
-cd /home/baphled/Projects/FlowState.git/main
-git worktree remove ../feature-my-feature
-git branch -d feature/my-feature
-```
-
-## Getting Started
-
-### Essential Commands
-
-| Task | Command |
-|------|---------|
-| **Run all tests** | `make test` |
-| **Run BDD tests** | `make bdd` |
-| **Run smoke tests** | `make bdd-smoke` |
-| **Build** | `make build` |
-| **Format** | `make fmt` |
-| **Lint** | `make lint` |
-| **Full check** | `make check` |
-
-## Development Workflow
-
-### BDD-Driven Development (MANDATORY)
-
-**ALWAYS develop from the outside-in:**
-
-1. **Write Cucumber scenario FIRST** - Start with acceptance test
-2. **Watch it fail** - Verify it fails for the right reason
-3. **Smallest change** - Implement just enough to pass ONE step
-4. **Run scenario** - See next failure
-5. **Repeat** - Until scenario passes
-6. **Refactor** - Clean up while green
-
-```gherkin
-# Example: features/chat/basic_chat.feature
-Feature: Basic Chat
-  Scenario: Send message and receive response
-    Given FlowState is running
-    When I type "Hello"
-    And I press Enter
-    Then I should see a response from the AI
-```
-
-### The Smallest Change
-
-| Situation | Smallest Change | NOT Smallest Change |
-|-----------|-----------------|---------------------|
-| Need a function | Create empty function returning nil | Implement full logic |
-| Need a struct | Create struct with needed field | Add all possible fields |
-| Need validation | Add one validation rule | Add all validations |
-| Need UI element | Add minimal element | Full styled component |
-
-### Commit Cadence
-
-```
-feat(chat): add scenario for basic chat [RED]
-feat(chat): create app struct [GREEN step 1]
-feat(chat): add input handling [GREEN step 2]
-feat(chat): implement provider call [GREEN step 3]
-feat(chat): display response [GREEN all steps]
-refactor(chat): extract message formatting [REFACTOR]
-```
-
-## Architecture
-
-### Layer Hierarchy (MUST follow)
-
-```
-App -> Intents -> Screens/Modals -> UIKit -> Behaviors
-```
-
-### Dependency Rules
-
-- `screens/` **NEVER** imports `intents/`
-- `uikit/` **NEVER** imports `screens/` or `intents/`
-- Use `ScreenResult` for screen -> intent communication
-
-### Intent Pattern
-
-```go
-type Intent interface {
-    Init() tea.Cmd
-    Update(msg tea.Msg) tea.Cmd  // Returns Cmd only, NOT (Model, Cmd)
-    View() string
-    Result() *IntentResult
-}
-```
-
-### ContentProvider Pattern
-
-```go
-type ContentProvider interface {
-    Content(width, height int) string
-    Title() string
-    Footer() string
-}
-
-// Usage
-asScreen := render.AsScreen(myComponent, layout)
-asModal := render.AsModal(myComponent, background, w, h, theme)
-```
-
-## Code Style
-
-### Imports
-
-```go
-import (
-    // 1. Standard library
-    "context"
-    "fmt"
-    
-    // 2. External (alphabetical)
-    tea "github.com/charmbracelet/bubbletea"
-    
-    // 3. Internal (alphabetical)
-    "github.com/baphled/flowstate/internal/tui/intents"
-)
-```
-
-### Naming
-
-- **Files:** `snake_case.go`
-- **Packages:** `lowercase` (single word)
-- **Types:** `PascalCase`
-- **Private:** `camelCase`
-
-### Comments (FORBIDDEN inside functions)
-
-- **NO** comments inside function bodies
-- **NO** inline comments
-- **NO** markers: `TODO`, `FIXME`, `HACK`
-
-**Exception:** E2E tests may have inline comments.
-
-## Testing
-
-### BDD Tags
-
-```gherkin
-@smoke       # Critical path, always run
-@wip         # Work in progress
-@navigation  # Navigation tests
-@chat        # Chat functionality
-```
-
-### Running Tests
-
-```bash
-make bdd           # All BDD tests
-make bdd-smoke     # Smoke tests only
-make bdd-wip       # WIP tests only
-make test          # Go tests
-```
-
-## When to REFUSE
-
-**Immediately refuse if asked to:**
-
-- Skip writing scenario/test first (BDD violation)
-- Build components bottom-up without acceptance test
-- Import `intents/` from `screens/`
-- Put comments inside function bodies
-- Work directly in the bare repo instead of a worktree
-
-## Key Files
-
-| File | Purpose |
-|------|---------|
-| `docs/PLAN.md` | Complete project plan |
-| `AGENTS.md` | This file - AI instructions |
-| `Makefile` | Build and development commands |
-| `rules/*.md` | Development rules |
-| `tasks/*.md` | Current tasks |
-| `features/*.feature` | BDD scenarios |
+GitHub is authoritative for commits, PRs, CI and reviews; Dropbox `PROGRESS.md` is the readable progress record, not a second scheduler. Never invent verification or publication receipts.
