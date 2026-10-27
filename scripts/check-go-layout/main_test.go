@@ -57,19 +57,23 @@ func TestMissingOrInvalidBaseFails(t *testing.T) {
 }
 
 func TestGitTypeChangeCannotHideCommittedGoPath(t *testing.T) {
-	t.Chdir(t.TempDir())
-	fixtureGit(t, "init", "-b", "feature/fixture")
-	fixtureSource(t, "client.go", "package fixture; func Run(){}\n")
-	base := fixtureGit(t, "rev-parse", "HEAD")
-	command := exec.Command("git", "hash-object", "-w", "--stdin")
-	command.Stdin = strings.NewReader("elsewhere.go")
-	output, err := command.Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	fixtureGit(t, "update-index", "--cacheinfo", "120000", strings.TrimSpace(string(output)), "client.go")
-	fixtureGit(t, "commit", "-qm", "test: synthetic mode change")
-	if err := checkRevision(base, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "parse") {
-		t.Fatalf("committed nonregular Go blob was not rejected: %v", err)
+	for _, linkText := range []string{"elsewhere.go", "package fixture"} {
+		t.Run(linkText, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			fixtureGit(t, "init", "-b", "feature/fixture")
+			fixtureSource(t, "client.go", "package fixture; func Run(){}\n")
+			base := fixtureGit(t, "rev-parse", "HEAD")
+			command := exec.Command("git", "hash-object", "-w", "--stdin")
+			command.Stdin = strings.NewReader(linkText)
+			output, err := command.Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			fixtureGit(t, "update-index", "--cacheinfo", "120000", strings.TrimSpace(string(output)), "client.go")
+			fixtureGit(t, "commit", "-qm", "test: synthetic mode change")
+			if err := checkRevision(base, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "regular") {
+				t.Fatalf("committed nonregular Go blob was not rejected: %v", err)
+			}
+		})
 	}
 }
