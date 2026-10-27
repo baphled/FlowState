@@ -1,0 +1,7 @@
+{
+  "after_system_prompt_tokens": 60,
+  "after_skill_header_tokens": 249,
+  "after_estimated_tokens": 309,
+  "baseline_estimated_tokens": 50907,
+  "reduction_percent": 99.39301078437151
+}

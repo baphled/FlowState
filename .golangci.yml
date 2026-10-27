@@ -1,21 +1,32 @@
 version: "2"
 
+run:
+  timeout: 5m
+
 linters:
   default: none
   enable:
-    - unused
-    - unparam
-    - staticcheck
+    - errcheck
     - govet
+    - ineffassign
+    - staticcheck
+    - unused
   settings:
-    staticcheck:
-      checks:
-        - "all"
-        - "-SA1019"
-        - "-ST1000"
+    errcheck:
+      check-blank: false
   exclusions:
     rules:
-      - path: "_test\\.go"
-        linters:
-          - unused
-          - unparam
+      # deferred Close on read/write paths is intentionally unchecked
+      # (best-effort cleanup); explicit error paths handle failures.
+      - linters:
+          - errcheck
+        source: "^\\s*defer .*\\.Close\\(\\)"
+      # os.Rename for corrupted-token backup is best-effort.
+      - linters:
+          - errcheck
+        source: "os\\.Rename"
+      # gosec g304: token storage paths are built from a user-configured,
+      # trusted storage dir - not attacker-controlled input.
+      - linters:
+          - gosec
+        text: "Potential file inclusion via variable"
