@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/baphled/flowstate/internal/store"
@@ -103,7 +104,11 @@ func TestGivenUnreadableTaskFileWhenNewThenUsageExit2(t *testing.T) {
 }
 
 func TestGivenBadDBPathWhenInvokedThenConfigInvalidExit4(t *testing.T) {
-	r := runArgv(t, []string{"session", "list", "--db", "/proc/definitely/not/writable.db"})
+	blocker := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := runArgv(t, []string{"session", "list", "--db", filepath.Join(blocker, "state.db")})
 	if r.exit != 4 {
 		t.Fatalf("exit %d, want 4", r.exit)
 	}
