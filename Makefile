@@ -106,7 +106,7 @@ worktree-list: ## List all worktrees
 
 worktree-new: ## Create new feature worktree (NAME=feature-name)
 	@echo "Creating worktree for feature/$(NAME)..."
-	@cd .. && git worktree add -b feature/$(NAME) $(NAME) main
+	@cd .. && git worktree add -b feature/$(NAME) $(NAME) next
 	@echo "Worktree created at ../$(NAME)"
 	@echo "Run: cd ../$(NAME)"
 
