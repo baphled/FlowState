@@ -61,6 +61,14 @@ def record_errors(path, content):
     return []
 
 
+def directory_errors(root):
+    errors = []
+    for item in sorted(Path(root).rglob('*')):
+        if item.is_file():
+            errors.extend(record_errors(item.relative_to(root).as_posix(), item.read_bytes()))
+    return errors
+
+
 def tree_errors(tree=None):
     if tree:
         rows = git('ls-tree', '-r', '-z', tree).split(b'\0')
@@ -117,10 +125,20 @@ def main():
     parser.add_argument('--external-record', type=Path)
     parser.add_argument('--receipt', type=Path,
                         help='validate an external attempt receipt against the schema')
+    parser.add_argument('--tree-root', type=Path,
+                        help='check a plain directory tree instead of Git state')
     args = parser.parse_args()
     if args.receipt:
         return validate_receipt(RECEIPT_SCHEMA, args.receipt)
     try:
+        if args.tree_root:
+            errors = directory_errors(args.tree_root)
+            for error in errors:
+                print('FAIL: ' + error, file=sys.stderr)
+            if not errors:
+                print('PASS: no project run records in the checked tree')
+                print('LIMIT: offline checks cannot authenticate Dropbox reads, serving identity or review')
+            return bool(errors)
         errors = tree_errors(None if args.staged or not args.base else args.head)
         if args.base:
             commits = git('rev-list', f'{args.base}..{args.head}').decode().splitlines()
