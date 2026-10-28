@@ -95,7 +95,9 @@ func TestGivenBadAllowFileWhenInvokeThenUsageExit(t *testing.T) {
 		t.Fatalf("exit %d", r.exit)
 	}
 	bad := filepath.Join(t.TempDir(), "bad.json")
-	os.WriteFile(bad, []byte(`{"not":"an array"}`), 0o644)
+	if err := os.WriteFile(bad, []byte(`{"not":"an array"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	r = runTool(t, id, "--tool", "echo", "--allow-file", bad)
 	if r.exit != exitUsage {
 		t.Fatalf("exit %d (bad json)", r.exit)

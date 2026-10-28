@@ -55,9 +55,9 @@ func runArgv(t *testing.T, argv []string) result {
 		done <- string(b)
 	}()
 	exit := dispatch(argv, outW, outW)
-	outW.Close()
+	_ = outW.Close()
 	out := <-done
-	outR.Close()
+	_ = outR.Close()
 	return result{exit: exit, stdout: out}
 }
 
@@ -169,7 +169,9 @@ func TestGivenCreatedSessionWhenListThenSessionListedExit0(t *testing.T) {
 	var rec struct {
 		ID string `json:"id"`
 	}
-	json.Unmarshal([]byte(firstLine(r.stdout)), &rec)
+	if err := json.Unmarshal([]byte(firstLine(r.stdout)), &rec); err != nil {
+		t.Fatalf("unmarshal new output: %v", err)
+	}
 	l := runCLIList(t)
 	if l.exit != 0 || len(lines(l.stdout)) != 1 {
 		t.Fatalf("list exit %d out %q", l.exit, l.stdout)
@@ -181,7 +183,9 @@ func TestGivenClosedSessionWhenListWithStatusCancelledThenListed(t *testing.T) {
 	var rec struct {
 		ID string `json:"id"`
 	}
-	json.Unmarshal([]byte(firstLine(r.stdout)), &rec)
+	if err := json.Unmarshal([]byte(firstLine(r.stdout)), &rec); err != nil {
+		t.Fatalf("unmarshal new output: %v", err)
+	}
 	runCLIClose(t, rec.ID)
 	l := runCLIList(t, "--status", "cancelled")
 	if l.exit != 0 || len(lines(l.stdout)) != 1 {
@@ -208,7 +212,9 @@ func TestGivenCreatedSessionWhenEventsThenTurnStartJSONL(t *testing.T) {
 	var rec struct {
 		ID string `json:"id"`
 	}
-	json.Unmarshal([]byte(firstLine(r.stdout)), &rec)
+	if err := json.Unmarshal([]byte(firstLine(r.stdout)), &rec); err != nil {
+		t.Fatalf("unmarshal new output: %v", err)
+	}
 	e := runCLIEvents(t, rec.ID)
 	if e.exit != 0 || len(lines(e.stdout)) != 1 {
 		t.Fatalf("events exit %d out %q", e.exit, e.stdout)
@@ -217,7 +223,9 @@ func TestGivenCreatedSessionWhenEventsThenTurnStartJSONL(t *testing.T) {
 		Type string `json:"type"`
 		Seq  int    `json:"seq"`
 	}
-	json.Unmarshal([]byte(firstLine(e.stdout)), &ev)
+	if err := json.Unmarshal([]byte(firstLine(e.stdout)), &ev); err != nil {
+		t.Fatalf("unmarshal events output: %v", err)
+	}
 	if ev.Type != "turn.start" || ev.Seq != 0 {
 		t.Fatalf("event %+v", ev)
 	}
@@ -235,7 +243,9 @@ func TestGivenActiveSessionWhenCloseThenCancelledExit0(t *testing.T) {
 	var rec struct {
 		ID string `json:"id"`
 	}
-	json.Unmarshal([]byte(firstLine(r.stdout)), &rec)
+	if err := json.Unmarshal([]byte(firstLine(r.stdout)), &rec); err != nil {
+		t.Fatalf("unmarshal new output: %v", err)
+	}
 	c := runCLIClose(t, rec.ID)
 	if c.exit != 0 {
 		t.Fatalf("close exit %d, want 0", c.exit)
@@ -243,7 +253,9 @@ func TestGivenActiveSessionWhenCloseThenCancelledExit0(t *testing.T) {
 	var out struct {
 		Status string `json:"status"`
 	}
-	json.Unmarshal([]byte(firstLine(c.stdout)), &out)
+	if err := json.Unmarshal([]byte(firstLine(c.stdout)), &out); err != nil {
+		t.Fatalf("unmarshal close output: %v", err)
+	}
 	if out.Status != "cancelled" {
 		t.Fatalf("status %q", out.Status)
 	}
@@ -254,7 +266,9 @@ func TestGivenAlreadyClosedSessionWhenCloseAgainThenTerminalExit6(t *testing.T) 
 	var rec struct {
 		ID string `json:"id"`
 	}
-	json.Unmarshal([]byte(firstLine(r.stdout)), &rec)
+	if err := json.Unmarshal([]byte(firstLine(r.stdout)), &rec); err != nil {
+		t.Fatalf("unmarshal new output: %v", err)
+	}
 	runCLIClose(t, rec.ID)
 	c := runCLIClose(t, rec.ID)
 	if c.exit != 6 {
@@ -267,7 +281,9 @@ func TestGivenEventsAfterCloseWhenInspectedThenCancelledEventLast(t *testing.T) 
 	var rec struct {
 		ID string `json:"id"`
 	}
-	json.Unmarshal([]byte(firstLine(r.stdout)), &rec)
+	if err := json.Unmarshal([]byte(firstLine(r.stdout)), &rec); err != nil {
+		t.Fatalf("unmarshal new output: %v", err)
+	}
 	runCLIClose(t, rec.ID)
 	e := runCLIEvents(t, rec.ID)
 	evs := lines(e.stdout)
@@ -277,7 +293,9 @@ func TestGivenEventsAfterCloseWhenInspectedThenCancelledEventLast(t *testing.T) 
 	var last struct {
 		Type string `json:"type"`
 	}
-	json.Unmarshal([]byte(evs[1]), &last)
+	if err := json.Unmarshal([]byte(evs[1]), &last); err != nil {
+		t.Fatalf("unmarshal event: %v", err)
+	}
 	if last.Type != "session.cancelled" {
 		t.Fatalf("last type %q", last.Type)
 	}
@@ -298,11 +316,12 @@ func TestGivenTamperedPayloadWhenEventsThenReplayMismatchExit7(t *testing.T) {
 	if _, err := w.Append(ctx, "user", "turn.start", map[string]any{"task": "t"}); err != nil {
 		t.Fatal(err)
 	}
-	w.Close()
-	if err := st.TamperEventPayload(ctx, sess.ID, 0, `{"task":"tampered"}`); err != nil {
+	_ = w.Close()
+	if _, err := st.DB().ExecContext(ctx,
+		`UPDATE events SET payload_json='{"task":"tampered"}' WHERE session_id=? AND seq=0`, sess.ID); err != nil {
 		t.Fatal(err)
 	}
-	st.Close()
+	_ = st.Close()
 	r := runArgv(t, []string{"session", "events", sess.ID, "--db", db})
 	if r.exit != 7 {
 		t.Fatalf("exit %d, want 7", r.exit)

@@ -18,7 +18,7 @@ func newStoreWithSession(t *testing.T) (*store.Store, string, *store.EventWriter
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	t.Cleanup(func() { st.Close() })
+	t.Cleanup(func() { _ = st.Close() })
 	sess, err := st.CreateSession(context.Background(), "id-1", "prov", "model", "harness", "sha")
 	if err != nil {
 		t.Fatalf("create session: %v", err)
@@ -27,7 +27,7 @@ func newStoreWithSession(t *testing.T) (*store.Store, string, *store.EventWriter
 	if err != nil {
 		t.Fatalf("new writer: %v", err)
 	}
-	t.Cleanup(func() { w.Close() })
+	t.Cleanup(func() { _ = w.Close() })
 	return st, sess.ID, w
 }
 

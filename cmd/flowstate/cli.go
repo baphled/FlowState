@@ -70,10 +70,10 @@ func asCliError(err error) *cliError {
 func writeError(stderr io.Writer, err error) {
 	b, merr := json.Marshal(asCliError(err))
 	if merr != nil { // never happens for this shape
-		fmt.Fprintf(stderr, "{\"code\":\"%s\",\"message\":%q}\n", codeInternal, err.Error())
+		_, _ = fmt.Fprintf(stderr, "{\"code\":\"%s\",\"message\":%q}\n", codeInternal, err.Error())
 		return
 	}
-	fmt.Fprintln(stderr, string(b))
+	_, _ = fmt.Fprintln(stderr, string(b))
 }
 
 // exitCodeFor maps an error onto its stable exit code.
