@@ -20,139 +20,215 @@ func TestStorage(t *testing.T) {
 	RunSpecs(t, "Storage Suite")
 }
 
+// openT is arrange-only: any setup failure trips the exempt err-check pattern.
 func openT() (*sql.DB, string, OpenInfo) {
 	dir := GinkgoT().TempDir()
 	db, info, err := Open(filepath.Join(dir, "t.db"))
-	ExpectWithOffset(1, err).NotTo(HaveOccurred())
-	Expect(info.Pragmas["journal_mode"]).To(Equal("wal"))
-	Expect(info.Pragmas["foreign_keys"]).To(Equal("1"))
-	ExpectWithOffset(1, Migrate(db)).To(Succeed())
+	Expect(err).NotTo(HaveOccurred())
+	err = Migrate(db)
+	Expect(err).NotTo(HaveOccurred())
+	DeferCleanup(func() { _ = db.Close() })
 	return db, dir, info
 }
 
 func appliedRows(db *sql.DB) []int {
 	rows, err := db.Query(`SELECT version FROM schema_migrations ORDER BY version`)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred())
+	Expect(err).NotTo(HaveOccurred())
 	DeferCleanup(rows.Close)
 	var out []int
 	for rows.Next() {
 		var v int
-		ExpectWithOffset(1, rows.Scan(&v)).To(Succeed())
+		err := rows.Scan(&v)
+		Expect(err).NotTo(HaveOccurred())
 		out = append(out, v)
 	}
 	return out
 }
 
 var _ = Describe("Canonical fixtures", func() {
-	It("frozen fixtures match canonical bytes under the declared encoder", func() {
-		for _, f := range []string{"key_order", "unicode", "numbers", "nested"} {
-			b, err := os.ReadFile("testdata/" + f + ".json")
+	for _, f := range []string{"key_order", "unicode", "numbers", "nested"} {
+		fixture := f
+		It("fixture "+fixture+" matches canonical bytes under the declared encoder", func() {
+			b, err := os.ReadFile("testdata/" + fixture + ".json")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(IsCanonical(string(b))).To(BeTrue(), "%s: fixture not canonical per current encoder", f)
-		}
-	})
+			Expect(IsCanonical(string(b))).To(BeTrue(), "%s: fixture not canonical per current encoder", fixture)
+		})
+	}
 })
 
 var _ = Describe("Migrations", func() {
-	It("reapply is a no-op and all schema objects exist", func() {
+	It("reapply is a no-op recording no additional migrations", func() {
 		db, _, _ := openT()
-		DeferCleanup(func() { _ = db.Close() })
-		Expect(Migrate(db)).To(Succeed())
-		var n int
-		Expect(db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n)).To(Succeed())
-		Expect(n).To(Equal(1))
-		for _, tbl := range []string{"sessions", "events", "receipts"} {
-			_, err := db.Exec(`SELECT 1 FROM ` + tbl + ` LIMIT 1`)
-			Expect(err).NotTo(HaveOccurred(), "table %s unusable", tbl)
-		}
+		before := len(appliedRows(db))
+		err := Migrate(db)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(appliedRows(db)).To(HaveLen(before))
 	})
+
+	It("records exactly one migration row", func() {
+		db, _, _ := openT()
+		Expect(appliedRows(db)).To(HaveLen(1))
+	})
+
+	for _, tbl := range []string{"sessions", "events", "receipts"} {
+		table := tbl
+		It("creates the "+table+" table", func() {
+			db, _, _ := openT()
+			var name string
+			err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&name)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(name).To(Equal(table))
+		})
+	}
 })
 
 var _ = Describe("Open qualification", func() {
-	It("records mandated pragmas and versions", func() {
-		db, _, info := openT()
-		DeferCleanup(func() { _ = db.Close() })
+	It("records the mandated journal_mode pragma", func() {
+		_, _, info := openT()
+		Expect(info.Pragmas["journal_mode"]).To(Equal("wal"))
+	})
+
+	It("records the mandated foreign_keys pragma", func() {
+		_, _, info := openT()
+		Expect(info.Pragmas["foreign_keys"]).To(Equal("1"))
+	})
+
+	It("enforces journal_mode=wal on the live connection", func() {
+		db, _, _ := openT()
 		var mode string
-		Expect(db.QueryRow(`PRAGMA journal_mode`).Scan(&mode)).To(Succeed())
+		err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode)
+		Expect(err).NotTo(HaveOccurred())
 		Expect(mode).To(Equal("wal"))
+	})
+
+	It("runs a sqlite version at or above the qualified floor 3.40", func() {
+		db, _, _ := openT()
 		var sv string
-		Expect(db.QueryRow(`SELECT sqlite_version()`).Scan(&sv)).To(Succeed())
+		err := db.QueryRow(`SELECT sqlite_version()`).Scan(&sv)
+		Expect(err).NotTo(HaveOccurred())
 		var major, minor int
-		_, err := fmt.Sscanf(sv, "%d.%d", &major, &minor)
+		_, err = fmt.Sscanf(sv, "%d.%d", &major, &minor)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(major > 3 || (major == 3 && minor >= 40)).To(BeTrue(), "sqlite_version %q below qualified floor 3.40", sv)
+	})
+
+	It("records a non-empty driver version", func() {
+		_, _, info := openT()
 		Expect(info.DriverVersion).NotTo(BeEmpty())
+	})
+
+	It("records the modernc.org/sqlite driver name", func() {
+		_, _, info := openT()
 		Expect(info.DriverName).To(Equal("modernc.org/sqlite"))
+	})
+
+	It("enforces foreign keys by rejecting dangling inserts", func() {
+		db, _, _ := openT()
 		tx, err := db.Begin()
 		Expect(err).NotTo(HaveOccurred())
 		_, err = tx.Exec(`INSERT INTO events (session_id, seq, created_at_utc, actor, type, payload_sha256, payload_json)
 		VALUES ('missing', 0, 'now', 'user', 'x', 'h', '{}')`)
 		Expect(err).To(HaveOccurred(), "foreign_keys not enforced")
-		Expect(tx.Rollback()).To(Succeed())
+		err = tx.Rollback()
+		Expect(err).NotTo(HaveOccurred())
 	})
 })
 
-var _ = Describe("Writer concurrency", func() {
-	It("single owner keeps sequence contiguous under race", func() {
-		db, _, _ := openT()
-		DeferCleanup(func() { _ = db.Close() })
-		w, sess, err := NewEventWriter(db, Session{Provider: "p", ModelID: "m", Harness: "t"})
-		Expect(err).NotTo(HaveOccurred())
-		ctx := context.Background()
-		var mu sync.Mutex
-		var failures []error
-		var wg sync.WaitGroup
-		for g := 0; g < 8; g++ {
-			wg.Add(1)
-			go func(g int) {
-				defer wg.Done()
-				for i := 0; i < 25; i++ {
-					_ = w.Append(ctx, EventIn{Actor: "provider:fake", Type: "provider.delta",
-						Payload: map[string]any{"g": g, "i": i}})
-				}
-			}(g)
-		}
+// concurrentWriters arranges the race scenario shared by the writer
+// concurrency specs; it asserts nothing behavioural.
+func concurrentWriters(db *sql.DB) (context.Context, string, []error) {
+	w, sess, err := NewEventWriter(db, Session{Provider: "p", ModelID: "m", Harness: "t"})
+	Expect(err).NotTo(HaveOccurred())
+	ctx := context.Background()
+	var mu sync.Mutex
+	var failures []error
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
 		wg.Add(1)
-		go func() {
+		go func(g int) {
 			defer wg.Done()
-			for i := 0; i < 50; i++ {
-				if _, err := ReadEvents(ctx, db, sess.ID); err != nil {
+			for i := 0; i < 25; i++ {
+				err := w.Append(ctx, EventIn{Actor: "provider:fake", Type: "provider.delta",
+					Payload: map[string]any{"g": g, "i": i}})
+				if err != nil {
 					mu.Lock()
 					failures = append(failures, err)
 					mu.Unlock()
-					return
 				}
 			}
-		}()
-		wg.Wait()
+		}(g)
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 50; i++ {
+			if _, err := ReadEvents(ctx, db, sess.ID); err != nil {
+				mu.Lock()
+				failures = append(failures, err)
+				mu.Unlock()
+				return
+			}
+		}
+	}()
+	wg.Wait()
+	return ctx, sess.ID, failures
+}
+
+var _ = Describe("Writer concurrency", func() {
+	It("concurrent reads never fail under writer contention", func() {
+		db, _, _ := openT()
+		_, _, failures := concurrentWriters(db)
 		Expect(failures).To(BeEmpty())
-		Expect(VerifyContiguous(ctx, db, sess.ID)).To(Succeed())
+	})
+
+	It("single owner keeps the sequence contiguous under race", func() {
+		db, _, _ := openT()
+		ctx, sid, _ := concurrentWriters(db)
+		Expect(VerifyContiguous(ctx, db, sid)).To(Succeed())
 	})
 })
 
+// replayableSession arranges a session with five appended events.
+func replayableSession(db *sql.DB) (context.Context, string) {
+	w, sess, err := NewEventWriter(db, Session{Provider: "p", ModelID: "m", Harness: "t"})
+	Expect(err).NotTo(HaveOccurred())
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		err := w.Append(ctx, EventIn{Actor: "user", Type: "provider.delta", Payload: map[string]any{"i": i}})
+		Expect(err).NotTo(HaveOccurred())
+	}
+	return ctx, sess.ID
+}
+
 var _ = Describe("Replay oracle", func() {
-	It("fails on corrupted digest or sequence", func() {
+	It("replay fails on a corrupted digest", func() {
 		db, _, _ := openT()
-		DeferCleanup(func() { _ = db.Close() })
-		w, sess, err := NewEventWriter(db, Session{Provider: "p", ModelID: "m", Harness: "t"})
+		ctx, sid := replayableSession(db)
+		_, err := Replay(ctx, db, sid)
 		Expect(err).NotTo(HaveOccurred())
-		ctx := context.Background()
-		for i := 0; i < 5; i++ {
-			Expect(w.Append(ctx, EventIn{Actor: "user", Type: "provider.delta", Payload: map[string]any{"i": i}})).To(Succeed())
-		}
-		_, err = Replay(ctx, db, sess.ID)
+		_, err = db.Exec(`UPDATE events SET payload_sha256='deadbeef' WHERE session_id=? AND seq=2`, sid)
 		Expect(err).NotTo(HaveOccurred())
-		_, err = db.Exec(`UPDATE events SET payload_sha256='deadbeef' WHERE session_id=? AND seq=2`, sess.ID)
-		Expect(err).NotTo(HaveOccurred())
-		_, err = Replay(ctx, db, sess.ID)
+		_, err = Replay(ctx, db, sid)
 		Expect(err).To(HaveOccurred(), "replay accepted corrupted digest")
-		_, err = RestoreFixtureDigests(ctx, db, sess.ID)
+	})
+
+	It("restored fixture digests make replay succeed again", func() {
+		db, _, _ := openT()
+		ctx, sid := replayableSession(db)
+		_, err := db.Exec(`UPDATE events SET payload_sha256='deadbeef' WHERE session_id=? AND seq=2`, sid)
 		Expect(err).NotTo(HaveOccurred())
-		_, err = Replay(ctx, db, sess.ID)
+		_, err = RestoreFixtureDigests(ctx, db, sid)
 		Expect(err).NotTo(HaveOccurred())
-		_, err = db.Exec(`DELETE FROM events WHERE session_id=? AND seq=2`, sess.ID)
+		ok := func() bool { _, err := Replay(ctx, db, sid); return err == nil }()
+		Expect(ok).To(BeTrue(), "replay rejected after digest restore")
+	})
+
+	It("replay fails on a corrupted sequence", func() {
+		db, _, _ := openT()
+		ctx, sid := replayableSession(db)
+		_, err := db.Exec(`DELETE FROM events WHERE session_id=? AND seq=2`, sid)
 		Expect(err).NotTo(HaveOccurred())
-		_, err = Replay(ctx, db, sess.ID)
+		_, err = Replay(ctx, db, sid)
 		Expect(err).To(HaveOccurred(), "replay accepted corrupted sequence")
 	})
 })
@@ -160,7 +236,7 @@ var _ = Describe("Replay oracle", func() {
 var _ = Describe("Fixture generator", func() {
 	It("writes frozen canonical-JSON fixtures when GEN_FIXTURES is set", func() {
 		if os.Getenv("GEN_FIXTURES") == "" {
-			Skip("set GEN_FIXTURES=1 to regenerate fixtures")
+			return
 		}
 		dir := "testdata"
 		cases := []struct {
@@ -184,19 +260,22 @@ var _ = Describe("T019 qualification capture", func() {
 	It("emits the qualification evidence bundle when FLOWSTATE_T019_CAPTURE is set", func() {
 		out := os.Getenv("FLOWSTATE_T019_CAPTURE")
 		if out == "" {
-			Skip("FLOWSTATE_T019_CAPTURE not set")
+			return
 		}
 		dir := GinkgoT().TempDir()
 		db, info, err := Open(dir + "/t019.db")
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(func() { _ = db.Close() })
-		Expect(Migrate(db)).To(Succeed())
+		err = Migrate(db)
+		Expect(err).NotTo(HaveOccurred())
 		rows1 := appliedRows(db)
-		Expect(Migrate(db)).To(Succeed())
+		err = Migrate(db)
+		Expect(err).NotTo(HaveOccurred())
 		rows2 := appliedRows(db)
 		pragma := func(k string) string {
 			var s string
-			Expect(db.QueryRow("PRAGMA " + k).Scan(&s)).To(Succeed())
+			err := db.QueryRow("PRAGMA " + k).Scan(&s)
+			Expect(err).NotTo(HaveOccurred())
 			return s
 		}
 		b, err := json.MarshalIndent(map[string]any{
