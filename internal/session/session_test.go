@@ -1,167 +1,114 @@
 package session
 
 import (
-	"strings"
 	"testing"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
-func newTestSession(t *testing.T) *Session {
-	t.Helper()
+func TestSession(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "Session Suite")
+}
+
+func newTestSession() *Session {
 	s, err := New("sess-1")
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	Expect(err).NotTo(HaveOccurred())
 	return s
 }
 
-func TestNewRejectsEmptyID(t *testing.T) {
-	if _, err := New(""); err == nil {
-		t.Fatal("expected error for empty id")
-	}
-}
+var _ = Describe("Session", func() {
+	It("rejects an empty session id", func() {
+		_, err := New("")
+		Expect(err).To(HaveOccurred())
+	})
 
-func TestTurnLifecycleOrderedEvents(t *testing.T) {
-	s := newTestSession(t)
-	turn, err := s.StartTurn("turn-1")
-	if err != nil {
-		t.Fatalf("StartTurn: %v", err)
-	}
-	if err := s.RecordToolResult(turn, "tool=shell output=ok"); err != nil {
-		t.Fatalf("RecordToolResult: %v", err)
-	}
-	if err := s.Complete(turn, "result=done"); err != nil {
-		t.Fatalf("Complete: %v", err)
-	}
+	It("records ordered turn lifecycle events with ascending sequence numbers", func() {
+		s := newTestSession()
+		turn, err := s.StartTurn("turn-1")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(s.RecordToolResult(turn, "tool=shell output=ok")).To(Succeed())
+		Expect(s.Complete(turn, "result=done")).To(Succeed())
 
-	events := s.Events()
-	wantKinds := []EventKind{EventTurnAdmitted, EventToolResult, EventTurnComplete}
-	if len(events) != len(wantKinds) {
-		t.Fatalf("got %d events, want %d", len(events), len(wantKinds))
-	}
-	var last uint64
-	for i, e := range events {
-		if e.Kind != wantKinds[i] {
-			t.Errorf("event %d kind = %q, want %q", i, e.Kind, wantKinds[i])
+		events := s.Events()
+		wantKinds := []EventKind{EventTurnAdmitted, EventToolResult, EventTurnComplete}
+		Expect(events).To(HaveLen(len(wantKinds)))
+		var last uint64
+		for i, e := range events {
+			Expect(e.Kind).To(Equal(wantKinds[i]))
+			Expect(e.Seq).To(BeNumerically(">", last))
+			last = e.Seq
 		}
-		if e.Seq <= last {
-			t.Errorf("event %d seq %d not greater than %d", i, e.Seq, last)
+	})
+
+	It("makes cancellation terminal", func() {
+		s := newTestSession()
+		turn, err := s.StartTurn("turn-1")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(s.Cancel(turn)).To(Succeed())
+		Expect(s.RecordToolResult(turn, "late")).To(HaveOccurred())
+		Expect(s.Complete(turn, "late")).To(HaveOccurred())
+		Expect(s.Events()[len(s.Events())-1].Kind).To(Equal(EventTurnCancelled))
+	})
+
+	It("rejects duplicate turn ids within a session", func() {
+		s := newTestSession()
+		_, err := s.StartTurn("dup")
+		Expect(err).NotTo(HaveOccurred())
+		_, err = s.StartTurn("dup")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("already exists"))
+	})
+
+	It("rejects turns owned by another session instance", func() {
+		s1 := newTestSession()
+		s2 := newTestSession()
+		turn1, err := s1.StartTurn("turn-1")
+		Expect(err).NotTo(HaveOccurred())
+		foreign, err := s2.StartTurn("turn-foreign")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(s2.RecordToolResult(turn1, "hijack")).To(HaveOccurred())
+		Expect(s2.Complete(turn1, "hijack")).To(HaveOccurred())
+		Expect(s1.RecordToolResult(foreign, "hijack")).To(HaveOccurred())
+		for _, e := range s1.Events() {
+			Expect(e.Payload).NotTo(ContainSubstring("hijack"))
 		}
-		last = e.Seq
-	}
-}
-
-func TestCancelIsTerminal(t *testing.T) {
-	s := newTestSession(t)
-	turn, _ := s.StartTurn("turn-1")
-	if err := s.Cancel(turn); err != nil {
-		t.Fatalf("Cancel: %v", err)
-	}
-	if err := s.RecordToolResult(turn, "late"); err == nil {
-		t.Fatal("expected error recording into cancelled turn")
-	}
-	if err := s.Complete(turn, "late"); err == nil {
-		t.Fatal("expected error completing cancelled turn")
-	}
-	if k := s.Events()[len(s.Events())-1].Kind; k != EventTurnCancelled {
-		t.Errorf("last event kind = %q, want %q", k, EventTurnCancelled)
-	}
-}
-
-func TestDuplicateTurnIDRejected(t *testing.T) {
-	s := newTestSession(t)
-	if _, err := s.StartTurn("dup"); err != nil {
-		t.Fatalf("first StartTurn: %v", err)
-	}
-	_, err := s.StartTurn("dup")
-	if err == nil || !strings.Contains(err.Error(), "already exists") {
-		t.Fatalf("expected duplicate error, got %v", err)
-	}
-}
-
-// --- regression tests for the PR #19 review findings ---
-
-func TestForeignTurnRejected(t *testing.T) {
-	s1 := newTestSession(t)
-	s2 := newTestSession(t)
-	// s2 reuses the same session id as s1 but is a distinct instance.
-	turn1, err := s1.StartTurn("turn-1")
-	if err != nil {
-		t.Fatalf("StartTurn: %v", err)
-	}
-	foreign, err := s2.StartTurn("turn-foreign")
-	if err != nil {
-		t.Fatalf("StartTurn: %v", err)
-	}
-	if err := s2.RecordToolResult(turn1, "hijack"); err == nil {
-		t.Fatal("expected error recording into a turn owned by another session")
-	}
-	if err := s2.Complete(turn1, "hijack"); err == nil {
-		t.Fatal("expected error completing a turn owned by another session")
-	}
-	if err := s1.RecordToolResult(foreign, "hijack"); err == nil {
-		t.Fatal("expected error recording into a turn owned by another session")
-	}
-	// Neither session's event log may contain cross-session writes.
-	for _, e := range s1.Events() {
-		if strings.Contains(e.Payload, "hijack") {
-			t.Errorf("session 1 log contains foreign write: %+v", e)
+		for _, e := range s2.Events() {
+			Expect(e.Payload).NotTo(ContainSubstring("hijack"))
 		}
-	}
-	for _, e := range s2.Events() {
-		if strings.Contains(e.Payload, "hijack") {
-			t.Errorf("session 2 log contains foreign write: %+v", e)
-		}
-	}
-}
+	})
 
-func TestTurnEventsSnapshotImmutable(t *testing.T) {
-	s := newTestSession(t)
-	turn, _ := s.StartTurn("turn-1")
-	snap := turn.Events()
-	if len(snap) != 1 {
-		t.Fatalf("snapshot length = %d, want 1", len(snap))
-	}
-	snap[0].Payload = "tampered"
-	if got := turn.Events()[0].Payload; got == "tampered" {
-		t.Fatal("mutating snapshot leaked into turn state")
-	}
-	// Session-level snapshot must also be a copy.
-	ssnap := s.Events()
-	ssnap[0].Payload = "tampered"
-	if got := s.Events()[0].Payload; got == "tampered" {
-		t.Fatal("mutating session snapshot leaked into session state")
-	}
-}
+	It("returns event snapshots that cannot mutate turn or session state", func() {
+		s := newTestSession()
+		turn, err := s.StartTurn("turn-1")
+		Expect(err).NotTo(HaveOccurred())
+		snap := turn.Events()
+		Expect(snap).To(HaveLen(1))
+		snap[0].Payload = "tampered"
+		Expect(turn.Events()[0].Payload).NotTo(Equal("tampered"))
+		ssnap := s.Events()
+		ssnap[0].Payload = "tampered"
+		Expect(s.Events()[0].Payload).NotTo(Equal("tampered"))
+	})
 
-func TestEventsGloballySeqOrdered(t *testing.T) {
-	s := newTestSession(t)
-	a, _ := s.StartTurn("turn-a")
-	b, _ := s.StartTurn("turn-b")
-	steps := []struct {
-		turn *Turn
-	}{
-		{a}, {b}, {a}, {b}, {a},
-	}
-	for _, st := range steps {
-		if err := s.RecordToolResult(st.turn, "tool step"); err != nil {
-			t.Fatalf("RecordToolResult: %v", err)
+	It("sequences events from interleaved turns in global order", func() {
+		s := newTestSession()
+		a, err := s.StartTurn("turn-a")
+		Expect(err).NotTo(HaveOccurred())
+		b, err := s.StartTurn("turn-b")
+		Expect(err).NotTo(HaveOccurred())
+		for _, turn := range []*Turn{a, b, a, b, a} {
+			Expect(s.RecordToolResult(turn, "tool step")).To(Succeed())
 		}
-	}
-	if err := s.Complete(b, "b done"); err != nil {
-		t.Fatalf("Complete: %v", err)
-	}
-	events := s.Events()
-	if len(events) == 0 {
-		t.Fatal("no events recorded")
-	}
-	var last uint64
-	for i, e := range events {
-		if e.Seq <= last {
-			t.Errorf("event %d seq %d not greater than %d (global order violated)", i, e.Seq, last)
+		Expect(s.Complete(b, "b done")).To(Succeed())
+		events := s.Events()
+		Expect(events).NotTo(BeEmpty())
+		var last uint64
+		for i, e := range events {
+			Expect(e.Seq).To(BeNumerically(">", last), "event %d seq %d not greater than %d", i, e.Seq, last)
+			last = e.Seq
 		}
-		last = e.Seq
-	}
-	if k := events[len(events)-1].Kind; k != EventTurnComplete {
-		t.Errorf("last event kind = %q, want %q", k, EventTurnComplete)
-	}
-}
+		Expect(events[len(events)-1].Kind).To(Equal(EventTurnComplete))
+	})
+})

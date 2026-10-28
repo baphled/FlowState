@@ -3,154 +3,118 @@ package session
 import (
 	"context"
 	"errors"
-	"testing"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/store"
 )
 
-func newStore(t *testing.T) *store.Store {
-	t.Helper()
+func newStore() *store.Store {
 	st, err := store.OpenMemory()
-	if err != nil {
-		t.Fatalf("OpenMemory: %v", err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
+	ExpectWithOffset(1, err).NotTo(HaveOccurred())
+	DeferCleanup(func() { _ = st.Close() })
 	return st
 }
 
-func TestGivenNoSessionsWhenListThenEmptySlice(t *testing.T) {
-	st := newStore(t)
-	got, err := List(context.Background(), st, "")
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(got) != 0 {
-		t.Fatalf("got %d sessions, want 0", len(got))
-	}
-}
+var _ = Describe("Store-backed session extensions", func() {
+	It("lists no sessions for an empty store", func() {
+		st := newStore()
+		got, err := List(context.Background(), st, "")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).To(BeEmpty())
+	})
 
-func TestGivenCreatedSessionWhenListThenRowReturned(t *testing.T) {
-	st := newStore(t)
-	ctx := context.Background()
-	created, err := Create(ctx, st, "prov", "model-x", DefaultHarness, "deadbeef", "do the thing")
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	got, err := List(ctx, st, "")
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(got) != 1 || got[0].ID != created.ID {
-		t.Fatalf("got %+v, want one session %s", got, created.ID)
-	}
-}
+	It("lists a created session", func() {
+		st := newStore()
+		ctx := context.Background()
+		created, err := Create(ctx, st, "prov", "model-x", DefaultHarness, "deadbeef", "do the thing")
+		Expect(err).NotTo(HaveOccurred())
+		got, err := List(ctx, st, "")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).To(HaveLen(1))
+		Expect(got[0].ID).To(Equal(created.ID))
+	})
 
-func TestGivenMixedStatusesWhenListWithStatusFilterThenOnlyMatching(t *testing.T) {
-	st := newStore(t)
-	ctx := context.Background()
-	a, _ := Create(ctx, st, "p", "m", DefaultHarness, "sha", "t1")
-	b, _ := Create(ctx, st, "p", "m", DefaultHarness, "sha", "t2")
-	if _, err := Close(ctx, st, b.ID); err != nil {
-		t.Fatalf("Close b: %v", err)
-	}
-	got, err := List(ctx, st, "cancelled")
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(got) != 1 || got[0].ID != a.ID && got[0].ID != b.ID {
-		t.Fatalf("filter mismatch: %+v", got)
-	}
-	if got[0].ID != b.ID {
-		t.Fatalf("got %s, want closed session %s", got[0].ID, b.ID)
-	}
-	_ = a
-}
+	It("filters list results by status", func() {
+		st := newStore()
+		ctx := context.Background()
+		_, err := Create(ctx, st, "p", "m", DefaultHarness, "sha", "t1")
+		Expect(err).NotTo(HaveOccurred())
+		b, err := Create(ctx, st, "p", "m", DefaultHarness, "sha", "t2")
+		Expect(err).NotTo(HaveOccurred())
+		_, err = Close(ctx, st, b.ID)
+		Expect(err).NotTo(HaveOccurred())
+		got, err := List(ctx, st, "cancelled")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).To(HaveLen(1))
+		Expect(got[0].ID).To(Equal(b.ID))
+	})
 
-func TestGivenInvalidStatusFilterWhenListThenUsageError(t *testing.T) {
-	st := newStore(t)
-	if _, err := List(context.Background(), st, "banana"); !errors.Is(err, ErrUsage) {
-		t.Fatalf("got %v, want ErrUsage", err)
-	}
-}
+	It("rejects an invalid status filter with ErrUsage", func() {
+		st := newStore()
+		_, err := List(context.Background(), st, "banana")
+		Expect(errors.Is(err, ErrUsage)).To(BeTrue())
+	})
 
-func TestGivenCreateWhenRecordPersistedThenTurnStartEventAndActiveStatus(t *testing.T) {
-	st := newStore(t)
-	ctx := context.Background()
-	created, err := Create(ctx, st, "prov", "model", DefaultHarness, "sha1", "hello task")
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	if created.Status != "active" {
-		t.Fatalf("status %q, want active", created.Status)
-	}
-	events, err := st.Replay(ctx, created.ID)
-	if err != nil {
-		t.Fatalf("Replay: %v", err)
-	}
-	if len(events) != 1 || events[0].Type != "turn.start" || events[0].Actor != "user" || events[0].Seq != 0 {
-		t.Fatalf("events %+v, want single user turn.start at seq 0", events)
-	}
-}
+	It("persists a turn start event and active status on create", func() {
+		st := newStore()
+		ctx := context.Background()
+		created, err := Create(ctx, st, "prov", "model", DefaultHarness, "sha1", "hello task")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created.Status).To(Equal("active"))
+		events, err := st.Replay(ctx, created.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(events).To(HaveLen(1))
+		Expect(events[0].Type).To(Equal("turn.start"))
+		Expect(events[0].Actor).To(Equal("user"))
+		Expect(events[0].Seq).To(Equal(int64(0)))
+	})
 
-func TestGivenEmptyTaskWhenCreateThenUsageError(t *testing.T) {
-	st := newStore(t)
-	if _, err := Create(context.Background(), st, "p", "m", DefaultHarness, "sha", ""); !errors.Is(err, ErrUsage) {
-		t.Fatalf("got %v, want ErrUsage", err)
-	}
-}
+	It("rejects an empty task with ErrUsage", func() {
+		st := newStore()
+		_, err := Create(context.Background(), st, "p", "m", DefaultHarness, "sha", "")
+		Expect(errors.Is(err, ErrUsage)).To(BeTrue())
+	})
 
-func TestGivenEmptyProviderOrModelWhenCreateThenUsageError(t *testing.T) {
-	st := newStore(t)
-	if _, err := Create(context.Background(), st, "", "m", DefaultHarness, "sha", "t"); !errors.Is(err, ErrUsage) {
-		t.Fatalf("provider: got %v, want ErrUsage", err)
-	}
-	if _, err := Create(context.Background(), st, "p", "", DefaultHarness, "sha", "t"); !errors.Is(err, ErrUsage) {
-		t.Fatalf("model: got %v, want ErrUsage", err)
-	}
-}
+	It("rejects an empty provider or model with ErrUsage", func() {
+		st := newStore()
+		_, err := Create(context.Background(), st, "", "m", DefaultHarness, "sha", "t")
+		Expect(errors.Is(err, ErrUsage)).To(BeTrue())
+		_, err = Create(context.Background(), st, "p", "", DefaultHarness, "sha", "t")
+		Expect(errors.Is(err, ErrUsage)).To(BeTrue())
+	})
 
-func TestGivenActiveSessionWhenCloseThenCancelledWithEvent(t *testing.T) {
-	st := newStore(t)
-	ctx := context.Background()
-	created, _ := Create(ctx, st, "p", "m", DefaultHarness, "sha", "t")
-	closed, err := Close(ctx, st, created.ID)
-	if err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	if closed.Status != "cancelled" {
-		t.Fatalf("status %q, want cancelled", closed.Status)
-	}
-	events, err := st.Replay(ctx, created.ID)
-	if err != nil {
-		t.Fatalf("Replay: %v", err)
-	}
-	last := events[len(events)-1]
-	if last.Type != "session.cancelled" {
-		t.Fatalf("last event %q, want session.cancelled", last.Type)
-	}
-}
+	It("closes an active session with a cancellation event", func() {
+		st := newStore()
+		ctx := context.Background()
+		created, err := Create(ctx, st, "p", "m", DefaultHarness, "sha", "t")
+		Expect(err).NotTo(HaveOccurred())
+		closed, err := Close(ctx, st, created.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(closed.Status).To(Equal("cancelled"))
+		events, err := st.Replay(ctx, created.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(events[len(events)-1].Type).To(Equal("session.cancelled"))
+	})
 
-func TestGivenClosedSessionWhenCloseAgainThenTerminalErrorAndNoNewEvent(t *testing.T) {
-	st := newStore(t)
-	ctx := context.Background()
-	created, _ := Create(ctx, st, "p", "m", DefaultHarness, "sha", "t")
-	if _, err := Close(ctx, st, created.ID); err != nil {
-		t.Fatalf("first Close: %v", err)
-	}
-	if _, err := Close(ctx, st, created.ID); !errors.Is(err, ErrTerminal) {
-		t.Fatalf("second Close: got %v, want ErrTerminal", err)
-	}
-	events, _ := st.Replay(ctx, created.ID)
-	// turn.start + session.cancelled only
-	if len(events) != 2 {
-		t.Fatalf("got %d events, want 2", len(events))
-	}
-}
+	It("rejects closing an already closed session with ErrTerminal and no new event", func() {
+		st := newStore()
+		ctx := context.Background()
+		created, err := Create(ctx, st, "p", "m", DefaultHarness, "sha", "t")
+		Expect(err).NotTo(HaveOccurred())
+		_, err = Close(ctx, st, created.ID)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = Close(ctx, st, created.ID)
+		Expect(errors.Is(err, ErrTerminal)).To(BeTrue())
+		events, err := st.Replay(ctx, created.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(events).To(HaveLen(2))
+	})
 
-func TestGivenUnknownSessionWhenCloseThenUnknownSessionError(t *testing.T) {
-	st := newStore(t)
-	_, err := Close(context.Background(), st, "nope")
-	if !errors.Is(err, store.ErrUnknownSession) {
-		t.Fatalf("got %v, want ErrUnknownSession", err)
-	}
-}
+	It("errors with ErrUnknownSession when closing an unknown session", func() {
+		st := newStore()
+		_, err := Close(context.Background(), st, "nope")
+		Expect(errors.Is(err, store.ErrUnknownSession)).To(BeTrue())
+	})
+})
