@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/baphled/flowstate/internal/session/internal-app"
 	"github.com/baphled/flowstate/internal/store"
 	"github.com/baphled/flowstate/internal/tool"
 )
@@ -68,6 +69,14 @@ func Wire(deps *Dependencies) (*Composition, error) {
 
 // Store exposes the wired store for session lifecycle calls.
 func (c *Composition) Store() *store.Store { return c.store }
+
+// SessionRepo exposes the consumer-side session-persistence port
+// (DB-abstraction ADR packet B-2). Consumers should depend on this
+// interface, not on *store.Store.
+func (c *Composition) SessionRepo() internalapp.SessionRepo { return c.store }
+
+// EventLog exposes the consumer-side event-persistence port.
+func (c *Composition) EventLog() internalapp.EventLog { return c.store }
 
 // Registry exposes the wired tool registry.
 func (c *Composition) Registry() *tool.Registry { return c.registry }
