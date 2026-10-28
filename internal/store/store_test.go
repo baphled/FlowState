@@ -450,7 +450,9 @@ func TestUpdateSessionStatusUnknownID(t *testing.T) {
 
 func TestListSessionsClosed(t *testing.T) {
 	s := newTestStore(t)
-	s.Close()
+	if err := s.Close(); err != nil {
+		t.Fatalf("close: %v", err) // errcheck
+	}
 	if _, err := s.ListSessions(context.Background(), ""); !errors.Is(err, ErrClosed) {
 		t.Fatalf("err = %v, want ErrClosed", err)
 	}
