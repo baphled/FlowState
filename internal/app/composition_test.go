@@ -132,3 +132,36 @@ func mustGraph(t *testing.T) (*store.Store, *tool.Registry, []string) {
 	}
 	return mustStore(t), reg, []string{"echo", "fake"}
 }
+
+// Given a wired composition, when the consumer-side ports are
+// requested, then they expose the same concrete store behaviour as
+// the Store accessor (B-2: no behaviour change, only explicit ports).
+func TestGivenWiredCompositionWhenPortsRequestedThenTheyServeTheStore(t *testing.T) {
+	st, reg, allow := mustGraph(t)
+	c, err := Wire(&Dependencies{Store: st, Registry: reg, Allowlist: allow})
+	if err != nil {
+		t.Fatalf("wire: %v", err)
+	}
+	ctx := context.Background()
+
+	repo := c.SessionRepo()
+	created, err := repo.CreateSession(ctx, "sid-port", "p", "m", "h", "sha")
+	if err != nil || created.Status != "active" {
+		t.Fatalf("create via port = %+v, %v", created, err)
+	}
+
+	log := c.EventLog()
+	w, err := log.NewEventWriter(ctx, "sid-port")
+	if err != nil {
+		t.Fatalf("writer via port: %v", err)
+	}
+	if _, err := w.Append(ctx, "user", "turn.start", map[string]any{"task": "t"}); err != nil {
+		t.Fatalf("append via port: %v", err)
+	}
+	w.Close()
+
+	events, err := log.Replay(ctx, "sid-port")
+	if err != nil || len(events) != 1 {
+		t.Fatalf("replay via port = %+v, %v", events, err)
+	}
+}
