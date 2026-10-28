@@ -77,6 +77,11 @@ check-code-quality: check-code-contract ## Run pinned contract linter after inst
 	golangci-lint run --config .golangci-contract.yml --new-from-rev="$(BASE_SHA)" --whole-files
 
 
+check-documentation: ## Check committed documentation (BASE_SHA=PR base)
+	node --test scripts/tests/docs_contract.test.mjs
+	node scripts/check_docs.mjs --base "$(BASE_SHA)"
+
+
 #
 # Dependencies
 #

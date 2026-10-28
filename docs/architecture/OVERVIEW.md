@@ -1,204 +1,35 @@
-# Architecture Overview
+# Backend architecture overview
 
-FlowState is built as a layered TUI application using BubbleTea.
+FlowState's current milestone is a native Go CLI/headless engine. The accepted
+product boundaries and milestone scope live in Dropbox `/FlowState/Dev`; read the
+entry point and current packet before work. This guide describes source ownership,
+not completed capabilities or runtime qualification.
 
-## System Diagram
+## Dependency direction
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                           FlowState                             │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │                         App                              │   │
-│  │  - Manages active intent                                 │   │
-│  │  - Routes global keys (Ctrl+p, q, etc.)                 │   │
-│  │  - Renders layout                                        │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                              │                                  │
-│                              ▼                                  │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │                       Intents                            │   │
-│  │  ┌─────────┐  ┌───────────┐  ┌──────────┐              │   │
-│  │  │  Chat   │  │  Sessions │  │ Settings │              │   │
-│  │  └─────────┘  └───────────┘  └──────────┘              │   │
-│  │  - Workflow orchestrators                                │   │
-│  │  - Manage screen lifecycle                               │   │
-│  │  - Coordinate providers/tools                            │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                              │                                  │
-│                              ▼                                  │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │                       Screens                            │   │
-│  │  - Display UI components                                 │   │
-│  │  - Handle user input                                     │   │
-│  │  - Return ScreenResult to intent                         │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                              │                                  │
-│                              ▼                                  │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │                        UIKit                             │   │
-│  │  ┌────────────┐  ┌─────────┐  ┌──────────┐             │   │
-│  │  │ Containers │  │ Layout  │  │  Theme   │             │   │
-│  │  └────────────┘  └─────────┘  └──────────┘             │   │
-│  │  ┌────────────┐  ┌─────────┐  ┌──────────┐             │   │
-│  │  │ Primitives │  │ Render  │  │ Feedback │             │   │
-│  │  └────────────┘  └─────────┘  └──────────┘             │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                                                                 │
-├─────────────────────────────────────────────────────────────────┤
-│                        External Services                        │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │                       Providers                          │   │
-│  │  ┌────────┐  ┌─────────┐  ┌───────────┐                │   │
-│  │  │ Ollama │  │ OpenAI  │  │ Anthropic │                │   │
-│  │  └────────┘  └─────────┘  └───────────┘                │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │                         Tools                            │   │
-│  │  ┌──────┐  ┌──────────┐  ┌───────────┐                 │   │
-│  │  │ Bash │  │   File   │  │ WebFetch  │                 │   │
-│  │  └──────┘  └──────────┘  └───────────┘                 │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │                       Storage                            │   │
-│  │  ┌──────────────┐  ┌─────────────┐                      │   │
-│  │  │   Sessions   │  │   Memory    │                      │   │
-│  │  │   (SQLite)   │  │ (sqlite-vec)│                      │   │
-│  │  └──────────────┘  └─────────────┘                      │   │
-│  └─────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
-```
+CLI adapters call application use cases. Explicit composition wires consumer-owned
+ports to persistence, provider and tool adapters. Domain code owns invariants and
+lifecycle; transports and concrete storage remain outside that boundary.
 
-## Data Flow
+| Area | Source responsibility |
+| --- | --- |
+| `cmd/flowstate` | Parse input and render stable output/exits |
+| `internal/app` | Compose collaborators and application use cases |
+| `internal/runtime`, `internal/session` | Lifecycle, identity and ordering policy |
+| `internal/provider`, `internal/tool` | Replaceable ports and domain-facing values |
+| Provider/auth/storage adapters | Implement external effects through those ports |
 
-### Chat Message Flow
+See [the enforced code structure contract](../../rules/ARCHITECTURE.md) for exact
+ownership and import rules. Existing concrete-store coupling is refactoring debt;
+its presence is not permission to add another dependency or a new global.
 
-```
-User Input
-    │
-    ▼
-┌─────────┐     ┌──────────────┐     ┌──────────┐
-│  Input  │ ──► │  ChatIntent  │ ──► │ Provider │
-│ Screen  │     │              │     │ (Ollama) │
-└─────────┘     └──────────────┘     └──────────┘
-                       │                   │
-                       │                   │
-                       ▼                   ▼
-                ┌──────────────┐   ┌────────────┐
-                │   Session    │   │  Streaming │
-                │    Store     │   │  Response  │
-                └──────────────┘   └────────────┘
-                                         │
-                                         ▼
-                                  ┌────────────┐
-                                  │  Viewport  │
-                                  │  (tokens)  │
-                                  └────────────┘
-```
+## Changes and proof
 
-### Tool Execution Flow
+A bounded refactor preserves the public contract, failure behaviour and tests.
+Keep named types with their owning package, inject collaborators, document the
+public surface and update the relevant guide with the change. Read [documentation
+standards](../../rules/DOCUMENTATION.md) and [the test contract](../../rules/BDD_WORKFLOW.md).
 
-```
-LLM Response (with tool call)
-    │
-    ▼
-┌─────────────────┐
-│  Parse Tool     │
-│  Request        │
-└─────────────────┘
-    │
-    ▼
-┌─────────────────┐     ┌───────────────┐
-│   Permission    │ ──► │ Ask User?     │
-│   Check         │     │ (if required) │
-└─────────────────┘     └───────────────┘
-    │
-    ▼ (allowed)
-┌─────────────────┐
-│  Execute Tool   │
-│  (sandboxed)    │
-└─────────────────┘
-    │
-    ▼
-┌─────────────────┐
-│  Return Result  │
-│  to LLM         │
-└─────────────────┘
-```
-
-## Key Interfaces
-
-### Provider
-
-```go
-type Provider interface {
-    Name() string
-    Models() ([]Model, error)
-    Chat(ctx context.Context, req ChatRequest) (ChatResponse, error)
-    Stream(ctx context.Context, req ChatRequest) (<-chan StreamChunk, error)
-    Embed(ctx context.Context, text string) ([]float32, error)
-}
-```
-
-### Intent
-
-```go
-type Intent interface {
-    Init() tea.Cmd
-    Update(msg tea.Msg) tea.Cmd
-    View() string
-    Result() *IntentResult
-}
-```
-
-### Tool
-
-```go
-type Tool interface {
-    Name() string
-    Description() string
-    Parameters() []Parameter
-    Execute(ctx context.Context, args map[string]any) (Result, error)
-}
-```
-
-## Component Patterns
-
-### ContentProvider
-
-Allows components to render as either screens or modals:
-
-```go
-type ContentProvider interface {
-    Content(width, height int) string
-    Title() string
-    Footer() string
-}
-```
-
-### ScreenResult
-
-Type-safe communication from screens to intents:
-
-```go
-type ScreenResult struct {
-    Action  Action
-    Payload any
-}
-```
-
-### Theme-Aware
-
-Components embed theme for consistent styling:
-
-```go
-type Component struct {
-    theme theme.Theme
-}
-```
-
-## See Also
-
-- [ARCHITECTURE.md](../../rules/ARCHITECTURE.md) - Architecture rules
-- [PLAN.md](../PLAN.md) - Full project plan
+Source checks and unit/integration tests do not prove live provider qualification,
+T019 acceptance, product readiness, actual AI identity or independent review.
+Resolve candidate-bound evidence only from the assigned Dropbox Metadata packet.

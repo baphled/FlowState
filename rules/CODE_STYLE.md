@@ -1,120 +1,29 @@
-# Code Style
+# Code style
 
-FlowState follows strict code style guidelines for consistency and maintainability.
+Follow [the owning-package contract](ARCHITECTURE.md), [documentation standards](DOCUMENTATION.md)
+and [the Ginkgo test contract](BDD_WORKFLOW.md). Current product and agent authority
+is Dropbox Dev; this page defines reusable source conventions.
 
-## Import Order
+## Names and layout
 
-```go
-import (
-    // 1. Standard library (alphabetical)
-    "context"
-    "fmt"
-    "strings"
-    
-    // 2. External packages (alphabetical)
-    tea "github.com/charmbracelet/bubbletea"
-    "github.com/charmbracelet/lipgloss"
-    
-    // 3. Internal packages (alphabetical)
-    "github.com/baphled/flowstate/internal/provider"
-    "github.com/baphled/flowstate/internal/tui/intents"
-)
-```
+Use snake_case Go filenames, lowercase cohesive package names, PascalCase exported
+names and camelCase private names. Prefer consumer-owned narrow interfaces.
+Named package types and aliases live in `types.go` or `*_types.go` within their
+owner; methods, functions and mutable variables live in implementation files.
 
-## Naming Conventions
+## Readability and errors
 
-| Element | Convention | Example |
-|---------|------------|---------|
-| Files | `snake_case.go` | `chat_intent.go` |
-| Packages | `lowercase` | `intents` |
-| Types | `PascalCase` | `ChatIntent` |
-| Private | `camelCase` | `handleMessage` |
-| Constants | `PascalCase` | `MaxRetries` |
-| Interfaces | `PascalCase` (often -er suffix) | `Provider`, `Renderer` |
+Keep functions focused and within the contract's size/complexity limits. Use
+explicit dependencies and constructors rather than ambient mutable wiring. Group
+standard-library, external and internal imports consistently. Handle returned
+errors and preserve their context; do not silence failures to obtain green CI.
 
-## Comments
+Use comments to document public guarantees and non-obvious invariants. Do not
+narrate implementation statements or add inline suppression directives. Track
+actual work and findings in Dropbox Metadata, outside the repository.
 
-### FORBIDDEN Inside Functions
+## Verification
 
-```go
-// BAD - No comments inside function bodies
-func (c *Chat) Update(msg tea.Msg) tea.Cmd {
-    // Handle key press  <- FORBIDDEN
-    switch m := msg.(type) {
-        // ...
-    }
-}
-
-// GOOD - Code should be self-documenting
-func (c *Chat) Update(msg tea.Msg) tea.Cmd {
-    switch m := msg.(type) {
-        // ...
-    }
-}
-```
-
-### Allowed: Package and Type Documentation
-
-```go
-// Package intents provides workflow orchestrators for the TUI.
-package intents
-
-// ChatIntent manages the chat conversation workflow.
-type ChatIntent struct {
-    // ...
-}
-```
-
-### Forbidden Markers
-
-Never use: `TODO`, `FIXME`, `HACK`, `XXX`
-
-Track work items in `tasks/` directory instead.
-
-## Error Handling
-
-```go
-// Return errors, don't panic
-func (p *OllamaProvider) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error) {
-    resp, err := p.client.Chat(ctx, req)
-    if err != nil {
-        return ChatResponse{}, fmt.Errorf("ollama chat: %w", err)
-    }
-    return resp, nil
-}
-```
-
-## Function Length
-
-- Prefer functions under 50 lines
-- Extract helper functions for complex logic
-- Each function should do one thing
-
-## Struct Initialization
-
-```go
-// Use named fields
-intent := &ChatIntent{
-    provider: provider,
-    session:  session,
-    input:    textinput.New(),
-}
-
-// Not positional
-intent := &ChatIntent{provider, session, textinput.New()} // BAD
-```
-
-## Testing
-
-Use Ginkgo v2/Gomega with one behavioural expectation per spec, isolated fixtures,
-cleanup and parallel randomized execution. Follow [the test contract](BDD_WORKFLOW.md)
-and the current Dropbox test rule. Plain TestX is only a Ginkgo suite bootstrap.
-
-## Formatting
-
-Run before committing:
-
-```bash
-make fmt   # gofmt + goimports
-make lint  # golangci-lint
-```
+Use gofmt, the pinned golangci profiles, source-contract checks and Ginkgo/Gomega.
+Check whole changed production files and documentation. A passing tool does not
+replace a separate review of modularity, meaningful tests and accurate examples.
