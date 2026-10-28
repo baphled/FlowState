@@ -51,14 +51,14 @@ func Open(path string) (*sql.DB, OpenInfo, error) {
 	for _, p := range []string{"journal_mode", "foreign_keys", "synchronous", "busy_timeout"} {
 		var v string
 		if err := db.QueryRow("PRAGMA " + p).Scan(&v); err != nil {
-			db.Close()
+			_ = db.Close()
 			return nil, OpenInfo{}, fmt.Errorf("read pragma %s: %w", p, err)
 		}
 		info.Pragmas[p] = v
 	}
 	var sv string
 	if err := db.QueryRow("SELECT sqlite_version()").Scan(&sv); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, OpenInfo{}, fmt.Errorf("read sqlite_version: %w", err)
 	}
 	info.SQLiteVersion = sv
@@ -128,12 +128,12 @@ func Migrate(db *sql.DB) error {
 	for rows.Next() {
 		var v int
 		if err := rows.Scan(&v); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return err
 		}
 		applied[v] = true
 	}
-	rows.Close()
+	_ = rows.Close()
 	if err := rows.Err(); err != nil {
 		return err
 	}
@@ -146,12 +146,12 @@ func Migrate(db *sql.DB) error {
 			return err
 		}
 		if _, err := tx.Exec(m.SQL); err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return fmt.Errorf("migration %d: %w", m.Version, err)
 		}
 		if _, err := tx.Exec(`INSERT INTO schema_migrations (version, applied_at_utc) VALUES (?, ?)`,
 			m.Version, time.Now().UTC().Format(time.RFC3339)); err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return fmt.Errorf("record migration %d: %w", m.Version, err)
 		}
 		if err := tx.Commit(); err != nil {

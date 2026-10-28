@@ -3,13 +3,14 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 )
 
-func openT(t *testing.T) (*sql.DB, string) {
+func openT(t *testing.T) (*sql.DB, string, OpenInfo) {
 	t.Helper()
 	dir := t.TempDir()
 	db, info, err := Open(filepath.Join(dir, "t.db"))
@@ -25,7 +26,7 @@ func openT(t *testing.T) (*sql.DB, string) {
 	if err := Migrate(db); err != nil {
 		t.Fatal(err)
 	}
-	return db, dir
+	return db, dir, info
 }
 
 // TestFrozenFixturesMatchCanonicalBytes verifies the frozen byte fixtures in
@@ -47,7 +48,7 @@ func TestFrozenFixturesMatchCanonicalBytes(t *testing.T) {
 // TestMigrationReapplyIsNoop proves versioned forward-only migrations are
 // idempotent and all schema objects exist (DATA-MODEL §2, done checklist).
 func TestMigrationReapplyIsNoop(t *testing.T) {
-	db, _ := openT(t)
+	db, _, _ := openT(t)
 	defer db.Close()
 	if err := Migrate(db); err != nil {
 		t.Fatal(err)
@@ -69,7 +70,7 @@ func TestMigrationReapplyIsNoop(t *testing.T) {
 // TestOpenRecordsPragmasAndVersions asserts the mandated pragmas and versions
 // are actually recorded from the live DB (T019 §1).
 func TestOpenRecordsPragmasAndVersions(t *testing.T) {
-	db, dir := openT(t)
+	db, dir, info := openT(t)
 	defer db.Close()
 	_ = dir
 	var mode string
@@ -79,21 +80,36 @@ func TestOpenRecordsPragmasAndVersions(t *testing.T) {
 	if mode != "wal" {
 		t.Fatalf("effective journal_mode = %q", mode)
 	}
+	// Qualified driver floor: SQLite >= 3.40 (T019 §1).
+	var sv string
+	if err := db.QueryRow(`SELECT sqlite_version()`).Scan(&sv); err != nil {
+		t.Fatal(err)
+	}
+	var major, minor int
+	if _, err := fmt.Sscanf(sv, "%d.%d", &major, &minor); err != nil {
+		t.Fatalf("parse sqlite_version %q: %v", sv, err)
+	}
+	if major < 3 || (major == 3 && minor < 40) {
+		t.Fatalf("sqlite_version %q below qualified floor 3.40", sv)
+	}
+	if info.DriverVersion == "" || info.DriverName != "modernc.org/sqlite" {
+		t.Fatalf("driver version not recorded: %+v", info)
+	}
 	// Foreign keys enforced: inserting an event for a missing session fails.
 	tx, _ := db.Begin()
 	if _, err := tx.Exec(`INSERT INTO events (session_id, seq, created_at_utc, actor, type, payload_sha256, payload_json)
 		VALUES ('missing', 0, 'now', 'user', 'x', 'h', '{}')`); err == nil {
-		tx.Rollback()
+		_ = tx.Rollback()
 		t.Fatal("foreign_keys not enforced")
 	}
-	tx.Rollback()
+	_ = tx.Rollback()
 }
 
 // TestWriterConcurrencySingleOwner exercises the serialized writer under a
 // race detector: many goroutines appending through one writer, readers
 // concurrently, sequence must stay contiguous.
 func TestWriterConcurrencySingleOwner(t *testing.T) {
-	db, _ := openT(t)
+	db, _, _ := openT(t)
 	defer db.Close()
 	w, sess, err := NewEventWriter(db, Session{Provider: "p", ModelID: "m", Harness: "t"})
 	if err != nil {
@@ -130,7 +146,7 @@ func TestWriterConcurrencySingleOwner(t *testing.T) {
 // TestReplayOracleNegative verifies deliberate corruption of payload_sha256
 // or seq fails the replay oracle (T019 §6 negative).
 func TestReplayOracleNegative(t *testing.T) {
-	db, _ := openT(t)
+	db, _, _ := openT(t)
 	defer db.Close()
 	w, sess, err := NewEventWriter(db, Session{Provider: "p", ModelID: "m", Harness: "t"})
 	if err != nil {

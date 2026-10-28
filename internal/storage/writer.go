@@ -84,7 +84,7 @@ func NewEventWriter(db *sql.DB, s Session) (*EventWriter, Session, error) {
 		VALUES (?,?,?,?,?,?,?,?)`,
 		s.ID, s.CreatedAt, s.UpdatedAt, s.Status, s.Provider, s.ModelID, s.Harness, s.ConfigSHA)
 	if err != nil {
-		tx.Rollback()
+		_ = tx.Rollback()
 		return nil, s, fmt.Errorf("insert session: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -149,12 +149,12 @@ func (w *EventWriter) Append(ctx context.Context, in EventIn) error {
 		VALUES (?,?,?,?,?,?,?)`,
 		w.session.ID, seq, now, in.Actor, in.Type, digest, payload)
 	if err != nil {
-		tx.Rollback()
+		_ = tx.Rollback()
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE sessions SET updated_at_utc = ? WHERE id = ?`, now, w.session.ID)
 	if err != nil {
-		tx.Rollback()
+		_ = tx.Rollback()
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -178,7 +178,7 @@ func (w *EventWriter) Cancel(ctx context.Context, reason string, lastCommittedSe
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	cpSeq := w.seq + 1
 	if err := insertEventTx(ctx, tx, w.session.ID, cpSeq, now, "engine", "cancel.checkpoint",
@@ -228,7 +228,7 @@ func (w *EventWriter) Pause(ctx context.Context, pi PauseInfo) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	seq := w.seq + 1
 	if err := insertEventTx(ctx, tx, w.session.ID, seq, now, "engine", "session.paused", payload); err != nil {
 		return err
@@ -268,7 +268,7 @@ func (w *EventWriter) Resume(ctx context.Context, uncertainTool string) (int, er
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	seq := w.seq + 1
 	if err := insertEventTx(ctx, tx, w.session.ID, seq, now, "user", "session.resumed", payload); err != nil {
 		return 0, err
