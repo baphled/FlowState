@@ -372,3 +372,64 @@ func TestFileDBPersists(t *testing.T) {
 		t.Logf("no wal file after close (checkpointed): %v", err)
 	}
 }
+
+func TestListSessions(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	first, err := s.CreateSession(ctx, "sid-1", "p1", "m1", "h", "sha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.CreateSession(ctx, "sid-2", "p2", "m2", "h", "sha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateSessionStatus(ctx, "sid-2", "completed"); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := s.ListSessions(ctx, "")
+	if err != nil {
+		t.Fatalf("list all: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("list all len = %d, want 2", len(all))
+	}
+	if all[0].ID != first.ID || all[1].ID != second.ID {
+		t.Errorf("order = %s,%s want %s,%s", all[0].ID, all[1].ID, first.ID, second.ID)
+	}
+	if all[1].Status != "completed" || all[1].UpdatedAt.Before(all[1].CreatedAt) {
+		t.Errorf("updated session = %+v", all[1])
+	}
+
+	active, err := s.ListSessions(ctx, "active")
+	if err != nil {
+		t.Fatalf("list active: %v", err)
+	}
+	if len(active) != 1 || active[0].ID != "sid-1" {
+		t.Fatalf("list active = %+v", active)
+	}
+
+	done, err := s.ListSessions(ctx, "completed")
+	if err != nil {
+		t.Fatalf("list completed: %v", err)
+	}
+	if len(done) != 1 || done[0].ID != "sid-2" {
+		t.Fatalf("list completed = %+v", done)
+	}
+}
+
+func TestUpdateSessionStatusUnknownID(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.UpdateSessionStatus(context.Background(), "nope", "cancelled"); err == nil {
+		t.Fatal("want error for unknown session id")
+	}
+}
+
+func TestListSessionsClosed(t *testing.T) {
+	s := newTestStore(t)
+	s.Close()
+	if _, err := s.ListSessions(context.Background(), ""); !errors.Is(err, ErrClosed) {
+		t.Fatalf("err = %v, want ErrClosed", err)
+	}
+}

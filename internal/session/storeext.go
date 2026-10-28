@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -82,44 +81,13 @@ func Create(ctx context.Context, st *store.Store, provider, modelID, harness, co
 
 // List returns sessions ordered by creation time (oldest first). A
 // non-empty status filters on it; an invalid status is ErrUsage.
+// The projection itself lives in store.ListSessions so *sql.DB never
+// escapes the store package.
 func List(ctx context.Context, st *store.Store, status string) ([]store.Session, error) {
 	if status != "" && !validStatusFilters[status] {
 		return nil, fmt.Errorf("%w: unknown status %q", ErrUsage, status)
 	}
-	rows, err := st.DB().QueryContext(ctx,
-		`SELECT id, created_at_utc, updated_at_utc, status, provider, model_id, harness, config_sha256
-		 FROM sessions`+whereStatus(status)+` ORDER BY created_at_utc, id`, statusArgs(status)...)
-	if err != nil {
-		return nil, fmt.Errorf("list sessions: %w", err)
-	}
-	defer rows.Close()
-	var out []store.Session
-	for rows.Next() {
-		var s store.Session
-		var created, updated string
-		if err := rows.Scan(&s.ID, &created, &updated, &s.Status, &s.Provider, &s.ModelID, &s.Harness, &s.ConfigSHA); err != nil {
-			return nil, fmt.Errorf("list scan: %w", err)
-		}
-		if err := parseTimes(&s, created, updated); err != nil {
-			return nil, err
-		}
-		out = append(out, s)
-	}
-	return out, rows.Err()
-}
-
-func whereStatus(status string) string {
-	if status == "" {
-		return ""
-	}
-	return " WHERE status=?"
-}
-
-func statusArgs(status string) []any {
-	if status == "" {
-		return nil
-	}
-	return []any{status}
+	return st.ListSessions(ctx, status)
 }
 
 // Inspect loads a session and its verified event log (seq contiguous,
@@ -157,32 +125,11 @@ func Close(ctx context.Context, st *store.Store, id string) (*store.Session, err
 	if _, err := w.Append(ctx, ActorEngine, TypeSessionCancelled, payload); err != nil {
 		return nil, err
 	}
-	if _, err := st.DB().ExecContext(ctx,
-		`UPDATE sessions SET status='cancelled', updated_at_utc=? WHERE id=?`,
-		mustISO(now()), id); err != nil {
+	if err := st.UpdateSessionStatus(ctx, id, "cancelled"); err != nil {
 		return nil, fmt.Errorf("cancel session %s: %w", id, err)
 	}
 	sess.Status = "cancelled"
 	return sess, nil
-}
-
-// now returns the current UTC time; a package var so tests could
-// substitute a clock if needed.
-var now = func() time.Time { return time.Now().UTC() }
-
-// mustISO formats t; it never fails because the layout is fixed.
-func mustISO(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
-
-// parseTimes fills CreatedAt/UpdatedAt from stored RFC3339Nano text.
-func parseTimes(s *store.Session, created, updated string) error {
-	var err error
-	if s.CreatedAt, err = time.Parse(time.RFC3339Nano, created); err != nil {
-		return fmt.Errorf("parse created_at %q: %w", created, err)
-	}
-	if s.UpdatedAt, err = time.Parse(time.RFC3339Nano, updated); err != nil {
-		return fmt.Errorf("parse updated_at %q: %w", updated, err)
-	}
-	return nil
 }
 
 // NewID returns a fresh UUIDv7 session id (DATA-MODEL §2 requires
