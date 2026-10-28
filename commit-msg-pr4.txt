@@ -1,0 +1,11 @@
+test(tests): refactor cmd stdlib suites to ginkgo (pr4 of 4)
+
+Convert cmd/flowstate tests (sessioncli_test.go, sessionrun_test.go,
+toolcli_test.go) to Ginkgo/Gomega per RULE-TEST-FRAMEWORK: one RunSpecs
+entry point (TestFlowstateCmd, "FlowState CLI Suite") in suite_test.go,
+Describe blocks per CLI surface, Gomega expectations. Behaviour
+preserving; every original assertion maps to an equivalent It spec and
+coverage is unchanged (75.6%). Final PR of the four-PR stacked Ginkgo
+migration; no production-code changes.
+
+Project-Metadata: dropbox:/FlowState/Metadata/attempts/2026-10-28-ginkgo-refactor-pr4/cmd-flowstate-ginkgo.json
