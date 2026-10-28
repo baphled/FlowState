@@ -22,3 +22,19 @@ type Provider interface {
 	Name() string
 	Models() []string
 }
+
+// Streamer is the streaming-provider port consumed by the engine
+// turn loop (M1-SESSION). Adapters that support streamed turns (zai)
+// satisfy it in addition to Provider; the engine depends on this
+// interface, not on concrete adapters.
+type Streamer interface {
+	Provider
+	Stream(ctx context.Context, req *ChatRequest) <-chan StreamEvent
+}
+
+// StreamEvent is one incremental streamed-turn event: a content
+// delta or a terminal typed error.
+type StreamEvent struct {
+	Content string
+	Err     error
+}
