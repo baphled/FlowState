@@ -54,7 +54,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Install commitlint
         run: npm ci
@@ -94,6 +94,18 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: make check-code-contract BASE_SHA="$BASE_SHA"
+
+      - name: Set up documentation tools
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install pinned documentation dependencies
+        run: npm ci
+
+      - name: Test documentation tooling
+        run: node --test scripts/tests/docs_contract.test.mjs
 
       - name: Run make check
         run: make check
