@@ -81,12 +81,12 @@ func (s *Store) migrate() error {
 		}
 		for _, stmt := range m.stmts {
 			if _, err := tx.Exec(stmt); err != nil {
-				tx.Rollback()
+				_ = tx.Rollback() // best effort; original error takes precedence
 				return fmt.Errorf("migration %d: %w", m.version, err)
 			}
 		}
 		if _, err := tx.Exec(`INSERT INTO schema_migrations (version, applied_at_utc) VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))`, m.version); err != nil {
-			tx.Rollback()
+			_ = tx.Rollback() // best effort; original error takes precedence
 			return fmt.Errorf("migration %d record: %w", m.version, err)
 		}
 		if err := tx.Commit(); err != nil {

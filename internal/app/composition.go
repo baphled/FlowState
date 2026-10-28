@@ -107,7 +107,7 @@ func (c *Composition) SessionLoop(ctx context.Context, sessionID string) (*LoopH
 	}
 	l, err := tool.NewLoop(c.registry, w, c.allowNames())
 	if err != nil {
-		w.Close()
+		_ = w.Close()
 		return nil, err
 	}
 	return &LoopHandle{Loop: l, close: w.Close}, nil

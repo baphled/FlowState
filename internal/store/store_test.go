@@ -18,7 +18,7 @@ func newTestStore(t *testing.T) *Store {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
 
@@ -70,7 +70,7 @@ func TestMigrationsIdempotent(t *testing.T) {
 		t.Fatalf("open1: %v", err)
 	}
 	v1, err := s1.SchemaVersion()
-	s1.Close()
+	_ = s1.Close()
 	if err != nil {
 		t.Fatalf("version1: %v", err)
 	}
@@ -90,18 +90,25 @@ func TestFutureSchemaRejected(t *testing.T) {
 	if _, err := s.db.Exec(`INSERT INTO schema_migrations (version, applied_at_utc) VALUES (999, 'x')`); err != nil {
 		t.Fatal(err)
 	}
-	s.Close()
+	_ = s.Close()
 	s2, err := Open(filepath.Join(t.TempDir(), "other.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Simulate: point at a db whose max version is in the future.
-	s2.Close()
+	_ = s2.Close()
 	path := filepath.Join(t.TempDir(), "future.db")
-	db, _ := sql.Open("sqlite", "file:"+path)
-	db.Exec(`CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at_utc TEXT NOT NULL)`)
-	db.Exec(`INSERT INTO schema_migrations VALUES (999,'x')`)
-	db.Close()
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("open raw sqlite: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at_utc TEXT NOT NULL)`); err != nil {
+		t.Fatalf("seed schema_migrations: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO schema_migrations VALUES (999,'x')`); err != nil {
+		t.Fatalf("seed future version: %v", err)
+	}
+	_ = db.Close()
 	if _, err := Open(path); !errors.Is(err, ErrFutureSchema) {
 		t.Fatalf("want ErrFutureSchema, got %v", err)
 	}
@@ -162,21 +169,25 @@ func TestSingleWriterEnforced(t *testing.T) {
 	if _, err := s.NewEventWriter(context.Background(), sid); !errors.Is(err, ErrWriterExists) {
 		t.Fatalf("want ErrWriterExists, got %v", err)
 	}
-	w.Close()
+	_ = w.Close()
 	w2, err := s.NewEventWriter(context.Background(), sid)
 	if err != nil {
 		t.Fatalf("re-register after close: %v", err)
 	}
-	w2.Close()
+	_ = w2.Close()
 }
 
 func TestWriterResumesFromCommittedSeq(t *testing.T) {
 	s := newTestStore(t)
 	sid := mustSession(t, s)
 	w, _ := s.NewEventWriter(context.Background(), sid)
-	w.Append(context.Background(), "user", "a", nil)
-	w.Append(context.Background(), "user", "b", nil)
-	w.Close()
+	if _, err := w.Append(context.Background(), "user", "a", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Append(context.Background(), "user", "b", nil); err != nil {
+		t.Fatal(err)
+	}
+	_ = w.Close()
 	w2, _ := s.NewEventWriter(context.Background(), sid)
 	defer w2.Close()
 	if got := w2.NextSeq(); got != 2 {
@@ -210,7 +221,7 @@ func TestClosedDBAndWriter(t *testing.T) {
 	sid := mustSession(t, s)
 	w, _ := s.NewEventWriter(context.Background(), sid)
 	defer w.Close()
-	s.Close()
+	_ = s.Close()
 	if _, err := w.Append(context.Background(), "user", "t", nil); !errors.Is(err, ErrClosed) {
 		t.Fatalf("append on closed store: %v", err)
 	}
@@ -226,8 +237,10 @@ func TestCorruptHashFailsReplay(t *testing.T) {
 	s := newTestStore(t)
 	sid := mustSession(t, s)
 	w, _ := s.NewEventWriter(context.Background(), sid)
-	w.Append(context.Background(), "user", "t", map[string]int{"n": 1})
-	w.Close()
+	if _, err := w.Append(context.Background(), "user", "t", map[string]int{"n": 1}); err != nil {
+		t.Fatal(err)
+	}
+	_ = w.Close()
 	if _, err := s.db.Exec(`UPDATE events SET payload_json='{"tampered":1}' WHERE session_id=? AND seq=0`, sid); err != nil {
 		t.Fatal(err)
 	}
@@ -240,9 +253,13 @@ func TestSeqGapFailsReplay(t *testing.T) {
 	s := newTestStore(t)
 	sid := mustSession(t, s)
 	w, _ := s.NewEventWriter(context.Background(), sid)
-	w.Append(context.Background(), "user", "a", nil)
-	w.Append(context.Background(), "user", "b", nil)
-	w.Close()
+	if _, err := w.Append(context.Background(), "user", "a", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Append(context.Background(), "user", "b", nil); err != nil {
+		t.Fatal(err)
+	}
+	_ = w.Close()
 	if _, err := s.db.Exec(`DELETE FROM events WHERE session_id=? AND seq=0`, sid); err != nil {
 		t.Fatal(err)
 	}
@@ -256,8 +273,9 @@ func TestSeqCollisionRejected(t *testing.T) {
 	sid := mustSession(t, s)
 	w, _ := s.NewEventWriter(context.Background(), sid)
 	defer w.Close()
-	w.Append(context.Background(), "user", "a", nil)
-	// Simulate a racing writer by forging the same seq out-of-band.
+	if _, err := w.Append(context.Background(), "user", "a", nil); err != nil {
+		t.Fatal(err)
+	} // Simulate a racing writer by forging the same seq out-of-band.
 	if _, err := s.db.Exec(`INSERT INTO events (session_id,seq,created_at_utc,actor,type,payload_sha256,payload_json)
 		VALUES (?,1,'t','user','forged',?,?)`, sid, sha256HexStr(`{}`), `{}`); err != nil {
 		t.Fatal(err)
@@ -302,8 +320,10 @@ func TestJSONLExport(t *testing.T) {
 	s := newTestStore(t)
 	sid := mustSession(t, s)
 	w, _ := s.NewEventWriter(context.Background(), sid)
-	w.Append(context.Background(), "user", "turn.start", map[string]any{"b": 2, "a": 1})
-	w.Close()
+	if _, err := w.Append(context.Background(), "user", "turn.start", map[string]any{"b": 2, "a": 1}); err != nil {
+		t.Fatal(err)
+	}
+	_ = w.Close()
 	b, err := s.ExportJSONL(context.Background(), sid)
 	if err != nil {
 		t.Fatalf("export: %v", err)
@@ -359,9 +379,11 @@ func TestFileDBPersists(t *testing.T) {
 	s, _ := Open(path)
 	sid := mustSession(t, s)
 	w, _ := s.NewEventWriter(context.Background(), sid)
-	w.Append(context.Background(), "user", "a", nil)
-	w.Close()
-	s.Close()
+	if _, err := w.Append(context.Background(), "user", "a", nil); err != nil {
+		t.Fatal(err)
+	}
+	_ = w.Close()
+	_ = s.Close()
 	s2, _ := Open(path)
 	defer s2.Close()
 	evs, err := s2.Replay(context.Background(), sid)
@@ -428,7 +450,9 @@ func TestUpdateSessionStatusUnknownID(t *testing.T) {
 
 func TestListSessionsClosed(t *testing.T) {
 	s := newTestStore(t)
-	s.Close()
+	if err := s.Close(); err != nil {
+		t.Fatalf("close: %v", err) // errcheck
+	}
 	if _, err := s.ListSessions(context.Background(), ""); !errors.Is(err, ErrClosed) {
 		t.Fatalf("err = %v, want ErrClosed", err)
 	}

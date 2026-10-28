@@ -36,7 +36,7 @@ func dispatch(args []string, stdout, stderr *os.File) int {
 		return exitUsage
 	}
 	if args[0] == "--version" {
-		fmt.Fprintf(stdout, "flowstate %s\n", Version)
+		_, _ = fmt.Fprintf(stdout, "flowstate %s\n", Version)
 		return exitOK
 	}
 	if args[0] == "--help" || args[0] == "-h" || args[0] == "help" {
@@ -206,7 +206,7 @@ func openStore(path string) (*store.Store, error) {
 
 // usage prints the CLI help text.
 func usage(w *os.File) {
-	fmt.Fprint(w, `usage: flowstate [--version] session <subcommand> [flags] [id]
+	_, _ = fmt.Fprint(w, `usage: flowstate [--version] session <subcommand> [flags] [id]
 
 session new    --provider <p> --model <m> --task <text|@file> [--db path]
 session list   [--status <s>] [--db path]

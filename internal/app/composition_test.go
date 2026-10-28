@@ -120,7 +120,7 @@ func mustStore(t *testing.T) *store.Store {
 	if err != nil {
 		t.Fatalf("open memory store: %v", err)
 	}
-	t.Cleanup(func() { st.Close() })
+	t.Cleanup(func() { _ = st.Close() })
 	return st
 }
 
@@ -158,7 +158,9 @@ func TestGivenWiredCompositionWhenPortsRequestedThenTheyServeTheStore(t *testing
 	if _, err := w.Append(ctx, "user", "turn.start", map[string]any{"task": "t"}); err != nil {
 		t.Fatalf("append via port: %v", err)
 	}
-	w.Close()
+	if err := w.Close(); err != nil {
+		t.Fatalf("close writer: %v", err) // errcheck
+	}
 
 	events, err := log.Replay(ctx, "sid-port")
 	if err != nil || len(events) != 1 {

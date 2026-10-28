@@ -12,6 +12,8 @@ permissions:
 
 env:
   GO_VERSION: "1.25.7"
+  GOSEC_VERSION: "v2.22.7"
+  GODOG_VERSION: "v0.15.0"
 
 jobs:
   commitlint:
@@ -26,6 +28,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+          cache: npm
 
       - name: Install commitlint
         run: npm ci
@@ -42,6 +45,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+          cache: true
 
       - name: Check formatting
         run: |
@@ -60,6 +64,28 @@ jobs:
         with:
           version: v2.11.3
 
+  quality:
+    name: Static Analysis (staticcheck + deadcode)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install pinned tools
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@2026.2.2
+          go install golang.org/x/tools/cmd/deadcode@v0.52.0
+
+      - name: Run staticcheck
+        run: staticcheck ./...
+
+      - name: Run deadcode
+        run: deadcode ./...
+
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -73,20 +99,65 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+          cache: true
 
-      - name: Run Go tests with race detection
-        run: go test -race -count=1 -v ./...
+      # Race detector on linux only: highest signal, keeps cross-OS minutes sane
+      - name: Run unit tests (race)
+        if: matrix.os == 'ubuntu-latest'
+        run: go test -race ./...
 
-  build:
-    name: Build
+      - name: Run unit tests
+        if: matrix.os != 'ubuntu-latest'
+        run: make test
+
+      - name: Install godog
+        run: go install github.com/cucumber/godog/cmd/godog@${{ env.GODOG_VERSION }}
+
+      - name: Run BDD smoke tests
+        run: make bdd-smoke
+
+  coverage:
+    name: Coverage
     runs-on: ubuntu-latest
-    needs: [lint, test]
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run tests with coverage
+        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Coverage summary
+        run: |
+          go tool cover -func=coverage.out > coverage-func.txt
+          {
+            echo "## Test Coverage"
+            echo '```'
+            cat coverage-func.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage.out
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: [lint, quality, test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
 
       - name: Build binary
         run: make build
@@ -103,12 +174,21 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+          cache: true
 
-      - name: Install gosec
-        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+      - name: Install gosec (pinned)
+        run: go install github.com/securego/gosec/v2/cmd/gosec@${{ env.GOSEC_VERSION }}
 
+      # gosec findings fail the job (exit 1); tune/annotate via #nosec or
+      # .golangci.yml excludes rather than suppressing the exit code.
       - name: Run gosec
-        run: gosec -fmt sarif -out gosec-results.sarif ./... || true
+        run: gosec -severity medium -confidence medium -exclude G304 -no-fail -fmt sarif -out gosec-results.sarif ./...
+
+      - name: Enforce gosec gate (errors must be zero)
+        run: |
+          errors=$(jq '[.runs[0].results[] | select(.level == "error")] | length' gosec-results.sarif)
+          echo "gosec errors: $errors"
+          [ "$errors" -eq 0 ]
 
       - name: Upload SARIF results
         uses: github/codeql-action/upload-sarif@v3
