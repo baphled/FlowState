@@ -4,15 +4,16 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"testing"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/provider/registry"
 	"github.com/baphled/flowstate/internal/provider/zai"
 	"github.com/baphled/flowstate/internal/session"
 )
 
-func newSSEServer(t *testing.T, chunks ...string) *httptest.Server {
-	t.Helper()
+func newSSEServer(chunks ...string) *httptest.Server {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fl := w.(http.Flusher)
@@ -23,91 +24,61 @@ func newSSEServer(t *testing.T, chunks ...string) *httptest.Server {
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 		fl.Flush()
 	}))
-	t.Cleanup(srv.Close)
+	DeferCleanup(srv.Close)
 	return srv
 }
 
-func TestGivenZaiOverHTTPWhenTurnThenPersistedEvents(t *testing.T) {
-	srv := newSSEServer(t,
-		`{"choices":[{"delta":{"content":"hel"}}]}`,
-		`{"choices":[{"delta":{"content":"lo"}}]}`,
-	)
-	p := zai.New("test-key", zai.WithBaseURL(srv.URL))
-	st := newStore(t)
-	ctx := context.Background()
-	sess, err := session.Create(ctx, st, "z.ai", "glm-4.6", session.DefaultHarness, "sha", "greet me")
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
+var _ = Describe("Turn with z.ai over HTTP", func() {
+	It("persists events for a successful streamed turn", func() {
+		srv := newSSEServer(
+			`{"choices":[{"delta":{"content":"hel"}}]}`,
+			`{"choices":[{"delta":{"content":"lo"}}]}`,
+		)
+		p := zai.New("test-key", zai.WithBaseURL(srv.URL))
+		st := newStore()
+		ctx := context.Background()
+		sess, err := session.Create(ctx, st, "z.ai", "glm-4.6", session.DefaultHarness, "sha", "greet me")
+		Expect(err).NotTo(HaveOccurred())
 
-	res, err := Turn(ctx, st, sess, p)
-	if err != nil {
-		t.Fatalf("Turn: %v", err)
-	}
-	if res.FinalContent != "hello" {
-		t.Fatalf("FinalContent = %q, want hello", res.FinalContent)
-	}
-	evts, err := st.Replay(ctx, sess.ID)
-	if err != nil {
-		t.Fatalf("Replay: %v", err)
-	}
-	want := []string{"turn.start", "user.message", "assistant.delta", "assistant.delta", "assistant.message", "turn.end"}
-	if len(evts) != len(want) {
-		t.Fatalf("event types = %v, want %v", types(evts), want)
-	}
-	for i, e := range evts {
-		if e.Type != want[i] {
-			t.Fatalf("event types = %v, want %v", types(evts), want)
-		}
-	}
-	after, _ := st.GetSession(ctx, sess.ID)
-	if after.Status != "completed" {
-		t.Errorf("status = %q, want completed", after.Status)
-	}
-}
+		res, err := Turn(ctx, st, sess, p)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.FinalContent).To(Equal("hello"))
+		evts, err := st.Replay(ctx, sess.ID)
+		Expect(err).NotTo(HaveOccurred())
+		want := []string{"turn.start", "user.message", "assistant.delta", "assistant.delta", "assistant.message", "turn.end"}
+		Expect(types(evts)).To(Equal(want))
+		after, _ := st.GetSession(ctx, sess.ID)
+		Expect(after.Status).To(Equal("completed"))
+	})
 
-func TestGivenZaiHTTPErrorWhenTurnThenProviderErrorEvent(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte(`{"error":{"code":"503","message":"upstream down"}}`))
-	}))
-	t.Cleanup(srv.Close)
-	p := zai.New("test-key", zai.WithBaseURL(srv.URL))
-	st := newStore(t)
-	ctx := context.Background()
-	sess, err := session.Create(ctx, st, "z.ai", "glm-4.6", session.DefaultHarness, "sha", "greet me")
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
+	It("persists a provider.error event and fails the session on HTTP 503", func() {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"code":"503","message":"upstream down"}}`))
+		}))
+		DeferCleanup(srv.Close)
+		p := zai.New("test-key", zai.WithBaseURL(srv.URL))
+		st := newStore()
+		ctx := context.Background()
+		sess, err := session.Create(ctx, st, "z.ai", "glm-4.6", session.DefaultHarness, "sha", "greet me")
+		Expect(err).NotTo(HaveOccurred())
 
-	if _, err := Turn(ctx, st, sess, p); err == nil {
-		t.Fatal("Turn: want error for 503 upstream")
-	}
-	evts, err := st.Replay(ctx, sess.ID)
-	if err != nil {
-		t.Fatalf("Replay: %v", err)
-	}
-	last := evts[len(evts)-1]
-	if last.Type != "provider.error" {
-		t.Fatalf("last event = %s, want provider.error", last.Type)
-	}
-	after, _ := st.GetSession(ctx, sess.ID)
-	if after.Status != "failed" {
-		t.Errorf("status = %q, want failed", after.Status)
-	}
-}
+		_, err = Turn(ctx, st, sess, p)
+		Expect(err).To(HaveOccurred())
+		evts, err := st.Replay(ctx, sess.ID)
+		Expect(err).NotTo(HaveOccurred())
+		last := evts[len(evts)-1]
+		Expect(last.Type).To(Equal("provider.error"))
+		after, _ := st.GetSession(ctx, sess.ID)
+		Expect(after.Status).To(Equal("failed"))
+	})
 
-func TestRegistryResolvesZai(t *testing.T) {
-	t.Setenv("ZAI_API_KEY", "test-key")
-	p, err := registry.Resolve("z.ai")
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	zp, ok := p.(*zai.Provider)
-	if !ok {
-		t.Fatalf("Resolve(z.ai) = %T, want *zai.Provider", p)
-	}
-	if zp.Name() != "z.ai" {
-		t.Errorf("Name = %q, want z.ai", zp.Name())
-	}
-}
+	It("resolves z.ai through the registry", func() {
+		GinkgoT().Setenv("ZAI_API_KEY", "test-key")
+		p, err := registry.Resolve("z.ai")
+		Expect(err).NotTo(HaveOccurred())
+		zp, ok := p.(*zai.Provider)
+		Expect(ok).To(BeTrue())
+		Expect(zp.Name()).To(Equal("z.ai"))
+	})
+})
