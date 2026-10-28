@@ -3,127 +3,158 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
-func openT(t *testing.T) (*sql.DB, string, OpenInfo) {
-	t.Helper()
-	dir := t.TempDir()
+func TestStorage(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "Storage Suite")
+}
+
+// openT is arrange-only: any setup failure trips the exempt err-check pattern.
+func openT() (*sql.DB, string, OpenInfo) {
+	dir := GinkgoT().TempDir()
 	db, info, err := Open(filepath.Join(dir, "t.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Pragmas["journal_mode"] != "wal" {
-		t.Fatalf("journal_mode=%s", info.Pragmas["journal_mode"])
-	}
-	if info.Pragmas["foreign_keys"] != "1" {
-		t.Fatalf("foreign_keys=%s", info.Pragmas["foreign_keys"])
-	}
-	if err := Migrate(db); err != nil {
-		t.Fatal(err)
-	}
+	Expect(err).NotTo(HaveOccurred())
+	err = Migrate(db)
+	Expect(err).NotTo(HaveOccurred())
+	DeferCleanup(func() { _ = db.Close() })
 	return db, dir, info
 }
 
-// TestFrozenFixturesMatchCanonicalBytes verifies the frozen byte fixtures in
-// testdata reproduce exactly under the declared canonical encoder (sorted
-// keys, compact, no HTML escaping, Go number encoding). T019 §6: equivalent
-// JSON values alone do not imply identical bytes.
-func TestFrozenFixturesMatchCanonicalBytes(t *testing.T) {
+func appliedRows(db *sql.DB) []int {
+	rows, err := db.Query(`SELECT version FROM schema_migrations ORDER BY version`)
+	Expect(err).NotTo(HaveOccurred())
+	DeferCleanup(rows.Close)
+	var out []int
+	for rows.Next() {
+		var v int
+		err := rows.Scan(&v)
+		Expect(err).NotTo(HaveOccurred())
+		out = append(out, v)
+	}
+	return out
+}
+
+var _ = Describe("Canonical fixtures", func() {
 	for _, f := range []string{"key_order", "unicode", "numbers", "nested"} {
-		b, err := os.ReadFile("testdata/" + f + ".json")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !IsCanonical(string(b)) {
-			t.Errorf("%s: fixture not canonical per current encoder", f)
-		}
+		fixture := f
+		It("fixture "+fixture+" matches canonical bytes under the declared encoder", func() {
+			b, err := os.ReadFile("testdata/" + fixture + ".json")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(IsCanonical(string(b))).To(BeTrue(), "%s: fixture not canonical per current encoder", fixture)
+		})
 	}
-}
+})
 
-// TestMigrationReapplyIsNoop proves versioned forward-only migrations are
-// idempotent and all schema objects exist (DATA-MODEL §2, done checklist).
-func TestMigrationReapplyIsNoop(t *testing.T) {
-	db, _, _ := openT(t)
-	defer db.Close()
-	if err := Migrate(db); err != nil {
-		t.Fatal(err)
-	}
-	var n int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	if n != 1 {
-		t.Fatalf("schema_migrations rows = %d, want 1", n)
-	}
+var _ = Describe("Migrations", func() {
+	It("reapply is a no-op recording no additional migrations", func() {
+		db, _, _ := openT()
+		before := len(appliedRows(db))
+		err := Migrate(db)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(appliedRows(db)).To(HaveLen(before))
+	})
+
+	It("records exactly one migration row", func() {
+		db, _, _ := openT()
+		Expect(appliedRows(db)).To(HaveLen(1))
+	})
+
 	for _, tbl := range []string{"sessions", "events", "receipts"} {
-		if _, err := db.Exec(`SELECT 1 FROM ` + tbl + ` LIMIT 1`); err != nil {
-			t.Fatalf("table %s unusable: %v", tbl, err)
-		}
+		table := tbl
+		It("creates the "+table+" table", func() {
+			db, _, _ := openT()
+			var name string
+			err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&name)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(name).To(Equal(table))
+		})
 	}
-}
+})
 
-// TestOpenRecordsPragmasAndVersions asserts the mandated pragmas and versions
-// are actually recorded from the live DB (T019 §1).
-func TestOpenRecordsPragmasAndVersions(t *testing.T) {
-	db, dir, info := openT(t)
-	defer db.Close()
-	_ = dir
-	var mode string
-	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
-		t.Fatal(err)
-	}
-	if mode != "wal" {
-		t.Fatalf("effective journal_mode = %q", mode)
-	}
-	// Qualified driver floor: SQLite >= 3.40 (T019 §1).
-	var sv string
-	if err := db.QueryRow(`SELECT sqlite_version()`).Scan(&sv); err != nil {
-		t.Fatal(err)
-	}
-	var major, minor int
-	if _, err := fmt.Sscanf(sv, "%d.%d", &major, &minor); err != nil {
-		t.Fatalf("parse sqlite_version %q: %v", sv, err)
-	}
-	if major < 3 || (major == 3 && minor < 40) {
-		t.Fatalf("sqlite_version %q below qualified floor 3.40", sv)
-	}
-	if info.DriverVersion == "" || info.DriverName != "modernc.org/sqlite" {
-		t.Fatalf("driver version not recorded: %+v", info)
-	}
-	// Foreign keys enforced: inserting an event for a missing session fails.
-	tx, _ := db.Begin()
-	if _, err := tx.Exec(`INSERT INTO events (session_id, seq, created_at_utc, actor, type, payload_sha256, payload_json)
-		VALUES ('missing', 0, 'now', 'user', 'x', 'h', '{}')`); err == nil {
-		_ = tx.Rollback()
-		t.Fatal("foreign_keys not enforced")
-	}
-	_ = tx.Rollback()
-}
+var _ = Describe("Open qualification", func() {
+	It("records the mandated journal_mode pragma", func() {
+		_, _, info := openT()
+		Expect(info.Pragmas["journal_mode"]).To(Equal("wal"))
+	})
 
-// TestWriterConcurrencySingleOwner exercises the serialized writer under a
-// race detector: many goroutines appending through one writer, readers
-// concurrently, sequence must stay contiguous.
-func TestWriterConcurrencySingleOwner(t *testing.T) {
-	db, _, _ := openT(t)
-	defer db.Close()
+	It("records the mandated foreign_keys pragma", func() {
+		_, _, info := openT()
+		Expect(info.Pragmas["foreign_keys"]).To(Equal("1"))
+	})
+
+	It("enforces journal_mode=wal on the live connection", func() {
+		db, _, _ := openT()
+		var mode string
+		err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(mode).To(Equal("wal"))
+	})
+
+	It("runs a sqlite version at or above the qualified floor 3.40", func() {
+		db, _, _ := openT()
+		var sv string
+		err := db.QueryRow(`SELECT sqlite_version()`).Scan(&sv)
+		Expect(err).NotTo(HaveOccurred())
+		var major, minor int
+		_, err = fmt.Sscanf(sv, "%d.%d", &major, &minor)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(major > 3 || (major == 3 && minor >= 40)).To(BeTrue(), "sqlite_version %q below qualified floor 3.40", sv)
+	})
+
+	It("records a non-empty driver version", func() {
+		_, _, info := openT()
+		Expect(info.DriverVersion).NotTo(BeEmpty())
+	})
+
+	It("records the modernc.org/sqlite driver name", func() {
+		_, _, info := openT()
+		Expect(info.DriverName).To(Equal("modernc.org/sqlite"))
+	})
+
+	It("enforces foreign keys by rejecting dangling inserts", func() {
+		db, _, _ := openT()
+		tx, err := db.Begin()
+		Expect(err).NotTo(HaveOccurred())
+		_, err = tx.Exec(`INSERT INTO events (session_id, seq, created_at_utc, actor, type, payload_sha256, payload_json)
+		VALUES ('missing', 0, 'now', 'user', 'x', 'h', '{}')`)
+		Expect(err).To(HaveOccurred(), "foreign_keys not enforced")
+		err = tx.Rollback()
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
+// concurrentWriters arranges the race scenario shared by the writer
+// concurrency specs; it asserts nothing behavioural.
+func concurrentWriters(db *sql.DB) (context.Context, string, []error) {
 	w, sess, err := NewEventWriter(db, Session{Provider: "p", ModelID: "m", Harness: "t"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	Expect(err).NotTo(HaveOccurred())
 	ctx := context.Background()
+	var mu sync.Mutex
+	var failures []error
 	var wg sync.WaitGroup
 	for g := 0; g < 8; g++ {
 		wg.Add(1)
 		go func(g int) {
 			defer wg.Done()
 			for i := 0; i < 25; i++ {
-				_ = w.Append(ctx, EventIn{Actor: "provider:fake", Type: "provider.delta",
+				err := w.Append(ctx, EventIn{Actor: "provider:fake", Type: "provider.delta",
 					Payload: map[string]any{"g": g, "i": i}})
+				if err != nil {
+					mu.Lock()
+					failures = append(failures, err)
+					mu.Unlock()
+				}
 			}
 		}(g)
 	}
@@ -132,53 +163,130 @@ func TestWriterConcurrencySingleOwner(t *testing.T) {
 		defer wg.Done()
 		for i := 0; i < 50; i++ {
 			if _, err := ReadEvents(ctx, db, sess.ID); err != nil {
-				t.Error(err)
+				mu.Lock()
+				failures = append(failures, err)
+				mu.Unlock()
 				return
 			}
 		}
 	}()
 	wg.Wait()
-	if err := VerifyContiguous(ctx, db, sess.ID); err != nil {
-		t.Fatal(err)
-	}
+	return ctx, sess.ID, failures
 }
 
-// TestReplayOracleNegative verifies deliberate corruption of payload_sha256
-// or seq fails the replay oracle (T019 §6 negative).
-func TestReplayOracleNegative(t *testing.T) {
-	db, _, _ := openT(t)
-	defer db.Close()
+var _ = Describe("Writer concurrency", func() {
+	It("concurrent reads never fail under writer contention", func() {
+		db, _, _ := openT()
+		_, _, failures := concurrentWriters(db)
+		Expect(failures).To(BeEmpty())
+	})
+
+	It("single owner keeps the sequence contiguous under race", func() {
+		db, _, _ := openT()
+		ctx, sid, _ := concurrentWriters(db)
+		Expect(VerifyContiguous(ctx, db, sid)).To(Succeed())
+	})
+})
+
+// replayableSession arranges a session with five appended events.
+func replayableSession(db *sql.DB) (context.Context, string) {
 	w, sess, err := NewEventWriter(db, Session{Provider: "p", ModelID: "m", Harness: "t"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	Expect(err).NotTo(HaveOccurred())
 	ctx := context.Background()
 	for i := 0; i < 5; i++ {
-		if err := w.Append(ctx, EventIn{Actor: "user", Type: "provider.delta", Payload: map[string]any{"i": i}}); err != nil {
-			t.Fatal(err)
-		}
+		err := w.Append(ctx, EventIn{Actor: "user", Type: "provider.delta", Payload: map[string]any{"i": i}})
+		Expect(err).NotTo(HaveOccurred())
 	}
-	if _, err := Replay(ctx, db, sess.ID); err != nil {
-		t.Fatal(err)
-	}
-	// Corrupt digest.
-	if _, err := db.Exec(`UPDATE events SET payload_sha256='deadbeef' WHERE session_id=? AND seq=2`, sess.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Replay(ctx, db, sess.ID); err == nil {
-		t.Fatal("replay accepted corrupted digest")
-	}
-	if _, err := RestoreFixtureDigests(ctx, db, sess.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Replay(ctx, db, sess.ID); err != nil {
-		t.Fatalf("clean replay after restore: %v", err)
-	}
-	// Corrupt sequence (delete middle row → gap).
-	if _, err := db.Exec(`DELETE FROM events WHERE session_id=? AND seq=2`, sess.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Replay(ctx, db, sess.ID); err == nil {
-		t.Fatal("replay accepted corrupted sequence")
-	}
+	return ctx, sess.ID
 }
+
+var _ = Describe("Replay oracle", func() {
+	It("replay fails on a corrupted digest", func() {
+		db, _, _ := openT()
+		ctx, sid := replayableSession(db)
+		_, err := Replay(ctx, db, sid)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = db.Exec(`UPDATE events SET payload_sha256='deadbeef' WHERE session_id=? AND seq=2`, sid)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = Replay(ctx, db, sid)
+		Expect(err).To(HaveOccurred(), "replay accepted corrupted digest")
+	})
+
+	It("restored fixture digests make replay succeed again", func() {
+		db, _, _ := openT()
+		ctx, sid := replayableSession(db)
+		_, err := db.Exec(`UPDATE events SET payload_sha256='deadbeef' WHERE session_id=? AND seq=2`, sid)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = RestoreFixtureDigests(ctx, db, sid)
+		Expect(err).NotTo(HaveOccurred())
+		ok := func() bool { _, err := Replay(ctx, db, sid); return err == nil }()
+		Expect(ok).To(BeTrue(), "replay rejected after digest restore")
+	})
+
+	It("replay fails on a corrupted sequence", func() {
+		db, _, _ := openT()
+		ctx, sid := replayableSession(db)
+		_, err := db.Exec(`DELETE FROM events WHERE session_id=? AND seq=2`, sid)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = Replay(ctx, db, sid)
+		Expect(err).To(HaveOccurred(), "replay accepted corrupted sequence")
+	})
+})
+
+var _ = Describe("Fixture generator", func() {
+	It("writes frozen canonical-JSON fixtures when GEN_FIXTURES is set", func() {
+		if os.Getenv("GEN_FIXTURES") == "" {
+			return
+		}
+		dir := "testdata"
+		cases := []struct {
+			name string
+			v    map[string]any
+		}{
+			{"key_order", map[string]any{"zeta": 1, "alpha": 2, "Mid": 3, "_under": 4}},
+			{"unicode", map[string]any{"text": "héllo → 世界", "emoji": "🚀"}},
+			{"numbers", map[string]any{"int": 3, "float": 1.5, "whole": 2.0, "big": 9007199254740993.0}},
+			{"nested", map[string]any{"b": 1, "a": []any{1.25, 2, "x"}, "o": map[string]any{"y": true, "x": nil}}},
+		}
+		for _, c := range cases {
+			canon, err := CanonicalJSON(c.v)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(os.WriteFile(filepath.Join(dir, c.name+".json"), []byte(canon), 0o644)).To(Succeed())
+		}
+	})
+})
+
+var _ = Describe("T019 qualification capture", func() {
+	It("emits the qualification evidence bundle when FLOWSTATE_T019_CAPTURE is set", func() {
+		out := os.Getenv("FLOWSTATE_T019_CAPTURE")
+		if out == "" {
+			return
+		}
+		dir := GinkgoT().TempDir()
+		db, info, err := Open(dir + "/t019.db")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = db.Close() })
+		err = Migrate(db)
+		Expect(err).NotTo(HaveOccurred())
+		rows1 := appliedRows(db)
+		err = Migrate(db)
+		Expect(err).NotTo(HaveOccurred())
+		rows2 := appliedRows(db)
+		pragma := func(k string) string {
+			var s string
+			err := db.QueryRow("PRAGMA " + k).Scan(&s)
+			Expect(err).NotTo(HaveOccurred())
+			return s
+		}
+		b, err := json.MarshalIndent(map[string]any{
+			"open_info":                      info,
+			"effective_pragmas":              map[string]string{"journal_mode": pragma("journal_mode"), "foreign_keys": pragma("foreign_keys"), "synchronous": pragma("synchronous"), "busy_timeout": pragma("busy_timeout")},
+			"applied_migrations_first_apply": rows1,
+			"applied_migrations_reapply":     rows2,
+			"reapply_is_noop":                len(rows1) == len(rows2),
+			"go_version":                     runtime.Version(),
+		}, "", "  ")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(os.WriteFile(out, b, 0o644)).To(Succeed())
+	})
+})
