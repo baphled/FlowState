@@ -141,13 +141,6 @@ func (p *Provider) Chat(ctx context.Context, req *provider.ChatRequest) (*provid
 	return &provider.ChatResponse{Content: resp.Choices[0].Message.Content}, nil
 }
 
-// StreamEvent is one incremental turn event: either a content delta
-// or a terminal typed error.
-type StreamEvent struct {
-	Content string
-	Err     error
-}
-
 // streamChunk is one SSE `data:` payload of the streaming response.
 type streamChunk struct {
 	Choices []struct {
@@ -160,13 +153,13 @@ type streamChunk struct {
 // Stream performs one streaming turn, emitting content deltas in
 // order. The channel closes after the stream ends or a terminal
 // error event is emitted; ctx cancellation stops the stream.
-func (p *Provider) Stream(ctx context.Context, req *provider.ChatRequest) <-chan StreamEvent {
-	out := make(chan StreamEvent)
+func (p *Provider) Stream(ctx context.Context, req *provider.ChatRequest) <-chan provider.StreamEvent {
+	out := make(chan provider.StreamEvent)
 	go func() {
 		defer close(out)
 		body, err := p.post(ctx, req, true)
 		if err != nil {
-			out <- StreamEvent{Err: err}
+			out <- provider.StreamEvent{Err: err}
 			return
 		}
 		defer body.Close()
@@ -182,13 +175,13 @@ func (p *Provider) Stream(ctx context.Context, req *provider.ChatRequest) <-chan
 					}
 					var chunk streamChunk
 					if jerr := json.Unmarshal([]byte(payload), &chunk); jerr != nil {
-						out <- StreamEvent{Err: fmt.Errorf("zai: bad stream chunk: %w", jerr)}
+						out <- provider.StreamEvent{Err: fmt.Errorf("zai: bad stream chunk: %w", jerr)}
 						return
 					}
 					for _, c := range chunk.Choices {
 						if c.Delta.Content != "" {
 							select {
-							case out <- StreamEvent{Content: c.Delta.Content}:
+							case out <- provider.StreamEvent{Content: c.Delta.Content}:
 							case <-ctx.Done():
 								return
 							}
@@ -199,7 +192,7 @@ func (p *Provider) Stream(ctx context.Context, req *provider.ChatRequest) <-chan
 			if err != nil {
 				if !errors.Is(err, io.EOF) {
 					select {
-					case out <- StreamEvent{Err: fmt.Errorf("zai: stream read: %w", err)}:
+					case out <- provider.StreamEvent{Err: fmt.Errorf("zai: stream read: %w", err)}:
 					case <-ctx.Done():
 					}
 				}

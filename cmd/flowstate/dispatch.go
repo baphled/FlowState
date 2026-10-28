@@ -81,6 +81,8 @@ func dispatch(args []string, stdout, stderr *os.File) int {
 		return cmdNew(ctx, st, fl, stdout, stderr)
 	case "list":
 		return cmdList(ctx, st, fl, stdout, stderr)
+	case "run":
+		return cmdRun(ctx, st, id, stdout, stderr)
 	case "events":
 		return cmdEvents(ctx, st, id, stdout, stderr)
 	case "close":
@@ -210,6 +212,7 @@ func usage(w *os.File) {
 
 session new    --provider <p> --model <m> --task <text|@file> [--db path]
 session list   [--status <s>] [--db path]
+session run    <id> [--db path]
 session events <id> [--db path]
 session close  <id> [--db path]
 session tool   <id> --tool <name> [--tool-arg <json>] [--allow <name>]... [--allow-file <manifest>] [--db path]
