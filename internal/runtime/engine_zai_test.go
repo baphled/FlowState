@@ -11,6 +11,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider/registry"
 	"github.com/baphled/flowstate/internal/provider/zai"
 	"github.com/baphled/flowstate/internal/session"
+	"github.com/baphled/flowstate/internal/store"
 )
 
 func newSSEServer(chunks ...string) *httptest.Server {
@@ -28,49 +29,99 @@ func newSSEServer(chunks ...string) *httptest.Server {
 	return srv
 }
 
+// zaiTurn captures the observable outcome of one z.ai Turn so each spec
+// asserts a single behavioural expectation (arrange/act helper only).
+type zaiTurn struct {
+	events        []store.RecordedEvent
+	finalContent  string
+	sessionStatus string
+	turnErr       error
+	sessionID     string
+	store         *store.Store
+}
+
+// mustTurnOverHTTP drives a z.ai Turn against the given server; fixture
+// failures panic so specs keep exactly one behavioural expectation.
+func mustTurnOverHTTP(srv *httptest.Server, prompt string) zaiTurn {
+	p := zai.New("test-key", zai.WithBaseURL(srv.URL))
+	st := newStore()
+	ctx := context.Background()
+	sess, err := session.Create(ctx, st, "z.ai", "glm-4.6", session.DefaultHarness, "sha", prompt)
+	if err != nil {
+		panic(err)
+	}
+	res, turnErr := Turn(ctx, st, sess, p)
+	evts, err := st.Replay(ctx, sess.ID)
+	if err != nil {
+		panic(err)
+	}
+	after, err := st.GetSession(ctx, sess.ID)
+	if err != nil {
+		panic(err)
+	}
+	final := ""
+	if res != nil {
+		final = res.FinalContent
+	}
+	return zaiTurn{events: evts, finalContent: final, sessionStatus: after.Status, turnErr: turnErr, sessionID: sess.ID, store: st}
+}
+
 var _ = Describe("Turn with z.ai over HTTP", func() {
-	It("persists events for a successful streamed turn", func() {
+	It("persists the full event stream for a successful streamed turn", func() {
 		srv := newSSEServer(
 			`{"choices":[{"delta":{"content":"hel"}}]}`,
 			`{"choices":[{"delta":{"content":"lo"}}]}`,
 		)
-		p := zai.New("test-key", zai.WithBaseURL(srv.URL))
-		st := newStore()
-		ctx := context.Background()
-		sess, err := session.Create(ctx, st, "z.ai", "glm-4.6", session.DefaultHarness, "sha", "greet me")
-		Expect(err).NotTo(HaveOccurred())
-
-		res, err := Turn(ctx, st, sess, p)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(res.FinalContent).To(Equal("hello"))
-		evts, err := st.Replay(ctx, sess.ID)
-		Expect(err).NotTo(HaveOccurred())
-		want := []string{"turn.start", "user.message", "assistant.delta", "assistant.delta", "assistant.message", "turn.end"}
-		Expect(types(evts)).To(Equal(want))
-		after, _ := st.GetSession(ctx, sess.ID)
-		Expect(after.Status).To(Equal("completed"))
+		out := mustTurnOverHTTP(srv, "greet me")
+		Expect(types(out.events)).To(Equal([]string{"turn.start", "user.message", "assistant.delta", "assistant.delta", "assistant.message", "turn.end"}))
 	})
 
-	It("persists a provider.error event and fails the session on HTTP 503", func() {
+	It("joins streamed deltas into the final content", func() {
+		srv := newSSEServer(
+			`{"choices":[{"delta":{"content":"hel"}}]}`,
+			`{"choices":[{"delta":{"content":"lo"}}]}`,
+		)
+		out := mustTurnOverHTTP(srv, "greet me")
+		Expect(out.finalContent).To(Equal("hello"))
+	})
+
+	It("marks the session completed after a successful streamed turn", func() {
+		srv := newSSEServer(
+			`{"choices":[{"delta":{"content":"hel"}}]}`,
+			`{"choices":[{"delta":{"content":"lo"}}]}`,
+		)
+		out := mustTurnOverHTTP(srv, "greet me")
+		Expect(out.sessionStatus).To(Equal("completed"))
+	})
+
+	It("persists a provider.error event on HTTP 503", func() {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte(`{"error":{"code":"503","message":"upstream down"}}`))
 		}))
 		DeferCleanup(srv.Close)
-		p := zai.New("test-key", zai.WithBaseURL(srv.URL))
-		st := newStore()
-		ctx := context.Background()
-		sess, err := session.Create(ctx, st, "z.ai", "glm-4.6", session.DefaultHarness, "sha", "greet me")
-		Expect(err).NotTo(HaveOccurred())
+		out := mustTurnOverHTTP(srv, "greet me")
+		Expect(out.events[len(out.events)-1].Type).To(Equal("provider.error"))
+	})
 
-		_, err = Turn(ctx, st, sess, p)
-		Expect(err).To(HaveOccurred())
-		evts, err := st.Replay(ctx, sess.ID)
-		Expect(err).NotTo(HaveOccurred())
-		last := evts[len(evts)-1]
-		Expect(last.Type).To(Equal("provider.error"))
-		after, _ := st.GetSession(ctx, sess.ID)
-		Expect(after.Status).To(Equal("failed"))
+	It("fails the turn on HTTP 503", func() {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"code":"503","message":"upstream down"}}`))
+		}))
+		DeferCleanup(srv.Close)
+		out := mustTurnOverHTTP(srv, "greet me")
+		Expect(out.turnErr).To(HaveOccurred())
+	})
+
+	It("marks the session failed on HTTP 503", func() {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"code":"503","message":"upstream down"}}`))
+		}))
+		DeferCleanup(srv.Close)
+		out := mustTurnOverHTTP(srv, "greet me")
+		Expect(out.sessionStatus).To(Equal("failed"))
 	})
 
 	It("resolves z.ai through the registry", func() {
@@ -78,7 +129,6 @@ var _ = Describe("Turn with z.ai over HTTP", func() {
 		p, err := registry.Resolve("z.ai")
 		Expect(err).NotTo(HaveOccurred())
 		zp, ok := p.(*zai.Provider)
-		Expect(ok).To(BeTrue())
-		Expect(zp.Name()).To(Equal("z.ai"))
+		Expect([2]any{ok, zp.Name()}).To(Equal([2]any{true, "z.ai"}))
 	})
 })
