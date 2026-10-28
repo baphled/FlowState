@@ -275,7 +275,7 @@ func TestSeqCollisionRejected(t *testing.T) {
 	defer w.Close()
 	if _, err := w.Append(context.Background(), "user", "a", nil); err != nil {
 		t.Fatal(err)
-	}	// Simulate a racing writer by forging the same seq out-of-band.
+	} // Simulate a racing writer by forging the same seq out-of-band.
 	if _, err := s.db.Exec(`INSERT INTO events (session_id,seq,created_at_utc,actor,type,payload_sha256,payload_json)
 		VALUES (?,1,'t','user','forged',?,?)`, sid, sha256HexStr(`{}`), `{}`); err != nil {
 		t.Fatal(err)
