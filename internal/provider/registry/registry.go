@@ -7,10 +7,8 @@ import (
 	"github.com/baphled/flowstate/internal/provider/zai"
 )
 
-// Resolve maps a provider name onto a configured adapter. The engine
 // and CLI stay provider-agnostic; this factory is the only place a
 // concrete adapter is selected (M1-CORE-REQUIREMENTS §3).
-// Resolve maps a provider name onto a configured adapter.
 func Resolve(name string) (provider.Provider, error) {
 	switch name {
 	case "z.ai", "zai":
