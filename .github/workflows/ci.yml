@@ -11,9 +11,7 @@ permissions:
   security-events: write
 
 env:
-  GO_VERSION: "1.25.7"
   GOSEC_VERSION: "v2.22.7"
-  GODOG_VERSION: "v0.15.0"
 
 jobs:
   commitlint:
@@ -41,10 +39,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
           cache: true
 
       - name: Check formatting
@@ -55,6 +55,12 @@ jobs:
             echo "$unformatted"
             exit 1
           fi
+
+      - name: Enforce changed test contract
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: make check-test-contract BASE_SHA="$BASE_SHA"
 
       - name: Run make check
         run: make check
@@ -72,7 +78,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
           cache: true
 
       - name: Install pinned tools
@@ -98,23 +104,17 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
           cache: true
 
       # Race detector on linux only: highest signal, keeps cross-OS minutes sane
       - name: Run unit tests (race)
         if: matrix.os == 'ubuntu-latest'
-        run: go test -race ./...
+        run: make test
 
       - name: Run unit tests
         if: matrix.os != 'ubuntu-latest'
         run: make test
-
-      - name: Install godog
-        run: go install github.com/cucumber/godog/cmd/godog@${{ env.GODOG_VERSION }}
-
-      - name: Run BDD smoke tests
-        run: make bdd-smoke
 
   coverage:
     name: Coverage
@@ -124,7 +124,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
           cache: true
 
       - name: Run tests with coverage
@@ -156,7 +156,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
           cache: true
 
       - name: Build binary
@@ -173,7 +173,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
           cache: true
 
       - name: Install gosec (pinned)

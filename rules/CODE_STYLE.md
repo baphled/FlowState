@@ -106,9 +106,9 @@ intent := &ChatIntent{provider, session, textinput.New()} // BAD
 
 ## Testing
 
-- Test files: `*_test.go`
-- Scenario-style named Go tests (`TestGivenXWhenYThenZ`) are the acceptance vocabulary
-- Use table-driven tests for unit tests
+Use Ginkgo v2/Gomega with one behavioural expectation per spec, isolated fixtures,
+cleanup and parallel randomized execution. Follow [the test contract](BDD_WORKFLOW.md)
+and the current Dropbox test rule. Plain TestX is only a Ginkgo suite bootstrap.
 
 ## Formatting
 

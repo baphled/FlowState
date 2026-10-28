@@ -1,45 +1,43 @@
-# Testing Workflow
+# Go testing contract
 
-Choose the smallest useful test that demonstrates the required behaviour.
-Go unit and integration tests are the default. Cucumber/Godog/Gherkin is
-prohibited in this repository (owner decision 2026-10-27): do not add
-feature files, runner dependencies, or workflow steps.
+Read the current Dropbox `/FlowState/Dev/governance/RULE-TEST-FRAMEWORK.md` before
+work or resumption. Use Ginkgo v2 and Gomega, pinned in go.mod; Cucumber, Godog,
+Gherkin, and new plain TestX behavioural functions are forbidden. The ordinary
+TestX entry point only registers Gomega failure handling and calls RunSpecs.
 
-## Choosing Coverage
+Each It/Specify/table-entry body owns one behavioural expectation. Keep required
+setup error checks explicit; move shared setup into BeforeEach, not mutable
+container initializers. Do not hide extra behavioural assertions in helpers or
+bundle unrelated outcomes in composite matchers. The AST gate checks syntax;
+independent review checks the meaning and preserved failure coverage.
 
-| Change | Validation |
-|--------|------------|
-| Business logic or bug fix | Focused Go test; reproduce the bug before fixing it |
-| Package, storage, or protocol boundary | Go integration test using temporary resources or a local test server |
-| Shared acceptance flow | Focused Go integration test with clear scenario-style names |
-| CI, configuration, or documentation | Validate the affected workflow or configuration; add tests only for behaviour that needs coverage |
+Specs run in parallel processes and randomized order. Use independent temporary
+resources, httptest servers and ports, explicit dependency injection, fresh
+fixtures and DeferCleanup. Do not share files/databases, mutate ambient process
+state or rely on another spec's results. Serial/Ordered need a separately reviewed
+policy change rather than a local waiver. Do not call t.Parallel inside Ginkgo.
 
-Reuse existing tests where they cover the risk. Avoid duplicating a Go assertion
-in Gherkin or adding scaffolding just to meet a process requirement.
+Use bounded Eventually/Consistently for observable asynchronous behaviour, with
+explicit timeouts/polling and cancellation. No arbitrary time.Sleep, live provider
+calls, focused/pending specs or runtime Skip in required coverage. Prefer fakes at
+ports and local fixtures. Exercise failures, cancellation and resource cleanup.
 
-## Development Loop
+## Migration and required checks
 
-1. Define the expected behaviour and identify the relevant existing coverage.
-2. For a bug fix, add a regression test and confirm the failure.
-3. Make the smallest implementation change and run the focused tests.
-4. Run the applicable checks before pushing; keep commits small and reviewable.
+Existing unchanged legacy tests continue to execute with go test; migration is
+in small package PRs. A changed test file must satisfy the new contract in full.
+The guard compares actual PR base to committed HEAD, with rename detection off,
+so a rename does not exempt legacy tests. Working-copy edits cannot hide a committed
+violation; use explicit `--worktree` only for a precommit preview. Do not delete tests to make the gate pass;
+retain the behavioural cases and review coverage changes.
 
-## CI Gates
+`make test` runs legacy coverage and Ginkgo recursively with process parallelism,
+full randomization, race detection, bounded timeout, fail-on-pending and
+fail-on-empty. Ginkgo prints the random seed; retain failures in Dropbox Metadata
+and reproduce with `--seed`. No retry-until-green gate or Copilot quota dependency.
 
-CI runs the Go suite with `go test -race -count=1 -v ./...` on Linux, macOS, and
-Windows. Formatting, vet, lint, build, commit validation, and security scanning
-remain separate checks. Required job names must remain compatible with branch
-protection. All checks and the required independent approval must pass before
-merging; do not bypass protection.
-
-```bash
-make test                          # Go tests
-go test -race -count=1 ./...         # Uncached tests with race detection
-make check                         # Format, lint, and test
-```
-
-```bash
-make test                          # Go tests
-go test -race -count=1 ./...         # Uncached tests with race detection
-make check                         # Format, lint, and test
-```
+Run `make check-test-contract BASE_SHA=<actual PR base SHA>`, `make check` and the
+required Actions jobs. ginkgolinter additionally checks matcher usage, async
+intervals, focused containers and container-state pollution. Passing syntax/lint
+checks does not prove that an assertion is meaningful; independent review remains
+required. No merge is authorized by this testing change.
