@@ -16,18 +16,12 @@ func TestRegistry(t *testing.T) {
 }
 
 var _ = Describe("Registry", func() {
-	It("resolves z.ai from env to the concrete provider type", func() {
-		GinkgoT().Setenv("ZAI_API_KEY", "k")
-		p, err := registry.Resolve("z.ai")
-		Expect(err).NotTo(HaveOccurred())
-		Expect(p).To(BeAssignableToTypeOf(&zai.Provider{}))
-	})
-
-	It("resolves z.ai from env reporting the provider name", func() {
+	It("resolves z.ai from env to the concrete provider", func() {
 		GinkgoT().Setenv("ZAI_API_KEY", "k")
 		p, err := registry.Resolve("z.ai")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(p.Name()).To(Equal("z.ai"))
+		Expect(p).To(BeAssignableToTypeOf(&zai.Provider{}))
 	})
 
 	It("errors for an unknown provider name", func() {

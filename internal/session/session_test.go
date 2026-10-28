@@ -1,7 +1,6 @@
 package session
 
 import (
-	"strings"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -15,9 +14,7 @@ func TestSession(t *testing.T) {
 
 func newTestSession() *Session {
 	s, err := New("sess-1")
-	if err != nil {
-		panic(err)
-	}
+	Expect(err).NotTo(HaveOccurred())
 	return s
 }
 
@@ -31,42 +28,27 @@ var _ = Describe("Session", func() {
 		s := newTestSession()
 		turn, err := s.StartTurn("turn-1")
 		Expect(err).NotTo(HaveOccurred())
-		if err := s.RecordToolResult(turn, "tool=shell output=ok"); err != nil {
-			panic(err)
-		}
-		if err := s.Complete(turn, "result=done"); err != nil {
-			panic(err)
-		}
+		Expect(s.RecordToolResult(turn, "tool=shell output=ok")).To(Succeed())
+		Expect(s.Complete(turn, "result=done")).To(Succeed())
 
 		events := s.Events()
 		wantKinds := []EventKind{EventTurnAdmitted, EventToolResult, EventTurnComplete}
-		gotKinds := make([]EventKind, len(events))
-		ascending := true
+		Expect(events).To(HaveLen(len(wantKinds)))
 		var last uint64
 		for i, e := range events {
-			gotKinds[i] = e.Kind
-			if e.Seq <= last {
-				ascending = false
-			}
+			Expect(e.Kind).To(Equal(wantKinds[i]))
+			Expect(e.Seq).To(BeNumerically(">", last))
 			last = e.Seq
 		}
-		Expect([2]any{gotKinds, ascending}).
-			To(Equal([2]any{wantKinds, true}))
 	})
 
 	It("makes cancellation terminal", func() {
 		s := newTestSession()
 		turn, err := s.StartTurn("turn-1")
 		Expect(err).NotTo(HaveOccurred())
-		if err := s.Cancel(turn); err != nil {
-			panic(err)
-		}
-		if s.RecordToolResult(turn, "late") == nil {
-			panic("expected RecordToolResult after cancel to fail")
-		}
-		if s.Complete(turn, "late") == nil {
-			panic("expected Complete after cancel to fail")
-		}
+		Expect(s.Cancel(turn)).To(Succeed())
+		Expect(s.RecordToolResult(turn, "late")).To(HaveOccurred())
+		Expect(s.Complete(turn, "late")).To(HaveOccurred())
 		Expect(s.Events()[len(s.Events())-1].Kind).To(Equal(EventTurnCancelled))
 	})
 
@@ -74,9 +56,9 @@ var _ = Describe("Session", func() {
 		s := newTestSession()
 		_, err := s.StartTurn("dup")
 		Expect(err).NotTo(HaveOccurred())
-		_, dupErr := s.StartTurn("dup")
-		Expect([2]any{dupErr != nil, dupErr != nil && strings.Contains(dupErr.Error(), "already exists")}).
-			To(Equal([2]any{true, true}))
+		_, err = s.StartTurn("dup")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("already exists"))
 	})
 
 	It("rejects turns owned by another session instance", func() {
@@ -86,18 +68,15 @@ var _ = Describe("Session", func() {
 		Expect(err).NotTo(HaveOccurred())
 		foreign, err := s2.StartTurn("turn-foreign")
 		Expect(err).NotTo(HaveOccurred())
-		hijackErrs := []bool{
-			s2.RecordToolResult(turn1, "hijack") != nil,
-			s2.Complete(turn1, "hijack") != nil,
-			s1.RecordToolResult(foreign, "hijack") != nil,
+		Expect(s2.RecordToolResult(turn1, "hijack")).To(HaveOccurred())
+		Expect(s2.Complete(turn1, "hijack")).To(HaveOccurred())
+		Expect(s1.RecordToolResult(foreign, "hijack")).To(HaveOccurred())
+		for _, e := range s1.Events() {
+			Expect(e.Payload).NotTo(ContainSubstring("hijack"))
 		}
-		leaked := false
-		for _, e := range append(s1.Events(), s2.Events()...) {
-			if e.Payload != "" && e.Payload == "hijack" {
-				leaked = true
-			}
+		for _, e := range s2.Events() {
+			Expect(e.Payload).NotTo(ContainSubstring("hijack"))
 		}
-		Expect([2]any{hijackErrs, leaked}).To(Equal([2]any{[]bool{true, true, true}, false}))
 	})
 
 	It("returns event snapshots that cannot mutate turn or session state", func() {
@@ -105,12 +84,12 @@ var _ = Describe("Session", func() {
 		turn, err := s.StartTurn("turn-1")
 		Expect(err).NotTo(HaveOccurred())
 		snap := turn.Events()
+		Expect(snap).To(HaveLen(1))
 		snap[0].Payload = "tampered"
-		turnUntampered := turn.Events()[0].Payload != "tampered"
+		Expect(turn.Events()[0].Payload).NotTo(Equal("tampered"))
 		ssnap := s.Events()
 		ssnap[0].Payload = "tampered"
-		sessUntampered := s.Events()[0].Payload != "tampered"
-		Expect([2]any{turnUntampered, sessUntampered}).To(Equal([2]any{true, true}))
+		Expect(s.Events()[0].Payload).NotTo(Equal("tampered"))
 	})
 
 	It("sequences events from interleaved turns in global order", func() {
@@ -120,23 +99,16 @@ var _ = Describe("Session", func() {
 		b, err := s.StartTurn("turn-b")
 		Expect(err).NotTo(HaveOccurred())
 		for _, turn := range []*Turn{a, b, a, b, a} {
-			if err := s.RecordToolResult(turn, "tool step"); err != nil {
-				panic(err)
-			}
+			Expect(s.RecordToolResult(turn, "tool step")).To(Succeed())
 		}
-		if err := s.Complete(b, "b done"); err != nil {
-			panic(err)
-		}
+		Expect(s.Complete(b, "b done")).To(Succeed())
 		events := s.Events()
-		ascending := true
+		Expect(events).NotTo(BeEmpty())
 		var last uint64
-		for _, e := range events {
-			if e.Seq <= last {
-				ascending = false
-			}
+		for i, e := range events {
+			Expect(e.Seq).To(BeNumerically(">", last), "event %d seq %d not greater than %d", i, e.Seq, last)
 			last = e.Seq
 		}
-		Expect([3]any{len(events) > 0, ascending, events[len(events)-1].Kind}).
-			To(Equal([3]any{true, true, EventTurnComplete}))
+		Expect(events[len(events)-1].Kind).To(Equal(EventTurnComplete))
 	})
 })

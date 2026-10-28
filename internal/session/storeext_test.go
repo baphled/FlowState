@@ -12,9 +12,7 @@ import (
 
 func newStore() *store.Store {
 	st, err := store.OpenMemory()
-	if err != nil {
-		panic(err)
-	}
+	ExpectWithOffset(1, err).NotTo(HaveOccurred())
 	DeferCleanup(func() { _ = st.Close() })
 	return st
 }
@@ -34,7 +32,8 @@ var _ = Describe("Store-backed session extensions", func() {
 		Expect(err).NotTo(HaveOccurred())
 		got, err := List(ctx, st, "")
 		Expect(err).NotTo(HaveOccurred())
-		Expect([2]any{len(got), got[0].ID}).To(Equal([2]any{1, created.ID}))
+		Expect(got).To(HaveLen(1))
+		Expect(got[0].ID).To(Equal(created.ID))
 	})
 
 	It("filters list results by status", func() {
@@ -44,12 +43,12 @@ var _ = Describe("Store-backed session extensions", func() {
 		Expect(err).NotTo(HaveOccurred())
 		b, err := Create(ctx, st, "p", "m", DefaultHarness, "sha", "t2")
 		Expect(err).NotTo(HaveOccurred())
-		if _, err := Close(ctx, st, b.ID); err != nil {
-			panic(err)
-		}
+		_, err = Close(ctx, st, b.ID)
+		Expect(err).NotTo(HaveOccurred())
 		got, err := List(ctx, st, "cancelled")
 		Expect(err).NotTo(HaveOccurred())
-		Expect([2]any{len(got), got[0].ID}).To(Equal([2]any{1, b.ID}))
+		Expect(got).To(HaveLen(1))
+		Expect(got[0].ID).To(Equal(b.ID))
 	})
 
 	It("rejects an invalid status filter with ErrUsage", func() {
@@ -63,10 +62,13 @@ var _ = Describe("Store-backed session extensions", func() {
 		ctx := context.Background()
 		created, err := Create(ctx, st, "prov", "model", DefaultHarness, "sha1", "hello task")
 		Expect(err).NotTo(HaveOccurred())
+		Expect(created.Status).To(Equal("active"))
 		events, err := st.Replay(ctx, created.ID)
 		Expect(err).NotTo(HaveOccurred())
-		Expect([5]any{created.Status, len(events), events[0].Type, events[0].Actor, events[0].Seq}).
-			To(Equal([5]any{"active", 1, "turn.start", "user", int64(0)}))
+		Expect(events).To(HaveLen(1))
+		Expect(events[0].Type).To(Equal("turn.start"))
+		Expect(events[0].Actor).To(Equal("user"))
+		Expect(events[0].Seq).To(Equal(int64(0)))
 	})
 
 	It("rejects an empty task with ErrUsage", func() {
@@ -75,15 +77,11 @@ var _ = Describe("Store-backed session extensions", func() {
 		Expect(errors.Is(err, ErrUsage)).To(BeTrue())
 	})
 
-	It("rejects an empty provider with ErrUsage", func() {
+	It("rejects an empty provider or model with ErrUsage", func() {
 		st := newStore()
 		_, err := Create(context.Background(), st, "", "m", DefaultHarness, "sha", "t")
 		Expect(errors.Is(err, ErrUsage)).To(BeTrue())
-	})
-
-	It("rejects an empty model with ErrUsage", func() {
-		st := newStore()
-		_, err := Create(context.Background(), st, "p", "", DefaultHarness, "sha", "t")
+		_, err = Create(context.Background(), st, "p", "", DefaultHarness, "sha", "t")
 		Expect(errors.Is(err, ErrUsage)).To(BeTrue())
 	})
 
@@ -94,10 +92,10 @@ var _ = Describe("Store-backed session extensions", func() {
 		Expect(err).NotTo(HaveOccurred())
 		closed, err := Close(ctx, st, created.ID)
 		Expect(err).NotTo(HaveOccurred())
+		Expect(closed.Status).To(Equal("cancelled"))
 		events, err := st.Replay(ctx, created.ID)
 		Expect(err).NotTo(HaveOccurred())
-		Expect([2]any{closed.Status, events[len(events)-1].Type}).
-			To(Equal([2]any{"cancelled", "session.cancelled"}))
+		Expect(events[len(events)-1].Type).To(Equal("session.cancelled"))
 	})
 
 	It("rejects closing an already closed session with ErrTerminal and no new event", func() {
@@ -105,13 +103,13 @@ var _ = Describe("Store-backed session extensions", func() {
 		ctx := context.Background()
 		created, err := Create(ctx, st, "p", "m", DefaultHarness, "sha", "t")
 		Expect(err).NotTo(HaveOccurred())
-		if _, err := Close(ctx, st, created.ID); err != nil {
-			panic(err)
-		}
-		_, closeErr := Close(ctx, st, created.ID)
+		_, err = Close(ctx, st, created.ID)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = Close(ctx, st, created.ID)
+		Expect(errors.Is(err, ErrTerminal)).To(BeTrue())
 		events, err := st.Replay(ctx, created.ID)
 		Expect(err).NotTo(HaveOccurred())
-		Expect([2]any{errors.Is(closeErr, ErrTerminal), len(events)}).To(Equal([2]any{true, 2}))
+		Expect(events).To(HaveLen(2))
 	})
 
 	It("errors with ErrUnknownSession when closing an unknown session", func() {
