@@ -7,11 +7,17 @@ linters:
   default: none
   enable:
     - errcheck
+    - ginkgolinter
     - govet
     - ineffassign
     - staticcheck
     - unused
   settings:
+    ginkgolinter:
+      forbid-focus-container: true
+      forbid-spec-pollution: true
+      force-expect-to: true
+      validate-async-intervals: true
     errcheck:
       check-blank: false
   exclusions:

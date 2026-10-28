@@ -63,7 +63,7 @@ existing coverage when it already validates the change.
 
 Cucumber/Godog/Gherkin is prohibited (owner decision 2026-10-27). Do not add
 feature files, Godog dependencies, step definitions, or workflow steps. All
-behavioural coverage comes from scenario-style named Go tests.
+behavioural coverage uses Ginkgo/Gomega specs.
 
 See [the testing workflow](rules/BDD_WORKFLOW.md) for test selection and CI gates.
 
@@ -124,7 +124,7 @@ Work test-first:
 3. Refactor while green.
 4. Open a PR to `next`.
 
-Tests must use standard `testing` package. Cucumber/Godog/Gherkin is prohibited; behavioural coverage comes from Go tests with clear names.
+All new or modified Go test files must use Ginkgo v2/Gomega. Only the two-call RegisterFailHandler/RunSpecs suite bootstrap uses TestX. Read current Dropbox governance/RULE-TEST-FRAMEWORK.md and rules/BDD_WORKFLOW.md before editing tests. Cucumber/Godog/Gherkin remains forbidden.
 
 ## Commit Cadence
 
@@ -169,15 +169,15 @@ import (
 ### Running Tests
 
 ```bash
-make test                          # Go tests
+make test                          # Legacy tests plus parallel Ginkgo specs
 go test -race -count=1 ./...         # Uncached tests with race detection
 make check                         # Format, lint, and test
 ```
 
-The checked-in Gherkin files describe planned acceptance behaviour. There is
-currently no runnable Godog suite, so `make bdd*` is not a CI gate and those files
-are not evidence of passing tests. Any future required acceptance suite must
-execute real assertions and fail on missing or pending steps and empty selection.
+During migration, `make test` retains unchanged legacy Go tests and runs Ginkgo
+specs with parallel workers, randomization, race detection and empty/pending
+suite failure. New or modified tests follow rules/BDD_WORKFLOW.md. Do not treat a
+framework conversion or a green count as proof that behavioural coverage survived.
 
 ## When to REFUSE
 
