@@ -14,6 +14,7 @@ import (
 // EventKind classifies ordered events recorded during a turn.
 type EventKind string
 
+// Event kinds emitted over the lifetime of a session turn.
 const (
 	EventTurnAdmitted  EventKind = "turn.admitted"
 	EventToolResult    EventKind = "turn.tool_result"

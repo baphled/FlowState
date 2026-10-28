@@ -7,6 +7,7 @@ import (
 
 type AuthType string
 
+// Supported provider authentication types.
 const (
 	AuthTypeAPIKey AuthType = "api_key"
 	AuthTypeOAuth  AuthType = "oauth"
