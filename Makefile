@@ -140,31 +140,15 @@ session-start: ## Start development session
 		echo "Godog: not installed - run: go install github.com/cucumber/godog/cmd/godog@latest"; \
 	fi
 	@echo ""
-	@echo "Ready! See docs/PLAN.md for tasks."
+	@echo "Read current Dropbox /FlowState/Dev and /FlowState/Metadata/ACTIVE.json before work."
 
 #
 # AI Attribution
 #
 
-ai-commit: ## Create AI-attributed commit (FILE=/path/to/msg.txt AI_MODEL=model)
-	@if [ -z "$(FILE)" ]; then \
-		echo "Usage:"; \
-		echo "  AI_MODEL=claude-opus-4-5 make ai-commit FILE=/path/to/commit-msg.txt"; \
-		echo ""; \
-		echo "Required: AI_MODEL must be set (agent auto-detected from OPENCODE env)"; \
-		echo ""; \
-		echo "Create your commit message file:"; \
-		echo "  cat > /tmp/commit.txt << 'EOF'"; \
-		echo "  feat(scope): short description"; \
-		echo "  "; \
-		echo "  Optional longer explanation..."; \
-		echo "  EOF"; \
-		echo ""; \
-		echo "  AI_MODEL=claude-opus-4-5 make ai-commit FILE=/tmp/commit.txt"; \
-		echo ""; \
-		exit 1; \
-	fi
-	@bash scripts/ai-commit.sh "$(FILE)" "$(NO_VERIFY)"
+ai-commit: ## Paused until the external Dropbox commit helper is available
+	@echo "The previous helper invents AI/reviewer claims. Use the corrected external-record helper before agent commits." >&2
+	@exit 1
 
 check-ai-attribution: ## Check latest commit for AI attribution
 	@echo "Checking latest commit for AI attribution..."
@@ -179,29 +163,19 @@ list-ai-commits: ## List all AI-generated commits
 # Task Management
 #
 
-new-task: ## Create a new task (TASK="task description")
-	@echo "# Task: $(TASK)" > tasks/$$(date +%Y%m%d)-$$(echo "$(TASK)" | tr ' ' '-' | tr '[:upper:]' '[:lower:]' | head -c 30).md
-	@echo "" >> tasks/$$(date +%Y%m%d)-*.md
-	@echo "Created: $$(date)" >> tasks/$$(date +%Y%m%d)-*.md
-	@echo "Status: pending" >> tasks/$$(date +%Y%m%d)-*.md
-	@echo "Task created!"
+new-task: ## Task records belong in Dropbox Metadata
+	@echo "Create the assigned packet under Dropbox /FlowState/Metadata/attempts/, outside this checkout."
+	@exit 1
 
-list-tasks: ## List all tasks
-	@echo "Tasks:"
-	@for f in tasks/*.md; do \
-		if [ -f "$$f" ]; then \
-			name=$$(basename "$$f" .md); \
-			status=$$(grep -m1 "Status:" "$$f" 2>/dev/null | cut -d: -f2 | tr -d ' '); \
-			echo "[$${status:-unknown}] $$name"; \
-		fi \
-	done
+list-tasks: ## Find the current assigned Dropbox packet
+	@echo "Read Dropbox /FlowState/Metadata/ACTIVE.json and the assigned packet."
 
 #
 # Help
 #
 
 help: ## Show this help
-	@echo "FlowState - AI Assistant TUI"
+	@echo "FlowState - AI Assistant"
 	@echo ""
 	@echo "Usage: make [target]"
 	@echo ""

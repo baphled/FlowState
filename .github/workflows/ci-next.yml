@@ -4,7 +4,7 @@ on:
   push:
     branches: [next]
   pull_request:
-    branches: [next]
+    branches: [next, "chore/split-28-*"]
 
 permissions:
   contents: read
