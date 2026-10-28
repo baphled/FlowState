@@ -299,8 +299,7 @@ func TestGivenTamperedPayloadWhenEventsThenReplayMismatchExit7(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Close()
-	if _, err := st.DB().ExecContext(ctx,
-		`UPDATE events SET payload_json='{"task":"tampered"}' WHERE session_id=? AND seq=0`, sess.ID); err != nil {
+	if err := st.TamperEventPayload(ctx, sess.ID, 0, `{"task":"tampered"}`); err != nil {
 		t.Fatal(err)
 	}
 	st.Close()

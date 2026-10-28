@@ -52,10 +52,6 @@ func OpenMemory() (*Store, error) {
 	return openDSN("file::memory:?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)")
 }
 
-// DB exposes the underlying *sql.DB for read-only projections.
-// Callers must not insert into events directly.
-func (s *Store) DB() *sql.DB { return s.db }
-
 // Close closes the underlying database handle. Operations after Close
 // fail with ErrClosed.
 func (s *Store) Close() error {

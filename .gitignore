@@ -48,3 +48,5 @@ test-results/
 
 # Build artifacts (fresh harness)
 build/
+
+/coordination_store/
