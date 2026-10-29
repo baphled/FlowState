@@ -168,18 +168,16 @@ func parseFlags(args []string) (*flags, []string, error) {
 				return nil, nil, err
 			}
 			fl.task = v
-		case a == "--tool":
-			v, err := take()
-			if err != nil {
-				return nil, nil, err
-			}
-			fl.tool = v
-		case a == "--tool-arg" || a == "--tool-arg=json.RawMessage":
+		case a == "--tool" || a == "--tool-arg" || a == "--tool-arg=json.RawMessage":
 			v, err := flagValue(a, take)
 			if err != nil {
 				return nil, nil, err
 			}
-			fl.toolArg = v
+			if a == "--tool" {
+				fl.tool = v
+			} else {
+				fl.toolArg = v
+			}
 		case a == "--allow":
 			v, err := flagValue(a, take)
 			if err != nil {
