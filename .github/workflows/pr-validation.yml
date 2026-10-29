@@ -86,6 +86,26 @@ jobs:
       - name: Validate all PR commits
         run: npx commitlint --from ${{ github.event.pull_request.base.sha }} --to ${{ github.event.pull_request.head.sha }} --verbose
 
+
+  validate-branch-name:
+    name: Validate Branch Name
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate source branch name
+        env:
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          pattern='^(feature|fix|chore|docs|refactor|test|perf|revert)/[a-z0-9]+(-[a-z0-9]+)*(-[0-9]{8})?$'
+          if [[ "$BRANCH" =~ $pattern ]]; then
+            echo "Branch name OK: $BRANCH"
+          else
+            echo "::error::Branch '$BRANCH' violates rules/branch-naming.md"
+            echo "Expected <type>/<kebab-case-slug>[-YYYYMMDD] with type in:"
+            echo "  feature|fix|chore|docs|refactor|test|perf|revert"
+            echo "Rename with: git branch -m '$BRANCH' 'feature/my-slug' && git push origin --delete '$BRANCH' && git push -u origin feature/my-slug"
+            exit 1
+          fi
+
   breaking-changes:
     name: Breaking Changes Detection
     runs-on: ubuntu-latest
