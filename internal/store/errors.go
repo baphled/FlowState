@@ -37,5 +37,7 @@ var (
 
 	// ErrEmptyActor / ErrEmptyType reject empty attribution fields.
 	ErrEmptyActor = errors.New("store: event actor must not be empty")
-	ErrEmptyType  = errors.New("store: event type must not be empty")
+
+	// ErrEmptyType rejects an empty event type on append.
+	ErrEmptyType = errors.New("store: event type must not be empty")
 )
