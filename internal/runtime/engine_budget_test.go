@@ -102,9 +102,7 @@ var _ = Describe("TurnWithOptions budget stop", func() {
 		var p struct {
 			Reason string `json:"reason"`
 		}
-		if err := json.Unmarshal([]byte(payload), &p); err != nil {
-			panic(err)
-		}
+		Expect(json.Unmarshal([]byte(payload), &p)).To(Succeed())
 		Expect(p.Reason).NotTo(BeEmpty())
 	})
 
