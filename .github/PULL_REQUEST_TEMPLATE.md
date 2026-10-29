@@ -1,3 +1,5 @@
+# Pull request
+
 <!-- Reviewer guidance: read AGENTS.md (branch/worktree policy, ai-commit,
      BDD workflow) and rules/BDD_WORKFLOW.md before approving. Confirm the
      checklist is truthful rather than merely ticked. -->

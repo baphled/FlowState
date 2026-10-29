@@ -4,6 +4,8 @@ about: Propose new behaviour or capability
 labels: enhancement
 ---
 
+# Feature request
+
 ## Problem
 
 <!-- What user-visible problem does this solve? -->
@@ -14,4 +16,8 @@ labels: enhancement
 
 ## Alternatives considered
 
+<!-- Any workarounds or alternative designs already tried. -->
+
 ## Additional context
+
+<!-- Links to specs, issues or discussions. -->

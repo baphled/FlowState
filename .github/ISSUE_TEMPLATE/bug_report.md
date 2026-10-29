@@ -4,6 +4,8 @@ about: Report something behaving incorrectly
 labels: bug
 ---
 
+# Bug report
+
 ## Description
 
 <!-- Clear description of the misbehaviour. -->
@@ -12,18 +14,18 @@ labels: bug
 
 1.
 2.
+3.
 
 ## Expected behaviour
 
+<!-- What should have happened instead. -->
+
 ## Actual behaviour
+
+<!-- What happened, including logs or errors where relevant. -->
 
 ## Environment
 
-- OS:
+- FlowState version:
 - Go version:
-- FlowState version/commit:
-
-## Failure output
-
-<!-- Logs, panic, failing spec output. Include the Ginkgo random seed if a
-     suite failure is intermittent. -->
+- OS:
