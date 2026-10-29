@@ -7,7 +7,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"testing"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/store"
 )
@@ -18,36 +20,18 @@ type result struct {
 	stdout string
 }
 
-// runCLI executes dispatch against a temp DB with captured stdout.
-func runCLI(t *testing.T, args ...string) result {
-	t.Helper()
-	argv := append([]string{"session", "--db", dbFor(t)}, args...)
-	return runArgv(t, argv)
-}
-
-// dbMemo holds one database path per running test so that chained
-// CLI invocations within a single test share state.
-var dbMemo = map[*testing.T]string{}
-
-// dbFor returns the per-test database path, creating it once.
-func dbFor(t *testing.T) string {
-	t.Helper()
-	if p, ok := dbMemo[t]; ok {
-		return p
-	}
-	p := t.TempDir() + "/test.db"
-	dbMemo[t] = p
-	t.Cleanup(func() { delete(dbMemo, t) })
-	return p
+// runCLI executes dispatch against the per-spec DB with captured stdout.
+func runCLI(args ...string) result {
+	argv := append([]string{"session", "--db", dbFor()}, args...)
+	return runArgv(argv)
 }
 
 // runArgv runs a full session argv including any --db override. Output
 // is drained concurrently so a full pipe buffer cannot deadlock.
-func runArgv(t *testing.T, argv []string) result {
-	t.Helper()
+func runArgv(argv []string) result {
 	outR, outW, err := os.Pipe()
 	if err != nil {
-		t.Fatalf("pipe: %v", err)
+		panic(err)
 	}
 	done := make(chan string, 1)
 	go func() {
@@ -59,273 +43,6 @@ func runArgv(t *testing.T, argv []string) result {
 	out := <-done
 	_ = outR.Close()
 	return result{exit: exit, stdout: out}
-}
-
-func TestGivenNoArgsWhenInvokedThenUsageExit2(t *testing.T) {
-	r := runCLI(t)
-	if r.exit != 2 {
-		t.Fatalf("exit %d, want 2", r.exit)
-	}
-}
-
-func TestGivenUnknownCommandWhenInvokedThenUsageExit2(t *testing.T) {
-	r := runCLI(t, "bogus")
-	if r.exit != 2 {
-		t.Fatalf("exit %d, want 2", r.exit)
-	}
-}
-
-func TestGivenSessionNewWithoutFlagsWhenInvokedThenUsageExit2(t *testing.T) {
-	r := runCLI(t, "new")
-	if r.exit != 2 {
-		t.Fatalf("exit %d, want 2", r.exit)
-	}
-}
-
-func TestGivenUnknownFlagWhenInvokedThenUsageExit2(t *testing.T) {
-	r := runCLIList(t, "--nope")
-	if r.exit != 2 {
-		t.Fatalf("exit %d, want 2", r.exit)
-	}
-}
-
-func TestGivenMissingFlagValueWhenInvokedThenUsageExit2(t *testing.T) {
-	r := runCLIList(t, "--db")
-	if r.exit != 2 {
-		t.Fatalf("exit %d, want 2", r.exit)
-	}
-}
-
-func TestGivenUnreadableTaskFileWhenNewThenUsageExit2(t *testing.T) {
-	r := runCLINew(t, "--provider", "p", "--model", "m", "--task", "@/nonexistent/file")
-	if r.exit != 2 {
-		t.Fatalf("exit %d, want 2", r.exit)
-	}
-}
-
-func TestGivenBadDBPathWhenInvokedThenConfigInvalidExit4(t *testing.T) {
-	// A directory component that is actually a regular file is an
-	// invalid DB path on every platform (Linux and Windows alike),
-	// unlike /proc paths, which modernc.org/sqlite happily creates on
-	// Windows.
-	dir := t.TempDir()
-	blocker := filepath.Join(dir, "blocker")
-	if err := os.WriteFile(blocker, []byte("file"), 0o644); err != nil {
-		t.Fatalf("write blocker: %v", err)
-	}
-	r := runArgv(t, []string{"session", "list", "--db", filepath.Join(blocker, "x.db")})
-	if r.exit != 4 {
-		t.Fatalf("exit %d, want 4", r.exit)
-	}
-}
-
-func TestGivenFreshDBWhenSessionListThenExit0NoOutput(t *testing.T) {
-	r := runCLIList(t)
-	if r.exit != 0 || r.stdout != "" {
-		t.Fatalf("exit %d out %q, want 0 and empty", r.exit, r.stdout)
-	}
-}
-
-func TestGivenInvalidStatusFilterWhenListThenUsageExit2(t *testing.T) {
-	r := runCLIList(t, "--status", "zombie")
-	if r.exit != 2 {
-		t.Fatalf("exit %d, want 2", r.exit)
-	}
-}
-
-func TestGivenSessionNewWhenCreatedThenJSONRecordExit0(t *testing.T) {
-	r := runCLINew(t, "--provider", "prov", "--model", "m1", "--task", "do things")
-	if r.exit != 0 {
-		t.Fatalf("exit %d, want 0", r.exit)
-	}
-	var rec struct {
-		ID     string `json:"id"`
-		Status string `json:"status"`
-	}
-	if err := json.Unmarshal([]byte(firstLine(r.stdout)), &rec); err != nil {
-		t.Fatalf("stdout not JSON: %q (%v)", r.stdout, err)
-	}
-	if rec.Status != "active" || rec.ID == "" {
-		t.Fatalf("record %+v", rec)
-	}
-}
-
-func TestGivenTaskFileWhenNewThenFileContentsUsed(t *testing.T) {
-	f := t.TempDir() + "/task.txt"
-	if err := os.WriteFile(f, []byte("task from file"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	r := runCLINew(t, "--provider", "p", "--model", "m", "--task", "@"+f)
-	if r.exit != 0 {
-		t.Fatalf("exit %d, want 0", r.exit)
-	}
-}
-
-func TestGivenCreatedSessionWhenListThenSessionListedExit0(t *testing.T) {
-	r := runCLINew(t, "--provider", "prov", "--model", "m1", "--task", "t")
-	if r.exit != 0 {
-		t.Fatalf("new exit %d", r.exit)
-	}
-	var rec struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal([]byte(firstLine(r.stdout)), &rec); err != nil {
-		t.Fatalf("unmarshal new output: %v", err)
-	}
-	l := runCLIList(t)
-	if l.exit != 0 || len(lines(l.stdout)) != 1 {
-		t.Fatalf("list exit %d out %q", l.exit, l.stdout)
-	}
-}
-
-func TestGivenClosedSessionWhenListWithStatusCancelledThenListed(t *testing.T) {
-	r := runCLINew(t, "--provider", "p", "--model", "m", "--task", "t")
-	var rec struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal([]byte(firstLine(r.stdout)), &rec); err != nil {
-		t.Fatalf("unmarshal new output: %v", err)
-	}
-	runCLIClose(t, rec.ID)
-	l := runCLIList(t, "--status", "cancelled")
-	if l.exit != 0 || len(lines(l.stdout)) != 1 {
-		t.Fatalf("list exit %d out %q", l.exit, l.stdout)
-	}
-}
-
-func TestGivenUnknownSessionWhenEventsThenExit1SessionNotFound(t *testing.T) {
-	r := runCLIEvents(t, "missing-id")
-	if r.exit != 1 {
-		t.Fatalf("exit %d, want 1", r.exit)
-	}
-}
-
-func TestGivenMissingIDWhenEventsThenUsageExit2(t *testing.T) {
-	r := runCLI(t, "events")
-	if r.exit != 2 {
-		t.Fatalf("exit %d, want 2", r.exit)
-	}
-}
-
-func TestGivenCreatedSessionWhenEventsThenTurnStartJSONL(t *testing.T) {
-	r := runCLINew(t, "--provider", "p", "--model", "m", "--task", "hello")
-	var rec struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal([]byte(firstLine(r.stdout)), &rec); err != nil {
-		t.Fatalf("unmarshal new output: %v", err)
-	}
-	e := runCLIEvents(t, rec.ID)
-	if e.exit != 0 || len(lines(e.stdout)) != 1 {
-		t.Fatalf("events exit %d out %q", e.exit, e.stdout)
-	}
-	var ev struct {
-		Type string `json:"type"`
-		Seq  int    `json:"seq"`
-	}
-	if err := json.Unmarshal([]byte(firstLine(e.stdout)), &ev); err != nil {
-		t.Fatalf("unmarshal events output: %v", err)
-	}
-	if ev.Type != "turn.start" || ev.Seq != 0 {
-		t.Fatalf("event %+v", ev)
-	}
-}
-
-func TestGivenUnknownSessionWhenCloseThenExit1(t *testing.T) {
-	r := runCLIClose(t, "missing-id")
-	if r.exit != 1 {
-		t.Fatalf("exit %d, want 1", r.exit)
-	}
-}
-
-func TestGivenActiveSessionWhenCloseThenCancelledExit0(t *testing.T) {
-	r := runCLINew(t, "--provider", "p", "--model", "m", "--task", "t")
-	var rec struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal([]byte(firstLine(r.stdout)), &rec); err != nil {
-		t.Fatalf("unmarshal new output: %v", err)
-	}
-	c := runCLIClose(t, rec.ID)
-	if c.exit != 0 {
-		t.Fatalf("close exit %d, want 0", c.exit)
-	}
-	var out struct {
-		Status string `json:"status"`
-	}
-	if err := json.Unmarshal([]byte(firstLine(c.stdout)), &out); err != nil {
-		t.Fatalf("unmarshal close output: %v", err)
-	}
-	if out.Status != "cancelled" {
-		t.Fatalf("status %q", out.Status)
-	}
-}
-
-func TestGivenAlreadyClosedSessionWhenCloseAgainThenTerminalExit6(t *testing.T) {
-	r := runCLINew(t, "--provider", "p", "--model", "m", "--task", "t")
-	var rec struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal([]byte(firstLine(r.stdout)), &rec); err != nil {
-		t.Fatalf("unmarshal new output: %v", err)
-	}
-	runCLIClose(t, rec.ID)
-	c := runCLIClose(t, rec.ID)
-	if c.exit != 6 {
-		t.Fatalf("exit %d, want 6", c.exit)
-	}
-}
-
-func TestGivenEventsAfterCloseWhenInspectedThenCancelledEventLast(t *testing.T) {
-	r := runCLINew(t, "--provider", "p", "--model", "m", "--task", "t")
-	var rec struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal([]byte(firstLine(r.stdout)), &rec); err != nil {
-		t.Fatalf("unmarshal new output: %v", err)
-	}
-	runCLIClose(t, rec.ID)
-	e := runCLIEvents(t, rec.ID)
-	evs := lines(e.stdout)
-	if len(evs) != 2 {
-		t.Fatalf("got %d events, want 2", len(evs))
-	}
-	var last struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal([]byte(evs[1]), &last); err != nil {
-		t.Fatalf("unmarshal event: %v", err)
-	}
-	if last.Type != "session.cancelled" {
-		t.Fatalf("last type %q", last.Type)
-	}
-}
-
-func TestGivenTamperedPayloadWhenEventsThenReplayMismatchExit7(t *testing.T) {
-	db := t.TempDir() + "/t.db"
-	st, err := store.Open(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	sess, err := st.CreateSession(ctx, "sid-tamper", "p", "m", "h", "sha")
-	if err != nil {
-		t.Fatal(err)
-	}
-	w, _ := st.NewEventWriter(ctx, sess.ID)
-	if _, err := w.Append(ctx, "user", "turn.start", map[string]any{"task": "t"}); err != nil {
-		t.Fatal(err)
-	}
-	_ = w.Close()
-	if err := st.TamperEventPayload(ctx, sess.ID, 0, `{"task":"tampered"}`); err != nil { // post-#44: no Store.DB()
-		t.Fatal(err)
-	}
-	_ = st.Close()
-	r := runArgv(t, []string{"session", "events", sess.ID, "--db", db})
-	if r.exit != 7 {
-		t.Fatalf("exit %d, want 7", r.exit)
-	}
-	fmt.Fprintln(os.Stderr)
 }
 
 // firstLine returns the first non-empty line of s.
@@ -352,28 +69,216 @@ func lines(s string) []string {
 	return out
 }
 
-// runCLIClose runs `session close <id>` against a fresh temp DB.
-func runCLIClose(t *testing.T, id string) result {
-	t.Helper()
-	return runArgv(t, []string{"session", "close", id, "--db", dbFor(t)})
+// runCLIClose runs `session close <id>` against the per-spec temp DB.
+func runCLIClose(id string) result {
+	return runArgv([]string{"session", "close", id, "--db", dbFor()})
 }
 
-// runCLIEvents runs `session events <id>` against a fresh temp DB.
-func runCLIEvents(t *testing.T, id string) result {
-	t.Helper()
-	return runArgv(t, []string{"session", "events", id, "--db", dbFor(t)})
+// runCLIEvents runs `session events <id>` against the per-spec temp DB.
+func runCLIEvents(id string) result {
+	return runArgv([]string{"session", "events", id, "--db", dbFor()})
 }
 
-// runCLINew runs `session new` with the given args against a fresh
-// temp DB.
-func runCLINew(t *testing.T, args ...string) result {
-	t.Helper()
-	return runArgv(t, append([]string{"session", "new", "--db", dbFor(t)}, args...))
+// runCLINew runs `session new` with the given args against the
+// per-spec temp DB.
+func runCLINew(args ...string) result {
+	return runArgv(append([]string{"session", "new", "--db", dbFor()}, args...))
 }
 
-// runCLIList runs `session list` with the given args against a fresh
-// temp DB.
-func runCLIList(t *testing.T, args ...string) result {
-	t.Helper()
-	return runArgv(t, append([]string{"session", "list", "--db", dbFor(t)}, args...))
+// runCLIList runs `session list` with the given args against the
+// per-spec temp DB.
+func runCLIList(args ...string) result {
+	return runArgv(append([]string{"session", "list", "--db", dbFor()}, args...))
 }
+
+// newRecord captures the JSON record printed by `session new`.
+type newRecord struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+}
+
+// decodeNew parses the first line of `session new` output as JSON.
+func decodeNew(out string) newRecord {
+	var rec newRecord
+	if err := json.Unmarshal([]byte(firstLine(out)), &rec); err != nil {
+		panic(err)
+	}
+	return rec
+}
+
+var _ = Describe("Session CLI usage", func() {
+	It("exits 2 with usage when invoked with no args", func() {
+		Expect(runCLI().exit).To(Equal(2))
+	})
+
+	It("exits 2 with usage for an unknown command", func() {
+		Expect(runCLI("bogus").exit).To(Equal(2))
+	})
+
+	It("exits 2 with usage when session new has no flags", func() {
+		Expect(runCLI("new").exit).To(Equal(2))
+	})
+
+	It("exits 2 with usage for an unknown flag", func() {
+		Expect(runCLIList("--nope").exit).To(Equal(2))
+	})
+
+	It("exits 2 with usage when a flag value is missing", func() {
+		Expect(runCLIList("--db").exit).To(Equal(2))
+	})
+
+	It("exits 2 with usage for an unreadable @task file on session new", func() {
+		r := runCLINew("--provider", "p", "--model", "m", "--task", "@/nonexistent/file")
+		Expect(r.exit).To(Equal(2))
+	})
+
+	It("exits 4 for an invalid DB path blocked by a regular file", func() {
+		dir := GinkgoT().TempDir()
+		blocker := filepath.Join(dir, "blocker")
+		if err := os.WriteFile(blocker, []byte("file"), 0o644); err != nil {
+			panic(err)
+		}
+		r := runArgv([]string{"session", "list", "--db", filepath.Join(blocker, "x.db")})
+		Expect(r.exit).To(Equal(4))
+	})
+})
+
+var _ = Describe("Session list", func() {
+	It("exits 0 with no output against a fresh DB", func() {
+		r := runCLIList()
+		Expect([2]any{r.exit, r.stdout}).To(Equal([2]any{0, ""}))
+	})
+
+	It("exits 2 with usage for an invalid status filter", func() {
+		Expect(runCLIList("--status", "zombie").exit).To(Equal(2))
+	})
+
+	It("lists a created session", func() {
+		r := runCLINew("--provider", "prov", "--model", "m1", "--task", "t")
+		if r.exit != 0 {
+			panic(fmt.Sprintf("session new exit %d", r.exit))
+		}
+		decodeNew(r.stdout)
+		l := runCLIList()
+		Expect([2]any{l.exit, lines(l.stdout)}).To(Equal([2]any{0, []string{firstLine(l.stdout)}}))
+	})
+
+	It("lists a closed session when filtered by status cancelled", func() {
+		r := runCLINew("--provider", "p", "--model", "m", "--task", "t")
+		rec := decodeNew(r.stdout)
+		runCLIClose(rec.ID)
+		l := runCLIList("--status", "cancelled")
+		Expect([2]any{l.exit, len(lines(l.stdout))}).To(Equal([2]any{0, 1}))
+	})
+})
+
+var _ = Describe("Session new", func() {
+	It("prints a JSON record with status active and exit 0", func() {
+		r := runCLINew("--provider", "prov", "--model", "m1", "--task", "do things")
+		if r.exit != 0 {
+			panic(fmt.Sprintf("session new exit %d", r.exit))
+		}
+		rec := decodeNew(r.stdout)
+		Expect([]any{rec.Status, rec.ID != ""}).To(Equal([]any{"active", true}))
+	})
+
+	It("uses @task file contents as the task", func() {
+		f := GinkgoT().TempDir() + "/task.txt"
+		if err := os.WriteFile(f, []byte("task from file"), 0o644); err != nil {
+			panic(err)
+		}
+		r := runCLINew("--provider", "p", "--model", "m", "--task", "@"+f)
+		Expect(r.exit).To(Equal(0))
+	})
+})
+
+var _ = Describe("Session events", func() {
+	It("exits 1 for an unknown session id", func() {
+		Expect(runCLIEvents("missing-id").exit).To(Equal(1))
+	})
+
+	It("exits 2 with usage when the id is missing", func() {
+		Expect(runCLI("events").exit).To(Equal(2))
+	})
+
+	It("emits a single turn.start JSONL event for a created session", func() {
+		r := runCLINew("--provider", "p", "--model", "m", "--task", "hello")
+		rec := decodeNew(r.stdout)
+		e := runCLIEvents(rec.ID)
+		var ev struct {
+			Type string `json:"type"`
+			Seq  int    `json:"seq"`
+		}
+		if err := json.Unmarshal([]byte(firstLine(e.stdout)), &ev); err != nil {
+			panic(err)
+		}
+		Expect([]any{e.exit, len(lines(e.stdout)), ev.Type, ev.Seq}).To(Equal([]any{0, 1, "turn.start", 0}))
+	})
+})
+
+var _ = Describe("Session close", func() {
+	It("exits 1 for an unknown session id", func() {
+		Expect(runCLIClose("missing-id").exit).To(Equal(1))
+	})
+
+	It("cancels an active session with exit 0 and status output", func() {
+		r := runCLINew("--provider", "p", "--model", "m", "--task", "t")
+		rec := decodeNew(r.stdout)
+		c := runCLIClose(rec.ID)
+		var out struct {
+			Status string `json:"status"`
+		}
+		if err := json.Unmarshal([]byte(firstLine(c.stdout)), &out); err != nil {
+			panic(err)
+		}
+		Expect([]any{c.exit, out.Status}).To(Equal([]any{0, "cancelled"}))
+	})
+
+	It("exits 6 when closing an already closed session", func() {
+		r := runCLINew("--provider", "p", "--model", "m", "--task", "t")
+		rec := decodeNew(r.stdout)
+		runCLIClose(rec.ID)
+		Expect(runCLIClose(rec.ID).exit).To(Equal(6))
+	})
+
+	It("emits session.cancelled as the last event after close", func() {
+		r := runCLINew("--provider", "p", "--model", "m", "--task", "t")
+		rec := decodeNew(r.stdout)
+		runCLIClose(rec.ID)
+		e := runCLIEvents(rec.ID)
+		evs := lines(e.stdout)
+		var last struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal([]byte(evs[1]), &last); err != nil {
+			panic(err)
+		}
+		Expect([]any{len(evs), last.Type}).To(Equal([]any{2, "session.cancelled"}))
+	})
+})
+
+var _ = Describe("Session events replay integrity", func() {
+	It("exits 7 on a tampered event payload", func() {
+		db := GinkgoT().TempDir() + "/t.db"
+		st, err := store.Open(db)
+		Expect(err).NotTo(HaveOccurred())
+		ctx := context.Background()
+		sess, err := st.CreateSession(ctx, "sid-tamper", "p", "m", "h", "sha")
+		Expect(err).NotTo(HaveOccurred())
+		w, err := st.NewEventWriter(ctx, sess.ID)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = w.Append(ctx, "user", "turn.start", map[string]any{"task": "t"})
+		Expect(err).NotTo(HaveOccurred())
+		if err := w.Close(); err != nil {
+			panic(err)
+		}
+		err = st.TamperEventPayload(ctx, sess.ID, 0, `{"task":"tampered"}`)
+		Expect(err).NotTo(HaveOccurred())
+		if err := st.Close(); err != nil {
+			panic(err)
+		}
+		r := runArgv([]string{"session", "events", sess.ID, "--db", db})
+		Expect(r.exit).To(Equal(7))
+		fmt.Fprintln(os.Stderr)
+	})
+})

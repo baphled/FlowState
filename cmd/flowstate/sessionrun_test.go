@@ -5,15 +5,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"testing"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/zai"
 )
 
 // fakeZaiServer serves an SSE stream of the given chunks.
-func fakeZaiServer(t *testing.T, chunks ...string) *httptest.Server {
-	t.Helper()
+func fakeZaiServer(chunks ...string) *httptest.Server {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fl := w.(http.Flusher)
@@ -24,158 +25,24 @@ func fakeZaiServer(t *testing.T, chunks ...string) *httptest.Server {
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 		fl.Flush()
 	}))
-	t.Cleanup(srv.Close)
+	DeferCleanup(srv.Close)
 	return srv
 }
 
 // withFakeZai swaps the CLI provider resolver for an httptest-backed
-// zai adapter and restores it after the test.
-func withFakeZai(t *testing.T, srv *httptest.Server) {
-	t.Helper()
+// zai adapter and restores it afterwards.
+func withFakeZai(srv *httptest.Server) {
 	old := providerResolver
 	providerResolver = func(name string) (provider.Provider, error) {
 		return zai.New("test-key", zai.WithBaseURL(srv.URL)), nil
 	}
-	t.Cleanup(func() { providerResolver = old })
-}
-
-func TestGivenNewSessionWhenRunThenStreamsEventsAndCompletes(t *testing.T) {
-	srv := fakeZaiServer(t,
-		`{"choices":[{"delta":{"content":"he"}}]}`,
-		`{"choices":[{"delta":{"content":"y"}}]}`,
-	)
-	withFakeZai(t, srv)
-
-	created := runCLINew(t, "--provider", "z.ai", "--model", "glm-4.6", "--task", "greet")
-	if created.exit != 0 {
-		t.Fatalf("new exit = %d, stdout %s", created.exit, created.stdout)
-	}
-	var rec struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal([]byte(strings.SplitN(created.stdout, "\n", 2)[0]), &rec); err != nil {
-		t.Fatalf("decode new output: %v (%s)", err, created.stdout)
-	}
-
-	run := runCLIRun(t, rec.ID)
-	if run.exit != 0 {
-		t.Fatalf("run exit = %d, stdout %s", run.exit, run.stdout)
-	}
-	lines := nonEmpty(strings.Split(run.stdout, "\n"))
-	if len(lines) < 4 {
-		t.Fatalf("run stdout = %q, want at least 4 event lines", run.stdout)
-	}
-	var last struct {
-		Type    string          `json:"type"`
-		Actor   string          `json:"actor"`
-		Payload json.RawMessage `json:"payload"`
-	}
-	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &last); err != nil {
-		t.Fatalf("decode final line: %v (%s)", err, lines[len(lines)-1])
-	}
-	if last.Type != "turn.end" {
-		t.Fatalf("final line type = %s, want turn.end", last.Type)
-	}
-	if last.Actor != "engine" {
-		t.Fatalf("final line actor = %s, want engine", last.Actor)
-	}
-	if !strings.Contains(string(last.Payload), `"status":"completed"`) {
-		t.Fatalf("final payload = %s, want completed status", last.Payload)
-	}
-
-	evts := runCLIEvents(t, rec.ID)
-	if evts.exit != 0 {
-		t.Fatalf("events exit = %d", evts.exit)
-	}
-	wantOrder := []string{"turn.start", "user.message", "assistant.delta", "assistant.delta", "assistant.message", "turn.end"}
-	gotTypes := []string{}
-	for _, l := range nonEmpty(strings.Split(evts.stdout, "\n")) {
-		var e struct {
-			Type string `json:"type"`
-		}
-		if err := json.Unmarshal([]byte(l), &e); err != nil {
-			t.Fatalf("decode event line: %v (%s)", err, l)
-		}
-		gotTypes = append(gotTypes, e.Type)
-	}
-	if strings.Join(gotTypes, ",") != strings.Join(wantOrder, ",") {
-		t.Fatalf("event types = %v, want %v", gotTypes, wantOrder)
-	}
-}
-
-func TestGivenProviderFailureWhenRunThenExitThreeAndProviderErrorEvent(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadGateway)
-		_, _ = w.Write([]byte(`{"error":{"code":"502","message":"down"}}`))
-	}))
-	t.Cleanup(srv.Close)
-	withFakeZai(t, srv)
-
-	created := runCLINew(t, "--provider", "z.ai", "--model", "glm-4.6", "--task", "greet")
-	if created.exit != 0 {
-		t.Fatalf("new exit = %d", created.exit)
-	}
-	var rec struct {
-		ID string `json:"id"`
-	}
-	_ = json.Unmarshal([]byte(strings.SplitN(created.stdout, "\n", 2)[0]), &rec)
-
-	run := runCLIRun(t, rec.ID)
-	if run.exit != 3 {
-		t.Fatalf("run exit = %d, want 3 (provider error)", run.exit)
-	}
-	lines := nonEmpty(strings.Split(run.stdout, "\n"))
-	var last struct {
-		Type string `json:"type"`
-	}
-	for _, l := range lines {
-		var e struct {
-			Type string `json:"type"`
-		}
-		if err := json.Unmarshal([]byte(l), &e); err != nil || e.Type == "" {
-			continue
-		}
-		last.Type = e.Type
-	}
-	if last.Type != "provider.error" {
-		t.Fatalf("final line type = %s, want provider.error", last.Type)
-	}
-}
-
-func TestGivenMissingSessionIDWhenRunThenUsage(t *testing.T) {
-	if got := runCLIRun(t); got.exit != 2 {
-		t.Fatalf("run exit = %d, want 2", got.exit)
-	}
-}
-
-func TestGivenUnknownSessionWhenRunThenExitOne(t *testing.T) {
-	if got := runCLIRun(t, "nope"); got.exit != 1 {
-		t.Fatalf("run exit = %d, want 1", got.exit)
-	}
-}
-
-func TestGivenTerminalSessionWhenRunThenExitSix(t *testing.T) {
-	srv := fakeZaiServer(t, `{"choices":[{"delta":{"content":"x"}}]}`)
-	withFakeZai(t, srv)
-	created := runCLINew(t, "--provider", "z.ai", "--model", "glm-4.6", "--task", "greet")
-	var rec struct {
-		ID string `json:"id"`
-	}
-	_ = json.Unmarshal([]byte(strings.SplitN(created.stdout, "\n", 2)[0]), &rec)
-	first := runCLIRun(t, rec.ID)
-	if first.exit != 0 {
-		t.Fatalf("first run exit = %d (%s)", first.exit, first.stdout)
-	}
-	if got := runCLIRun(t, rec.ID); got.exit != 6 {
-		t.Fatalf("second run exit = %d, want 6", got.exit)
-	}
+	DeferCleanup(func() { providerResolver = old })
 }
 
 // runCLIRun runs `session run` with the given id args against the
-// per-test temp DB.
-func runCLIRun(t *testing.T, ids ...string) result {
-	t.Helper()
-	return runArgv(t, append([]string{"session", "run", "--db", dbFor(t)}, ids...))
+// per-spec temp DB.
+func runCLIRun(ids ...string) result {
+	return runArgv(append([]string{"session", "run", "--db", dbFor()}, ids...))
 }
 
 // nonEmpty drops empty split fragments.
@@ -188,3 +55,124 @@ func nonEmpty(in []string) []string {
 	}
 	return out
 }
+
+var _ = Describe("Session run", func() {
+	It("streams events and completes for a new session", func() {
+		srv := fakeZaiServer(
+			`{"choices":[{"delta":{"content":"he"}}]}`,
+			`{"choices":[{"delta":{"content":"y"}}]}`,
+		)
+		withFakeZai(srv)
+
+		created := runCLINew("--provider", "z.ai", "--model", "glm-4.6", "--task", "greet")
+		if created.exit != 0 {
+			panic("session new failed")
+		}
+		rec := decodeNew(created.stdout)
+
+		run := runCLIRun(rec.ID)
+		got := nonEmpty(strings.Split(run.stdout, "\n"))
+		var last struct {
+			Type    string          `json:"type"`
+			Actor   string          `json:"actor"`
+			Payload json.RawMessage `json:"payload"`
+		}
+		if err := json.Unmarshal([]byte(got[len(got)-1]), &last); err != nil {
+			panic(err)
+		}
+		Expect([]any{run.exit, len(got), last.Type, last.Actor,
+			strings.Contains(string(last.Payload), `"status":"completed"`),
+		}).To(Equal([]any{
+			0, 6, "turn.end", "engine", true,
+		}))
+	})
+
+	It("persists the streamed events in order", func() {
+		srv := fakeZaiServer(
+			`{"choices":[{"delta":{"content":"he"}}]}`,
+			`{"choices":[{"delta":{"content":"y"}}]}`,
+		)
+		withFakeZai(srv)
+
+		created := runCLINew("--provider", "z.ai", "--model", "glm-4.6", "--task", "greet")
+		if created.exit != 0 {
+			panic("session new failed")
+		}
+		rec := decodeNew(created.stdout)
+		run := runCLIRun(rec.ID)
+		if run.exit != 0 {
+			panic("session run failed")
+		}
+
+		evts := runCLIEvents(rec.ID)
+		wantOrder := "turn.start,user.message,assistant.delta,assistant.delta,assistant.message,turn.end"
+		gotTypes := []string{}
+		for _, l := range nonEmpty(strings.Split(evts.stdout, "\n")) {
+			var e struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal([]byte(l), &e); err != nil {
+				panic(err)
+			}
+			gotTypes = append(gotTypes, e.Type)
+		}
+		Expect([]any{evts.exit, strings.Join(gotTypes, ",")}).To(Equal([]any{0, wantOrder}))
+	})
+
+	It("exits 3 and emits a provider.error event on provider failure", func() {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte(`{"error":{"code":"502","message":"down"}}`))
+		}))
+		DeferCleanup(srv.Close)
+		withFakeZai(srv)
+
+		created := runCLINew("--provider", "z.ai", "--model", "glm-4.6", "--task", "greet")
+		if created.exit != 0 {
+			panic("session new failed")
+		}
+		var rec struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(strings.SplitN(created.stdout, "\n", 2)[0]), &rec); err != nil {
+			panic(err)
+		}
+
+		run := runCLIRun(rec.ID)
+		got := nonEmpty(strings.Split(run.stdout, "\n"))
+		lastType := ""
+		for _, l := range got {
+			var e struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal([]byte(l), &e); err != nil || e.Type == "" {
+				continue
+			}
+			lastType = e.Type
+		}
+		Expect([]any{run.exit, lastType}).To(Equal([]any{3, "provider.error"}))
+	})
+
+	It("exits 2 with usage when the session id is missing", func() {
+		Expect(runCLIRun().exit).To(Equal(2))
+	})
+
+	It("exits 1 for an unknown session", func() {
+		Expect(runCLIRun("nope").exit).To(Equal(1))
+	})
+
+	It("exits 6 when running an already-terminal session", func() {
+		srv := fakeZaiServer(`{"choices":[{"delta":{"content":"x"}}]}`)
+		withFakeZai(srv)
+		created := runCLINew("--provider", "z.ai", "--model", "glm-4.6", "--task", "greet")
+		var rec struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(strings.SplitN(created.stdout, "\n", 2)[0]), &rec); err != nil {
+			panic(err)
+		}
+		first := runCLIRun(rec.ID)
+		second := runCLIRun(rec.ID)
+		Expect([]int{first.exit, second.exit}).To(Equal([]int{0, 6}))
+	})
+})
