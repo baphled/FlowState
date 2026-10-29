@@ -150,7 +150,10 @@ var _ = Describe("Session run budget", func() {
 				messageAt = i
 			}
 		}
-		Expect([]any{second.exit, resumedAt >= 0, resumedAt < messageAt, lines[resumedAt]["actor"]}).To(Equal([]any{0, true, true, "user"}))
+		Expect(second.exit).To(Equal(0))
+		Expect(resumedAt).To(BeNumerically(">=", 0))
+		Expect(resumedAt).To(BeNumerically("<", messageAt))
+		Expect(lines[resumedAt]["actor"]).To(Equal("user"))
 	})
 })
 
@@ -170,7 +173,9 @@ var _ = Describe("Session run interrupt", func() {
 		evts, rerr := st.Replay(ctx, id)
 		Expect(rerr).NotTo(HaveOccurred())
 		lastType := evts[len(evts)-1].Type
-		Expect([]any{code, sess.Status, lastType}).To(Equal([]any{130, "cancelled", "session.cancelled"}))
+		Expect(code).To(Equal(130))
+		Expect(sess.Status).To(Equal("cancelled"))
+		Expect(lastType).To(Equal("session.cancelled"))
 	})
 
 	It("returns 6 when cancelling an already-terminal session", func() {
