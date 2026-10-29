@@ -11,7 +11,7 @@ type ProviderConfig struct {
 	APIKey   string             `yaml:"api_key,omitempty"`
 	Model    string             `yaml:"model"`
 	AuthType oauth.AuthType     `yaml:"auth_type"`
-	OAuth    *oauth.OAuthConfig `yaml:"oauth,omitempty"`
+	OAuth    *oauth.Config `yaml:"oauth,omitempty"`
 }
 
 func DefaultConfig() *Config {

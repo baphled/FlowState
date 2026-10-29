@@ -34,8 +34,8 @@ type DeviceCodeResponse struct {
 	Interval        int
 }
 
-// OAuthProvider performs the provider side of the OAuth device flow.
-type OAuthProvider interface {
+// Provider performs the provider side of the OAuth device flow.
+type Provider interface {
 	// RequestDeviceCode starts device-flow authorisation for the
 	// provider.
 	RequestDeviceCode(ctx context.Context) (*DeviceCodeResponse, error)
@@ -58,8 +58,8 @@ type TokenStorage interface {
 	Exists(providerName string) bool
 }
 
-// OAuthConfig configures a provider's OAuth client.
-type OAuthConfig struct {
+// Config configures a provider's OAuth client.
+type Config struct {
 	ClientID    string   `yaml:"client_id"`
 	Scopes      []string `yaml:"scopes,omitempty"`
 	RedirectURI string   `yaml:"redirect_uri,omitempty"`
