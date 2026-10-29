@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -19,17 +20,41 @@ func TestTool(t *testing.T) {
 }
 
 // newStoreWithSession opens a temp SQLite store with one session and
-// returns the store, session id and a live event writer.
+// returns the store, session id and a live event writer. Arrange-only
+// helper: fixture failures panic so specs keep one behavioural
+// expectation each.
 func newStoreWithSession() (*store.Store, string, *store.EventWriter) {
 	st, err := store.Open(filepath.Join(GinkgoT().TempDir(), "test.db"))
-	ExpectWithOffset(1, err).NotTo(HaveOccurred())
+	if err != nil {
+		panic(err)
+	}
 	DeferCleanup(func() { _ = st.Close() })
 	sess, err := st.CreateSession(context.Background(), "id-1", "prov", "model", "harness", "sha")
-	ExpectWithOffset(1, err).NotTo(HaveOccurred())
+	if err != nil {
+		panic(err)
+	}
 	w, err := st.NewEventWriter(context.Background(), sess.ID)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred())
+	if err != nil {
+		panic(err)
+	}
 	DeferCleanup(func() { _ = w.Close() })
 	return st, sess.ID, w
+}
+
+// newEchoLoop wires a Loop over a temp store with one session, the
+// echo tool registered under the given allowlist, and returns the
+// loop, store and session id (arrange-only helper).
+func newEchoLoop(allow []string) (*Loop, *store.Store, string) {
+	st, sid, w := newStoreWithSession()
+	r := NewRegistry()
+	if err := r.Register(NewEcho()); err != nil {
+		panic(err)
+	}
+	l, err := NewLoop(r, w, allow)
+	if err != nil {
+		panic(err)
+	}
+	return l, st, sid
 }
 
 // fakeTool is a configurable tool for tests.
@@ -44,6 +69,11 @@ func (f fakeTool) Invoke(_ context.Context, _ json.RawMessage) (any, error) {
 	return f.out, f.err
 }
 
+// contains reports whether s contains sub (test-local shorthand).
+func contains(s, sub string) bool {
+	return len(sub) == 0 || len(s) >= len(sub) && strings.Contains(s, sub)
+}
+
 var _ = Describe("Registry", func() {
 	It("errors with ErrUnknownTool when getting an unknown tool", func() {
 		_, err := NewRegistry().Get("nope")
@@ -52,7 +82,9 @@ var _ = Describe("Registry", func() {
 
 	It("errors with ErrToolExists when registering a duplicate tool", func() {
 		r := NewRegistry()
-		Expect(r.Register(NewEcho())).To(Succeed())
+		if err := r.Register(NewEcho()); err != nil {
+			panic(err)
+		}
 		err := r.Register(NewEcho())
 		Expect(errors.Is(err, ErrToolExists)).To(BeTrue())
 	})
@@ -71,62 +103,102 @@ var _ = Describe("Registry", func() {
 })
 
 var _ = Describe("Loop", func() {
-	It("rejects a nil registry or nil writer", func() {
+	It("rejects a nil registry", func() {
 		_, _, w := newStoreWithSession()
 		_, err := NewLoop(nil, w, nil)
 		Expect(err).To(HaveOccurred())
-		_, err = NewLoop(NewRegistry(), nil, nil)
+	})
+
+	It("rejects a nil writer", func() {
+		_, err := NewLoop(NewRegistry(), nil, nil)
 		Expect(err).To(HaveOccurred())
 	})
 
-	It("denies a registered tool under an empty allowlist and records the denial", func() {
-		st, sid, w := newStoreWithSession()
-		r := NewRegistry()
-		_ = r.Register(NewEcho())
-		l, err := NewLoop(r, w, nil)
-		Expect(err).NotTo(HaveOccurred())
-		_, err = l.Invoke(context.Background(), Echo, json.RawMessage(`{}`))
+	It("denies a registered tool under an empty allowlist", func() {
+		l, _, _ := newEchoLoop(nil)
+		_, err := l.Invoke(context.Background(), Echo, json.RawMessage(`{}`))
 		Expect(errors.Is(err, ErrDenied)).To(BeTrue())
+	})
+
+	It("records exactly one tool_result denial event under an empty allowlist", func() {
+		l, st, sid := newEchoLoop(nil)
+		_, _ = l.Invoke(context.Background(), Echo, json.RawMessage(`{}`))
 		events, err := st.Replay(context.Background(), sid)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(events).To(HaveLen(1))
-		Expect(events[0].Type).To(Equal(TypeToolResult))
+		Expect([2]any{len(events), events[0].Type}).To(Equal([2]any{1, TypeToolResult}))
+	})
+
+	It("flags the denial payload as tool_denied", func() {
+		l, st, sid := newEchoLoop(nil)
+		_, _ = l.Invoke(context.Background(), Echo, json.RawMessage(`{}`))
+		events, err := st.Replay(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
 		Expect(events[0].PayloadJSON).To(ContainSubstring("tool_denied"))
 	})
 
-	It("invokes an allowlisted tool and records call then result events in order", func() {
-		st, sid, w := newStoreWithSession()
-		r := NewRegistry()
-		_ = r.Register(NewEcho())
-		l, err := NewLoop(r, w, []string{Echo})
-		Expect(err).NotTo(HaveOccurred())
+	It("invokes an allowlisted tool and echoes its arguments", func() {
+		l, _, _ := newEchoLoop([]string{Echo})
 		res, err := l.Invoke(context.Background(), Echo, json.RawMessage(`{"msg":"hi"}`))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res).To(HaveKeyWithValue("msg", "hi"))
+	})
+
+	It("records call then result events in order", func() {
+		l, st, sid := newEchoLoop([]string{Echo})
+		_, err := l.Invoke(context.Background(), Echo, json.RawMessage(`{"msg":"hi"}`))
+		Expect(err).NotTo(HaveOccurred())
 		events, err := st.Replay(context.Background(), sid)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(events).To(HaveLen(2))
-		Expect(events[0].Type).To(Equal(TypeToolCall))
-		Expect(events[1].Type).To(Equal(TypeToolResult))
-		Expect(events[0].Seq).To(Equal(int64(0)))
-		Expect(events[1].Seq).To(Equal(int64(1)))
+		Expect([]string{events[0].Type, events[1].Type}).To(Equal([]string{TypeToolCall, TypeToolResult}))
+	})
+
+	It("sequences the call and result events", func() {
+		l, st, sid := newEchoLoop([]string{Echo})
+		_, err := l.Invoke(context.Background(), Echo, json.RawMessage(`{"msg":"hi"}`))
+		Expect(err).NotTo(HaveOccurred())
+		events, err := st.Replay(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		Expect([]int64{events[0].Seq, events[1].Seq}).To(Equal([]int64{0, 1}))
+	})
+
+	It("attributes the tool call event to the tool actor", func() {
+		l, st, sid := newEchoLoop([]string{Echo})
+		_, err := l.Invoke(context.Background(), Echo, json.RawMessage(`{"msg":"hi"}`))
+		Expect(err).NotTo(HaveOccurred())
+		events, err := st.Replay(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
 		Expect(events[0].Actor).To(Equal("tool:echo"))
+	})
+
+	It("marks the tool result payload ok", func() {
+		l, st, sid := newEchoLoop([]string{Echo})
+		_, err := l.Invoke(context.Background(), Echo, json.RawMessage(`{"msg":"hi"}`))
+		Expect(err).NotTo(HaveOccurred())
+		events, err := st.Replay(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
 		Expect(events[1].PayloadJSON).To(ContainSubstring(`"ok":true`))
 	})
 
-	It("errors with ErrUnknownTool for an unregistered tool without recording events", func() {
-		st, sid, w := newStoreWithSession()
+	It("errors with ErrUnknownTool for an unregistered tool", func() {
+		_, _, w := newStoreWithSession()
 		l, err := NewLoop(NewRegistry(), w, []string{"ghost"})
 		Expect(err).NotTo(HaveOccurred())
 		_, err = l.Invoke(context.Background(), "ghost", nil)
 		Expect(errors.Is(err, ErrUnknownTool)).To(BeTrue())
+	})
+
+	It("records no events for an unregistered tool", func() {
+		st, sid, w := newStoreWithSession()
+		l, err := NewLoop(NewRegistry(), w, []string{"ghost"})
+		Expect(err).NotTo(HaveOccurred())
+		_, _ = l.Invoke(context.Background(), "ghost", nil)
 		events, err := st.Replay(context.Background(), sid)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(events).To(BeEmpty())
 	})
 
-	It("wraps tool errors with ErrToolExecuted and records a tool_error event", func() {
-		st, sid, w := newStoreWithSession()
+	It("wraps tool errors with ErrToolExecuted", func() {
+		_, _, w := newStoreWithSession()
 		r := NewRegistry()
 		boom := errors.New("boom")
 		_ = r.Register(fakeTool{name: "failing", err: boom})
@@ -134,13 +206,43 @@ var _ = Describe("Loop", func() {
 		Expect(err).NotTo(HaveOccurred())
 		_, err = l.Invoke(context.Background(), "failing", nil)
 		Expect(errors.Is(err, ErrToolExecuted)).To(BeTrue())
+	})
+
+	It("preserves the wrapped tool error", func() {
+		_, _, w := newStoreWithSession()
+		r := NewRegistry()
+		boom := errors.New("boom")
+		_ = r.Register(fakeTool{name: "failing", err: boom})
+		l, err := NewLoop(r, w, []string{"failing"})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = l.Invoke(context.Background(), "failing", nil)
 		Expect(errors.Is(err, boom)).To(BeTrue())
+	})
+
+	It("records a tool_result event on tool error", func() {
+		st, sid, w := newStoreWithSession()
+		r := NewRegistry()
+		boom := errors.New("boom")
+		_ = r.Register(fakeTool{name: "failing", err: boom})
+		l, err := NewLoop(r, w, []string{"failing"})
+		Expect(err).NotTo(HaveOccurred())
+		_, _ = l.Invoke(context.Background(), "failing", nil)
 		events, err := st.Replay(context.Background(), sid)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(events).To(HaveLen(2))
-		Expect(events[1].Type).To(Equal(TypeToolResult))
-		Expect(events[1].PayloadJSON).To(ContainSubstring("tool_error"))
-		Expect(events[1].PayloadJSON).To(ContainSubstring("boom"))
+		Expect([2]any{len(events), events[1].Type}).To(Equal([2]any{2, TypeToolResult}))
+	})
+
+	It("flags the error payload as tool_error containing the cause", func() {
+		st, sid, w := newStoreWithSession()
+		r := NewRegistry()
+		boom := errors.New("boom")
+		_ = r.Register(fakeTool{name: "failing", err: boom})
+		l, err := NewLoop(r, w, []string{"failing"})
+		Expect(err).NotTo(HaveOccurred())
+		_, _ = l.Invoke(context.Background(), "failing", nil)
+		events, err := st.Replay(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		Expect([]bool{contains(events[1].PayloadJSON, "tool_error"), contains(events[1].PayloadJSON, "boom")}).To(Equal([]bool{true, true}))
 	})
 
 	It("errors with ErrEmptyName when invoking with an empty name", func() {
@@ -152,14 +254,28 @@ var _ = Describe("Loop", func() {
 	})
 
 	It("propagates append failure from a closed writer for an allowlisted tool", func() {
+		_, _, w := newStoreWithSession()
+		r := NewRegistry()
+		_ = r.Register(NewEcho())
+		l, err := NewLoop(r, w, []string{Echo})
+		Expect(err).NotTo(HaveOccurred())
+		if err := w.Close(); err != nil {
+			panic(err)
+		}
+		_, err = l.Invoke(context.Background(), Echo, nil)
+		Expect(errors.Is(err, store.ErrClosed)).To(BeTrue())
+	})
+
+	It("records no events when the writer is closed for an allowlisted tool", func() {
 		st, sid, w := newStoreWithSession()
 		r := NewRegistry()
 		_ = r.Register(NewEcho())
 		l, err := NewLoop(r, w, []string{Echo})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(w.Close()).To(Succeed())
-		_, err = l.Invoke(context.Background(), Echo, nil)
-		Expect(errors.Is(err, store.ErrClosed)).To(BeTrue())
+		if err := w.Close(); err != nil {
+			panic(err)
+		}
+		_, _ = l.Invoke(context.Background(), Echo, nil)
 		events, err := st.Replay(context.Background(), sid)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(events).To(BeEmpty())
@@ -171,18 +287,20 @@ var _ = Describe("Loop", func() {
 		_ = r.Register(NewEcho())
 		l, err := NewLoop(r, w, nil)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(w.Close()).To(Succeed())
+		if err := w.Close(); err != nil {
+			panic(err)
+		}
 		_, err = l.Invoke(context.Background(), "echo", nil)
 		Expect(errors.Is(err, store.ErrClosed)).To(BeTrue())
 	})
 
-	It("allowlists only the configured tools under deny-by-default", func() {
-		_, _, w := newStoreWithSession()
-		r := NewRegistry()
-		_ = r.Register(NewEcho())
-		l, err := NewLoop(r, w, []string{Echo})
-		Expect(err).NotTo(HaveOccurred())
+	It("allowlists the configured tool under deny-by-default", func() {
+		l, _, _ := newEchoLoop([]string{Echo})
 		Expect(l.Allowed(Echo)).To(BeTrue())
+	})
+
+	It("denies unconfigured tools under deny-by-default", func() {
+		l, _, _ := newEchoLoop([]string{Echo})
 		Expect(l.Allowed("other")).To(BeFalse())
 	})
 })
