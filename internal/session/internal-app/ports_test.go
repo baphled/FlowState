@@ -15,36 +15,64 @@ func TestPorts(t *testing.T) {
 	RunSpecs(t, "Internal App Ports Suite")
 }
 
+// arrangeSession opens an in-memory store wired as ports, creates a session
+// and appends one turn.start event; fixture failures panic.
+func arrangeSession() (repo SessionRepo, log EventLog, ctx context.Context, cleanup func()) {
+	st, err := store.OpenMemory()
+	if err != nil {
+		panic(err)
+	}
+	repo = st
+	log = st
+	ctx = context.Background()
+	if _, err := repo.CreateSession(ctx, "sid-1", "p", "m", "h", "sha"); err != nil {
+		panic(err)
+	}
+	w, err := log.NewEventWriter(ctx, "sid-1")
+	if err != nil {
+		panic(err)
+	}
+	if _, err := w.Append(ctx, "user", "turn.start", map[string]any{"task": "t"}); err != nil {
+		panic(err)
+	}
+	if err := w.Close(); err != nil {
+		panic(err)
+	}
+	return repo, log, ctx, func() { _ = st.Close() }
+}
+
 var _ = Describe("Store wired as ports", func() {
-	It("round-trips session CRUD and event append/replay through the port interfaces", func() {
-		st, err := store.OpenMemory()
-		Expect(err).NotTo(HaveOccurred())
-		DeferCleanup(st.Close)
-
-		var repo SessionRepo = st
-		var log EventLog = st
-		ctx := context.Background()
-
-		created, err := repo.CreateSession(ctx, "sid-1", "p", "m", "h", "sha")
+	It("creates a session with active status through the repo port", func() {
+		repo, _, ctx, cleanup := arrangeSession()
+		DeferCleanup(cleanup)
+		created, err := repo.CreateSession(ctx, "sid-2", "p", "m", "h", "sha")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(created.Status).To(Equal("active"))
+	})
 
-		w, err := log.NewEventWriter(ctx, "sid-1")
-		Expect(err).NotTo(HaveOccurred())
-		var wPort EventWriter = w
-		_, err = wPort.Append(ctx, "user", "turn.start", map[string]any{"task": "t"})
-		Expect(err).NotTo(HaveOccurred())
-		Expect(w.Close()).To(Succeed())
-
+	It("appends and replays a turn.start event through the event log port", func() {
+		_, log, ctx, cleanup := arrangeSession()
+		DeferCleanup(cleanup)
 		events, err := log.Replay(ctx, "sid-1")
 		Expect(err).NotTo(HaveOccurred())
-		Expect(events).To(HaveLen(1))
-		Expect(events[0].Type).To(Equal("turn.start"))
+		Expect([2]any{len(events), events[0].Type}).To(Equal([2]any{1, "turn.start"}))
+	})
 
-		Expect(repo.UpdateSessionStatus(ctx, "sid-1", "completed")).To(Succeed())
+	It("round-trips status updates through the repo port", func() {
+		repo, _, ctx, cleanup := arrangeSession()
+		DeferCleanup(cleanup)
+		err := repo.UpdateSessionStatus(ctx, "sid-1", "completed")
+		Expect(err).NotTo(HaveOccurred())
 		got, err := repo.GetSession(ctx, "sid-1")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(got.Status).To(Equal("completed"))
+	})
+
+	It("lists completed sessions through the repo port", func() {
+		repo, _, ctx, cleanup := arrangeSession()
+		DeferCleanup(cleanup)
+		err := repo.UpdateSessionStatus(ctx, "sid-1", "completed")
+		Expect(err).NotTo(HaveOccurred())
 		listed, err := repo.ListSessions(ctx, "completed")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(listed).To(HaveLen(1))
