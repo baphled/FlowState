@@ -24,12 +24,25 @@ const (
 	TypeProviderError    = "provider.error"
 )
 
+// TurnOptions configures one engine turn; the zero value preserves
+// the existing unlimited behaviour.
+type TurnOptions struct {
+	// Budget caps the turn; values <= 0 mean unlimited.
+	Budget int64
+}
+
 // TurnResult reports one completed engine turn.
 type TurnResult struct {
 	// SessionID is the session the turn ran in.
 	SessionID string
 	// FinalContent is the concatenated assistant content.
 	FinalContent string
+	// BudgetExceeded reports that the turn stopped early on its budget.
+	BudgetExceeded bool
+	// ConsumedBudget is the budget consumed this turn. In M1 tokens are
+	// approximated 1:1 by the total length of streamed provider delta
+	// content (sum of len(ev.Content) over the streamed chunks).
+	ConsumedBudget int64
 }
 
 // payloadTask extracts the task text from a stored turn.start
@@ -49,6 +62,17 @@ func payloadTask(payloadJSON string) string {
 // provider.error event, marks the session failed and returns the
 // error; there are no retries (M1-PROVIDER failure path).
 func Turn(ctx context.Context, st *store.Store, sess *store.Session, p provider.Streamer) (*TurnResult, error) {
+	return TurnWithOptions(ctx, st, sess, p, TurnOptions{})
+}
+
+// TurnWithOptions runs one provider turn like Turn, honouring opts.
+// When opts.Budget > 0 and the accumulated streamed delta content
+// length reaches the budget, the turn stops consuming the stream
+// without appending assistant.message or turn.end, pauses the session
+// via the store writer (session.paused with reason "budget_exceeded"
+// and status paused) and returns a TurnResult with BudgetExceeded set
+// and a nil error.
+func TurnWithOptions(ctx context.Context, st *store.Store, sess *store.Session, p provider.Streamer, opts TurnOptions) (*TurnResult, error) {
 	if sess == nil {
 		return nil, fmt.Errorf("runtime: session must not be nil")
 	}
@@ -75,7 +99,9 @@ func Turn(ctx context.Context, st *store.Store, sess *store.Session, p provider.
 		return nil, err
 	}
 	var content string
+	var consumed int64
 	streamErr := false
+	budgetExceeded := false
 	for ev := range p.Stream(ctx, &provider.ChatRequest{
 		Messages: []provider.Message{{Role: "user", Content: task}},
 		Model:    sess.ModelID,
@@ -99,6 +125,21 @@ func Turn(ctx context.Context, st *store.Store, sess *store.Session, p provider.
 			return nil, derr
 		}
 		content += ev.Content
+		consumed += int64(len(ev.Content))
+		if opts.Budget > 0 && consumed >= opts.Budget {
+			budgetExceeded = true
+			break
+		}
+	}
+	if budgetExceeded {
+		if perr := w.Pause(ctx, store.PauseInfo{
+			Reason:         "budget_exceeded",
+			ConsumedBudget: consumed,
+			NextSafeOp:     "session run " + sess.ID,
+		}); perr != nil {
+			return nil, perr
+		}
+		return &TurnResult{SessionID: sess.ID, FinalContent: content, BudgetExceeded: true, ConsumedBudget: consumed}, nil
 	}
 	if streamErr {
 		return nil, err
