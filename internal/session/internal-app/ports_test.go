@@ -4,60 +4,77 @@ import (
 	"context"
 	"testing"
 
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
 	"github.com/baphled/flowstate/internal/store"
 )
 
-// Given the concrete store adapter, when it is wired as both ports,
-// then session CRUD and event append/replay round-trip through the
-// interfaces (BDD: ports behave identically to the concrete store).
-func TestGivenStoreWhenWiredAsPortsThenBehaviourMatchesConcreteStore(t *testing.T) {
+func TestPorts(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "Internal App Ports Suite")
+}
+
+// arrangeSession opens an in-memory store wired as ports, creates a session
+// and appends one turn.start event; fixture failures panic.
+func arrangeSession() (repo SessionRepo, log EventLog, ctx context.Context, cleanup func()) {
 	st, err := store.OpenMemory()
 	if err != nil {
-		t.Fatalf("open memory store: %v", err)
+		panic(err)
 	}
-	defer st.Close()
-
-	var repo SessionRepo = st
-	var log EventLog = st
-	ctx := context.Background()
-
-	created, err := repo.CreateSession(ctx, "sid-1", "p", "m", "h", "sha")
-	if err != nil {
-		t.Fatalf("create via port: %v", err)
+	repo = st
+	log = st
+	ctx = context.Background()
+	if _, err := repo.CreateSession(ctx, "sid-1", "p", "m", "h", "sha"); err != nil {
+		panic(err)
 	}
-	if created.Status != "active" {
-		t.Fatalf("status = %q, want active", created.Status)
-	}
-
 	w, err := log.NewEventWriter(ctx, "sid-1")
 	if err != nil {
-		t.Fatalf("new writer via port: %v", err)
+		panic(err)
 	}
-	var wPort EventWriter = w
-	if _, err := wPort.Append(ctx, "user", "turn.start", map[string]any{"task": "t"}); err != nil {
-		t.Fatalf("append via port: %v", err)
+	if _, err := w.Append(ctx, "user", "turn.start", map[string]any{"task": "t"}); err != nil {
+		panic(err)
 	}
 	if err := w.Close(); err != nil {
-		t.Fatalf("close writer via port: %v", err)
+		panic(err)
 	}
-
-	events, err := log.Replay(ctx, "sid-1")
-	if err != nil {
-		t.Fatalf("replay via port: %v", err)
-	}
-	if len(events) != 1 || events[0].Type != "turn.start" {
-		t.Fatalf("replayed = %+v", events)
-	}
-
-	if err := repo.UpdateSessionStatus(ctx, "sid-1", "completed"); err != nil {
-		t.Fatalf("update status via port: %v", err)
-	}
-	got, err := repo.GetSession(ctx, "sid-1")
-	if err != nil || got.Status != "completed" {
-		t.Fatalf("get via port = %+v, %v", got, err)
-	}
-	listed, err := repo.ListSessions(ctx, "completed")
-	if err != nil || len(listed) != 1 {
-		t.Fatalf("list via port = %+v, %v", listed, err)
-	}
+	return repo, log, ctx, func() { _ = st.Close() }
 }
+
+var _ = Describe("Store wired as ports", func() {
+	It("creates a session with active status through the repo port", func() {
+		repo, _, ctx, cleanup := arrangeSession()
+		DeferCleanup(cleanup)
+		created, err := repo.CreateSession(ctx, "sid-2", "p", "m", "h", "sha")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created.Status).To(Equal("active"))
+	})
+
+	It("appends and replays a turn.start event through the event log port", func() {
+		_, log, ctx, cleanup := arrangeSession()
+		DeferCleanup(cleanup)
+		events, err := log.Replay(ctx, "sid-1")
+		Expect(err).NotTo(HaveOccurred())
+		Expect([2]any{len(events), events[0].Type}).To(Equal([2]any{1, "turn.start"}))
+	})
+
+	It("round-trips status updates through the repo port", func() {
+		repo, _, ctx, cleanup := arrangeSession()
+		DeferCleanup(cleanup)
+		err := repo.UpdateSessionStatus(ctx, "sid-1", "completed")
+		Expect(err).NotTo(HaveOccurred())
+		got, err := repo.GetSession(ctx, "sid-1")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got.Status).To(Equal("completed"))
+	})
+
+	It("lists completed sessions through the repo port", func() {
+		repo, _, ctx, cleanup := arrangeSession()
+		DeferCleanup(cleanup)
+		err := repo.UpdateSessionStatus(ctx, "sid-1", "completed")
+		Expect(err).NotTo(HaveOccurred())
+		listed, err := repo.ListSessions(ctx, "completed")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(listed).To(HaveLen(1))
+	})
+})

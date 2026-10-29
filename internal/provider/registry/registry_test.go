@@ -3,32 +3,40 @@ package registry_test
 import (
 	"testing"
 
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
 	"github.com/baphled/flowstate/internal/provider/registry"
 	"github.com/baphled/flowstate/internal/provider/zai"
 )
 
-func TestResolveZaiFromEnv(t *testing.T) {
-	t.Setenv("ZAI_API_KEY", "k")
-	p, err := registry.Resolve("z.ai")
-	if err != nil {
-		t.Fatalf("Resolve(z.ai): %v", err)
-	}
-	if p.Name() != "z.ai" {
-		t.Fatalf("Name = %q", p.Name())
-	}
-	if _, ok := p.(*zai.Provider); !ok {
-		t.Fatalf("want *zai.Provider, got %T", p)
-	}
+func TestRegistry(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "Provider Registry Suite")
 }
 
-func TestResolveUnknownName(t *testing.T) {
-	if _, err := registry.Resolve("nope"); err == nil {
-		t.Fatal("expected error for unknown provider")
-	}
-}
+var _ = Describe("Registry", func() {
+	It("resolves z.ai from env to the concrete provider type", func() {
+		GinkgoT().Setenv("ZAI_API_KEY", "k")
+		p, err := registry.Resolve("z.ai")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(p).To(BeAssignableToTypeOf(&zai.Provider{}))
+	})
 
-func TestResolveZaiMissingKey(t *testing.T) {
-	if _, err := registry.Resolve("z.ai"); err == nil {
-		t.Fatal("expected error when ZAI_API_KEY unset")
-	}
-}
+	It("resolves z.ai from env reporting the provider name", func() {
+		GinkgoT().Setenv("ZAI_API_KEY", "k")
+		p, err := registry.Resolve("z.ai")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(p.Name()).To(Equal("z.ai"))
+	})
+
+	It("errors for an unknown provider name", func() {
+		_, err := registry.Resolve("nope")
+		Expect(err).To(HaveOccurred())
+	})
+
+	It("errors when z.ai is resolved without an api key", func() {
+		_, err := registry.Resolve("z.ai")
+		Expect(err).To(HaveOccurred())
+	})
+})
