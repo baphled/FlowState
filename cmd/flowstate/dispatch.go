@@ -144,30 +144,21 @@ func parseFlags(args []string) (*flags, []string, error) {
 			fl.db = v
 		case a == "--json":
 			fl.json = true
-		case strings.HasPrefix(a, "--status"):
+		case strings.HasPrefix(a, "--status"), strings.HasPrefix(a, "--provider"), strings.HasPrefix(a, "--model"), strings.HasPrefix(a, "--task"):
 			v, err := flagValue(a, take)
 			if err != nil {
 				return nil, nil, err
 			}
-			fl.status = v
-		case strings.HasPrefix(a, "--provider"):
-			v, err := flagValue(a, take)
-			if err != nil {
-				return nil, nil, err
+			switch {
+			case strings.HasPrefix(a, "--status"):
+				fl.status = v
+			case strings.HasPrefix(a, "--provider"):
+				fl.provider = v
+			case strings.HasPrefix(a, "--model"):
+				fl.model = v
+			default:
+				fl.task = v
 			}
-			fl.provider = v
-		case strings.HasPrefix(a, "--model"):
-			v, err := flagValue(a, take)
-			if err != nil {
-				return nil, nil, err
-			}
-			fl.model = v
-		case strings.HasPrefix(a, "--task"):
-			v, err := flagValue(a, take)
-			if err != nil {
-				return nil, nil, err
-			}
-			fl.task = v
 		case a == "--tool" || a == "--tool-arg" || a == "--tool-arg=json.RawMessage":
 			v, err := flagValue(a, take)
 			if err != nil {
