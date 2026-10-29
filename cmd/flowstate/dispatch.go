@@ -110,6 +110,17 @@ func (usageSentinel) Error() string { return "usage" }
 // Is reports equality with the session package usage sentinel.
 func (usageSentinel) Is(target error) bool { return target.Error() == "usage" }
 
+// parseBudget validates one --budget/--max-tokens value and records it
+// on fl; non-numeric or non-positive values are usage errors.
+func parseBudget(fl *flags, name, v string) error {
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n <= 0 {
+		return fmt.Errorf("flag %s requires a positive integer value", name)
+	}
+	fl.budget = n
+	return nil
+}
+
 // parseFlags extracts --db, --json, --status, --provider, --model and
 // --task flags; positional arguments are returned in order.
 func parseFlags(args []string) (*flags, []string, error) {
@@ -186,11 +197,9 @@ func parseFlags(args []string) (*flags, []string, error) {
 			if err != nil {
 				return nil, nil, err
 			}
-			n, perr := strconv.ParseInt(v, 10, 64)
-			if perr != nil || n <= 0 {
-				return nil, nil, fmt.Errorf("flag %s requires a positive integer value", a)
+			if berr := parseBudget(fl, a, v); berr != nil {
+				return nil, nil, berr
 			}
-			fl.budget = n
 		case strings.HasPrefix(a, "--"):
 			return nil, nil, fmt.Errorf("unknown flag %s", a)
 		default:
