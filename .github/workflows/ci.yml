@@ -62,6 +62,12 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: make check-test-contract BASE_SHA="$BASE_SHA"
 
+      - name: Enforce changed production structure
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: make check-code-contract BASE_SHA="$BASE_SHA"
+
       - name: Run make check
         run: make check
 
@@ -69,6 +75,13 @@ jobs:
         uses: golangci/golangci-lint-action@v8
         with:
           version: v2.11.3
+
+      - name: Enforce modularity and API documentation
+        if: github.event_name == 'pull_request'
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.11.3
+          args: --config .golangci-contract.yml --new-from-rev=${{ github.event.pull_request.base.sha }} --whole-files
 
   quality:
     name: Static Analysis (staticcheck + deadcode)

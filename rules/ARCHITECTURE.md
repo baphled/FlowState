@@ -1,244 +1,65 @@
-# Architecture Rules
+# Code structure contract
 
-FlowState follows a strict layered architecture inspired by the KaRiya project.
+Read the current Dropbox `/FlowState/Dev/architecture.md` and agent rules before
+work. This file implements the accepted M1 boundaries; it does not invent a new
+product architecture or expand the milestone. No TUI/prototype layer is a source
+for this backend.
 
-## Layer Hierarchy
+## Ownership and dependency direction
 
-```
-App -> Intents -> Screens/Modals -> UIKit -> Behaviors
-```
+| Area | Responsibility | Dependency boundary |
+| --- | --- | --- |
+| `cmd/flowstate` | Input parsing, output and stable exits | Application/configuration; no direct engine, provider or store wiring |
+| `internal/app` | Composition and use cases | Wire domain ports to concrete adapters explicitly |
+| `internal/runtime` | Turn lifecycle and sequencing | Domain/ports; no HTTP, SQL or provider SDK |
+| `internal/session` | Session identity and state invariants | Domain/ports; no concrete store, HTTP or SQL |
+| `internal/provider` | Provider port and domain messages | Standard library/domain types; adapters live in subpackages |
+| `internal/tool` | Tool port, permission and loop policy | Domain/ports; storage behind a narrow consumer port |
+| `internal/store`, `internal/storage` | Persistence adapters | No application, CLI or engine lifecycle dependency |
+| `internal/provider/*`, `internal/oauth` | External transports/authentication | Implement ports; no application, CLI or lifecycle ownership |
+| `internal/config` | Configuration values and validation | Configuration is passed into composition, not ambient domain wiring |
 
-Each layer can only depend on layers to its right.
+Production Go roots are `cmd/flowstate`, the classified `internal` areas, and
+`scripts` for reusable tooling. New roots/public packages need an explicit ownership
+and guard disposition. Internal code never imports `cmd`. New internal areas need an explicit ownership
+and dependency disposition plus guard updates in the same reviewed change. A
+renamed or nested package must not escape its layer. Tests may deliberately wire
+adapters for integration; production dependency rules remain mandatory.
 
-## Dependency Rules
+## Cohesion and file layout
 
-| Layer | Can Import | CANNOT Import |
-|-------|------------|---------------|
-| `app/` | `intents/`, `screens/`, `uikit/` | - |
-| `intents/` | `screens/`, `uikit/` | `app/` |
-| `screens/` | `uikit/` | `app/`, `intents/` |
-| `uikit/` | Standard lib, external | `app/`, `intents/`, `screens/` |
+Keep a package cohesive around one responsibility. Consumer-owned interfaces are
+small and express only the operations the consumer needs. Do not expose concrete
+adapter handles or move business logic into CLI/adapters to bypass a boundary.
+Use explicit composition and injected collaborators; avoid mutable global wiring.
 
-### Critical Rule
+Package-level named types and aliases belong in `types.go` or `*_types.go` within
+the owning package. Methods/functions and mutable variables belong in
+implementation files; related constants may remain with types. Test fixture types
+may stay in tests. Do not create catch-all `types`, `common`, `util`, `utils` or
+`helpers` packages. Do not split types into a generic shared package.
 
-**`screens/` NEVER imports `intents/`**
+Functions should do one thing. Changed production files are checked at 60 lines,
+40 statements, a cyclomatic-complexity limit of 15, and at most 10 interface methods.
+These are review boundaries, not targets to game by wrapping unrelated work.
 
-Communication from screens to intents uses `ScreenResult`:
+## Enforcement and refactoring
 
-```go
-// In screens/chat/chat_screen.go
-type Result struct {
-    Message string
-    Action  Action
-}
+`make check-code-contract BASE_SHA=<actual PR base>` parses committed changed
+production files, including build-tagged/platform files. It checks layout,
+classified ownership, forbidden imports and inline waiver directives. The
+additional pinned golangci contract profile checks whole changed files for
+`depguard`, `revive` API/package comments, function size, complexity and interfaces.
 
-func (s *Screen) Result() *Result {
-    return s.result
-}
+Untouched legacy violations remain visible refactoring debt. Once a production
+file is changed, its whole contract applies; do not suppress the result with a
+comment, generated marker, file rename or altered working copy. Record findings
+and accepted scope in Dropbox Metadata. AST checks cover all changed tag/platform
+variants; function-size, complexity and interface metrics run in the active Go
+build. Other build variants need their relevant target lint/review; host success
+does not waive those limits. A gate passes source checks, not proof of
+cohesion, correct invariants, real independence or runtime readiness.
 
-// In intents/chat/chat_intent.go
-func (i *ChatIntent) Update(msg tea.Msg) tea.Cmd {
-    if result := i.screen.Result(); result != nil {
-        switch result.Action {
-        case screens.ActionSend:
-            return i.sendMessage(result.Message)
-        }
-    }
-    return nil
-}
-```
-
-## Intent Pattern
-
-Intents are workflow orchestrators with a modified TEA interface:
-
-```go
-type Intent interface {
-    Init() tea.Cmd
-    Update(msg tea.Msg) tea.Cmd  // Note: Cmd only, NOT (Model, Cmd)
-    View() string
-    Result() *IntentResult
-}
-```
-
-### Why `Update` Returns Only `tea.Cmd`
-
-- Intents manage their own state internally
-- Reduces boilerplate
-- Cleaner composition
-
-## ContentProvider Pattern
-
-Components can render as screens or modals:
-
-```go
-type ContentProvider interface {
-    Content(width, height int) string
-    Title() string
-    Footer() string
-}
-
-// Flexible rendering
-asScreen := render.AsScreen(component, layout)
-asModal := render.AsModal(component, background, w, h, theme)
-```
-
-## Theme-Aware Components
-
-Components embed theme for consistent styling:
-
-```go
-type Component struct {
-    theme theme.Theme
-    // ...
-}
-
-func New(t theme.Theme) *Component {
-    return &Component{theme: t}
-}
-```
-
-## Modal Registry
-
-Modals are managed through a priority-based registry:
-
-```go
-type ModalPriority int
-
-const (
-    PriorityLow ModalPriority = iota
-    PriorityNormal
-    PriorityHigh
-    PriorityCritical
-)
-```
-
-## Directory Structure
-
-```
-internal/
-├── provider/          # LLM provider abstraction
-│   ├── provider.go    # Interface definition
-│   ├── ollama/        # Ollama implementation
-│   ├── openai/        # OpenAI implementation
-│   └── anthropic/     # Anthropic implementation
-├── session/           # Session management
-├── tools/             # Built-in tools
-├── skills/            # Skill system
-├── mcp/               # MCP integration
-│   ├── client/        # MCP client
-│   │   ├── transport/ # stdio + SSE transport
-│   │   ├── handler.go # Request/response handling
-│   │   └── server.go  # Server connection management
-│   ├── types/         # MCP types (Resource, Tool, etc.)
-│   └── memory/        # Optional local memory MCP server
-└── tui/               # BubbleTea UI
-    ├── app/           # Main application
-    ├── intents/       # Workflow orchestrators
-    │   ├── chat/
-    │   ├── sessions/
-    │   └── settings/
-    ├── screens/       # Screen components
-    │   └── base/
-    └── uikit/         # Reusable UI components
-        ├── containers/
-        ├── feedback/
-        ├── layout/
-        ├── primitives/
-        ├── render/
-        └── theme/
-```
-
-## Provider Interface
-
-```go
-type Provider interface {
-    Name() string
-    Models() ([]Model, error)
-    Chat(ctx context.Context, req ChatRequest) (ChatResponse, error)
-    Stream(ctx context.Context, req ChatRequest) (<-chan StreamChunk, error)
-    Embed(ctx context.Context, text string) ([]float32, error)
-}
-```
-
-## Tool Interface
-
-```go
-type Tool interface {
-    Name() string
-    Description() string
-    Parameters() []Parameter
-    Execute(ctx context.Context, args map[string]any) (Result, error)
-}
-
-type Permission int
-
-const (
-    PermissionAllow Permission = iota
-    PermissionAsk
-    PermissionDeny
-)
-```
-
-## MCP Integration
-
-FlowState acts as an MCP client, connecting to external MCP servers for memory, RAG, and other capabilities.
-
-### MCP Client Interface
-
-```go
-type MCPClient interface {
-    Connect(ctx context.Context, server ServerConfig) error
-    Disconnect(serverName string) error
-    ListServers() []ServerStatus
-    
-    // Resources
-    ListResources(serverName string) ([]Resource, error)
-    ReadResource(serverName, uri string) (ResourceContent, error)
-    
-    // Tools
-    ListTools(serverName string) ([]Tool, error)
-    CallTool(ctx context.Context, serverName, toolName string, args map[string]any) (Result, error)
-}
-```
-
-### Transport Support
-
-```go
-type Transport interface {
-    Connect(ctx context.Context) error
-    Send(msg Message) error
-    Receive() <-chan Message
-    Close() error
-}
-
-// Implementations:
-// - StdioTransport: Connect via stdin/stdout to subprocess
-// - SSETransport: Connect via HTTP Server-Sent Events
-```
-
-### Permission Integration
-
-MCP tools use the existing `Allow/Ask/Deny` permission system:
-
-```go
-type MCPToolPermission struct {
-    ServerName string
-    ToolName   string
-    Permission Permission
-}
-```
-
-### Optional Local Memory Server
-
-When enabled via `--memory-server` flag:
-
-```go
-type MemoryServer struct {
-    db *sql.DB  // SQLite storage
-}
-
-func (s *MemoryServer) ListResources() []Resource
-func (s *MemoryServer) ReadResource(uri string) ResourceContent
-func (s *MemoryServer) WriteResource(uri string, content ResourceContent) error
-```
+Use the [Ginkgo test contract](BDD_WORKFLOW.md). A separate verifier checks
+responsibility, public surface, failure/cancellation semantics, documentation and
+preserved behaviour. No merge is authorized by a source-contract PASS.

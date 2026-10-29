@@ -69,6 +69,14 @@ lint: ## Run linters
 
 check: fmt lint test ## Run all checks
 
+check-code-contract: ## Check committed changed Go structure (BASE_SHA=PR base)
+	python3 -B -m unittest discover -s scripts/tests -p test_code_contract.py
+	python3 -B scripts/check_code_contract.py --base "$(BASE_SHA)"
+
+check-code-quality: check-code-contract ## Run pinned contract linter after installation
+	golangci-lint run --config .golangci-contract.yml --new-from-rev="$(BASE_SHA)" --whole-files
+
+
 #
 # Dependencies
 #
