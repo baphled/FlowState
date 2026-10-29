@@ -11,35 +11,6 @@ import (
 	"time"
 )
 
-// EventKind classifies ordered events recorded during a turn.
-type EventKind string
-
-// Event kinds emitted over the lifetime of a session turn.
-const (
-	EventTurnAdmitted  EventKind = "turn.admitted"
-	EventToolResult    EventKind = "turn.tool_result"
-	EventTurnComplete  EventKind = "turn.complete"
-	EventTurnCancelled EventKind = "turn.cancelled"
-)
-
-// Event is an immutable, ordered record of something that happened inside a
-// session. Sequence numbers are assigned by the session and strictly
-// increase in append order.
-type Event struct {
-	Seq     uint64
-	Kind    EventKind
-	Payload string
-	Time    time.Time
-}
-
-// Turn is one admitted unit of work inside a session. Its events are owned
-// by the session; callers read them via the immutable Events snapshot.
-type Turn struct {
-	ID     string
-	events []Event
-	done   bool
-}
-
 // Events returns an immutable snapshot of the turn's events in sequence
 // order. The returned slice is a copy: mutating it cannot affect session
 // state.
@@ -47,15 +18,6 @@ func (t *Turn) Events() []Event {
 	out := make([]Event, len(t.events))
 	copy(out, t.events)
 	return out
-}
-
-// Session owns identity, ordered events and turn lifecycle for one
-// conversation with the harness.
-type Session struct {
-	ID    string
-	start time.Time
-	seq   uint64
-	turns []*Turn
 }
 
 // New creates a fresh session with the given runtime-owned identity.
