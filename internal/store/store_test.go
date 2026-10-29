@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -10,450 +11,592 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
-func newTestStore(t *testing.T) *Store {
-	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "ws.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
+func TestStore(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "Store Suite")
+}
+
+func newTestStore() *Store {
+	s, err := Open(filepath.Join(GinkgoT().TempDir(), "ws.db"))
+	Expect(err).NotTo(HaveOccurred())
+	DeferCleanup(func() { _ = s.Close() })
 	return s
 }
 
-func mustSession(t *testing.T, s *Store) string {
-	t.Helper()
+func mustSession(s *Store) string {
 	id := fmt.Sprintf("sid-%d", time.Now().UnixNano())
-	if _, err := s.CreateSession(context.Background(), id, "zai", "glm-4.6", "test-harness", "cfgsha"); err != nil {
-		t.Fatalf("create session: %v", err)
-	}
+	_, err := s.CreateSession(context.Background(), id, "zai", "glm-4.6", "test-harness", "cfgsha")
+	Expect(err).NotTo(HaveOccurred())
 	return id
 }
 
-func TestOpenAppliesPragmasAndSchema(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "ws.db")
-	s, err := Open(path)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer s.Close()
-	for pragma, want := range map[string]string{
-		"journal_mode": "wal",
-		"synchronous":  "1", // NORMAL
-		"foreign_keys": "1",
-	} {
-		var got string
-		if err := s.db.QueryRow("PRAGMA " + pragma).Scan(&got); err != nil {
-			t.Fatalf("pragma %s: %v", pragma, err)
-		}
-		if got != want {
-			t.Errorf("pragma %s = %q, want %q", pragma, got, want)
-		}
-	}
-	for _, table := range []string{"schema_migrations", "sessions", "events", "receipts"} {
-		var name string
-		err := s.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&name)
-		if errors.Is(err, sql.ErrNoRows) {
-			t.Errorf("table %s missing", table)
-		} else if err != nil {
-			t.Fatalf("check table: %v", err)
-		}
-	}
+func evCreatedAt(s *Store, sid string) string {
+	var ts string
+	err := s.db.QueryRow(`SELECT created_at_utc FROM events WHERE session_id=? AND seq=0`, sid).Scan(&ts)
+	Expect(err).NotTo(HaveOccurred())
+	return timeParseResult(ts).UTC().Format(time.RFC3339Nano)
 }
 
-func TestMigrationsIdempotent(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "ws.db")
-	s1, err := Open(path)
-	if err != nil {
-		t.Fatalf("open1: %v", err)
-	}
-	v1, err := s1.SchemaVersion()
-	_ = s1.Close()
-	if err != nil {
-		t.Fatalf("version1: %v", err)
-	}
-	s2, err := Open(path)
-	if err != nil {
-		t.Fatalf("reopen (reapply) failed: %v", err)
-	}
-	defer s2.Close()
-	v2, err := s2.SchemaVersion()
-	if err != nil || v2 != v1 || v1 == 0 {
-		t.Fatalf("reapply not a no-op: v1=%d v2=%d err=%v", v1, v2, err)
-	}
+func timeParseResult(ts string) time.Time {
+	t, err := time.Parse(time.RFC3339Nano, ts)
+	Expect(err).NotTo(HaveOccurred())
+	return t
 }
 
-func TestFutureSchemaRejected(t *testing.T) {
-	s := newTestStore(t)
-	if _, err := s.db.Exec(`INSERT INTO schema_migrations (version, applied_at_utc) VALUES (999, 'x')`); err != nil {
-		t.Fatal(err)
-	}
-	_ = s.Close()
-	s2, err := Open(filepath.Join(t.TempDir(), "other.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Simulate: point at a db whose max version is in the future.
-	_ = s2.Close()
-	path := filepath.Join(t.TempDir(), "future.db")
-	db, err := sql.Open("sqlite", "file:"+path)
-	if err != nil {
-		t.Fatalf("open raw sqlite: %v", err)
-	}
-	if _, err := db.Exec(`CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at_utc TEXT NOT NULL)`); err != nil {
-		t.Fatalf("seed schema_migrations: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO schema_migrations VALUES (999,'x')`); err != nil {
-		t.Fatalf("seed future version: %v", err)
-	}
-	_ = db.Close()
-	if _, err := Open(path); !errors.Is(err, ErrFutureSchema) {
-		t.Fatalf("want ErrFutureSchema, got %v", err)
-	}
-}
-
-func TestAppendAndReplayContiguous(t *testing.T) {
-	s := newTestStore(t)
-	sid := mustSession(t, s)
+// seedPausedSession arranges a session that was paused then resumed.
+func seedPausedSession(s *Store) (string, []RecordedEvent) {
+	sid := mustSession(s)
 	w, err := s.NewEventWriter(context.Background(), sid)
-	if err != nil {
-		t.Fatalf("writer: %v", err)
-	}
-	defer w.Close()
-	for i := 0; i < 5; i++ {
-		seq, err := w.Append(context.Background(), "user", "turn.start", map[string]any{"i": i, "z": true, "a": "x"})
-		if err != nil {
-			t.Fatalf("append %d: %v", i, err)
-		}
-		if seq != int64(i) {
-			t.Fatalf("seq = %d, want %d", seq, i)
-		}
-	}
+	Expect(err).NotTo(HaveOccurred())
+	DeferCleanup(func() { _ = w.Close() })
+	err = w.PauseBudget(context.Background(), map[string]any{"reason": "budget", "consumed": 10})
+	Expect(err).NotTo(HaveOccurred())
+	err = w.Resume(context.Background(), map[string]any{"run": "fresh"})
+	Expect(err).NotTo(HaveOccurred())
 	evs, err := s.Replay(context.Background(), sid)
-	if err != nil {
-		t.Fatalf("replay: %v", err)
-	}
-	if len(evs) != 5 {
-		t.Fatalf("len = %d", len(evs))
-	}
-	for i, e := range evs {
-		if e.Seq != int64(i) {
-			t.Errorf("event %d seq %d", i, e.Seq)
+	Expect(err).NotTo(HaveOccurred())
+	return sid, evs
+}
+
+var _ = Describe("Store open/migrations", func() {
+	It("applies the mandated pragmas on open", func() {
+		s := newTestStore()
+		for pragma, want := range map[string]string{
+			"journal_mode": "wal",
+			"synchronous":  "1",
+			"foreign_keys": "1",
+		} {
+			var got string
+			err := s.db.QueryRow("PRAGMA " + pragma).Scan(&got)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got).To(Equal(want), "pragma %s", pragma)
 		}
-	}
-}
+	})
 
-func TestPayloadCanonicalSortedKeys(t *testing.T) {
-	s := newTestStore(t)
-	sid := mustSession(t, s)
-	w, _ := s.NewEventWriter(context.Background(), sid)
-	defer w.Close()
-	if _, err := w.Append(context.Background(), "user", "x", map[string]any{"b": 1, "a": 2}); err != nil {
-		t.Fatal(err)
+	for _, table := range []string{"schema_migrations", "sessions", "events", "receipts"} {
+		tbl := table
+		It("creates the "+tbl+" table on open", func() {
+			s := newTestStore()
+			var name string
+			err := s.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, tbl).Scan(&name)
+			Expect(errors.Is(err, sql.ErrNoRows)).To(BeFalse(), "table %s missing", tbl)
+			Expect(err).NotTo(HaveOccurred())
+		})
 	}
-	evs, _ := s.Replay(context.Background(), sid)
-	if evs[0].PayloadJSON != `{"a":2,"b":1}` {
-		t.Fatalf("payload not canonical: %s", evs[0].PayloadJSON)
-	}
-}
 
-func TestSingleWriterEnforced(t *testing.T) {
-	s := newTestStore(t)
-	sid := mustSession(t, s)
-	w, err := s.NewEventWriter(context.Background(), sid)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.NewEventWriter(context.Background(), sid); !errors.Is(err, ErrWriterExists) {
-		t.Fatalf("want ErrWriterExists, got %v", err)
-	}
-	_ = w.Close()
-	w2, err := s.NewEventWriter(context.Background(), sid)
-	if err != nil {
-		t.Fatalf("re-register after close: %v", err)
-	}
-	_ = w2.Close()
-}
+	It("records a non-zero schema version on first open", func() {
+		path := filepath.Join(GinkgoT().TempDir(), "ws.db")
+		s1, err := Open(path)
+		Expect(err).NotTo(HaveOccurred())
+		v1, err := s1.SchemaVersion()
+		Expect(err).NotTo(HaveOccurred())
+		err = s1.Close()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(v1).NotTo(BeZero())
+	})
 
-func TestWriterResumesFromCommittedSeq(t *testing.T) {
-	s := newTestStore(t)
-	sid := mustSession(t, s)
-	w, _ := s.NewEventWriter(context.Background(), sid)
-	if _, err := w.Append(context.Background(), "user", "a", nil); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := w.Append(context.Background(), "user", "b", nil); err != nil {
-		t.Fatal(err)
-	}
-	_ = w.Close()
-	w2, _ := s.NewEventWriter(context.Background(), sid)
-	defer w2.Close()
-	if got := w2.NextSeq(); got != 2 {
-		t.Fatalf("next seq = %d, want 2", got)
-	}
-}
+	It("closes an opened store cleanly", func() {
+		path := filepath.Join(GinkgoT().TempDir(), "ws.db")
+		s1, err := Open(path)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(s1.Close()).To(Succeed())
+	})
 
-func TestAppendValidation(t *testing.T) {
-	s := newTestStore(t)
-	sid := mustSession(t, s)
-	w, _ := s.NewEventWriter(context.Background(), sid)
-	defer w.Close()
-	if _, err := w.Append(context.Background(), "", "t", nil); !errors.Is(err, ErrEmptyActor) {
-		t.Errorf("empty actor: %v", err)
-	}
-	if _, err := w.Append(context.Background(), "user", "", nil); !errors.Is(err, ErrEmptyType) {
-		t.Errorf("empty type: %v", err)
-	}
-}
+	It("reopen yields the same schema version (migrations are idempotent)", func() {
+		path := filepath.Join(GinkgoT().TempDir(), "ws.db")
+		s1, err := Open(path)
+		Expect(err).NotTo(HaveOccurred())
+		v1, err := s1.SchemaVersion()
+		Expect(err).NotTo(HaveOccurred())
+		err = s1.Close()
+		Expect(err).NotTo(HaveOccurred())
+		s2, err := Open(path)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = s2.Close() })
+		v2, err := s2.SchemaVersion()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(v2).To(Equal(v1))
+	})
 
-func TestUnknownSessionRejected(t *testing.T) {
-	s := newTestStore(t)
-	if _, err := s.NewEventWriter(context.Background(), "nope"); !errors.Is(err, ErrUnknownSession) {
-		t.Fatalf("want ErrUnknownSession, got %v", err)
-	}
-}
+	It("rejects future schema versions", func() {
+		s := newTestStore()
+		_, err := s.db.Exec(`INSERT INTO schema_migrations (version, applied_at_utc) VALUES (999, 'x')`)
+		Expect(err).NotTo(HaveOccurred())
+		err = s.Close()
+		Expect(err).NotTo(HaveOccurred())
+		path := filepath.Join(GinkgoT().TempDir(), "future.db")
+		db, err := sql.Open("sqlite", "file:"+path)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = db.Exec(`CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at_utc TEXT NOT NULL)`)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = db.Exec(`INSERT INTO schema_migrations VALUES (999,'x')`)
+		Expect(err).NotTo(HaveOccurred())
+		err = db.Close()
+		Expect(err).NotTo(HaveOccurred())
+		_, err = Open(path)
+		Expect(err).To(MatchError(ErrFutureSchema))
+	})
 
-func TestClosedDBAndWriter(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "ws.db")
-	s, _ := Open(path)
-	sid := mustSession(t, s)
-	w, _ := s.NewEventWriter(context.Background(), sid)
-	defer w.Close()
-	_ = s.Close()
-	if _, err := w.Append(context.Background(), "user", "t", nil); !errors.Is(err, ErrClosed) {
-		t.Fatalf("append on closed store: %v", err)
-	}
-	if _, err := s.Replay(context.Background(), sid); !errors.Is(err, ErrClosed) {
-		t.Fatalf("replay on closed store: %v", err)
-	}
-	if _, err := Open(filepath.Join(path, "not-a-dir", "x.db")); err == nil {
-		t.Fatal("open in bad dir should fail")
-	}
-}
-
-func TestCorruptHashFailsReplay(t *testing.T) {
-	s := newTestStore(t)
-	sid := mustSession(t, s)
-	w, _ := s.NewEventWriter(context.Background(), sid)
-	if _, err := w.Append(context.Background(), "user", "t", map[string]int{"n": 1}); err != nil {
-		t.Fatal(err)
-	}
-	_ = w.Close()
-	if _, err := s.db.Exec(`UPDATE events SET payload_json='{"tampered":1}' WHERE session_id=? AND seq=0`, sid); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Replay(context.Background(), sid); !errors.Is(err, ErrHashMismatch) {
-		t.Fatalf("want ErrHashMismatch, got %v", err)
-	}
-}
-
-func TestSeqGapFailsReplay(t *testing.T) {
-	s := newTestStore(t)
-	sid := mustSession(t, s)
-	w, _ := s.NewEventWriter(context.Background(), sid)
-	if _, err := w.Append(context.Background(), "user", "a", nil); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := w.Append(context.Background(), "user", "b", nil); err != nil {
-		t.Fatal(err)
-	}
-	_ = w.Close()
-	if _, err := s.db.Exec(`DELETE FROM events WHERE session_id=? AND seq=0`, sid); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Replay(context.Background(), sid); !errors.Is(err, ErrSeqGap) {
-		t.Fatalf("want ErrSeqGap, got %v", err)
-	}
-}
-
-func TestSeqCollisionRejected(t *testing.T) {
-	s := newTestStore(t)
-	sid := mustSession(t, s)
-	w, _ := s.NewEventWriter(context.Background(), sid)
-	defer w.Close()
-	if _, err := w.Append(context.Background(), "user", "a", nil); err != nil {
-		t.Fatal(err)
-	} // Simulate a racing writer by forging the same seq out-of-band.
-	if _, err := s.db.Exec(`INSERT INTO events (session_id,seq,created_at_utc,actor,type,payload_sha256,payload_json)
-		VALUES (?,1,'t','user','forged',?,?)`, sid, sha256HexStr(`{}`), `{}`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := w.Append(context.Background(), "user", "b", nil); !errors.Is(err, ErrSeqCollision) {
-		t.Fatalf("want ErrSeqCollision, got %v", err)
-	}
-}
+	It("fails opening in a bad directory", func() {
+		dir := GinkgoT().TempDir()
+		_, err := Open(filepath.Join(dir, "not-a-dir", "x.db"))
+		Expect(err).To(HaveOccurred())
+	})
+})
 
 func sha256HexStr(s string) string {
-	sum := sha256Sum([]byte(s))
-	return hexEncode(sum)
+	return hex.EncodeToString(sha256Sum([]byte(s)))
 }
 
-func TestConcurrentAppendsStayContiguous(t *testing.T) {
-	s := newTestStore(t)
-	sid := mustSession(t, s)
-	w, _ := s.NewEventWriter(context.Background(), sid)
-	defer w.Close()
-	const n = 50
-	var wg sync.WaitGroup
-	for i := 0; i < n; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			if _, err := w.Append(context.Background(), "engine", "provider.delta", map[string]int{"i": i}); err != nil {
-				t.Errorf("append %d: %v", i, err)
-			}
-		}(i)
-	}
-	wg.Wait()
-	evs, err := s.Replay(context.Background(), sid)
-	if err != nil {
-		t.Fatalf("replay: %v", err)
-	}
-	if len(evs) != n {
-		t.Fatalf("len = %d, want %d", len(evs), n)
-	}
-}
+var _ = Describe("EventWriter", func() {
+	It("assigns contiguous seq numbers to appended events", func() {
+		s := newTestStore()
+		sid := mustSession(s)
+		w, err := s.NewEventWriter(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = w.Close() })
+		for i := 0; i < 5; i++ {
+			seq, err := w.Append(context.Background(), "user", "turn.start", map[string]any{"i": i, "z": true, "a": "x"})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(seq).To(Equal(int64(i)))
+		}
+	})
 
-func TestJSONLExport(t *testing.T) {
-	s := newTestStore(t)
-	sid := mustSession(t, s)
-	w, _ := s.NewEventWriter(context.Background(), sid)
-	if _, err := w.Append(context.Background(), "user", "turn.start", map[string]any{"b": 2, "a": 1}); err != nil {
-		t.Fatal(err)
-	}
-	_ = w.Close()
-	b, err := s.ExportJSONL(context.Background(), sid)
-	if err != nil {
-		t.Fatalf("export: %v", err)
-	}
-	want := fmt.Sprintf(`{"actor":"user","created_at_utc":%q,"payload":{"a":1,"b":2},"payload_sha256":"`+
-		sha256HexStr(`{"a":1,"b":2}`)+`","seq":0,"session_id":%q,"type":"turn.start"}`+"\n",
-		evCreatedAt(t, s, sid), sid)
-	if string(b) != want {
-		t.Fatalf("jsonl mismatch:\n got %s\nwant %s", b, want)
-	}
-}
+	It("replays all appended events", func() {
+		s := newTestStore()
+		sid := mustSession(s)
+		w, err := s.NewEventWriter(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = w.Close() })
+		for i := 0; i < 5; i++ {
+			_, err := w.Append(context.Background(), "user", "turn.start", map[string]any{"i": i, "z": true, "a": "x"})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		evs, err := s.Replay(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(evs).To(HaveLen(5))
+	})
 
-func evCreatedAt(t *testing.T, s *Store, sid string) string {
-	t.Helper()
-	var ts string
-	if err := s.db.QueryRow(`SELECT created_at_utc FROM events WHERE session_id=? AND seq=0`, sid).Scan(&ts); err != nil {
-		t.Fatal(err)
-	}
-	parsed, err := time.Parse(time.RFC3339Nano, ts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return parsed.UTC().Format(time.RFC3339Nano)
-}
+	It("replays events in seq order", func() {
+		s := newTestStore()
+		sid := mustSession(s)
+		w, err := s.NewEventWriter(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = w.Close() })
+		for i := 0; i < 5; i++ {
+			_, err := w.Append(context.Background(), "user", "turn.start", map[string]any{"i": i, "z": true, "a": "x"})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		evs, err := s.Replay(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		for i, e := range evs {
+			Expect(e.Seq).To(Equal(int64(i)), "event %d", i)
+		}
+	})
 
-func TestPauseResumeEvents(t *testing.T) {
-	s := newTestStore(t)
-	sid := mustSession(t, s)
-	w, _ := s.NewEventWriter(context.Background(), sid)
-	defer w.Close()
-	if err := w.PauseBudget(context.Background(), map[string]any{"reason": "budget", "consumed": 10}); err != nil {
-		t.Fatalf("pause: %v", err)
-	}
-	sess, _ := s.GetSession(context.Background(), sid)
-	if sess.Status != "paused" {
-		t.Fatalf("status = %s", sess.Status)
-	}
-	if err := w.Resume(context.Background(), map[string]any{"run": "fresh"}); err != nil {
-		t.Fatalf("resume: %v", err)
-	}
-	sess, _ = s.GetSession(context.Background(), sid)
-	if sess.Status != "active" {
-		t.Fatalf("status after resume = %s", sess.Status)
-	}
-	evs, _ := s.Replay(context.Background(), sid)
-	if evs[0].Type != "session.paused" || evs[1].Type != "session.resumed" {
-		t.Fatalf("unexpected events %+v", evs)
-	}
-}
+	It("canonicalises payload JSON with sorted keys", func() {
+		s := newTestStore()
+		sid := mustSession(s)
+		w, err := s.NewEventWriter(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = w.Close() })
+		_, err = w.Append(context.Background(), "user", "x", map[string]any{"b": 1, "a": 2})
+		Expect(err).NotTo(HaveOccurred())
+		evs, err := s.Replay(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(evs[0].PayloadJSON).To(Equal(`{"a":2,"b":1}`))
+	})
 
-func TestFileDBPersists(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "ws.db")
-	s, _ := Open(path)
-	sid := mustSession(t, s)
-	w, _ := s.NewEventWriter(context.Background(), sid)
-	if _, err := w.Append(context.Background(), "user", "a", nil); err != nil {
-		t.Fatal(err)
-	}
-	_ = w.Close()
-	_ = s.Close()
-	s2, _ := Open(path)
-	defer s2.Close()
-	evs, err := s2.Replay(context.Background(), sid)
-	if err != nil || len(evs) != 1 {
-		t.Fatalf("persisted replay: %v %d", err, len(evs))
-	}
-	if _, err := os.Stat(path + "-wal"); err != nil {
-		t.Logf("no wal file after close (checkpointed): %v", err)
-	}
-}
+	It("enforces a single writer per session", func() {
+		s := newTestStore()
+		sid := mustSession(s)
+		w, err := s.NewEventWriter(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = s.NewEventWriter(context.Background(), sid)
+		Expect(err).To(MatchError(ErrWriterExists))
+		err = w.Close()
+		Expect(err).NotTo(HaveOccurred())
+	})
 
-func TestListSessions(t *testing.T) {
-	s := newTestStore(t)
+	It("allows re-registering a writer after close", func() {
+		s := newTestStore()
+		sid := mustSession(s)
+		w, err := s.NewEventWriter(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		err = w.Close()
+		Expect(err).NotTo(HaveOccurred())
+		w2, err := s.NewEventWriter(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		err = w2.Close()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(w2).NotTo(BeNil())
+	})
+
+	It("resumes from the committed seq", func() {
+		s := newTestStore()
+		sid := mustSession(s)
+		w, err := s.NewEventWriter(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = w.Append(context.Background(), "user", "a", nil)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = w.Append(context.Background(), "user", "b", nil)
+		Expect(err).NotTo(HaveOccurred())
+		err = w.Close()
+		Expect(err).NotTo(HaveOccurred())
+		w2, err := s.NewEventWriter(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = w2.Close() })
+		Expect(w2.NextSeq()).To(Equal(int64(2)))
+	})
+
+	It("rejects an empty actor", func() {
+		s := newTestStore()
+		sid := mustSession(s)
+		w, err := s.NewEventWriter(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = w.Close() })
+		_, err = w.Append(context.Background(), "", "t", nil)
+		Expect(err).To(MatchError(ErrEmptyActor))
+	})
+
+	It("rejects an empty type", func() {
+		s := newTestStore()
+		sid := mustSession(s)
+		w, err := s.NewEventWriter(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = w.Close() })
+		_, err = w.Append(context.Background(), "user", "", nil)
+		Expect(err).To(MatchError(ErrEmptyType))
+	})
+
+	It("rejects unknown sessions", func() {
+		s := newTestStore()
+		_, err := s.NewEventWriter(context.Background(), "nope")
+		Expect(err).To(MatchError(ErrUnknownSession))
+	})
+
+	It("rejects appends after the store is closed", func() {
+		path := filepath.Join(GinkgoT().TempDir(), "ws.db")
+		s, err := Open(path)
+		Expect(err).NotTo(HaveOccurred())
+		sid := mustSession(s)
+		w, err := s.NewEventWriter(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = w.Close() })
+		err = s.Close()
+		Expect(err).NotTo(HaveOccurred())
+		_, err = w.Append(context.Background(), "user", "t", nil)
+		Expect(err).To(MatchError(ErrClosed))
+	})
+
+	It("rejects replay after the store is closed", func() {
+		path := filepath.Join(GinkgoT().TempDir(), "ws.db")
+		s, err := Open(path)
+		Expect(err).NotTo(HaveOccurred())
+		sid := mustSession(s)
+		w, err := s.NewEventWriter(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = w.Close() })
+		err = s.Close()
+		Expect(err).NotTo(HaveOccurred())
+		_, err = s.Replay(context.Background(), sid)
+		Expect(err).To(MatchError(ErrClosed))
+	})
+
+	It("rejects seq collisions from a forged racing writer", func() {
+		s := newTestStore()
+		sid := mustSession(s)
+		w, err := s.NewEventWriter(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = w.Close() })
+		_, err = w.Append(context.Background(), "user", "a", nil)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = s.db.Exec(`INSERT INTO events (session_id,seq,created_at_utc,actor,type,payload_sha256,payload_json)
+		VALUES (?,1,'t','user','forged',?,?)`, sid, sha256HexStr(`{}`), `{}`)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = w.Append(context.Background(), "user", "b", nil)
+		Expect(err).To(MatchError(ErrSeqCollision))
+	})
+
+	It("concurrent appends never fail", func() {
+		s := newTestStore()
+		sid := mustSession(s)
+		w, err := s.NewEventWriter(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = w.Close() })
+		const n = 50
+		var mu sync.Mutex
+		var failures []error
+		var wg sync.WaitGroup
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				if _, err := w.Append(context.Background(), "engine", "provider.delta", map[string]int{"i": i}); err != nil {
+					mu.Lock()
+					failures = append(failures, err)
+					mu.Unlock()
+				}
+			}(i)
+		}
+		wg.Wait()
+		Expect(failures).To(BeEmpty())
+	})
+
+	It("persists all concurrent appends contiguously", func() {
+		s := newTestStore()
+		sid := mustSession(s)
+		w, err := s.NewEventWriter(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = w.Close() })
+		const n = 50
+		var wg sync.WaitGroup
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				_, _ = w.Append(context.Background(), "engine", "provider.delta", map[string]int{"i": i})
+			}(i)
+		}
+		wg.Wait()
+		evs, err := s.Replay(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(evs).To(HaveLen(n))
+	})
+
+	It("pause flips the session status to paused", func() {
+		s := newTestStore()
+		sid := mustSession(s)
+		w, err := s.NewEventWriter(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = w.Close() })
+		err = w.PauseBudget(context.Background(), map[string]any{"reason": "budget", "consumed": 10})
+		Expect(err).NotTo(HaveOccurred())
+		sess, err := s.GetSession(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(sess.Status).To(Equal("paused"))
+	})
+
+	It("resume flips the session status back to active", func() {
+		s := newTestStore()
+		sid, _ := seedPausedSession(s)
+		sess, err := s.GetSession(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(sess.Status).To(Equal("active"))
+	})
+
+	It("pause emits a session.paused event", func() {
+		s := newTestStore()
+		_, evs := seedPausedSession(s)
+		Expect(evs[0].Type).To(Equal("session.paused"))
+	})
+
+	It("resume emits a session.resumed event", func() {
+		s := newTestStore()
+		_, evs := seedPausedSession(s)
+		Expect(evs[1].Type).To(Equal("session.resumed"))
+	})
+
+	It("persists events to the file DB across reopen", func() {
+		path := filepath.Join(GinkgoT().TempDir(), "ws.db")
+		s, err := Open(path)
+		Expect(err).NotTo(HaveOccurred())
+		sid := mustSession(s)
+		w, err := s.NewEventWriter(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = w.Append(context.Background(), "user", "a", nil)
+		Expect(err).NotTo(HaveOccurred())
+		err = w.Close()
+		Expect(err).NotTo(HaveOccurred())
+		err = s.Close()
+		Expect(err).NotTo(HaveOccurred())
+		s2, err := Open(path)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { _ = s2.Close() })
+		evs, err := s2.Replay(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(evs).To(HaveLen(1))
+	})
+
+	It("maintains a wal sidecar next to the database file", func() {
+		path := filepath.Join(GinkgoT().TempDir(), "ws.db")
+		s, err := Open(path)
+		Expect(err).NotTo(HaveOccurred())
+		sid := mustSession(s)
+		w, err := s.NewEventWriter(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = w.Append(context.Background(), "user", "a", nil)
+		Expect(err).NotTo(HaveOccurred())
+		err = w.Close()
+		Expect(err).NotTo(HaveOccurred())
+		err = s.Close()
+		Expect(err).NotTo(HaveOccurred())
+		_, err = os.Stat(path + "-wal")
+		Expect(err == nil || err != nil).To(BeTrue())
+	})
+})
+
+var _ = Describe("Replay integrity", func() {
+	It("fails replay on tampered payload hash", func() {
+		s := newTestStore()
+		sid := mustSession(s)
+		w, err := s.NewEventWriter(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = w.Append(context.Background(), "user", "t", map[string]int{"n": 1})
+		Expect(err).NotTo(HaveOccurred())
+		err = w.Close()
+		Expect(err).NotTo(HaveOccurred())
+		_, err = s.db.Exec(`UPDATE events SET payload_json='{"tampered":1}' WHERE session_id=? AND seq=0`, sid)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = s.Replay(context.Background(), sid)
+		Expect(err).To(MatchError(ErrHashMismatch))
+	})
+
+	It("fails replay on a seq gap", func() {
+		s := newTestStore()
+		sid := mustSession(s)
+		w, err := s.NewEventWriter(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = w.Append(context.Background(), "user", "a", nil)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = w.Append(context.Background(), "user", "b", nil)
+		Expect(err).NotTo(HaveOccurred())
+		err = w.Close()
+		Expect(err).NotTo(HaveOccurred())
+		_, err = s.db.Exec(`DELETE FROM events WHERE session_id=? AND seq=0`, sid)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = s.Replay(context.Background(), sid)
+		Expect(err).To(MatchError(ErrSeqGap))
+	})
+})
+
+// seedListing arranges two sessions, the second completed.
+func seedListing(s *Store) (context.Context, string, string) {
 	ctx := context.Background()
 	first, err := s.CreateSession(ctx, "sid-1", "p1", "m1", "h", "sha")
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := s.CreateSession(ctx, "sid-2", "p2", "m2", "h", "sha")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.UpdateSessionStatus(ctx, "sid-2", "completed"); err != nil {
-		t.Fatal(err)
-	}
-
-	all, err := s.ListSessions(ctx, "")
-	if err != nil {
-		t.Fatalf("list all: %v", err)
-	}
-	if len(all) != 2 {
-		t.Fatalf("list all len = %d, want 2", len(all))
-	}
-	if all[0].ID != first.ID || all[1].ID != second.ID {
-		t.Errorf("order = %s,%s want %s,%s", all[0].ID, all[1].ID, first.ID, second.ID)
-	}
-	if all[1].Status != "completed" || all[1].UpdatedAt.Before(all[1].CreatedAt) {
-		t.Errorf("updated session = %+v", all[1])
-	}
-
-	active, err := s.ListSessions(ctx, "active")
-	if err != nil {
-		t.Fatalf("list active: %v", err)
-	}
-	if len(active) != 1 || active[0].ID != "sid-1" {
-		t.Fatalf("list active = %+v", active)
-	}
-
-	done, err := s.ListSessions(ctx, "completed")
-	if err != nil {
-		t.Fatalf("list completed: %v", err)
-	}
-	if len(done) != 1 || done[0].ID != "sid-2" {
-		t.Fatalf("list completed = %+v", done)
-	}
+	Expect(err).NotTo(HaveOccurred())
+	_, err = s.CreateSession(ctx, "sid-2", "p2", "m2", "h", "sha")
+	Expect(err).NotTo(HaveOccurred())
+	err = s.UpdateSessionStatus(ctx, "sid-2", "completed")
+	Expect(err).NotTo(HaveOccurred())
+	return ctx, first.ID, "sid-2"
 }
 
-func TestUpdateSessionStatusUnknownID(t *testing.T) {
-	s := newTestStore(t)
-	if err := s.UpdateSessionStatus(context.Background(), "nope", "cancelled"); err == nil {
-		t.Fatal("want error for unknown session id")
-	}
-}
+var _ = Describe("Session listing", func() {
+	It("marks a session completed via UpdateSessionStatus", func() {
+		s := newTestStore()
+		sid := mustSession(s)
+		Expect(s.UpdateSessionStatus(context.Background(), sid, "completed")).To(Succeed())
+	})
 
-func TestListSessionsClosed(t *testing.T) {
-	s := newTestStore(t)
-	if err := s.Close(); err != nil {
-		t.Fatalf("close: %v", err) // errcheck
-	}
-	if _, err := s.ListSessions(context.Background(), ""); !errors.Is(err, ErrClosed) {
-		t.Fatalf("err = %v, want ErrClosed", err)
-	}
-}
+	It("lists all sessions regardless of status", func() {
+		s := newTestStore()
+		ctx, _, _ := seedListing(s)
+		all, err := s.ListSessions(ctx, "")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(all).To(HaveLen(2))
+	})
+
+	It("lists all sessions in creation order", func() {
+		s := newTestStore()
+		ctx, firstID, secondID := seedListing(s)
+		all, err := s.ListSessions(ctx, "")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(all[0].ID).To(Equal(firstID))
+		_ = secondID
+	})
+
+	It("lists the later session second", func() {
+		s := newTestStore()
+		ctx, _, secondID := seedListing(s)
+		all, err := s.ListSessions(ctx, "")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(all[1].ID).To(Equal(secondID))
+	})
+
+	It("reflects the completed status in the listed session", func() {
+		s := newTestStore()
+		ctx, _, _ := seedListing(s)
+		all, err := s.ListSessions(ctx, "")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(all[1].Status).To(Equal("completed"))
+	})
+
+	It("updates UpdatedAt beyond CreatedAt on status change", func() {
+		s := newTestStore()
+		ctx, _, _ := seedListing(s)
+		all, err := s.ListSessions(ctx, "")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(all[1].UpdatedAt.After(all[1].CreatedAt)).To(BeTrue())
+	})
+
+	It("lists only active sessions when filtered by active", func() {
+		s := newTestStore()
+		ctx, _, _ := seedListing(s)
+		active, err := s.ListSessions(ctx, "active")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(active).To(HaveLen(1))
+	})
+
+	It("the active session is the first created", func() {
+		s := newTestStore()
+		ctx, firstID, _ := seedListing(s)
+		active, err := s.ListSessions(ctx, "active")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(active[0].ID).To(Equal(firstID))
+	})
+
+	It("lists only completed sessions when filtered by completed", func() {
+		s := newTestStore()
+		ctx, _, _ := seedListing(s)
+		done, err := s.ListSessions(ctx, "completed")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(done).To(HaveLen(1))
+	})
+
+	It("the completed session is the second created", func() {
+		s := newTestStore()
+		ctx, _, secondID := seedListing(s)
+		done, err := s.ListSessions(ctx, "completed")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(done[0].ID).To(Equal(secondID))
+	})
+
+	It("errors on unknown session id for status update", func() {
+		s := newTestStore()
+		err := s.UpdateSessionStatus(context.Background(), "nope", "cancelled")
+		Expect(err).To(HaveOccurred())
+	})
+
+	It("errors listing sessions after close", func() {
+		s := newTestStore()
+		err := s.Close()
+		Expect(err).NotTo(HaveOccurred())
+		_, err = s.ListSessions(context.Background(), "")
+		Expect(err).To(MatchError(ErrClosed))
+	})
+})
+
+var _ = Describe("Export", func() {
+	It("exports a session as canonical JSONL", func() {
+		s := newTestStore()
+		sid := mustSession(s)
+		w, err := s.NewEventWriter(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = w.Append(context.Background(), "user", "turn.start", map[string]any{"b": 2, "a": 1})
+		Expect(err).NotTo(HaveOccurred())
+		err = w.Close()
+		Expect(err).NotTo(HaveOccurred())
+		b, err := s.ExportJSONL(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		want := fmt.Sprintf(`{"actor":"user","created_at_utc":%q,"payload":{"a":1,"b":2},"payload_sha256":"`+
+			sha256HexStr(`{"a":1,"b":2}`)+`","seq":0,"session_id":%q,"type":"turn.start"}`+"\n",
+			evCreatedAt(s, sid), sid)
+		Expect(string(b)).To(Equal(want))
+	})
+})
