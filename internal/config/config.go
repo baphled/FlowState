@@ -1,3 +1,5 @@
+// Package config defines the FlowState configuration document and
+// provider registry helpers.
 package config
 
 // DefaultConfig returns an empty configuration with initialised maps.
