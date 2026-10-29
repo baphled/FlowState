@@ -112,6 +112,7 @@ type EventWriter struct {
 	session string
 	mu      sync.Mutex
 	next    int64
+	paused  bool
 	closed  bool
 }
 
@@ -190,6 +191,116 @@ func (w *EventWriter) Append(ctx context.Context, actor, typ string, payload any
 	}
 	w.next++
 	return seq, nil
+}
+
+// PauseInfo describes the engine-side pause context recorded in the
+// session.paused event payload.
+type PauseInfo struct {
+	Reason         string
+	ConsumedBudget int64
+	NextSafeOp     string
+}
+
+// pauseTxEvent inserts an event row inside tx with the canonical
+// payload hash, mirroring Append's row shape.
+func (w *EventWriter) pauseTxEvent(ctx context.Context, tx *sql.Tx, seq int64, actor, typ string, payload any) error {
+	payloadJSON, err := canonicalJSON(payload)
+	if err != nil {
+		return fmt.Errorf("canonicalize payload: %w", err)
+	}
+	digest := sha256Hex(payloadJSON)
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO events (session_id, seq, created_at_utc, actor, type, payload_sha256, payload_json)
+		 VALUES (?,?,?,?,?,?,?)`,
+		w.session, seq, iso(time.Now().UTC()), actor, typ, digest, string(payloadJSON))
+	if err != nil {
+		if isUniqueConstraint(err) {
+			return fmt.Errorf("%w: session %s seq %d", ErrSeqCollision, w.session, seq)
+		}
+		return fmt.Errorf("append event seq %d: %w", seq, err)
+	}
+	return nil
+}
+
+// pauseTxStatus updates the session status inside tx.
+func (w *EventWriter) pauseTxStatus(ctx context.Context, tx *sql.Tx, status string) error {
+	_, err := tx.ExecContext(ctx, `UPDATE sessions SET status=?, updated_at_utc=? WHERE id=?`,
+		status, iso(time.Now().UTC()), w.session)
+	if err != nil {
+		return fmt.Errorf("set status %s: %w", status, err)
+	}
+	return nil
+}
+
+// Pause atomically appends a `session.paused` event (actor "engine",
+// payload carries reason, consumed_budget and next_safe_op) and sets
+// sessions.status='paused' in one transaction. Empty NextSafeOp
+// defaults to "session run <id>".
+func (w *EventWriter) Pause(ctx context.Context, pi PauseInfo) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed || w.store == nil || w.store.db == nil {
+		return ErrClosed
+	}
+	if pi.NextSafeOp == "" {
+		pi.NextSafeOp = "session run <id>"
+	}
+	payload := map[string]any{
+		"reason":          pi.Reason,
+		"consumed_budget": pi.ConsumedBudget,
+		"next_safe_op":    pi.NextSafeOp,
+	}
+	tx, err := w.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("pause begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	seq := w.next
+	if err := w.pauseTxEvent(ctx, tx, seq, "engine", "session.paused", payload); err != nil {
+		return err
+	}
+	if err := w.pauseTxStatus(ctx, tx, "paused"); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("pause commit: %w", err)
+	}
+	w.next++
+	w.paused = true
+	return nil
+}
+
+// Resume atomically appends a `session.resumed` event (actor "user",
+// payload from_status=paused) and sets sessions.status='active' in one
+// transaction. Resuming a session that is not paused returns
+// ErrNotPaused and appends no event.
+func (w *EventWriter) Resume(ctx context.Context) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed || w.store == nil || w.store.db == nil {
+		return ErrClosed
+	}
+	if !w.paused {
+		return ErrNotPaused
+	}
+	tx, err := w.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("resume begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	seq := w.next
+	if err := w.pauseTxEvent(ctx, tx, seq, "user", "session.resumed", map[string]any{"from_status": "paused"}); err != nil {
+		return err
+	}
+	if err := w.pauseTxStatus(ctx, tx, "active"); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("resume commit: %w", err)
+	}
+	w.next++
+	w.paused = false
+	return nil
 }
 
 // NextSeq reports the next seq this writer will assign.

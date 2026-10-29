@@ -31,6 +31,10 @@ var (
 	// that does not exist in sessions.
 	ErrUnknownSession = errors.New("store: unknown session")
 
+	// ErrNotPaused is returned when Resume is called on a writer whose
+	// session is not currently paused.
+	ErrNotPaused = errors.New("store: session is not paused")
+
 	// ErrEmptyActor / ErrEmptyType reject empty attribution fields.
 	ErrEmptyActor = errors.New("store: event actor must not be empty")
 	ErrEmptyType  = errors.New("store: event type must not be empty")
