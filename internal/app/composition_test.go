@@ -6,9 +6,17 @@ import (
 	"errors"
 	"testing"
 
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
 	"github.com/baphled/flowstate/internal/store"
 	"github.com/baphled/flowstate/internal/tool"
 )
+
+func TestApp(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "App Suite")
+}
 
 // fakeTool is an injectable fake tool used to assert the wiring graph
 // without executing real behaviour (M1-COMPOSITION).
@@ -28,142 +36,181 @@ func (f *fakeTool) Invoke(_ context.Context, args json.RawMessage) (any, error) 
 	return map[string]any{"args": args, "tool": f.name}, nil
 }
 
-func TestGivenNilDependenciesWhenWireThenError(t *testing.T) {
-	if _, err := Wire(nil); err == nil {
-		t.Fatal("expected error wiring nil dependencies")
-	}
-}
-
-func TestGivenMissingStoreOrRegistryWhenWireThenTypedError(t *testing.T) {
-	if _, err := Wire(&Dependencies{Registry: tool.NewRegistry()}); err == nil {
-		t.Fatal("expected error for nil store")
-	}
-	if _, err := Wire(&Dependencies{Store: mustStore(t)}); err == nil {
-		t.Fatal("expected error for nil registry")
-	}
-}
-
-func TestGivenIdenticalDependenciesWhenWireThenIdenticalGraph(t *testing.T) {
-	st, reg, allow := mustGraph(t)
-	a, err := Wire(&Dependencies{Store: st, Registry: reg, Allowlist: allow})
-	if err != nil {
-		t.Fatalf("wire a: %v", err)
-	}
-	b, err := Wire(&Dependencies{Store: st, Registry: reg, Allowlist: allow})
-	if err != nil {
-		t.Fatalf("wire b: %v", err)
-	}
-	if a.Store() != b.Store() || a.Registry() != b.Registry() {
-		t.Fatal("identical dependencies must wire identical store and registry")
-	}
-	for _, name := range []string{"echo", "fake", "missing"} {
-		if a.Allowed(name) != b.Allowed(name) {
-			t.Fatalf("allowlist wiring diverged for %q", name)
-		}
-	}
-}
-
-func TestGivenInjectableFakesWhenSessionLoopThenGraphWiredEndToEnd(t *testing.T) {
-	st, reg, allow := mustGraph(t)
-	fake := &fakeTool{name: "fake"}
-	if err := reg.Register(fake); err != nil {
-		t.Fatalf("register fake: %v", err)
-	}
-	c, err := Wire(&Dependencies{Store: st, Registry: reg, Allowlist: allow})
-	if err != nil {
-		t.Fatalf("wire: %v", err)
-	}
-	sess, err := st.CreateSession(context.Background(), "s-1", "z.ai", "glm-4.6", "flowstate-cli", "")
-	if err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	h, err := c.SessionLoop(context.Background(), sess.ID)
-	if err != nil {
-		t.Fatalf("session loop: %v", err)
-	}
-	defer h.Close()
-	if !h.Loop.Allowed("fake") || h.Loop.Allowed("other") {
-		t.Fatal("loop allowlist does not match wired allowlist")
-	}
-	if _, err := h.Loop.Invoke(context.Background(), "fake", json.RawMessage(`{"x":1}`)); err != nil {
-		t.Fatalf("invoke wired fake: %v", err)
-	}
-	if fake.calls != 1 {
-		t.Fatalf("wired fake invoked %d times, want 1", fake.calls)
-	}
-	events, err := st.Replay(context.Background(), sess.ID)
-	if err != nil {
-		t.Fatalf("replay: %v", err)
-	}
-	if len(events) != 2 {
-		t.Fatalf("got %d events, want tool.call + tool.result", len(events))
-	}
-	if events[0].Type != tool.TypeToolCall || events[1].Type != tool.TypeToolResult {
-		t.Fatalf("unexpected event types %q %q", events[0].Type, events[1].Type)
-	}
-}
-
-func TestGivenUnknownSessionWhenSessionLoopThenUnknownSessionError(t *testing.T) {
-	st, reg, allow := mustGraph(t)
-	c, err := Wire(&Dependencies{Store: st, Registry: reg, Allowlist: allow})
-	if err != nil {
-		t.Fatalf("wire: %v", err)
-	}
-	if _, err := c.SessionLoop(context.Background(), "nope"); !errors.Is(err, store.ErrUnknownSession) {
-		t.Fatalf("want ErrUnknownSession, got %v", err)
-	}
-}
-
-func mustStore(t *testing.T) *store.Store {
-	t.Helper()
+func mustStore() *store.Store {
 	st, err := store.OpenMemory()
 	if err != nil {
-		t.Fatalf("open memory store: %v", err)
+		panic(err)
 	}
-	t.Cleanup(func() { _ = st.Close() })
+	DeferCleanup(func() { _ = st.Close() })
 	return st
 }
 
-func mustGraph(t *testing.T) (*store.Store, *tool.Registry, []string) {
-	t.Helper()
+func mustGraph() (*store.Store, *tool.Registry, []string) {
 	reg := tool.NewRegistry()
 	if err := reg.Register(tool.NewEcho()); err != nil {
-		t.Fatalf("register echo: %v", err)
+		panic(err)
 	}
-	return mustStore(t), reg, []string{"echo", "fake"}
+	return mustStore(), reg, []string{"echo", "fake"}
 }
 
-// Given a wired composition, when the consumer-side ports are
-// requested, then they expose the same concrete store behaviour as
-// the Store accessor (B-2: no behaviour change, only explicit ports).
-func TestGivenWiredCompositionWhenPortsRequestedThenTheyServeTheStore(t *testing.T) {
-	st, reg, allow := mustGraph(t)
-	c, err := Wire(&Dependencies{Store: st, Registry: reg, Allowlist: allow})
-	if err != nil {
-		t.Fatalf("wire: %v", err)
-	}
-	ctx := context.Background()
+var _ = Describe("Wire", func() {
+	It("errors on nil dependencies", func() {
+		_, err := Wire(nil)
+		Expect(err).To(HaveOccurred())
+	})
 
-	repo := c.SessionRepo()
-	created, err := repo.CreateSession(ctx, "sid-port", "p", "m", "h", "sha")
-	if err != nil || created.Status != "active" {
-		t.Fatalf("create via port = %+v, %v", created, err)
-	}
+	It("errors on missing store", func() {
+		_, err := Wire(&Dependencies{Registry: tool.NewRegistry()})
+		Expect(err).To(HaveOccurred())
+	})
 
-	log := c.EventLog()
-	w, err := log.NewEventWriter(ctx, "sid-port")
-	if err != nil {
-		t.Fatalf("writer via port: %v", err)
-	}
-	if _, err := w.Append(ctx, "user", "turn.start", map[string]any{"task": "t"}); err != nil {
-		t.Fatalf("append via port: %v", err)
-	}
-	if err := w.Close(); err != nil {
-		t.Fatalf("close writer: %v", err) // errcheck
-	}
+	It("errors on missing registry", func() {
+		_, err := Wire(&Dependencies{Store: mustStore()})
+		Expect(err).To(HaveOccurred())
+	})
 
-	events, err := log.Replay(ctx, "sid-port")
-	if err != nil || len(events) != 1 {
-		t.Fatalf("replay via port = %+v, %v", events, err)
-	}
-}
+	It("wires an identical graph for identical dependencies", func() {
+		st, reg, allow := mustGraph()
+		a, err := Wire(&Dependencies{Store: st, Registry: reg, Allowlist: allow})
+		Expect(err).NotTo(HaveOccurred())
+		b, err := Wire(&Dependencies{Store: st, Registry: reg, Allowlist: allow})
+		Expect(err).NotTo(HaveOccurred())
+		allowed := map[string][2]bool{}
+		for _, name := range []string{"echo", "fake", "missing"} {
+			allowed[name] = [2]bool{a.Allowed(name), b.Allowed(name)}
+		}
+		Expect(allowed).To(Equal(map[string][2]bool{
+			"echo":    {true, true},
+			"fake":    {true, true},
+			"missing": {false, false},
+		}))
+	})
+
+	It("exposes the same store for identical dependencies", func() {
+		st, reg, allow := mustGraph()
+		a, err := Wire(&Dependencies{Store: st, Registry: reg, Allowlist: allow})
+		Expect(err).NotTo(HaveOccurred())
+		b, err := Wire(&Dependencies{Store: st, Registry: reg, Allowlist: allow})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(a.Store()).To(Equal(b.Store()))
+	})
+
+	It("exposes the same registry for identical dependencies", func() {
+		st, reg, allow := mustGraph()
+		a, err := Wire(&Dependencies{Store: st, Registry: reg, Allowlist: allow})
+		Expect(err).NotTo(HaveOccurred())
+		b, err := Wire(&Dependencies{Store: st, Registry: reg, Allowlist: allow})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(a.Registry()).To(Equal(b.Registry()))
+	})
+
+	It("wires the session loop end-to-end through the composition", func() {
+		st, reg, allow := mustGraph()
+		fake := &fakeTool{name: "fake"}
+		if err := reg.Register(fake); err != nil {
+			panic(err)
+		}
+		c, err := Wire(&Dependencies{Store: st, Registry: reg, Allowlist: allow})
+		Expect(err).NotTo(HaveOccurred())
+		sess, err := st.CreateSession(context.Background(), "s-1", "z.ai", "glm-4.6", "flowstate-cli", "")
+		Expect(err).NotTo(HaveOccurred())
+		h, err := c.SessionLoop(context.Background(), sess.ID)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(h.Close)
+		Expect(h.Loop.Allowed("fake")).To(BeTrue())
+	})
+
+	It("rejects tools outside the allowlist in the session loop", func() {
+		st, reg, allow := mustGraph()
+		fake := &fakeTool{name: "fake"}
+		if err := reg.Register(fake); err != nil {
+			panic(err)
+		}
+		c, err := Wire(&Dependencies{Store: st, Registry: reg, Allowlist: allow})
+		Expect(err).NotTo(HaveOccurred())
+		sess, err := st.CreateSession(context.Background(), "s-2", "z.ai", "glm-4.6", "flowstate-cli", "")
+		Expect(err).NotTo(HaveOccurred())
+		h, err := c.SessionLoop(context.Background(), sess.ID)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(h.Close)
+		Expect(h.Loop.Allowed("other")).To(BeFalse())
+	})
+
+	It("invokes the fake tool exactly once through the session loop", func() {
+		st, reg, allow := mustGraph()
+		fake := &fakeTool{name: "fake"}
+		if err := reg.Register(fake); err != nil {
+			panic(err)
+		}
+		c, err := Wire(&Dependencies{Store: st, Registry: reg, Allowlist: allow})
+		Expect(err).NotTo(HaveOccurred())
+		sess, err := st.CreateSession(context.Background(), "s-3", "z.ai", "glm-4.6", "flowstate-cli", "")
+		Expect(err).NotTo(HaveOccurred())
+		h, err := c.SessionLoop(context.Background(), sess.ID)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(h.Close)
+		_, err = h.Loop.Invoke(context.Background(), "fake", json.RawMessage(`{"x":1}`))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(fake.calls).To(Equal(1))
+	})
+
+	It("records tool call and result events through the session loop", func() {
+		st, reg, allow := mustGraph()
+		fake := &fakeTool{name: "fake"}
+		if err := reg.Register(fake); err != nil {
+			panic(err)
+		}
+		c, err := Wire(&Dependencies{Store: st, Registry: reg, Allowlist: allow})
+		Expect(err).NotTo(HaveOccurred())
+		sess, err := st.CreateSession(context.Background(), "s-4", "z.ai", "glm-4.6", "flowstate-cli", "")
+		Expect(err).NotTo(HaveOccurred())
+		h, err := c.SessionLoop(context.Background(), sess.ID)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(h.Close)
+		_, err = h.Loop.Invoke(context.Background(), "fake", json.RawMessage(`{"x":1}`))
+		Expect(err).NotTo(HaveOccurred())
+		events, err := st.Replay(context.Background(), sess.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect([]string{events[0].Type, events[1].Type}).To(Equal([]string{tool.TypeToolCall, tool.TypeToolResult}))
+	})
+
+	It("returns ErrUnknownSession for an unknown session", func() {
+		st, reg, allow := mustGraph()
+		c, err := Wire(&Dependencies{Store: st, Registry: reg, Allowlist: allow})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = c.SessionLoop(context.Background(), "nope")
+		Expect(errors.Is(err, store.ErrUnknownSession)).To(BeTrue())
+	})
+
+	// Given a wired composition, when the consumer-side ports are
+	// requested, then they expose the same concrete store behaviour as
+	// the Store accessor (B-2: no behaviour change, only explicit ports).
+	It("creates an active session through the SessionRepo port", func() {
+		st, reg, allow := mustGraph()
+		c, err := Wire(&Dependencies{Store: st, Registry: reg, Allowlist: allow})
+		Expect(err).NotTo(HaveOccurred())
+		created, err := c.SessionRepo().CreateSession(context.Background(), "sid-port", "p", "m", "h", "sha")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created.Status).To(Equal("active"))
+	})
+
+	It("appends and replays events through the EventLog port", func() {
+		st, reg, allow := mustGraph()
+		c, err := Wire(&Dependencies{Store: st, Registry: reg, Allowlist: allow})
+		Expect(err).NotTo(HaveOccurred())
+		ctx := context.Background()
+		if _, err := c.SessionRepo().CreateSession(ctx, "sid-port", "p", "m", "h", "sha"); err != nil {
+			panic(err)
+		}
+		w, err := c.EventLog().NewEventWriter(ctx, "sid-port")
+		Expect(err).NotTo(HaveOccurred())
+		_, err = w.Append(ctx, "user", "turn.start", map[string]any{"task": "t"})
+		Expect(err).NotTo(HaveOccurred())
+		if err := w.Close(); err != nil {
+			panic(err)
+		}
+		events, err := c.EventLog().Replay(ctx, "sid-port")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(events).To(HaveLen(1))
+	})
+})
