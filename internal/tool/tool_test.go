@@ -309,7 +309,7 @@ var _ = Describe("Echo", func() {
 	It("returns an empty object for blank arguments", func() {
 		res, err := NewEcho().Invoke(context.Background(), json.RawMessage("  "))
 		Expect(err).NotTo(HaveOccurred())
-		Expect(res).To(HaveLen(0))
+		Expect(res).To(BeEmpty())
 	})
 
 	It("errors on invalid json arguments", func() {
