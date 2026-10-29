@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/registry"
@@ -30,11 +32,20 @@ var errProvider = fmt.Errorf("provider_error")
 // exitProviderError is the stable provider-failure exit code.
 const exitProviderError = 3
 
+// errBudgetExceeded marks budget-cap stops (code budget_exceeded,
+// exit 5 per CLI-AND-API-CONTRACT §1).
+var errBudgetExceeded = errors.New("budget_exceeded")
+
+// errSessionCancelled marks interrupt-driven cancellation (code
+// session_cancelled, exit 130).
+var errSessionCancelled = errors.New("session_cancelled")
+
 // cmdRun implements `flowstate session run <id>`: runs one bounded
 // provider turn, projects the persisted events as JSONL on stdout and
 // ends with a terminal event envelope. Exit 0 completed; 1 unknown
-// session; 2 usage; 3 provider error; 6 already terminal.
-func cmdRun(ctx context.Context, st *store.Store, id string, stdout, stderr *os.File) int {
+// session; 2 usage; 3 provider error; 5 budget exceeded; 6 already
+// terminal; 130 interrupted.
+func cmdRun(ctx context.Context, st *store.Store, id string, fl *flags, stdout, stderr *os.File) int {
 	if id == "" {
 		writeError(stderr, fmt.Errorf("%w: session id required", session.ErrUsage))
 		return exitUsage
@@ -48,6 +59,13 @@ func cmdRun(ctx context.Context, st *store.Store, id string, stdout, stderr *os.
 		writeError(stderr, fmt.Errorf("%w: session %s is %s", session.ErrTerminal, id, sess.Status))
 		return exitTerminal
 	}
+	if sess.Status == "paused" {
+		if rerr := resumeSession(ctx, st, id); rerr != nil {
+			writeError(stderr, rerr)
+			return exitCodeFor(rerr)
+		}
+		sess.Status = "active"
+	}
 	p, err := providerResolver(sess.Provider)
 	if err != nil {
 		writeError(stderr, fmt.Errorf("%w: %v", errProvider, err))
@@ -58,8 +76,19 @@ func cmdRun(ctx context.Context, st *store.Store, id string, stdout, stderr *os.
 		writeError(stderr, fmt.Errorf("%w: provider %s does not support streaming turns", errProvider, sess.Provider))
 		return exitProviderError
 	}
-	res, err := runtime.Turn(ctx, st, sess, streamer)
-	_ = res
+	sctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt)
+	defer signal.Stop(sigCh)
+	go func() {
+		select {
+		case <-sigCh:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	res, err := runtime.TurnWithOptions(sctx, st, sess, streamer, runtime.TurnOptions{Budget: fl.budget})
 	evts, rerr := st.Replay(ctx, id)
 	if rerr != nil {
 		writeError(stderr, rerr)
@@ -80,8 +109,38 @@ func cmdRun(ctx context.Context, st *store.Store, id string, stdout, stderr *os.
 		}
 	}
 	if err != nil {
+		if sctx.Err() != nil {
+			return cancelOnInterrupt(ctx, st, id)
+		}
 		writeError(stderr, fmt.Errorf("%w: %v", errProvider, err))
 		return exitProviderError
 	}
+	if res != nil && res.BudgetExceeded {
+		writeError(stderr, errBudgetExceeded)
+		return exitBudgetExceeded
+	}
 	return exitOK
+}
+
+// resumeSession persists session.resumed (actor user) and flips the
+// session back to active before any new turn work events.
+func resumeSession(ctx context.Context, st *store.Store, id string) error {
+	w, err := st.NewEventWriter(ctx, id)
+	if err != nil {
+		return err
+	}
+	defer w.Close()
+	return w.Resume(ctx)
+}
+
+// cancelOnInterrupt handles SIGINT during `session run`: it cancels
+// the session (session.cancelled, status cancelled) and returns the
+// interrupt exit code; a terminal session maps to exit 6.
+func cancelOnInterrupt(ctx context.Context, st *store.Store, id string) int {
+	if _, err := session.Close(ctx, st, id); err != nil {
+		writeError(os.Stderr, err)
+		return exitCodeFor(err)
+	}
+	writeError(os.Stderr, errSessionCancelled)
+	return exitInterrupted
 }

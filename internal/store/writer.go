@@ -127,6 +127,10 @@ func (s *Store) NewEventWriter(ctx context.Context, sessionID string) (*EventWri
 		return nil, err
 	}
 	w := &EventWriter{store: s, session: sessionID}
+	var status string
+	if err := s.db.QueryRowContext(ctx, `SELECT status FROM sessions WHERE id=?`, sessionID).Scan(&status); err == nil && status == "paused" {
+		w.paused = true
+	}
 	if _, loaded := writerRegistry.LoadOrStore(sessionID, w); loaded {
 		return nil, fmt.Errorf("%w: %s", ErrWriterExists, sessionID)
 	}

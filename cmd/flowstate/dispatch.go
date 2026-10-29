@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/baphled/flowstate/internal/store"
@@ -27,6 +28,8 @@ type flags struct {
 	toolArg   string
 	allow     []string
 	allowFile string
+	// session run
+	budget int64
 }
 
 // dispatch routes one CLI invocation and returns its exit code.
@@ -82,7 +85,7 @@ func dispatch(args []string, stdout, stderr *os.File) int {
 	case "list":
 		return cmdList(ctx, st, fl, stdout, stderr)
 	case "run":
-		return cmdRun(ctx, st, id, stdout, stderr)
+		return cmdRun(ctx, st, id, fl, stdout, stderr)
 	case "events":
 		return cmdEvents(ctx, st, id, stdout, stderr)
 	case "close":
@@ -178,6 +181,16 @@ func parseFlags(args []string) (*flags, []string, error) {
 				return nil, nil, err
 			}
 			fl.allowFile = v
+		case a == "--budget" || a == "--max-tokens":
+			v, err := take()
+			if err != nil {
+				return nil, nil, err
+			}
+			n, perr := strconv.ParseInt(v, 10, 64)
+			if perr != nil || n <= 0 {
+				return nil, nil, fmt.Errorf("flag %s requires a positive integer value", a)
+			}
+			fl.budget = n
 		case strings.HasPrefix(a, "--"):
 			return nil, nil, fmt.Errorf("unknown flag %s", a)
 		default:
@@ -212,7 +225,7 @@ func usage(w *os.File) {
 
 session new    --provider <p> --model <m> --task <text|@file> [--db path]
 session list   [--status <s>] [--db path]
-session run    <id> [--db path]
+session run    <id> [--max-tokens <n>|--budget <cap>] [--db path]
 session events <id> [--db path]
 session close  <id> [--db path]
 session tool   <id> --tool <name> [--tool-arg <json>] [--allow <name>]... [--allow-file <manifest>] [--db path]

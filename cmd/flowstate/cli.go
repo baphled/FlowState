@@ -20,6 +20,8 @@ const (
 	exitConfigInvalid  = 4
 	exitTerminal       = 6
 	exitReplayMismatch = 7
+	exitBudgetExceeded = 5
+	exitInterrupted    = 130
 )
 
 // Error codes of the closed set in the contract §2.
@@ -55,6 +57,10 @@ func asCliError(err error) *cliError {
 		return &cliError{Code: codeUsage, Message: err.Error()}
 	case errors.Is(err, errConfigInvalid):
 		return &cliError{Code: codeConfigInvalid, Message: err.Error()}
+	case errors.Is(err, errBudgetExceeded):
+		return &cliError{Code: "budget_exceeded", Message: err.Error()}
+	case errors.Is(err, errSessionCancelled):
+		return &cliError{Code: "session_cancelled", Message: err.Error()}
 	case errors.Is(err, session.ErrTerminal):
 		return &cliError{Code: codeSessionTerm, Message: err.Error()}
 	case errors.Is(err, store.ErrUnknownSession):
