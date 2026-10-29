@@ -47,7 +47,9 @@ var _ = Describe("TurnWithOptions budget stop", func() {
 		st := newStore()
 		ctx := context.Background()
 		sess, err := session.Create(ctx, st, "fake", "fake-model", session.DefaultHarness, "sha", "say hi")
-		Expect(err).NotTo(HaveOccurred())
+		if err != nil {
+			panic(err)
+		}
 		fake := &fakeStreamer{events: []provider.StreamEvent{
 			{Content: "hello"},
 			{Content: " world"},
@@ -55,7 +57,9 @@ var _ = Describe("TurnWithOptions budget stop", func() {
 
 		_, _ = TurnWithOptions(ctx, st, sess, fake, TurnOptions{Budget: 5})
 		evts, err := st.Replay(ctx, sess.ID)
-		Expect(err).NotTo(HaveOccurred())
+		if err != nil {
+			panic(err)
+		}
 		var paused *struct {
 			PayloadJSON string
 		}
@@ -71,7 +75,9 @@ var _ = Describe("TurnWithOptions budget stop", func() {
 		st := newStore()
 		ctx := context.Background()
 		sess, err := session.Create(ctx, st, "fake", "fake-model", session.DefaultHarness, "sha", "say hi")
-		Expect(err).NotTo(HaveOccurred())
+		if err != nil {
+			panic(err)
+		}
 		fake := &fakeStreamer{events: []provider.StreamEvent{
 			{Content: "hello"},
 			{Content: " world"},
@@ -79,7 +85,9 @@ var _ = Describe("TurnWithOptions budget stop", func() {
 
 		_, _ = TurnWithOptions(ctx, st, sess, fake, TurnOptions{Budget: 5})
 		evts, err := st.Replay(ctx, sess.ID)
-		Expect(err).NotTo(HaveOccurred())
+		if err != nil {
+			panic(err)
+		}
 		var payload string
 		found := false
 		for _, e := range evts {
@@ -88,11 +96,44 @@ var _ = Describe("TurnWithOptions budget stop", func() {
 				found = true
 			}
 		}
-		Expect(found).To(BeTrue())
+		if !found {
+			panic("no session.paused event persisted")
+		}
 		var p struct {
 			Reason string `json:"reason"`
 		}
 		Expect(json.Unmarshal([]byte(payload), &p)).To(Succeed())
+	})
+
+	It("persists the paused event reason as budget_exceeded", func() {
+		st := newStore()
+		ctx := context.Background()
+		sess, err := session.Create(ctx, st, "fake", "fake-model", session.DefaultHarness, "sha", "say hi")
+		if err != nil {
+			panic(err)
+		}
+		fake := &fakeStreamer{events: []provider.StreamEvent{
+			{Content: "hello"},
+			{Content: " world"},
+		}}
+
+		_, _ = TurnWithOptions(ctx, st, sess, fake, TurnOptions{Budget: 5})
+		evts, err := st.Replay(ctx, sess.ID)
+		if err != nil {
+			panic(err)
+		}
+		var payload string
+		for _, e := range evts {
+			if e.Type == "session.paused" {
+				payload = e.PayloadJSON
+			}
+		}
+		var p struct {
+			Reason string `json:"reason"`
+		}
+		if err := json.Unmarshal([]byte(payload), &p); err != nil {
+			panic(err)
+		}
 		Expect(p.Reason).To(Equal("budget_exceeded"))
 	})
 
