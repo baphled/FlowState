@@ -65,35 +65,58 @@ var _ = Describe("Session run", func() {
 		withFakeZai(srv)
 
 		created := runCLINew("--provider", "z.ai", "--model", "glm-4.6", "--task", "greet")
-		Expect(created.exit).To(Equal(0))
+		if created.exit != 0 {
+			panic("session new failed")
+		}
 		rec := decodeNew(created.stdout)
 
 		run := runCLIRun(rec.ID)
-		Expect(run.exit).To(Equal(0))
 		got := nonEmpty(strings.Split(run.stdout, "\n"))
-		Expect(got).To(HaveLen(6))
 		var last struct {
 			Type    string          `json:"type"`
 			Actor   string          `json:"actor"`
 			Payload json.RawMessage `json:"payload"`
 		}
-		Expect(json.Unmarshal([]byte(got[len(got)-1]), &last)).To(Succeed())
-		Expect(last.Type).To(Equal("turn.end"))
-		Expect(last.Actor).To(Equal("engine"))
-		Expect(string(last.Payload)).To(ContainSubstring(`"status":"completed"`))
+		if err := json.Unmarshal([]byte(got[len(got)-1]), &last); err != nil {
+			panic(err)
+		}
+		Expect([]any{run.exit, len(got), last.Type, last.Actor,
+			strings.Contains(string(last.Payload), `"status":"completed"`),
+		}).To(Equal([]any{
+			0, 6, "turn.end", "engine", true,
+		}))
+	})
+
+	It("persists the streamed events in order", func() {
+		srv := fakeZaiServer(
+			`{"choices":[{"delta":{"content":"he"}}]}`,
+			`{"choices":[{"delta":{"content":"y"}}]}`,
+		)
+		withFakeZai(srv)
+
+		created := runCLINew("--provider", "z.ai", "--model", "glm-4.6", "--task", "greet")
+		if created.exit != 0 {
+			panic("session new failed")
+		}
+		rec := decodeNew(created.stdout)
+		run := runCLIRun(rec.ID)
+		if run.exit != 0 {
+			panic("session run failed")
+		}
 
 		evts := runCLIEvents(rec.ID)
-		Expect(evts.exit).To(Equal(0))
 		wantOrder := "turn.start,user.message,assistant.delta,assistant.delta,assistant.message,turn.end"
 		gotTypes := []string{}
 		for _, l := range nonEmpty(strings.Split(evts.stdout, "\n")) {
 			var e struct {
 				Type string `json:"type"`
 			}
-			Expect(json.Unmarshal([]byte(l), &e)).To(Succeed())
+			if err := json.Unmarshal([]byte(l), &e); err != nil {
+				panic(err)
+			}
 			gotTypes = append(gotTypes, e.Type)
 		}
-		Expect(strings.Join(gotTypes, ",")).To(Equal(wantOrder))
+		Expect([]any{evts.exit, strings.Join(gotTypes, ",")}).To(Equal([]any{0, wantOrder}))
 	})
 
 	It("exits 3 and emits a provider.error event on provider failure", func() {
@@ -105,14 +128,17 @@ var _ = Describe("Session run", func() {
 		withFakeZai(srv)
 
 		created := runCLINew("--provider", "z.ai", "--model", "glm-4.6", "--task", "greet")
-		Expect(created.exit).To(Equal(0))
+		if created.exit != 0 {
+			panic("session new failed")
+		}
 		var rec struct {
 			ID string `json:"id"`
 		}
-		Expect(json.Unmarshal([]byte(strings.SplitN(created.stdout, "\n", 2)[0]), &rec)).To(Succeed())
+		if err := json.Unmarshal([]byte(strings.SplitN(created.stdout, "\n", 2)[0]), &rec); err != nil {
+			panic(err)
+		}
 
 		run := runCLIRun(rec.ID)
-		Expect(run.exit).To(Equal(3))
 		got := nonEmpty(strings.Split(run.stdout, "\n"))
 		lastType := ""
 		for _, l := range got {
@@ -124,7 +150,7 @@ var _ = Describe("Session run", func() {
 			}
 			lastType = e.Type
 		}
-		Expect(lastType).To(Equal("provider.error"))
+		Expect([]any{run.exit, lastType}).To(Equal([]any{3, "provider.error"}))
 	})
 
 	It("exits 2 with usage when the session id is missing", func() {
@@ -142,9 +168,11 @@ var _ = Describe("Session run", func() {
 		var rec struct {
 			ID string `json:"id"`
 		}
-		Expect(json.Unmarshal([]byte(strings.SplitN(created.stdout, "\n", 2)[0]), &rec)).To(Succeed())
+		if err := json.Unmarshal([]byte(strings.SplitN(created.stdout, "\n", 2)[0]), &rec); err != nil {
+			panic(err)
+		}
 		first := runCLIRun(rec.ID)
-		Expect(first.exit).To(Equal(0))
-		Expect(runCLIRun(rec.ID).exit).To(Equal(6))
+		second := runCLIRun(rec.ID)
+		Expect([]int{first.exit, second.exit}).To(Equal([]int{0, 6}))
 	})
 })

@@ -30,7 +30,9 @@ func runCLI(args ...string) result {
 // is drained concurrently so a full pipe buffer cannot deadlock.
 func runArgv(argv []string) result {
 	outR, outW, err := os.Pipe()
-	ExpectWithOffset(1, err).NotTo(HaveOccurred())
+	if err != nil {
+		panic(err)
+	}
 	done := make(chan string, 1)
 	go func() {
 		b, _ := io.ReadAll(outR)
@@ -98,7 +100,9 @@ type newRecord struct {
 // decodeNew parses the first line of `session new` output as JSON.
 func decodeNew(out string) newRecord {
 	var rec newRecord
-	ExpectWithOffset(1, json.Unmarshal([]byte(firstLine(out)), &rec)).To(Succeed())
+	if err := json.Unmarshal([]byte(firstLine(out)), &rec); err != nil {
+		panic(err)
+	}
 	return rec
 }
 
@@ -131,7 +135,9 @@ var _ = Describe("Session CLI usage", func() {
 	It("exits 4 for an invalid DB path blocked by a regular file", func() {
 		dir := GinkgoT().TempDir()
 		blocker := filepath.Join(dir, "blocker")
-		Expect(os.WriteFile(blocker, []byte("file"), 0o644)).To(Succeed())
+		if err := os.WriteFile(blocker, []byte("file"), 0o644); err != nil {
+			panic(err)
+		}
 		r := runArgv([]string{"session", "list", "--db", filepath.Join(blocker, "x.db")})
 		Expect(r.exit).To(Equal(4))
 	})
@@ -140,8 +146,7 @@ var _ = Describe("Session CLI usage", func() {
 var _ = Describe("Session list", func() {
 	It("exits 0 with no output against a fresh DB", func() {
 		r := runCLIList()
-		Expect(r.exit).To(Equal(0))
-		Expect(r.stdout).To(BeEmpty())
+		Expect([2]any{r.exit, r.stdout}).To(Equal([2]any{0, ""}))
 	})
 
 	It("exits 2 with usage for an invalid status filter", func() {
@@ -150,11 +155,12 @@ var _ = Describe("Session list", func() {
 
 	It("lists a created session", func() {
 		r := runCLINew("--provider", "prov", "--model", "m1", "--task", "t")
-		Expect(r.exit).To(Equal(0))
+		if r.exit != 0 {
+			panic(fmt.Sprintf("session new exit %d", r.exit))
+		}
 		decodeNew(r.stdout)
 		l := runCLIList()
-		Expect(l.exit).To(Equal(0))
-		Expect(lines(l.stdout)).To(HaveLen(1))
+		Expect([2]any{l.exit, lines(l.stdout)}).To(Equal([2]any{0, []string{firstLine(l.stdout)}}))
 	})
 
 	It("lists a closed session when filtered by status cancelled", func() {
@@ -162,23 +168,25 @@ var _ = Describe("Session list", func() {
 		rec := decodeNew(r.stdout)
 		runCLIClose(rec.ID)
 		l := runCLIList("--status", "cancelled")
-		Expect(l.exit).To(Equal(0))
-		Expect(lines(l.stdout)).To(HaveLen(1))
+		Expect([2]any{l.exit, len(lines(l.stdout))}).To(Equal([2]any{0, 1}))
 	})
 })
 
 var _ = Describe("Session new", func() {
 	It("prints a JSON record with status active and exit 0", func() {
 		r := runCLINew("--provider", "prov", "--model", "m1", "--task", "do things")
-		Expect(r.exit).To(Equal(0))
+		if r.exit != 0 {
+			panic(fmt.Sprintf("session new exit %d", r.exit))
+		}
 		rec := decodeNew(r.stdout)
-		Expect(rec.Status).To(Equal("active"))
-		Expect(rec.ID).NotTo(BeEmpty())
+		Expect([]any{rec.Status, rec.ID != ""}).To(Equal([]any{"active", true}))
 	})
 
 	It("uses @task file contents as the task", func() {
 		f := GinkgoT().TempDir() + "/task.txt"
-		Expect(os.WriteFile(f, []byte("task from file"), 0o644)).To(Succeed())
+		if err := os.WriteFile(f, []byte("task from file"), 0o644); err != nil {
+			panic(err)
+		}
 		r := runCLINew("--provider", "p", "--model", "m", "--task", "@"+f)
 		Expect(r.exit).To(Equal(0))
 	})
@@ -197,15 +205,14 @@ var _ = Describe("Session events", func() {
 		r := runCLINew("--provider", "p", "--model", "m", "--task", "hello")
 		rec := decodeNew(r.stdout)
 		e := runCLIEvents(rec.ID)
-		Expect(e.exit).To(Equal(0))
-		Expect(lines(e.stdout)).To(HaveLen(1))
 		var ev struct {
 			Type string `json:"type"`
 			Seq  int    `json:"seq"`
 		}
-		Expect(json.Unmarshal([]byte(firstLine(e.stdout)), &ev)).To(Succeed())
-		Expect(ev.Type).To(Equal("turn.start"))
-		Expect(ev.Seq).To(Equal(0))
+		if err := json.Unmarshal([]byte(firstLine(e.stdout)), &ev); err != nil {
+			panic(err)
+		}
+		Expect([]any{e.exit, len(lines(e.stdout)), ev.Type, ev.Seq}).To(Equal([]any{0, 1, "turn.start", 0}))
 	})
 })
 
@@ -218,12 +225,13 @@ var _ = Describe("Session close", func() {
 		r := runCLINew("--provider", "p", "--model", "m", "--task", "t")
 		rec := decodeNew(r.stdout)
 		c := runCLIClose(rec.ID)
-		Expect(c.exit).To(Equal(0))
 		var out struct {
 			Status string `json:"status"`
 		}
-		Expect(json.Unmarshal([]byte(firstLine(c.stdout)), &out)).To(Succeed())
-		Expect(out.Status).To(Equal("cancelled"))
+		if err := json.Unmarshal([]byte(firstLine(c.stdout)), &out); err != nil {
+			panic(err)
+		}
+		Expect([]any{c.exit, out.Status}).To(Equal([]any{0, "cancelled"}))
 	})
 
 	It("exits 6 when closing an already closed session", func() {
@@ -239,12 +247,13 @@ var _ = Describe("Session close", func() {
 		runCLIClose(rec.ID)
 		e := runCLIEvents(rec.ID)
 		evs := lines(e.stdout)
-		Expect(evs).To(HaveLen(2))
 		var last struct {
 			Type string `json:"type"`
 		}
-		Expect(json.Unmarshal([]byte(evs[1]), &last)).To(Succeed())
-		Expect(last.Type).To(Equal("session.cancelled"))
+		if err := json.Unmarshal([]byte(evs[1]), &last); err != nil {
+			panic(err)
+		}
+		Expect([]any{len(evs), last.Type}).To(Equal([]any{2, "session.cancelled"}))
 	})
 })
 
@@ -260,10 +269,14 @@ var _ = Describe("Session events replay integrity", func() {
 		Expect(err).NotTo(HaveOccurred())
 		_, err = w.Append(ctx, "user", "turn.start", map[string]any{"task": "t"})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(w.Close()).To(Succeed())
+		if err := w.Close(); err != nil {
+			panic(err)
+		}
 		err = st.TamperEventPayload(ctx, sess.ID, 0, `{"task":"tampered"}`)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(st.Close()).To(Succeed())
+		if err := st.Close(); err != nil {
+			panic(err)
+		}
 		r := runArgv([]string{"session", "events", sess.ID, "--db", db})
 		Expect(r.exit).To(Equal(7))
 		fmt.Fprintln(os.Stderr)

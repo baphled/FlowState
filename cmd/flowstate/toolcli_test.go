@@ -21,7 +21,9 @@ func runTool(id string, extra ...string) result {
 // newTestSession creates a session via the CLI and returns its id.
 func newTestSession() string {
 	r := runCLINew("--provider", "zai", "--model", "glm", "--task", "x")
-	ExpectWithOffset(1, r.exit).To(Equal(0))
+	if r.exit != 0 {
+		panic("session new failed")
+	}
 	return decodeNew(r.stdout).ID
 }
 
@@ -29,34 +31,35 @@ var _ = Describe("Session tool", func() {
 	It("persists tool.call and tool.result events for an allowed echo invocation", func() {
 		id := newTestSession()
 		r := runTool(id, "--tool", "echo", "--tool-arg", `{"a":1}`, "--allow", "echo")
-		Expect(r.exit).To(Equal(0))
-		Expect(r.stdout).To(ContainSubstring(`"ok":true`))
 		ev := runCLIEvents(id)
-		Expect(ev.exit).To(Equal(0))
-		Expect(ev.stdout).To(ContainSubstring(tool.TypeToolCall))
-		Expect(ev.stdout).To(ContainSubstring(tool.TypeToolResult))
-		Expect(ev.stdout).To(ContainSubstring(`"tool:echo"`))
+		Expect([]any{
+			r.exit,
+			strings.Contains(r.stdout, `"ok":true`),
+			strings.Contains(ev.stdout, tool.TypeToolCall),
+			strings.Contains(ev.stdout, tool.TypeToolResult),
+			strings.Contains(ev.stdout, `"tool:echo"`),
+		}).To(Equal([]any{0, true, true, true, true}))
 	})
 
 	It("denies an un-allowlisted tool with a typed event and usage exit", func() {
 		id := newTestSession()
 		r := runTool(id, "--tool", "echo")
-		Expect(r.exit).To(Equal(exitUsage))
 		ev := runCLIEvents(id)
-		Expect(ev.stdout).To(ContainSubstring("tool_denied"))
+		Expect([]any{r.exit, strings.Contains(ev.stdout, "tool_denied")}).To(Equal([]any{exitUsage, true}))
 	})
 
 	It("exits usage for an unknown tool without emitting a tool.call event", func() {
 		id := newTestSession()
 		r := runTool(id, "--tool", "ghost", "--allow", "ghost")
-		Expect(r.exit).To(Equal(exitUsage))
 		ev := runCLIEvents(id)
-		Expect(ev.stdout).NotTo(ContainSubstring(tool.TypeToolCall))
+		Expect([]any{r.exit, strings.Contains(ev.stdout, tool.TypeToolCall)}).To(Equal([]any{exitUsage, false}))
 	})
 
 	It("allows a tool listed in an allow-file manifest", func() {
 		manifest := filepath.Join(GinkgoT().TempDir(), "allow.json")
-		Expect(os.WriteFile(manifest, []byte(`["echo"]`), 0o644)).To(Succeed())
+		if err := os.WriteFile(manifest, []byte(`["echo"]`), 0o644); err != nil {
+			panic(err)
+		}
 		id := newTestSession()
 		r := runTool(id, "--tool", "echo", "--allow-file", manifest)
 		Expect(r.exit).To(Equal(0))
@@ -71,14 +74,18 @@ var _ = Describe("Session tool", func() {
 	It("exits usage for an allow-file that is not a JSON array", func() {
 		id := newTestSession()
 		bad := filepath.Join(GinkgoT().TempDir(), "bad.json")
-		Expect(os.WriteFile(bad, []byte(`{"not":"an array"}`), 0o644)).To(Succeed())
+		if err := os.WriteFile(bad, []byte(`{"not":"an array"}`), 0o644); err != nil {
+			panic(err)
+		}
 		r := runTool(id, "--tool", "echo", "--allow-file", bad)
 		Expect(r.exit).To(Equal(exitUsage))
 	})
 
 	It("exits terminal when invoking a tool on a closed session", func() {
 		id := newTestSession()
-		Expect(runCLIClose(id).exit).To(Equal(0))
+		if c := runCLIClose(id); c.exit != 0 {
+			panic("session close failed")
+		}
 		r := runTool(id, "--tool", "echo", "--allow", "echo")
 		Expect(r.exit).To(Equal(exitTerminal))
 	})
@@ -95,15 +102,21 @@ var _ = Describe("Session tool", func() {
 
 	It("continues event sequence contiguously across two invocations", func() {
 		id := newTestSession()
-		Expect(runTool(id, "--tool", "echo", "--allow", "echo").exit).To(Equal(0))
-		Expect(runTool(id, "--tool", "echo", "--allow", "echo").exit).To(Equal(0))
+		if r := runTool(id, "--tool", "echo", "--allow", "echo"); r.exit != 0 {
+			panic("first tool call failed")
+		}
+		if r := runTool(id, "--tool", "echo", "--allow", "echo"); r.exit != 0 {
+			panic("second tool call failed")
+		}
 		ev := runCLIEvents(id)
 		var seqs []int
 		for _, line := range strings.Split(strings.TrimSpace(ev.stdout), "\n") {
 			var e struct {
 				Seq int `json:"seq"`
 			}
-			Expect(json.Unmarshal([]byte(line), &e)).To(Succeed())
+			if err := json.Unmarshal([]byte(line), &e); err != nil {
+				panic(err)
+			}
 			seqs = append(seqs, e.Seq)
 		}
 		Expect(seqs).To(Equal([]int{0, 1, 2, 3, 4}))
