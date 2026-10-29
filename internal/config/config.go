@@ -7,11 +7,11 @@ type Config struct {
 }
 
 type ProviderConfig struct {
-	Host     string             `yaml:"host"`
-	APIKey   string             `yaml:"api_key,omitempty"`
-	Model    string             `yaml:"model"`
-	AuthType oauth.AuthType     `yaml:"auth_type"`
-	OAuth    *oauth.Config `yaml:"oauth,omitempty"`
+	Host     string         `yaml:"host"`
+	APIKey   string         `yaml:"api_key,omitempty"`
+	Model    string         `yaml:"model"`
+	AuthType oauth.AuthType `yaml:"auth_type"`
+	OAuth    *oauth.Config  `yaml:"oauth,omitempty"`
 }
 
 func DefaultConfig() *Config {
