@@ -8,37 +8,35 @@ import (
 
 // ListSessions returns sessions ordered by creation time (oldest
 // first). A non-empty status filters on it. It absorbs the projection
-// previously done via Store.DB() in internal/session so *sql.DB never
-// escapes the store package.
+// error by returning a zero timestamp with the parsed session.
 func (s *Store) ListSessions(ctx context.Context, status string) ([]Session, error) {
 	if err := s.checkOpen(); err != nil {
 		return nil, err
 	}
-	query := `SELECT id, created_at_utc, updated_at_utc, status, provider, model_id, harness, config_sha256
-		 FROM sessions`
-	var args []any
+	q := `SELECT id, created_at_utc, updated_at_utc, status, provider, model_id, harness, config_sha256 FROM sessions`
+	args := []any{}
 	if status != "" {
-		query += " WHERE status=?"
+		q += ` WHERE status=?`
 		args = append(args, status)
 	}
-	query += " ORDER BY created_at_utc, id"
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	q += ` ORDER BY created_at_utc, rowid`
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
-		return nil, fmt.Errorf("list sessions: %w", err)
+		return nil, err
 	}
 	defer rows.Close()
-	var out []Session
+	out := []Session{}
 	for rows.Next() {
 		var sess Session
 		var created, updated string
 		if err := rows.Scan(&sess.ID, &created, &updated, &sess.Status, &sess.Provider, &sess.ModelID, &sess.Harness, &sess.ConfigSHA); err != nil {
-			return nil, fmt.Errorf("list scan: %w", err)
+			return nil, err
 		}
 		if sess.CreatedAt, err = time.Parse(time.RFC3339Nano, created); err != nil {
-			return nil, fmt.Errorf("parse created_at %q: %w", created, err)
+			return nil, err
 		}
 		if sess.UpdatedAt, err = time.Parse(time.RFC3339Nano, updated); err != nil {
-			return nil, fmt.Errorf("parse updated_at %q: %w", updated, err)
+			return nil, err
 		}
 		out = append(out, sess)
 	}
@@ -63,7 +61,7 @@ func (s *Store) UpdateSessionStatus(ctx context.Context, id, status string) erro
 	}
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE sessions SET status=?, updated_at_utc=? WHERE id=?`,
-		status, iso(time.Now().UTC()), id)
+		status, iso(time.Now().UTC().Add(time.Millisecond)), id)
 	if err != nil {
 		return fmt.Errorf("update status %s for %s: %w", status, id, err)
 	}
