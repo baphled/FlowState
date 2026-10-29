@@ -43,7 +43,7 @@ var _ = Describe("TurnWithOptions budget stop", func() {
 		Expect(types(evts)).ToNot(ContainElement("turn.end"))
 	})
 
-	It("persists a session.paused event with reason budget_exceeded", func() {
+	It("persists a session.paused event on budget stop", func() {
 		st := newStore()
 		ctx := context.Background()
 		sess, err := session.Create(ctx, st, "fake", "fake-model", session.DefaultHarness, "sha", "say hi")
@@ -65,10 +65,34 @@ var _ = Describe("TurnWithOptions budget stop", func() {
 			}
 		}
 		Expect(paused).NotTo(BeNil())
+	})
+
+	It("persists the paused event with reason budget_exceeded", func() {
+		st := newStore()
+		ctx := context.Background()
+		sess, err := session.Create(ctx, st, "fake", "fake-model", session.DefaultHarness, "sha", "say hi")
+		Expect(err).NotTo(HaveOccurred())
+		fake := &fakeStreamer{events: []provider.StreamEvent{
+			{Content: "hello"},
+			{Content: " world"},
+		}}
+
+		_, _ = TurnWithOptions(ctx, st, sess, fake, TurnOptions{Budget: 5})
+		evts, err := st.Replay(ctx, sess.ID)
+		Expect(err).NotTo(HaveOccurred())
+		var payload string
+		found := false
+		for _, e := range evts {
+			if e.Type == "session.paused" {
+				payload = e.PayloadJSON
+				found = true
+			}
+		}
+		Expect(found).To(BeTrue())
 		var p struct {
 			Reason string `json:"reason"`
 		}
-		Expect(json.Unmarshal([]byte(paused.PayloadJSON), &p)).To(Succeed())
+		Expect(json.Unmarshal([]byte(payload), &p)).To(Succeed())
 		Expect(p.Reason).To(Equal("budget_exceeded"))
 	})
 
