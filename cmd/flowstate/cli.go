@@ -40,7 +40,7 @@ var errConfigInvalid = errors.New("config_invalid")
 // asCliError maps any error onto a cliError with a contract code.
 func asCliError(err error) *cliError {
 	var ce *cliError
-	if errors.As(err, &ce) { //nolint:errorlint // legacy shape check
+	if errors.As(err, &ce) {
 		return ce
 	}
 	return &cliError{Code: app.ErrorCode(err), Message: err.Error()}
