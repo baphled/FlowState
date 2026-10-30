@@ -9,7 +9,7 @@ import (
 	"context"
 	"errors"
 
-	internalapp "github.com/baphled/flowstate/internal/session/internal-app"
+	internalapp "github.com/baphled/flowstate/internal/session/internalapp"
 	"github.com/baphled/flowstate/internal/store"
 	"github.com/baphled/flowstate/internal/tool"
 )
