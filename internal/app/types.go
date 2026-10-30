@@ -1,6 +1,8 @@
 package app
 
 import (
+	"github.com/baphled/flowstate/internal/provider"
+
 	"github.com/baphled/flowstate/internal/runtime"
 	"github.com/baphled/flowstate/internal/store"
 	"github.com/baphled/flowstate/internal/tool"
@@ -57,3 +59,7 @@ type LoopHandle struct {
 // Store aliases the concrete SQLite store so the thin cmd adapter can
 // pass it through without importing the store package directly.
 type Store = store.Store
+
+// ProviderFactory resolves a provider by name; tests swap it for an
+// httptest-backed adapter, production uses the registry.
+type ProviderFactory func(name string) (provider.Provider, error)

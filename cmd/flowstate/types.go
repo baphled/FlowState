@@ -7,9 +7,6 @@ type cliError struct {
 	Message string `json:"message"`
 }
 
-// Error renders the cliError message, satisfying the error contract.
-func (e *cliError) Error() string { return e.Message }
-
 // flags holds the parsed global flags for one invocation.
 type flags struct {
 	db     string
@@ -31,6 +28,3 @@ type flags struct {
 // usageSentinel satisfies errors.Is against the session package
 // usage sentinel while formatting a usage message.
 type usageSentinel struct{}
-
-// Error renders the usage sentinel message.
-func (usageSentinel) Error() string { return "usage" }
