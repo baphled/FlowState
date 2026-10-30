@@ -53,6 +53,11 @@ def record_errors(path, content):
         return []
     if RECORD_PATH.search(path) or LEGACY_RECORD.search(path):
         return ['project metadata file must be stored in Dropbox: ' + path]
+    if item.suffix.lower() in {'.md', '.txt', '.log'}:
+        references = re.findall(r'^\s*Project-Metadata:\s*(\S+)\s*$',
+                                content.decode('utf-8', 'replace'), re.M)
+        if any(REFERENCE.fullmatch(reference) for reference in references):
+            return ['executed delivery record must be stored in Dropbox: ' + path]
     if isinstance(value, dict):
         version = str(value.get('schema_version', value.get('record_type', '')))
         if re.search(r'(?:acceptance-receipt|work-packet|qualification|project-metadata)', version):

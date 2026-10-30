@@ -109,6 +109,27 @@ class MetadataCLI(unittest.TestCase):
                 result = subprocess.run(['python3', str(GUARD), '--message-file', str(self.msg)], cwd=self.repo, capture_output=True)
                 self.assertNotEqual(result.returncode, 0)
 
+    def test_actual_delivery_records_cannot_hide_in_ordinary_text_files(self):
+        for name in ('commit-msg-pr4.txt', 'notes.md', 'journal.log'):
+            with self.subTest(name=name):
+                base = self.run_git('rev-parse', 'HEAD').stdout.strip()
+                (self.repo / name).write_text('test: delivered work\n\nProject-Metadata: ' + REF + '\n')
+                self.run_git('add', '.')
+                self.run_git('commit', '-qm', 'docs: fixture\n\nProject-Metadata: ' + REF)
+                result = subprocess.run(['python3', str(GUARD), '--changed', '--base', base],
+                                        cwd=self.repo, capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(b'Dropbox', result.stderr)
+
+    def test_reusable_metadata_placeholder_is_allowed(self):
+        (self.repo / 'commit-template.txt').write_text(
+            'Project-Metadata: dropbox:/FlowState/Metadata/attempts/<attempt>/<record>.json\n')
+        self.run_git('add', '.')
+        self.run_git('commit', '-qm', 'docs: fixture\n\nProject-Metadata: ' + REF)
+        result = subprocess.run(['python3', str(GUARD), '--changed', '--base', self.base],
+                                cwd=self.repo, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_range_rejects_bad_non_go_commit_even_when_later_deleted(self):
         self.run_git('commit', '-qm', 'docs: missing reference')
         self.run_git('rm', 'file with space.txt')
