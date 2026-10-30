@@ -50,12 +50,19 @@ var _ = Describe("Store wired as ports", func() {
 		Expect(created.Status).To(Equal("active"))
 	})
 
-	It("appends and replays a turn.start event through the event log port", func() {
-		_, log, ctx, cleanup := arrangeSession()
-		DeferCleanup(cleanup)
-		events, err := log.Replay(ctx, "sid-1")
-		Expect(err).NotTo(HaveOccurred())
-		Expect([2]any{len(events), events[0].Type}).To(Equal([2]any{1, "turn.start"}))
+	Context("appends and replays a turn.start event through the event log port", func() {
+		var observedEventCount int
+		var observedEventType string
+		BeforeEach(func() {
+			_, log, ctx, cleanup := arrangeSession()
+			DeferCleanup(cleanup)
+			events, err := log.Replay(ctx, "sid-1")
+			Expect(err).NotTo(HaveOccurred())
+			observedEventCount = len(events)
+			observedEventType = events[0].Type
+		})
+		It("records the expected number of events", func() { Expect(observedEventCount).To(Equal(1)) })
+		It("records the expected event type", func() { Expect(observedEventType).To(Equal("turn.start")) })
 	})
 
 	It("round-trips status updates through the repo port", func() {
