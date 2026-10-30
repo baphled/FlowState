@@ -1,13 +1,19 @@
-package app
+package internalapp
 
 import (
 	"context"
+	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/store"
 )
+
+func TestPorts(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "Internal App Ports Suite")
+}
 
 // arrangeSession opens an in-memory store wired as ports, creates a session
 // and appends one turn.start event; fixture failures panic.

@@ -36,11 +36,6 @@ const (
 // per CLI-AND-API-CONTRACT §1).
 var ErrProvider = fmt.Errorf("provider_error")
 
-// ErrUsage marks argument misuse (code usage, exit 2 per
-// CLI-AND-API-CONTRACT §1); the session domain sentinel is aliased so
-// cmd depends only on app.
-var ErrUsage = session.ErrUsage
-
 // ErrBudgetExceeded marks budget-cap stops (code budget_exceeded,
 // exit 5 per CLI-AND-API-CONTRACT §1).
 var ErrBudgetExceeded = errors.New("budget_exceeded")
