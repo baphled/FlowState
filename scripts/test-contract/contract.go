@@ -1,3 +1,4 @@
+// Package main checks changed Go test sources against the Ginkgo contract.
 package main
 
 import (
@@ -15,129 +16,14 @@ func checkSource(input sourceFile) []string {
 	if err != nil {
 		return []string{err.Error()}
 	}
-	imports := map[string]string{}
-	ginkgoDot, gomegaDot := false, false
-	for _, imp := range f.Imports {
-		path, _ := strconv.Unquote(imp.Path.Value)
-		name := path[strings.LastIndex(path, "/")+1:]
-		if path == "github.com/onsi/ginkgo/v2" {
-			name = "ginkgo"
-		}
-		if imp.Name != nil {
-			name = imp.Name.Name
-		}
-		imports[name] = path
-		if name == "." && path == "github.com/onsi/ginkgo/v2" {
-			ginkgoDot = true
-		}
-		if name == "." && path == "github.com/onsi/gomega" {
-			gomegaDot = true
-		}
-	}
-	resolve := func(expr ast.Expr) string {
-		switch x := expr.(type) {
-		case *ast.Ident:
-			if ginkgoDot || gomegaDot {
-				return x.Name
-			}
-		case *ast.SelectorExpr:
-			if id, ok := x.X.(*ast.Ident); ok {
-				if imports[id.Name] == "github.com/onsi/ginkgo/v2" || imports[id.Name] == "github.com/onsi/gomega" {
-					return x.Sel.Name
-				}
-				if imports[id.Name] == "time" && x.Sel.Name == "Sleep" {
-					return "Sleep"
-				}
-			}
-		}
-		return ""
-	}
+	resolve := frameworkResolver(f)
 	var errors []string
 	fail := func(node ast.Node, msg string) {
 		errors = append(errors, fmt.Sprintf("%s: %s", fs.Position(node.Pos()), msg))
 	}
 	subjects := map[*ast.CallExpr]bool{}
-	ast.Inspect(f, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		name := resolve(call.Fun)
-		if name == "DescribeTableSubtree" {
-			fail(call, "table subtrees are unsupported by the contract gate; use DescribeTable")
-		}
-		if name == "It" || name == "Specify" || name == "DescribeTable" {
-			foundBody := false
-			for _, arg := range call.Args {
-				body, ok := arg.(*ast.FuncLit)
-				if !ok {
-					continue
-				}
-				foundBody = true
-				count := 0
-				ast.Inspect(body.Body, func(node ast.Node) bool {
-					c, ok := node.(*ast.CallExpr)
-					if !ok {
-						return true
-					}
-					assertion := resolve(c.Fun)
-					if assertion == "Expect" || assertion == "ExpectWithOffset" || assertion == "Eventually" || assertion == "Consistently" {
-						subjects[c] = true
-						terminal, timeout, polling := assertionChain(body.Body, c)
-						if !terminal {
-							fail(c, "expectation requires a terminal matcher")
-						}
-						if (assertion == "Eventually" || assertion == "Consistently") && (!timeout || !polling) {
-							fail(c, "async expectations require explicit WithTimeout and WithPolling")
-						}
-						if !setupErrorCheck(body.Body, c) {
-							count++
-						}
-					}
-					return true
-				})
-				if count != 1 {
-					fail(body, fmt.Sprintf("one behavioural expectation per spec required; got %d", count))
-				}
-			}
-			if !foundBody {
-				fail(call, "spec body must be an inline function checked by the contract gate")
-			}
-		}
-		return true
-	})
-	ast.Inspect(f, func(n ast.Node) bool {
-		switch node := n.(type) {
-		case *ast.FuncDecl:
-			if node.Name.Name == "TestMain" && !testMainBootstrap(node, imports) {
-				fail(node, "TestMain must propagate the exit status of m.Run")
-			}
-			if strings.HasPrefix(node.Name.Name, "Test") && node.Name.Name != "TestMain" && !suiteBootstrap(node, resolve) {
-				fail(node, "only a Ginkgo RunSpecs bootstrap may use TestX")
-			}
-		case *ast.CallExpr:
-			name := resolve(node.Fun)
-			if sel, ok := node.Fun.(*ast.SelectorExpr); ok && (sel.Sel.Name == "Skip" || sel.Sel.Name == "Skipf" || sel.Sel.Name == "SkipNow" || sel.Sel.Name == "Parallel") {
-				fail(node, "test skipping and t.Parallel are forbidden in Ginkgo specs")
-			}
-			if name == "Sleep" || name == "Skip" {
-				fail(node, "sleep/skip is forbidden; use bounded async assertions and deterministic fixtures")
-			}
-			for _, bad := range []string{"FIt", "FSpecify", "FDescribe", "FContext", "FWhen", "FDescribeTable", "FEntry", "PIt", "PDescribe", "PContext", "PWhen", "PSpecify", "PDescribeTable", "PEntry", "XIt", "XDescribe", "XContext", "XWhen", "XSpecify", "XDescribeTable", "XEntry"} {
-				if name == bad {
-					fail(node, "focused/pending specs are forbidden")
-				}
-			}
-			if (name == "Expect" || name == "ExpectWithOffset" || name == "Eventually" || name == "Consistently") && !subjects[node] && !setupErrorCheck(f, node) {
-				fail(node, "behavioural expectations belong directly in a spec, not hidden helpers/hooks")
-			}
-		case *ast.Ident:
-			if node.Name == "Focus" || node.Name == "Pending" || node.Name == "Serial" || node.Name == "Ordered" {
-				fail(node, "focus/pending/serial/ordered require a separately reviewed policy change")
-			}
-		}
-		return true
-	})
+	checkSpecs(f, resolve, fail, subjects)
+	checkFileRules(f, resolve, fail, subjects)
 	return errors
 }
 
@@ -194,7 +80,7 @@ func suiteBootstrap(f *ast.FuncDecl, resolve func(ast.Expr) string) bool {
 	if !ok {
 		return false
 	}
-	if f.Type.Params == nil || len(f.Type.Params.List) != 1 || len(f.Type.Params.List[0].Names) != 1 {
+	if !singleParameter(f) {
 		return false
 	}
 	param := f.Type.Params.List[0].Names[0].Name
@@ -240,7 +126,7 @@ func assertionChain(root ast.Node, assertion *ast.CallExpr) (bool, bool, bool) {
 }
 
 func testMainBootstrap(f *ast.FuncDecl, imports map[string]string) bool {
-	if f.Body == nil || len(f.Body.List) != 1 || f.Type.Params == nil || len(f.Type.Params.List) != 1 || len(f.Type.Params.List[0].Names) != 1 {
+	if !singleStatement(f) || !singleParameter(f) {
 		return false
 	}
 	stmt, ok := f.Body.List[0].(*ast.ExprStmt)
@@ -269,4 +155,143 @@ func testMainBootstrap(f *ast.FuncDecl, imports map[string]string) bool {
 	}
 	receiver, ok := method.X.(*ast.Ident)
 	return ok && receiver.Name == f.Type.Params.List[0].Names[0].Name
+}
+
+func frameworkResolver(f *ast.File) func(ast.Expr) string {
+	imports := map[string]string{}
+	ginkgoDot, gomegaDot := false, false
+	for _, imp := range f.Imports {
+		path, _ := strconv.Unquote(imp.Path.Value)
+		name := path[strings.LastIndex(path, "/")+1:]
+		if path == "github.com/onsi/ginkgo/v2" {
+			name = "ginkgo"
+		}
+		if imp.Name != nil {
+			name = imp.Name.Name
+		}
+		imports[name] = path
+		if name == "." && path == "github.com/onsi/ginkgo/v2" {
+			ginkgoDot = true
+		}
+		if name == "." && path == "github.com/onsi/gomega" {
+			gomegaDot = true
+		}
+	}
+	return func(expr ast.Expr) string { return resolveFramework(expr, imports, ginkgoDot || gomegaDot) }
+}
+
+func checkSpecs(f *ast.File, resolve func(ast.Expr) string, fail func(ast.Node, string), subjects map[*ast.CallExpr]bool) {
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		name := resolve(call.Fun)
+		if name == "DescribeTableSubtree" {
+			fail(call, "table subtrees are unsupported by the contract gate; use DescribeTable")
+		}
+		if name == "It" || name == "Specify" || name == "DescribeTable" {
+			foundBody := false
+			for _, arg := range call.Args {
+				body, ok := arg.(*ast.FuncLit)
+				if !ok {
+					continue
+				}
+				foundBody = true
+				checkSpecBody(body, resolve, fail, subjects)
+			}
+			if !foundBody {
+				fail(call, "spec body must be an inline function checked by the contract gate")
+			}
+		}
+		return true
+	})
+}
+
+func checkFileRules(f *ast.File, resolve func(ast.Expr) string, fail func(ast.Node, string), subjects map[*ast.CallExpr]bool) {
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch node := n.(type) {
+		case *ast.FuncDecl:
+			if node.Name.Name == "TestMain" && !testMainBootstrap(node, importPaths(f)) {
+				fail(node, "TestMain must propagate the exit status of m.Run")
+			}
+			if strings.HasPrefix(node.Name.Name, "Test") && node.Name.Name != "TestMain" && !suiteBootstrap(node, resolve) {
+				fail(node, "only a Ginkgo RunSpecs bootstrap may use TestX")
+			}
+		case *ast.CallExpr:
+			checkCallRules(f, node, resolve, fail, subjects)
+		case *ast.Ident:
+			if node.Name == "Focus" || node.Name == "Pending" || node.Name == "Serial" || node.Name == "Ordered" {
+				fail(node, "focus/pending/serial/ordered require a separately reviewed policy change")
+			}
+		}
+		return true
+	})
+}
+
+func checkSpecBody(body *ast.FuncLit, resolve func(ast.Expr) string, fail func(ast.Node, string), subjects map[*ast.CallExpr]bool) {
+	checkSpecReturns(body, fail)
+	count := 0
+	ast.Inspect(body.Body, func(node ast.Node) bool {
+		c, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		assertion := resolve(c.Fun)
+		if isAssertion(assertion) {
+			subjects[c] = true
+			checkOracle(c, assertion, fail)
+			terminal, timeout, polling := assertionChain(body.Body, c)
+			if !terminal {
+				fail(c, "expectation requires a terminal matcher")
+			}
+			if (assertion == "Eventually" || assertion == "Consistently") && (!timeout || !polling) {
+				fail(c, "async expectations require explicit WithTimeout and WithPolling")
+			}
+			if !setupErrorCheck(body.Body, c) {
+				count++
+			}
+		}
+		return true
+	})
+	if count != 1 {
+		fail(body, fmt.Sprintf("one behavioural expectation per spec required; got %d", count))
+	}
+}
+
+func checkCallRules(f *ast.File, node *ast.CallExpr, resolve func(ast.Expr) string, fail func(ast.Node, string), subjects map[*ast.CallExpr]bool) {
+	name := resolve(node.Fun)
+	if sel, ok := node.Fun.(*ast.SelectorExpr); ok && (forbiddenMethod(sel.Sel.Name)) {
+		fail(node, "test skipping and t.Parallel are forbidden in Ginkgo specs")
+	}
+	if name == "Sleep" || name == "Skip" {
+		fail(node, "sleep/skip is forbidden; use bounded async assertions and deterministic fixtures")
+	}
+	for _, bad := range []string{"FIt", "FSpecify", "FDescribe", "FContext", "FWhen", "FDescribeTable", "FEntry", "PIt", "PDescribe", "PContext", "PWhen", "PSpecify", "PDescribeTable", "PEntry", "XIt", "XDescribe", "XContext", "XWhen", "XSpecify", "XDescribeTable", "XEntry"} {
+		if name == bad {
+			fail(node, "focused/pending specs are forbidden")
+		}
+	}
+	if isAssertion(name) && !subjects[node] && !setupErrorCheck(f, node) {
+		fail(node, "behavioural expectations belong directly in a spec, not hidden helpers/hooks")
+	}
+}
+
+func resolveFramework(expr ast.Expr, imports map[string]string, dot bool) string {
+	switch x := expr.(type) {
+	case *ast.Ident:
+		if dot {
+			return x.Name
+		}
+	case *ast.SelectorExpr:
+		if id, ok := x.X.(*ast.Ident); ok {
+			if imports[id.Name] == "github.com/onsi/ginkgo/v2" || imports[id.Name] == "github.com/onsi/gomega" {
+				return x.Sel.Name
+			}
+			if imports[id.Name] == "time" && x.Sel.Name == "Sleep" {
+				return "Sleep"
+			}
+		}
+	}
+	return ""
 }

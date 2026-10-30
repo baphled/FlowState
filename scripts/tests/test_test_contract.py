@@ -69,6 +69,21 @@ class CandidateContract(unittest.TestCase):
         self.commit()
         self.assertEqual(self.guard().returncode, 0)
 
+    def test_committed_vacuous_oracles_are_rejected(self):
+        cases = (
+            'Expect(err == nil || err != nil).To(BeTrue())',
+            'Expect(x || !x).To(BeTrue())',
+            'Expect([]any{err, count}).To(Equal(want))',
+            'Expect([4]any{err, count, name, ok}).To(Equal(want))',
+            'if err != nil { return }; Expect(value).To(Equal(1))',
+        )
+        for body in cases:
+            with self.subTest(body=body):
+                source = VALID.replace('Expect(value).To(Equal(1))', body)
+                (self.root / 'new_test.go').write_text(source)
+                self.commit()
+                self.assertNotEqual(self.guard().returncode, 0)
+
     def test_symlink_mode_is_rejected_without_os_symlink_privileges(self):
         oid = subprocess.check_output(['git', 'hash-object', '-w', '--stdin'], cwd=self.root, input=VALID.encode()).decode().strip()
         self.git('update-index', '--add', '--cacheinfo', '120000', oid, 'linked_test.go')
