@@ -1,4 +1,7 @@
-.PHONY: all build run test fmt lint check clean help ai-commit check-ai-attribution list-ai-commits install-tools
+.PHONY: all build run test fmt lint check clean help ai-commit check-ai-attribution list-ai-commits install-tools check-pr-size
+
+check-pr-size: ## Bound the complete committed PR diff (BASE_SHA=actual target)
+	python3 -B scripts/pr_size.py --base "$(BASE_SHA)" --head "$$(git rev-parse HEAD)"
 
 # Binary name
 BINARY_NAME=flowstate

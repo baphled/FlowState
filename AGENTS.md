@@ -34,9 +34,13 @@ Fetch actual `origin/next`; work in a registered feature worktree inside the
 verified bare root. Do not commit directly to `main`/`next` or transplant prototype
 runtime. An unmerged prerequisite needs an explicit scoped disposition in Dropbox.
 Keep PRs small and run the actual commands/hooks; never bypass protection.
+Read [the PR review budget](rules/PR_SCOPE.md): one outcome, at most 500 changed
+lines and 10 paths including tests/docs. Estimate before delegation; checkpoint
+and split before exceeding it. Refactoring is a separate prerequisite, not padding.
 
 ```sh
 make check
+make check-pr-size BASE_SHA=<actual-pr-base-sha>
 make check-code-quality BASE_SHA=<actual-pr-base-sha>
 make check-documentation BASE_SHA=<actual-pr-base-sha>
 ```
