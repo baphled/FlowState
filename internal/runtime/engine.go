@@ -12,38 +12,22 @@ import (
 
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
-	"github.com/baphled/flowstate/internal/store"
 )
 
-// Event types emitted by the engine turn loop (DATA-MODEL §3).
-const (
-	TypeUserMessage      = "user.message"
-	TypeAssistantDelta   = "assistant.delta"
-	TypeAssistantMessage = "assistant.message"
-	TypeTurnEnd          = "turn.end"
-	TypeProviderError    = "provider.error"
-)
+// TypeUserMessage is the user-turn event type (DATA-MODEL §3).
+const TypeUserMessage = "user.message"
 
-// TurnOptions configures one engine turn; the zero value preserves
-// the existing unlimited behaviour.
-type TurnOptions struct {
-	// Budget caps the turn; values <= 0 mean unlimited.
-	Budget int64
-}
+// TypeAssistantDelta is one streamed assistant chunk event type.
+const TypeAssistantDelta = "assistant.delta"
 
-// TurnResult reports one completed engine turn.
-type TurnResult struct {
-	// SessionID is the session the turn ran in.
-	SessionID string
-	// FinalContent is the concatenated assistant content.
-	FinalContent string
-	// BudgetExceeded reports that the turn stopped early on its budget.
-	BudgetExceeded bool
-	// ConsumedBudget is the budget consumed this turn. In M1 tokens are
-	// approximated 1:1 by the total length of streamed provider delta
-	// content (sum of len(ev.Content) over the streamed chunks).
-	ConsumedBudget int64
-}
+// TypeAssistantMessage is the final assistant event type.
+const TypeAssistantMessage = "assistant.message"
+
+// TypeTurnEnd is the turn-completion event type.
+const TypeTurnEnd = "turn.end"
+
+// TypeProviderError is the terminal provider-failure event type.
+const TypeProviderError = "provider.error"
 
 // payloadTask extracts the task text from a stored turn.start
 // payload without failing on unknown shapes.
@@ -61,7 +45,7 @@ func payloadTask(payloadJSON string) string {
 // session completed. A provider error appends a terminal typed
 // provider.error event, marks the session failed and returns the
 // error; there are no retries (M1-PROVIDER failure path).
-func Turn(ctx context.Context, st *store.Store, sess *store.Session, p provider.Streamer) (*TurnResult, error) {
+func Turn(ctx context.Context, st DomainEventLog, sess *DomainSession, p provider.Streamer) (*TurnResult, error) {
 	return TurnWithOptions(ctx, st, sess, p, TurnOptions{})
 }
 
@@ -72,7 +56,7 @@ func Turn(ctx context.Context, st *store.Store, sess *store.Session, p provider.
 // via the store writer (session.paused with reason "budget_exceeded"
 // and status paused) and returns a TurnResult with BudgetExceeded set
 // and a nil error.
-func TurnWithOptions(ctx context.Context, st *store.Store, sess *store.Session, p provider.Streamer, opts TurnOptions) (*TurnResult, error) {
+func TurnWithOptions(ctx context.Context, st DomainEventLog, sess *DomainSession, p provider.Streamer, opts TurnOptions) (*TurnResult, error) {
 	if sess == nil {
 		return nil, fmt.Errorf("runtime: session must not be nil")
 	}
@@ -132,7 +116,7 @@ func TurnWithOptions(ctx context.Context, st *store.Store, sess *store.Session, 
 		}
 	}
 	if budgetExceeded {
-		if perr := w.Pause(ctx, store.PauseInfo{
+		if perr := w.Pause(ctx, PausePayload{
 			Reason:         "budget_exceeded",
 			ConsumedBudget: consumed,
 			NextSafeOp:     "session run " + sess.ID,
@@ -142,7 +126,7 @@ func TurnWithOptions(ctx context.Context, st *store.Store, sess *store.Session, 
 		return &TurnResult{SessionID: sess.ID, FinalContent: content, BudgetExceeded: true, ConsumedBudget: consumed}, nil
 	}
 	if streamErr {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", ErrProvider, err)
 	}
 	if _, err := w.Append(ctx, session.ActorEngine, TypeAssistantMessage, map[string]any{"content": content}); err != nil {
 		return nil, err
@@ -155,3 +139,7 @@ func TurnWithOptions(ctx context.Context, st *store.Store, sess *store.Session, 
 	}
 	return &TurnResult{SessionID: sess.ID, FinalContent: content}, nil
 }
+
+// ErrProvider marks terminal provider failures surfaced by the turn
+// loop (code provider_error, exit 3 per CLI-AND-API-CONTRACT §1).
+var ErrProvider = fmt.Errorf("provider_error")

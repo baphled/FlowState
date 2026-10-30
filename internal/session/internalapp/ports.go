@@ -55,3 +55,24 @@ var (
 	_ SessionRepo = (*store.Store)(nil)
 	_ EventLog    = (*store.Store)(nil)
 )
+
+// TurnEventLog is the persistence port consumed by the engine turn
+// loop: replay, writer factory and status projection in one view so
+// *store.Store satisfies it structurally without modification.
+type TurnEventLog interface {
+	// NewEventWriter returns the single serialized writer for one
+	// session's log.
+	NewEventWriter(ctx context.Context, sessionID string) (*store.EventWriter, error)
+	// Replay returns the hash-verified event log for one session.
+	Replay(ctx context.Context, sessionID string) ([]store.RecordedEvent, error)
+	// UpdateSessionStatus projects a terminal or paused status.
+	UpdateSessionStatus(ctx context.Context, id, status string) error
+}
+
+// TurnSession is the session view consumed by the engine turn loop;
+// the concrete record is aliased so the store keeps owning its shape
+// while runtime depends only on this port spelling.
+type TurnSession = store.Session
+
+// PausePayload carries pause metadata for EventWriter.Pause.
+type PausePayload = store.PauseInfo

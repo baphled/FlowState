@@ -1,9 +1,21 @@
 package app
 
 import (
+	"github.com/baphled/flowstate/internal/runtime"
 	"github.com/baphled/flowstate/internal/store"
 	"github.com/baphled/flowstate/internal/tool"
 )
+
+// TurnOutcome summarises one `session run` turn: the replayed event
+// log for projection plus the engine result and interrupt state.
+type TurnOutcome struct {
+	// Events is the full hash-verified event log after the turn.
+	Events []store.RecordedEvent
+	// Result is the engine turn result (nil only on early failure).
+	Result *runtime.TurnResult
+	// Interrupted reports an interrupt-driven cancellation stop.
+	Interrupted bool
+}
 
 // Dependencies are the explicit inputs of the composition root. Every
 // field is injectable so tests can supply substitutes such as an
@@ -41,3 +53,7 @@ type LoopHandle struct {
 	// close releases the event-writer registration.
 	close func() error
 }
+
+// Store aliases the concrete SQLite store so the thin cmd adapter can
+// pass it through without importing the store package directly.
+type Store = store.Store
