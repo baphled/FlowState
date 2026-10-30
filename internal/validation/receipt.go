@@ -18,6 +18,19 @@ var CapabilityIDs = map[string]bool{
 // ValidateReceipt checks a receipt against the m1-acceptance-receipt-v2
 // obligations and returns every violation found; an empty slice means valid.
 func ValidateReceipt(r Receipt) []string {
+	violations := validateReceiptHeader(r)
+	if len(r.Evidence) == 0 {
+		violations = append(violations, "evidence must contain at least one item")
+	}
+	for i, e := range r.Evidence {
+		violations = append(violations, validateEvidenceItem(i, e)...)
+	}
+	violations = append(violations, validateReceiptBody(r)...)
+	return violations
+}
+
+// validateReceiptHeader checks the schema, capability and repo-state fields.
+func validateReceiptHeader(r Receipt) []string {
 	var violations []string
 	if r.SchemaVersion != "m1-acceptance-receipt-v2" {
 		violations = append(violations, "schema_version must be m1-acceptance-receipt-v2")
@@ -40,12 +53,12 @@ func ValidateReceipt(r Receipt) []string {
 	if r.AuthorIdentity == "" {
 		violations = append(violations, "author_identity must not be empty")
 	}
-	if len(r.Evidence) == 0 {
-		violations = append(violations, "evidence must contain at least one item")
-	}
-	for i, e := range r.Evidence {
-		violations = append(violations, validateEvidenceItem(i, e)...)
-	}
+	return violations
+}
+
+// validateReceiptBody checks the gate outcome, model, review and validator run.
+func validateReceiptBody(r Receipt) []string {
+	var violations []string
 	if r.GateOutcome != "pass" && r.GateOutcome != "fail" {
 		violations = append(violations, "gate_outcome must be pass or fail")
 	}
