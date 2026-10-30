@@ -120,12 +120,19 @@ var _ = Describe("Loop", func() {
 		Expect(errors.Is(err, ErrDenied)).To(BeTrue())
 	})
 
-	It("records exactly one tool_result denial event under an empty allowlist", func() {
-		l, st, sid := newEchoLoop(nil)
-		_, _ = l.Invoke(context.Background(), Echo, json.RawMessage(`{}`))
-		events, err := st.Replay(context.Background(), sid)
-		Expect(err).NotTo(HaveOccurred())
-		Expect([2]any{len(events), events[0].Type}).To(Equal([2]any{1, TypeToolResult}))
+	Context("records exactly one tool_result denial event under an empty allowlist", func() {
+		var observedEventCount int
+		var observedEventType string
+		BeforeEach(func() {
+			l, st, sid := newEchoLoop(nil)
+			_, _ = l.Invoke(context.Background(), Echo, json.RawMessage(`{}`))
+			events, err := st.Replay(context.Background(), sid)
+			Expect(err).NotTo(HaveOccurred())
+			observedEventCount = len(events)
+			observedEventType = events[0].Type
+		})
+		It("records the expected number of events", func() { Expect(observedEventCount).To(Equal(1)) })
+		It("records the expected event type", func() { Expect(observedEventType).To(Equal(TypeToolResult)) })
 	})
 
 	It("flags the denial payload as tool_denied", func() {
@@ -219,30 +226,44 @@ var _ = Describe("Loop", func() {
 		Expect(errors.Is(err, boom)).To(BeTrue())
 	})
 
-	It("records a tool_result event on tool error", func() {
-		st, sid, w := newStoreWithSession()
-		r := NewRegistry()
-		boom := errors.New("boom")
-		_ = r.Register(fakeTool{name: "failing", err: boom})
-		l, err := NewLoop(r, w, []string{"failing"})
-		Expect(err).NotTo(HaveOccurred())
-		_, _ = l.Invoke(context.Background(), "failing", nil)
-		events, err := st.Replay(context.Background(), sid)
-		Expect(err).NotTo(HaveOccurred())
-		Expect([2]any{len(events), events[1].Type}).To(Equal([2]any{2, TypeToolResult}))
+	Context("records a tool_result event on tool error", func() {
+		var observedEventCount int
+		var observedEventType string
+		BeforeEach(func() {
+			st, sid, w := newStoreWithSession()
+			r := NewRegistry()
+			boom := errors.New("boom")
+			_ = r.Register(fakeTool{name: "failing", err: boom})
+			l, err := NewLoop(r, w, []string{"failing"})
+			Expect(err).NotTo(HaveOccurred())
+			_, _ = l.Invoke(context.Background(), "failing", nil)
+			events, err := st.Replay(context.Background(), sid)
+			Expect(err).NotTo(HaveOccurred())
+			observedEventCount = len(events)
+			observedEventType = events[1].Type
+		})
+		It("records the expected number of events", func() { Expect(observedEventCount).To(Equal(2)) })
+		It("records the tool result type", func() { Expect(observedEventType).To(Equal(TypeToolResult)) })
 	})
 
-	It("flags the error payload as tool_error containing the cause", func() {
-		st, sid, w := newStoreWithSession()
-		r := NewRegistry()
-		boom := errors.New("boom")
-		_ = r.Register(fakeTool{name: "failing", err: boom})
-		l, err := NewLoop(r, w, []string{"failing"})
-		Expect(err).NotTo(HaveOccurred())
-		_, _ = l.Invoke(context.Background(), "failing", nil)
-		events, err := st.Replay(context.Background(), sid)
-		Expect(err).NotTo(HaveOccurred())
-		Expect([]bool{contains(events[1].PayloadJSON, "tool_error"), contains(events[1].PayloadJSON, "boom")}).To(Equal([]bool{true, true}))
+	Context("flags the error payload as tool_error containing the cause", func() {
+		var observedHasToolError bool
+		var observedHasCause bool
+		BeforeEach(func() {
+			st, sid, w := newStoreWithSession()
+			r := NewRegistry()
+			boom := errors.New("boom")
+			_ = r.Register(fakeTool{name: "failing", err: boom})
+			l, err := NewLoop(r, w, []string{"failing"})
+			Expect(err).NotTo(HaveOccurred())
+			_, _ = l.Invoke(context.Background(), "failing", nil)
+			events, err := st.Replay(context.Background(), sid)
+			Expect(err).NotTo(HaveOccurred())
+			observedHasToolError = contains(events[1].PayloadJSON, "tool_error")
+			observedHasCause = contains(events[1].PayloadJSON, "boom")
+		})
+		It("marks the payload as a tool error", func() { Expect(observedHasToolError).To(BeTrue()) })
+		It("includes the original error cause", func() { Expect(observedHasCause).To(BeTrue()) })
 	})
 
 	It("errors with ErrEmptyName when invoking with an empty name", func() {
@@ -309,7 +330,7 @@ var _ = Describe("Echo", func() {
 	It("returns an empty object for blank arguments", func() {
 		res, err := NewEcho().Invoke(context.Background(), json.RawMessage("  "))
 		Expect(err).NotTo(HaveOccurred())
-		Expect(res).To(BeEmpty())
+		Expect(res).To(Equal(map[string]any{}))
 	})
 
 	It("errors on invalid json arguments", func() {

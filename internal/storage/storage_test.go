@@ -233,60 +233,141 @@ var _ = Describe("Replay oracle", func() {
 	})
 })
 
+// writeCanonicalFixture is the explicit fixture-generation utility. Callers choose
+// the output path; required specs always use an isolated temporary directory.
+func writeCanonicalFixture(path string, value map[string]any) error {
+	canonical, err := CanonicalJSON(value)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(canonical), 0o644)
+}
+
 var _ = Describe("Fixture generator", func() {
-	It("writes frozen canonical-JSON fixtures when GEN_FIXTURES is set", func() {
-		if os.Getenv("GEN_FIXTURES") == "" {
-			return
-		}
-		dir := "testdata"
-		cases := []struct {
-			name string
-			v    map[string]any
-		}{
-			{"key_order", map[string]any{"zeta": 1, "alpha": 2, "Mid": 3, "_under": 4}},
-			{"unicode", map[string]any{"text": "héllo → 世界", "emoji": "🚀"}},
-			{"numbers", map[string]any{"int": 3, "float": 1.5, "whole": 2.0, "big": 9007199254740993.0}},
-			{"nested", map[string]any{"b": 1, "a": []any{1.25, 2, "x"}, "o": map[string]any{"y": true, "x": nil}}},
-		}
-		for _, c := range cases {
-			canon, err := CanonicalJSON(c.v)
+	for _, tc := range []struct {
+		name  string
+		value map[string]any
+	}{
+		{"key_order", map[string]any{"zeta": 1, "alpha": 2, "Mid": 3, "_under": 4}},
+		{"unicode", map[string]any{"text": "héllo → 世界", "emoji": "🚀"}},
+		{"numbers", map[string]any{"int": 3, "float": 1.5, "whole": 2.0, "big": 9007199254740993.0}},
+		{"nested", map[string]any{"b": 1, "a": []any{1.25, 2, "x"}, "o": map[string]any{"y": true, "x": nil}}},
+	} {
+		fixture := tc
+		It("writes the frozen "+fixture.name+" canonical fixture", func() {
+			path := filepath.Join(GinkgoT().TempDir(), fixture.name+".json")
+			err := writeCanonicalFixture(path, fixture.value)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(os.WriteFile(filepath.Join(dir, c.name+".json"), []byte(canon), 0o644)).To(Succeed())
-		}
-	})
+			got, err := os.ReadFile(path)
+			Expect(err).NotTo(HaveOccurred())
+			frozen, err := os.ReadFile(filepath.Join("testdata", fixture.name+".json"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got).To(Equal(frozen))
+		})
+	}
 })
 
+// captureQualification writes the T019 bundle to an explicit destination. It
+// retains the capture capability without environment-gated passing specs or
+// writes to shared source fixtures.
+func captureQualification(db *sql.DB, info OpenInfo, out string) error {
+	rows := func() ([]int, error) {
+		result, err := db.Query(`SELECT version FROM schema_migrations ORDER BY version`)
+		if err != nil {
+			return nil, err
+		}
+		defer result.Close()
+		versions := []int{}
+		for result.Next() {
+			var v int
+			if err := result.Scan(&v); err != nil {
+				return nil, err
+			}
+			versions = append(versions, v)
+		}
+		return versions, result.Err()
+	}
+	first, err := rows()
+	if err != nil {
+		return err
+	}
+	if err := Migrate(db); err != nil {
+		return err
+	}
+	second, err := rows()
+	if err != nil {
+		return err
+	}
+	pragmas := map[string]string{}
+	for _, key := range []string{"journal_mode", "foreign_keys", "synchronous", "busy_timeout"} {
+		var value string
+		if err := db.QueryRow("PRAGMA " + key).Scan(&value); err != nil {
+			return err
+		}
+		pragmas[key] = value
+	}
+	b, err := json.MarshalIndent(map[string]any{
+		"open_info":                      info,
+		"effective_pragmas":              pragmas,
+		"applied_migrations_first_apply": first,
+		"applied_migrations_reapply":     second,
+		"reapply_is_noop":                len(first) == len(second),
+		"go_version":                     runtime.Version(),
+	}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(out, b, 0o644)
+}
+
 var _ = Describe("T019 qualification capture", func() {
-	It("emits the qualification evidence bundle when FLOWSTATE_T019_CAPTURE is set", func() {
-		out := os.Getenv("FLOWSTATE_T019_CAPTURE")
-		if out == "" {
-			return
-		}
-		dir := GinkgoT().TempDir()
-		db, info, err := Open(dir + "/t019.db")
+	var captured map[string]json.RawMessage
+	BeforeEach(func() {
+		db, dir, info := openT()
+		out := filepath.Join(dir, "qualification.json")
+		err := captureQualification(db, info, out)
 		Expect(err).NotTo(HaveOccurred())
-		DeferCleanup(func() { _ = db.Close() })
-		err = Migrate(db)
+		b, err := os.ReadFile(out)
 		Expect(err).NotTo(HaveOccurred())
-		rows1 := appliedRows(db)
-		err = Migrate(db)
+		err = json.Unmarshal(b, &captured)
 		Expect(err).NotTo(HaveOccurred())
-		rows2 := appliedRows(db)
-		pragma := func(k string) string {
-			var s string
-			err := db.QueryRow("PRAGMA " + k).Scan(&s)
+	})
+	It("captures the modernc driver identity", func() {
+		var info OpenInfo
+		err := json.Unmarshal(captured["open_info"], &info)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(info.DriverName).To(Equal("modernc.org/sqlite"))
+	})
+	DescribeTable("captures the effective pragma", func(key, want string) {
+		var pragmas map[string]string
+		err := json.Unmarshal(captured["effective_pragmas"], &pragmas)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(pragmas[key]).To(Equal(want))
+	},
+		Entry("journal mode", "journal_mode", "wal"),
+		Entry("foreign keys", "foreign_keys", "1"),
+		Entry("synchronous", "synchronous", "1"),
+		Entry("busy timeout", "busy_timeout", "10000"),
+	)
+	for _, key := range []string{"applied_migrations_first_apply", "applied_migrations_reapply"} {
+		field := key
+		It("captures "+field, func() {
+			var versions []int
+			err := json.Unmarshal(captured[field], &versions)
 			Expect(err).NotTo(HaveOccurred())
-			return s
-		}
-		b, err := json.MarshalIndent(map[string]any{
-			"open_info":                      info,
-			"effective_pragmas":              map[string]string{"journal_mode": pragma("journal_mode"), "foreign_keys": pragma("foreign_keys"), "synchronous": pragma("synchronous"), "busy_timeout": pragma("busy_timeout")},
-			"applied_migrations_first_apply": rows1,
-			"applied_migrations_reapply":     rows2,
-			"reapply_is_noop":                len(rows1) == len(rows2),
-			"go_version":                     runtime.Version(),
-		}, "", "  ")
+			Expect(versions).To(Equal([]int{1}))
+		})
+	}
+	It("captures the migration no-op result", func() {
+		var noop bool
+		err := json.Unmarshal(captured["reapply_is_noop"], &noop)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(os.WriteFile(out, b, 0o644)).To(Succeed())
+		Expect(noop).To(BeTrue())
+	})
+	It("captures the executing Go version", func() {
+		var version string
+		err := json.Unmarshal(captured["go_version"], &version)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(version).To(Equal(runtime.Version()))
 	})
 })
