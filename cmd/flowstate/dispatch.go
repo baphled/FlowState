@@ -4,33 +4,14 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
-	"github.com/baphled/flowstate/internal/store"
+	"github.com/baphled/flowstate/internal/app"
 )
 
 // defaultDBPath is the SQLite database used when --db is absent.
 const defaultDBPath = "flowstate.db"
-
-// flags holds the parsed global flags for one invocation.
-type flags struct {
-	db     string
-	json   bool
-	status string
-	// session new
-	provider string
-	model    string
-	task     string
-	// session tool
-	tool      string
-	toolArg   string
-	allow     []string
-	allowFile string
-	// session run
-	budget int64
-}
 
 // dispatch routes one CLI invocation and returns its exit code.
 func dispatch(args []string, stdout, stderr *os.File) int {
@@ -100,12 +81,6 @@ func dispatch(args []string, stdout, stderr *os.File) int {
 
 // errUsageCmd wraps the usage sentinel for CLI-level rejections.
 var errUsageCmd = usageSentinel{}
-
-// usageSentinel satisfies errors.Is against session.ErrUsage while
-// formatting a usage message.
-type usageSentinel struct{}
-
-func (usageSentinel) Error() string { return "usage" }
 
 // Is reports equality with the session package usage sentinel.
 func (usageSentinel) Is(target error) bool { return target.Error() == "usage" }
@@ -207,14 +182,8 @@ func flagValue(a string, take func() (string, error)) (string, error) {
 }
 
 // openStore opens (creating directories for) the SQLite database.
-func openStore(path string) (*store.Store, error) {
-	if path != ":memory:" {
-		dir := filepath.Dir(path)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return nil, err
-		}
-	}
-	return store.Open(path)
+func openStore(path string) (*app.Store, error) {
+	return app.OpenStore(path)
 }
 
 // usage prints the CLI help text.

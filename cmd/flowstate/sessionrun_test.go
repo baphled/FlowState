@@ -32,6 +32,8 @@ func fakeZaiServer(chunks ...string) *httptest.Server {
 // withFakeZai swaps the CLI provider resolver for an httptest-backed
 // zai adapter and restores it afterwards.
 func withFakeZai(srv *httptest.Server) {
+	t := GinkgoT()
+	t.Setenv("ZAI_API_KEY", "test-key")
 	old := providerResolver
 	providerResolver = func(name string) (provider.Provider, error) {
 		return zai.New("test-key", zai.WithBaseURL(srv.URL)), nil

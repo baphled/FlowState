@@ -185,6 +185,7 @@ var _ = Describe("Turn", func() {
 			}}
 
 			_, err = Turn(ctx, st, sess, fake)
+			Expect(errors.Is(err, ErrProvider)).To(BeTrue())
 			Expect(errors.Is(err, boom)).To(BeTrue())
 		})
 
