@@ -9,17 +9,6 @@ import (
 	"sort"
 )
 
-// PersistedEvent is the stored event row projected onto stdout (VA-E2).
-type PersistedEvent struct {
-	SessionID     string
-	Seq           int64
-	CreatedAtUTC  string
-	Actor         string
-	Type          string
-	PayloadSHA256 string
-	Payload       map[string]any
-}
-
 // CanonicalPayload reserializes the parsed payload as sorted-key JSON with no
 // insignificant whitespace and returns its UTF-8 digest.
 func CanonicalPayload(payload map[string]any) ([]byte, string) {

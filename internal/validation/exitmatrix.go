@@ -1,29 +1,29 @@
 package validation
 
-// ExitCode identifies a stable CLI exit code from the CLI contract (VA-C1).
-type ExitCode int
-
 // Stable exit codes from specs/CLI-AND-API-CONTRACT.md. The behaviour lives
 // in cmd/flowstate exitCodeFor; this table only validates observed pairs.
 const (
-	ExitCompleted      ExitCode = 0
+	// ExitCompleted is the success exit for any completed command.
+	ExitCompleted ExitCode = 0
+	// ExitUnknownSession is the unknown-session exit for event/replay lookups.
 	ExitUnknownSession ExitCode = 1
-	ExitUsage          ExitCode = 2
-	ExitProvider       ExitCode = 3
-	ExitConfigInvalid  ExitCode = 4
-	ExitBudgetPause    ExitCode = 5
+	// ExitUsage is the usage-error exit.
+	ExitUsage ExitCode = 2
+	// ExitProvider is the provider-failure exit.
+	ExitProvider ExitCode = 3
+	// ExitConfigInvalid is the invalid-config exit.
+	ExitConfigInvalid ExitCode = 4
+	// ExitBudgetPause is the budget pause exit; the session stays non-terminal.
+	ExitBudgetPause ExitCode = 5
+	// ExitTerminalRefuse is the terminal-state refusal exit.
 	ExitTerminalRefuse ExitCode = 6
+	// ExitReplayMismatch is the persisted-log corruption exit.
 	ExitReplayMismatch ExitCode = 7
+	// ExitReceiptInvalid is the any-invalid-receipt exit.
 	ExitReceiptInvalid ExitCode = 8
-	ExitCancelled      ExitCode = 130
+	// ExitCancelled is the SIGINT-cancellation exit.
+	ExitCancelled ExitCode = 130
 )
-
-// ExitExpectation is one row of the VA-C1 command/error/exit matrix.
-type ExitExpectation struct {
-	Command string
-	Error   string
-	Exit    ExitCode
-}
 
 // ExitMatrix is the declarative VA-C1 matrix from the CLI contract.
 var ExitMatrix = []ExitExpectation{

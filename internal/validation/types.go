@@ -105,3 +105,24 @@ type ArtefactVerification struct {
 	ActualSHA256  string
 	Present       bool
 }
+
+// PersistedEvent is the stored event row projected onto stdout (VA-E2).
+type PersistedEvent struct {
+	SessionID     string
+	Seq           int64
+	CreatedAtUTC  string
+	Actor         string
+	Type          string
+	PayloadSHA256 string
+	Payload       map[string]any
+}
+
+// ExitCode identifies a stable CLI exit code from the CLI contract (VA-C1).
+type ExitCode int
+
+// ExitExpectation is one row of the VA-C1 command/error/exit matrix.
+type ExitExpectation struct {
+	Command string
+	Error   string
+	Exit    ExitCode
+}
