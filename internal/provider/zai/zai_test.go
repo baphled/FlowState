@@ -84,85 +84,126 @@ var _ = Describe("Zai provider", func() {
 		Expect(p.Models()).NotTo(BeEmpty())
 	})
 
-	It("sends auth, model and body to chat completions and parses content", func() {
-		var gotAuth, gotPathOK, gotBodyOK string
-		_, p := newTestServer(func(w http.ResponseWriter, r *http.Request) {
-			gotAuth = r.Header.Get("Authorization")
-			if strings.HasSuffix(r.URL.Path, "/chat/completions") {
-				gotPathOK = "path-ok"
-			}
-			b, _ := io.ReadAll(r.Body)
-			if strings.Contains(string(b), `"model":"glm-4.6"`) {
-				gotBodyOK = "body-ok"
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"id":      "c1",
-				"choices": []map[string]any{{"index": 0, "message": map[string]any{"role": "assistant", "content": "hello there"}}},
+	Context("sends auth, model and body to chat completions and parses content", func() {
+		var observedContent string
+		var observedAuthorization string
+		var observedCompletionPath string
+		var observedModelBody string
+		BeforeEach(func() {
+			var gotAuth, gotPathOK, gotBodyOK string
+			_, p := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+				gotAuth = r.Header.Get("Authorization")
+				if strings.HasSuffix(r.URL.Path, "/chat/completions") {
+					gotPathOK = "path-ok"
+				}
+				b, _ := io.ReadAll(r.Body)
+				if strings.Contains(string(b), `"model":"glm-4.6"`) {
+					gotBodyOK = "body-ok"
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"id":      "c1",
+					"choices": []map[string]any{{"index": 0, "message": map[string]any{"role": "assistant", "content": "hello there"}}},
+				})
 			})
+			resp, err := p.Chat(context.Background(), &provider.ChatRequest{
+				Model:    "glm-4.6",
+				Messages: []provider.Message{{Role: "user", Content: "hi"}},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			observedContent = resp.Content
+			observedAuthorization = gotAuth
+			observedCompletionPath = gotPathOK
+			observedModelBody = gotBodyOK
 		})
-		resp, err := p.Chat(context.Background(), &provider.ChatRequest{
-			Model:    "glm-4.6",
-			Messages: []provider.Message{{Role: "user", Content: "hi"}},
-		})
-		Expect(err).NotTo(HaveOccurred())
-		Expect([4]any{resp.Content, gotAuth, gotPathOK, gotBodyOK}).
-			To(Equal([4]any{"hello there", "Bearer test-key", "path-ok", "body-ok"}))
+		It("returns assistant content", func() { Expect(observedContent).To(Equal("hello there")) })
+		It("sends the bearer authorization header", func() { Expect(observedAuthorization).To(Equal("Bearer test-key")) })
+		It("uses the chat completions endpoint", func() { Expect(observedCompletionPath).To(Equal("path-ok")) })
+		It("sends the requested model", func() { Expect(observedModelBody).To(Equal("body-ok")) })
 	})
 
-	It("wraps api failures in the typed APIError and the unauthorized sentinel", func() {
-		_, p := newTestServer(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"error":{"code":"1002","message":"invalid api key"}}`))
+	Context("wraps api failures in the typed APIError and the unauthorized sentinel", func() {
+		var observedIsAPIError bool
+		var observedIsUnauthorized bool
+		BeforeEach(func() {
+			_, p := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"error":{"code":"1002","message":"invalid api key"}}`))
+			})
+			_, err := chat(p)
+			var apiErr *zai.APIError
+			observedIsAPIError = errors.As(err, &apiErr)
+			observedIsUnauthorized = errors.Is(err, zai.ErrUnauthorized)
 		})
-		_, err := chat(p)
-		var apiErr *zai.APIError
-		Expect([2]any{errors.As(err, &apiErr), errors.Is(err, zai.ErrUnauthorized)}).
-			To(Equal([2]any{true, true}))
+		It("returns a typed API error", func() { Expect(observedIsAPIError).To(BeTrue()) })
+		It("wraps the unauthorized sentinel", func() { Expect(observedIsUnauthorized).To(BeTrue()) })
 	})
 
-	It("populates APIError status, code and message from the api response", func() {
-		_, p := newTestServer(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"error":{"code":"1002","message":"invalid api key"}}`))
-		})
-		_, err := chat(p)
-		var apiErr *zai.APIError
-		if !errors.As(err, &apiErr) {
-			panic("expected *zai.APIError")
-		}
-		Expect([3]any{apiErr.Status, apiErr.Code, apiErr.Message}).
-			To(Equal([3]any{http.StatusUnauthorized, "1002", "invalid api key"}))
-	})
-
-	It("does not silently retry failed chat calls", func() {
-		calls := 0
-		_, p := newTestServer(func(w http.ResponseWriter, r *http.Request) {
-			calls++
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = w.Write([]byte(`{"error":{"code":"internal","message":"boom"}}`))
-		})
-		_, err := chat(p)
-		Expect([2]any{err != nil, calls}).To(Equal([2]any{true, 1}))
-	})
-
-	It("requests event streaming when streaming chat deltas", func() {
-		var accept string
-		_, p := newTestServer(func(w http.ResponseWriter, r *http.Request) {
-			accept = r.Header.Get("Accept")
-			w.Header().Set("Content-Type", "text/event-stream")
-			fl := w.(http.Flusher)
-			for _, chunk := range []string{
-				`data: {"choices":[{"delta":{"content":"he"}}]}`,
-				`data: {"choices":[{"delta":{"content":"llo"}}]}`,
-				`data: [DONE]`,
-			} {
-				_, _ = w.Write([]byte(chunk + "\n\n"))
-				fl.Flush()
+	Context("populates APIError status, code and message from the api response", func() {
+		var observedStatus int
+		var observedCode string
+		var observedMessage string
+		BeforeEach(func() {
+			_, p := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"error":{"code":"1002","message":"invalid api key"}}`))
+			})
+			_, err := chat(p)
+			var apiErr *zai.APIError
+			if !errors.As(err, &apiErr) {
+				panic("expected *zai.APIError")
 			}
+			observedStatus = apiErr.Status
+			observedCode = apiErr.Code
+			observedMessage = apiErr.Message
 		})
-		content := collectStream(p, &provider.ChatRequest{Model: "glm-4.6"})
-		Expect([2]any{strings.Contains(accept, "text/event-stream"), content}).To(Equal([2]any{true, "hello"}))
+		It("records the HTTP status", func() { Expect(observedStatus).To(Equal(http.StatusUnauthorized)) })
+		It("records the API error code", func() { Expect(observedCode).To(Equal("1002")) })
+		It("records the API error message", func() { Expect(observedMessage).To(Equal("invalid api key")) })
+	})
+
+	Context("does not silently retry failed chat calls", func() {
+		var observedFailed bool
+		var observedCallCount int
+		BeforeEach(func() {
+			calls := 0
+			_, p := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"error":{"code":"internal","message":"boom"}}`))
+			})
+			_, err := chat(p)
+			observedFailed = err != nil
+			observedCallCount = calls
+		})
+		It("returns an error", func() { Expect(observedFailed).To(BeTrue()) })
+		It("makes exactly one HTTP request", func() { Expect(observedCallCount).To(Equal(1)) })
+	})
+
+	Context("requests event streaming when streaming chat deltas", func() {
+		var observedAcceptsEvents bool
+		var observedContent string
+		BeforeEach(func() {
+			var accept string
+			_, p := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+				accept = r.Header.Get("Accept")
+				w.Header().Set("Content-Type", "text/event-stream")
+				fl := w.(http.Flusher)
+				for _, chunk := range []string{
+					`data: {"choices":[{"delta":{"content":"he"}}]}`,
+					`data: {"choices":[{"delta":{"content":"llo"}}]}`,
+					`data: [DONE]`,
+				} {
+					_, _ = w.Write([]byte(chunk + "\n\n"))
+					fl.Flush()
+				}
+			})
+			content := collectStream(p, &provider.ChatRequest{Model: "glm-4.6"})
+			observedAcceptsEvents = strings.Contains(accept, "text/event-stream")
+			observedContent = content
+		})
+		It("requests server sent events", func() { Expect(observedAcceptsEvents).To(BeTrue()) })
+		It("joins the streamed content", func() { Expect(observedContent).To(Equal("hello")) })
 	})
 
 	It("surfaces typed errors from a failed stream", func() {
