@@ -7,7 +7,6 @@ import (
 	"os"
 
 	"github.com/baphled/flowstate/internal/app"
-	"github.com/baphled/flowstate/internal/session"
 )
 
 // providerResolver is the CLI's provider factory seam; tests swap it
@@ -21,7 +20,7 @@ var providerResolver = app.ResolveProvider
 // terminal; 130 interrupted.
 func cmdRun(ctx context.Context, st *app.Store, id string, fl *flags, stdout, stderr *os.File) int {
 	if id == "" {
-		writeError(stderr, fmt.Errorf("%w: session id required", session.ErrUsage))
+		writeError(stderr, fmt.Errorf("%w: session id required", app.ErrUsage))
 		return exitUsage
 	}
 	outcome, err := app.RunTurn(ctx, st, id, fl.budget, providerResolver)

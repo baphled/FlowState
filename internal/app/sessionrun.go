@@ -19,10 +19,6 @@ import (
 // config_invalid); the cmd adapter wraps database-open failures in it.
 var ErrConfigInvalid = errors.New("config_invalid")
 
-// ProviderFactory resolves a provider by name; tests swap it for an
-// httptest-backed adapter, production uses the registry.
-type ProviderFactory func(name string) (provider.Provider, error)
-
 // ResolveProvider resolves a provider by name through the registry
 // (the only place a concrete adapter is selected).
 func ResolveProvider(name string) (provider.Provider, error) {
@@ -90,7 +86,7 @@ func RunTurn(ctx context.Context, st *store.Store, id string, budget int64, reso
 		case <-ctx.Done():
 		}
 	}()
-	res, err := runtime.TurnWithOptions(sctx, st, sess, streamer, runtime.TurnOptions{Budget: budget})
+	res, err := TurnWithOptions(sctx, st, sess, streamer, runtime.TurnOptions{Budget: budget})
 	outcome := &TurnOutcome{Result: res, Interrupted: sctx.Err() != nil && err != nil}
 	evts, rerr := st.Replay(ctx, id)
 	if rerr != nil {
