@@ -13,18 +13,6 @@ import (
 	"time"
 )
 
-// Session is the persisted session record per DATA-MODEL §2.
-type Session struct {
-	ID        string
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	Status    string
-	Provider  string
-	ModelID   string
-	Harness   string
-	ConfigSHA string
-}
-
 // CreateSession inserts a session row with status active and returns it.
 // The ID must be a caller-generated UUIDv7; attribution fields must be
 // runtime-observed, never prompt-claimed.
@@ -103,19 +91,6 @@ func sha256Hex(b []byte) string {
 // across the whole process for this Store.
 var writerRegistry sync.Map // session id -> *EventWriter
 
-// EventWriter is the single serialized event writer for one session
-// (DATA-MODEL §5). It owns the next-seq allocation and every events
-// insert inside a transaction. Release it with Close so a later writer
-// may be registered.
-type EventWriter struct {
-	store   *Store
-	session string
-	mu      sync.Mutex
-	next    int64
-	paused  bool
-	closed  bool
-}
-
 // NewEventWriter registers the single event writer for session id.
 // If a live writer already exists for the session it returns
 // ErrWriterExists.
@@ -146,17 +121,6 @@ func (s *Store) NewEventWriter(ctx context.Context, sessionID string) (*EventWri
 		w.next = maxSeq.Int64 + 1
 	}
 	return w, nil
-}
-
-// Event is one attributable ordered event as appended by the writer.
-// Payload is any JSON-serialisable value; it is canonicalised on write.
-type Event struct {
-	SessionID string
-	Seq       int64
-	CreatedAt time.Time
-	Actor     string
-	Type      string
-	Payload   any
 }
 
 // Append validates e, assigns the next 0-based contiguous seq for the
@@ -195,14 +159,6 @@ func (w *EventWriter) Append(ctx context.Context, actor, typ string, payload any
 	}
 	w.next++
 	return seq, nil
-}
-
-// PauseInfo describes the engine-side pause context recorded in the
-// session.paused event payload.
-type PauseInfo struct {
-	Reason         string
-	ConsumedBudget int64
-	NextSafeOp     string
 }
 
 // pauseTxEvent inserts an event row inside tx with the canonical
