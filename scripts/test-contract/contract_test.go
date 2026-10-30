@@ -10,6 +10,16 @@ var _ = Describe("Test contract", func() {
 		source := "package fixture\nimport (. \"github.com/onsi/ginkgo/v2\"; . \"github.com/onsi/gomega\"; \"testing\"; \"time\"; \"os\")\n" + body
 		Expect(checkSource(sourceFile{Name: "fixture_test.go", Source: source})).To(HaveLen(failures))
 	},
+		Entry("nil tautology", `var _=It("works",func(){ Expect(err==nil || err!=nil).To(BeTrue()) })`, 1),
+		Entry("boolean tautology", `var _=It("works",func(){ Expect(x || !x).To(BeTrue()) })`, 1),
+		Entry("any slice tuple", `var _=It("works",func(){ Expect([]any{err, count}).To(Equal([]any{nil, 1})) })`, 1),
+		Entry("any array tuple", `var _=It("works",func(){ Expect([4]any{err, count, name, ok}).To(Equal(want)) })`, 1),
+		Entry("guard return", `var _=It("works",func(){ if err != nil { return }; Expect(value).To(Equal(1)) })`, 1),
+		Entry("typed sequence", `var _=It("works",func(){ Expect([]string{"first", "second"}).To(Equal(want)) })`, 0),
+		Entry("structured contract", `var _=It("works",func(){ Expect(result{Count: count, Name: name}).To(Equal(want)) })`, 0),
+		Entry("async inner return", `var _=It("works",func(){ Eventually(func() int { if ready { return 1 }; return 0 }).WithTimeout(time.Second).WithPolling(time.Millisecond).Should(Equal(1)) })`, 0),
+		Entry("repeated calls may differ", `var _=It("works",func(){ Expect(read() || !read()).To(BeTrue()) })`, 0),
+		Entry("non tautology", `var _=It("works",func(){ Expect(x || y).To(BeTrue()) })`, 0),
 		Entry("constructor is not assertion", `var _=It("works",func(){ Expect(value) })`, 1),
 		Entry("async must be bounded", `var _=It("works",func(){ Eventually(read).Should(Equal(1)) })`, 1),
 		Entry("indirect body", `var _=It("works",body)`, 1),
