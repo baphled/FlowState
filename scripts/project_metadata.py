@@ -10,11 +10,8 @@ from pathlib import Path, PurePosixPath
 
 
 REFERENCE = re.compile(r'dropbox:/FlowState/Metadata/attempts/[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*\.json')
-# AI-Generated-By and Reviewed-By are the repo-standard trailers added by
-# the ai-commit helper (enforced by the commit-msg hook and the Check AI
-# Attribution CI job); other identity claims belong in Dropbox records,
-# not commit messages.
-CLAIM = re.compile(r'^(?:AI-Agent|AI-Model|Co-authored-by):', re.I | re.M)
+# Identity and review claims belong only in the external record.
+CLAIM = re.compile(r'^\s*(?:AI-Generated-By|Reviewed-By|AI-Agent|AI-Model|Co-authored-by)\s*:', re.I | re.M)
 RECORD_PATH = re.compile(r'(^|/)(?:receipts?|qualifications?|evidence|reports?|agent-metadata|project-metadata|tasks?|plans?|handoffs?|progress)(?:/|[._-])|(?:^|/)[^/]*(?:qualification|receipt|attestation|validation-evidence|review-result)[^/]*\.(?:md|json|ya?ml|txt|log|zip|db|sqlite)$', re.I)
 LEGACY_RECORD = re.compile(r'(^|/)(?:HANDOFF|PROGRESS|PLAN)\.md$', re.I)
 CODE_SUFFIXES = {'.go', '.py', '.sh', '.js', '.ts', '.tsx', '.vue'}
@@ -56,6 +53,11 @@ def record_errors(path, content):
         return []
     if RECORD_PATH.search(path) or LEGACY_RECORD.search(path):
         return ['project metadata file must be stored in Dropbox: ' + path]
+    if item.suffix.lower() in {'.md', '.txt', '.log'}:
+        references = re.findall(r'^\s*Project-Metadata:\s*(\S+)\s*$',
+                                content.decode('utf-8', 'replace'), re.M)
+        if any(REFERENCE.fullmatch(reference) for reference in references):
+            return ['executed delivery record must be stored in Dropbox: ' + path]
     if isinstance(value, dict):
         version = str(value.get('schema_version', value.get('record_type', '')))
         if re.search(r'(?:acceptance-receipt|work-packet|qualification|project-metadata)', version):
@@ -94,13 +96,54 @@ def tree_errors(tree=None):
     return errors
 
 
+def changed_tree_errors(base, head):
+    """Inspect every touched blob, including files subsequently deleted."""
+    errors = []
+    for commit in git('rev-list', f'{base}..{head}').decode().splitlines():
+        names = git('diff-tree', '--root', '-m', '--no-commit-id', '--name-only',
+                    '--diff-filter=ACMT', '--no-renames', '-r', '-z', commit).split(b'\0')
+        for name in filter(None, names):
+            path = name.decode('utf-8', 'surrogateescape')
+            content = git('show', f'{commit}:{path}')
+            errors.extend(f'{commit[:12]}: {e}' for e in record_errors(path, content))
+    return errors
+
+
+def prepare_message(source, record, output):
+    """Validate a fetched external cache and bind its reference to the message.
+
+    This offline check cannot authenticate Dropbox or the claimed observations.
+    The caller must fetch the real record; source text is never modified.
+    """
+    errors = external_record_errors(record)
+    if errors:
+        return errors
+    if output.resolve() in (source.resolve(), record.resolve()):
+        return ['output must differ from the source message and external record']
+    value = json.loads(record.read_text())
+    message = source.read_text().rstrip()
+    if not message or message == '...':
+        errors.append('a substantive commit message is required')
+    references = re.findall(r'^Project-Metadata: (.+)$', message, re.M)
+    if references and references != [value.get('metadata_ref')]:
+        errors.append('message reference differs from the validated external record')
+    if not references:
+        message += '\n\nProject-Metadata: ' + str(value.get('metadata_ref', ''))
+    errors.extend(message_errors(message))
+    if not errors:
+        output.write_text(message + '\n')
+    return errors
+
+
 def external_record_errors(path):
     root = Path(git('rev-parse', '--show-toplevel').decode().strip()).resolve()
     if path.resolve().is_relative_to(root):
         return ['metadata record/cache must be outside the code checkout']
     value = json.loads(path.read_text())
+    if not isinstance(value, dict):
+        return ['external record must be a JSON object']
     errors = []
-    if value.get('record_type') != 'flowstate-project-metadata-v1' or not REFERENCE.fullmatch(value.get('metadata_ref', '')):
+    if value.get('record_type') != 'flowstate-project-metadata-v1' or not REFERENCE.fullmatch(str(value.get('metadata_ref', ''))):
         errors.append('invalid external project metadata record/reference')
     if value.get('base_sha') != git('rev-parse', 'HEAD').decode().strip():
         errors.append('external record base differs from current HEAD')
@@ -108,14 +151,16 @@ def external_record_errors(path):
                 '/FlowState/Dev/governance/OWNER-DECISIONS-AND-OPEN-QUESTIONS.md',
                 '/FlowState/Metadata/ACTIVE.json'}
     reads = value.get('dropbox_reads', [])
-    observed = {r.get('path') for r in reads if isinstance(r, dict) and
+    if not isinstance(reads, list):
+        return ['dropbox_reads must be a list']
+    observed = {re.sub(r'^ns:[0-9]+//', '/', str(r.get('path'))) for r in reads if isinstance(r, dict) and
                 re.fullmatch('[0-9a-f]{64}', str(r.get('sha256', ''))) and r.get('file_id')}
     if not required <= observed:
         errors.append('current Dropbox entry/rules/decisions/ACTIVE reads and hashes are required')
     if not re.fullmatch('[0-9a-f]{64}', str(value.get('docs_pack_manifest_sha256', ''))):
         errors.append('current pack manifest digest is required')
     attribution = value.get('attribution', {})
-    if not isinstance(attribution, dict) or not all(attribution.get(k) for k in ('agent', 'provider', 'model', 'harness', 'source')):
+    if not isinstance(attribution, dict) or not all(isinstance(attribution.get(k), str) and attribution[k].strip() for k in ('agent', 'provider', 'model', 'harness', 'source')):
         errors.append('observed attribution or explicit unverified values and source are required')
     return errors
 
@@ -125,6 +170,9 @@ def main():
     parser.add_argument('--base')
     parser.add_argument('--head', default='HEAD')
     parser.add_argument('--staged', action='store_true')
+    parser.add_argument('--changed', action='store_true', help='check touched blobs in every PR commit; requires --base')
+    parser.add_argument('--prepare-message', type=Path, help='prepare a neutral commit message from a fetched external record')
+    parser.add_argument('--output', type=Path)
     parser.add_argument('--message-file', type=Path)
     parser.add_argument('--external-record', type=Path)
     parser.add_argument('--receipt', type=Path,
@@ -135,6 +183,15 @@ def main():
     if args.receipt:
         return validate_receipt(RECEIPT_SCHEMA, args.receipt)
     try:
+        if args.prepare_message:
+            if not args.external_record or not args.output:
+                parser.error('--prepare-message requires --external-record and --output')
+            errors = prepare_message(args.prepare_message, args.external_record, args.output)
+            for error in errors:
+                print('FAIL: ' + error, file=sys.stderr)
+            return bool(errors)
+        if args.changed and not args.base:
+            parser.error('--changed requires --base')
         if args.message_file and not (args.tree_root or args.base or args.staged or args.external_record):
             # Message-only mode: validate the commit message alone, with no
             # Git tree/context scan, so `--message-file` can fail loudly on a
@@ -154,11 +211,12 @@ def main():
                 print('PASS: no project run records in the checked tree')
                 print('LIMIT: offline checks cannot authenticate Dropbox reads, serving identity or review')
             return bool(errors)
-        errors = tree_errors(None if args.staged or not args.base else args.head)
+        errors = changed_tree_errors(args.base, args.head) if args.changed else tree_errors(None if args.staged or not args.base else args.head)
         if args.base:
             commits = git('rev-list', f'{args.base}..{args.head}').decode().splitlines()
             for commit in commits:
-                errors.extend(f'{commit[:12]}: {e}' for e in tree_errors(commit))
+                if not args.changed:
+                    errors.extend(f'{commit[:12]}: {e}' for e in tree_errors(commit))
                 errors.extend(f'{commit[:12]}: {e}' for e in message_errors(git('show', '-s', '--format=%B', commit).decode()))
         if args.message_file:
             errors.extend(message_errors(args.message_file.read_text()))
@@ -167,7 +225,7 @@ def main():
         for error in errors:
             print('FAIL: ' + error, file=sys.stderr)
         if not errors:
-            print('PASS: no project run records in Git; reference checks passed')
+            print('PASS: checked blobs and commit references satisfy metadata policy')
             print('LIMIT: offline checks cannot authenticate Dropbox reads, serving identity or review')
         return bool(errors)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:

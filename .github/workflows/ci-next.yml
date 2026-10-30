@@ -14,34 +14,19 @@ jobs:
   metadata:
     name: Project Metadata Guard
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Guard project metadata in commits and tree
-        run: |
-          set -euo pipefail
-          # next's base still carries forbidden Gherkin/Gherkin-tooling content
-          # (legacy cucumber job, .sisyphus evidence) that is
-          # scheduled for removal separately; until that lands, the tree scan
-          # scopes itself to the files this PR actually touches. The commit
-          # message check always fails loudly.
-          BASE_SHA="${{ github.event.pull_request.base.sha }}"
-          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-          mkdir -p /tmp/guard
-          for path in $(git diff --name-only "$BASE_SHA" "$HEAD_SHA"); do
-            git show "$HEAD_SHA:$path" > /tmp/guard-file 2>/dev/null || continue
-            mkdir -p "/tmp/guard/$(dirname "$path")"
-            cp /tmp/guard-file "/tmp/guard/$path"
-          done
-          python3 scripts/project_metadata.py --tree-root /tmp/guard
-          # GitHub checks out the PR MERGE commit, whose auto message has no
-          # Project-Metadata trailer; validate the PR HEAD commit message.
-          git show -s --format=%B "$HEAD_SHA" > /tmp/msg.txt
-          python3 scripts/project_metadata.py --message-file /tmp/msg.txt
-          echo "PASS: no project run records in the PR-touched files"
+      - name: Test metadata contract and commit helper
+        run: python3 -B -m unittest discover -s scripts/tests -p test_project_metadata.py -v
+
+      - name: Guard every new commit and changed blob
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 -B scripts/project_metadata.py --changed --base "$BASE_SHA" --head "$HEAD_SHA"
 
   commitlint:
     name: Lint Commits
@@ -145,9 +130,27 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
-    needs: [lint, test]
+    if: ${{ always() }}
+    needs: [lint, test, metadata]
     steps:
+      - name: Require successful prerequisites
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, sys
+          results = json.loads(os.environ["NEEDS_JSON"])
+          failures = {job: data.get("result") for job, data in results.items()
+                      if data.get("result") != "success"}
+          if not results or failures:
+              print("Build blocked by unsuccessful prerequisites:", failures)
+              sys.exit(1)
+          PYTHON
+
       - uses: actions/checkout@v4
+
+      - name: Test required Build failure handling
+        run: python3 -B -m unittest discover -s scripts/tests -p test_required_build.py -v
 
       - uses: actions/setup-go@v5
         with:
