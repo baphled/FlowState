@@ -30,7 +30,7 @@ func ResolveProvider(name string) (provider.Provider, error) {
 func OpenStore(path string) (*store.Store, error) {
 	if path != ":memory:" {
 		dir := filepath.Dir(path)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return nil, err
 		}
 	}
