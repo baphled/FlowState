@@ -6,9 +6,9 @@ import (
 	"time"
 )
 
-// ListSessions returns sessions ordered by creation time (oldest
-// first). A non-empty status filters on it. It absorbs the projection
-// error by returning a zero timestamp with the parsed session.
+// ListSessions returns sessions ordered by creation time (oldest first),
+// breaking ties by ID. A non-empty status filters on it. Invalid stored
+// timestamps return a parsing error rather than a zero timestamp.
 func (s *Store) ListSessions(ctx context.Context, status string) ([]Session, error) {
 	if err := s.checkOpen(); err != nil {
 		return nil, err
@@ -19,7 +19,7 @@ func (s *Store) ListSessions(ctx context.Context, status string) ([]Session, err
 		q += ` WHERE status=?`
 		args = append(args, status)
 	}
-	q += ` ORDER BY created_at_utc, rowid`
+	q += ` ORDER BY created_at_utc, id`
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -61,7 +61,7 @@ func (s *Store) UpdateSessionStatus(ctx context.Context, id, status string) erro
 	}
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE sessions SET status=?, updated_at_utc=? WHERE id=?`,
-		status, iso(time.Now().UTC().Add(time.Millisecond)), id)
+		status, iso(time.Now().UTC()), id)
 	if err != nil {
 		return fmt.Errorf("update status %s for %s: %w", status, id, err)
 	}
