@@ -67,6 +67,15 @@ func mustTurnOverHTTP(srv *httptest.Server, prompt string) zaiTurn {
 }
 
 var _ = Describe("Turn with z.ai over HTTP", func() {
+	It("returns no error for a successful streamed turn", func() {
+		srv := newSSEServer(
+			`{"choices":[{"delta":{"content":"hel"}}]}`,
+			`{"choices":[{"delta":{"content":"lo"}}]}`,
+		)
+		out := mustTurnOverHTTP(srv, "greet me")
+		Expect(out.turnErr).To(Succeed())
+	})
+
 	It("persists the full event stream for a successful streamed turn", func() {
 		srv := newSSEServer(
 			`{"choices":[{"delta":{"content":"hel"}}]}`,
@@ -124,11 +133,18 @@ var _ = Describe("Turn with z.ai over HTTP", func() {
 		Expect(out.sessionStatus).To(Equal("failed"))
 	})
 
-	It("resolves z.ai through the registry", func() {
-		GinkgoT().Setenv("ZAI_API_KEY", "test-key")
-		p, err := registry.Resolve("z.ai")
-		Expect(err).NotTo(HaveOccurred())
-		zp, ok := p.(*zai.Provider)
-		Expect([2]any{ok, zp.Name()}).To(Equal([2]any{true, "z.ai"}))
+	Context("resolves z.ai through the registry", func() {
+		var observedIsZai bool
+		var observedProviderName string
+		BeforeEach(func() {
+			GinkgoT().Setenv("ZAI_API_KEY", "test-key")
+			p, err := registry.Resolve("z.ai")
+			Expect(err).NotTo(HaveOccurred())
+			zp, ok := p.(*zai.Provider)
+			observedIsZai = ok
+			observedProviderName = zp.Name()
+		})
+		It("resolves a z.ai provider", func() { Expect(observedIsZai).To(BeTrue()) })
+		It("reports the z.ai provider name", func() { Expect(observedProviderName).To(Equal("z.ai")) })
 	})
 })

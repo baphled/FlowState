@@ -222,22 +222,29 @@ var _ = Describe("Turn", func() {
 			Expect(evts[len(evts)-1].Actor).To(Equal(session.ActorEngine))
 		})
 
-		It("serialises the terminal error payload in the provider.error event", func() {
-			st := newStore()
-			ctx := context.Background()
-			sess, err := session.Create(ctx, st, "fake", "fake-model", session.DefaultHarness, "sha", "boom")
-			Expect(err).NotTo(HaveOccurred())
-			boom := errors.New("upstream exploded")
-			fake := &fakeStreamer{events: []provider.StreamEvent{
-				{Content: "par"},
-				{Err: boom},
-			}}
+		Context("serialises the terminal error payload in the provider.error event", func() {
+			var observedHasError bool
+			var observedIsTerminal bool
+			BeforeEach(func() {
+				st := newStore()
+				ctx := context.Background()
+				sess, err := session.Create(ctx, st, "fake", "fake-model", session.DefaultHarness, "sha", "boom")
+				Expect(err).NotTo(HaveOccurred())
+				boom := errors.New("upstream exploded")
+				fake := &fakeStreamer{events: []provider.StreamEvent{
+					{Content: "par"},
+					{Err: boom},
+				}}
 
-			_, _ = Turn(ctx, st, sess, fake)
-			evts, err := st.Replay(ctx, sess.ID)
-			Expect(err).NotTo(HaveOccurred())
-			last := evts[len(evts)-1].PayloadJSON
-			Expect([]bool{strings.Contains(last, `"error"`), strings.Contains(last, `"terminal":true`)}).To(Equal([]bool{true, true}))
+				_, _ = Turn(ctx, st, sess, fake)
+				evts, err := st.Replay(ctx, sess.ID)
+				Expect(err).NotTo(HaveOccurred())
+				last := evts[len(evts)-1].PayloadJSON
+				observedHasError = strings.Contains(last, `"error"`)
+				observedIsTerminal = strings.Contains(last, `"terminal":true`)
+			})
+			It("includes the error in the payload", func() { Expect(observedHasError).To(BeTrue()) })
+			It("marks the provider error terminal", func() { Expect(observedIsTerminal).To(BeTrue()) })
 		})
 
 		It("marks the session failed on streamer error", func() {
