@@ -129,7 +129,6 @@ var _ = Describe("Turn with z.ai over HTTP", func() {
 		p, err := registry.Resolve("z.ai")
 		Expect(err).NotTo(HaveOccurred())
 		zp, ok := p.(*zai.Provider)
-		observedIsZai := ok && zp.Name() == "z.ai"
-		Expect(observedIsZai).To(BeTrue())
+		Expect([2]any{ok, zp.Name()}).To(Equal([2]any{true, "z.ai"}))
 	})
 })
