@@ -144,42 +144,73 @@ var _ = Describe("Session CLI usage", func() {
 })
 
 var _ = Describe("Session list", func() {
-	It("exits 0 with no output against a fresh DB", func() {
-		r := runCLIList()
-		Expect([2]any{r.exit, r.stdout}).To(Equal([2]any{0, ""}))
+	Context("exits 0 with no output against a fresh DB", func() {
+		var observedExit int
+		var observedStdout string
+		BeforeEach(func() {
+			r := runCLIList()
+			observedExit = r.exit
+			observedStdout = r.stdout
+		})
+		It("returns the expected exit status", func() { Expect(observedExit).To(Equal(0)) })
+		It("prints no sessions", func() { Expect(observedStdout).To(Equal("")) })
 	})
 
 	It("exits 2 with usage for an invalid status filter", func() {
 		Expect(runCLIList("--status", "zombie").exit).To(Equal(2))
 	})
 
-	It("lists a created session", func() {
-		r := runCLINew("--provider", "prov", "--model", "m1", "--task", "t")
-		if r.exit != 0 {
-			panic(fmt.Sprintf("session new exit %d", r.exit))
-		}
-		decodeNew(r.stdout)
-		l := runCLIList()
-		Expect([2]any{l.exit, lines(l.stdout)}).To(Equal([2]any{0, []string{firstLine(l.stdout)}}))
+	Context("lists a created session", func() {
+		var observedExit int
+		var observedSessionLines []string
+		var observedExpectedID string
+		BeforeEach(func() {
+			r := runCLINew("--provider", "prov", "--model", "m1", "--task", "t")
+			if r.exit != 0 {
+				panic(fmt.Sprintf("session new exit %d", r.exit))
+			}
+			rec := decodeNew(r.stdout)
+			l := runCLIList()
+			observedExit = l.exit
+			observedSessionLines = lines(l.stdout)
+			observedExpectedID = rec.ID
+		})
+		It("lists sessions successfully", func() { Expect(observedExit).To(Equal(0)) })
+		It("lists exactly one session", func() { Expect(observedSessionLines).To(HaveLen(1)) })
+		It("lists the created session ID", func() { Expect(observedSessionLines[0]).To(ContainSubstring(observedExpectedID)) })
 	})
 
-	It("lists a closed session when filtered by status cancelled", func() {
-		r := runCLINew("--provider", "p", "--model", "m", "--task", "t")
-		rec := decodeNew(r.stdout)
-		runCLIClose(rec.ID)
-		l := runCLIList("--status", "cancelled")
-		Expect([2]any{l.exit, len(lines(l.stdout))}).To(Equal([2]any{0, 1}))
+	Context("lists a closed session when filtered by status cancelled", func() {
+		var observedExit int
+		var observedSessionCount int
+		BeforeEach(func() {
+			r := runCLINew("--provider", "p", "--model", "m", "--task", "t")
+			rec := decodeNew(r.stdout)
+			runCLIClose(rec.ID)
+			l := runCLIList("--status", "cancelled")
+			observedExit = l.exit
+			observedSessionCount = len(lines(l.stdout))
+		})
+		It("lists sessions successfully", func() { Expect(observedExit).To(Equal(0)) })
+		It("lists one cancelled session", func() { Expect(observedSessionCount).To(Equal(1)) })
 	})
 })
 
 var _ = Describe("Session new", func() {
-	It("prints a JSON record with status active and exit 0", func() {
-		r := runCLINew("--provider", "prov", "--model", "m1", "--task", "do things")
-		if r.exit != 0 {
-			panic(fmt.Sprintf("session new exit %d", r.exit))
-		}
-		rec := decodeNew(r.stdout)
-		Expect([]any{rec.Status, rec.ID != ""}).To(Equal([]any{"active", true}))
+	Context("prints a JSON record with status active and exit 0", func() {
+		var observedStatus string
+		var observedHasID bool
+		BeforeEach(func() {
+			r := runCLINew("--provider", "prov", "--model", "m1", "--task", "do things")
+			if r.exit != 0 {
+				panic(fmt.Sprintf("session new exit %d", r.exit))
+			}
+			rec := decodeNew(r.stdout)
+			observedStatus = rec.Status
+			observedHasID = rec.ID != ""
+		})
+		It("creates an active session", func() { Expect(observedStatus).To(Equal("active")) })
+		It("assigns a nonempty session ID", func() { Expect(observedHasID).To(BeTrue()) })
 	})
 
 	It("uses @task file contents as the task", func() {
@@ -201,18 +232,31 @@ var _ = Describe("Session events", func() {
 		Expect(runCLI("events").exit).To(Equal(2))
 	})
 
-	It("emits a single turn.start JSONL event for a created session", func() {
-		r := runCLINew("--provider", "p", "--model", "m", "--task", "hello")
-		rec := decodeNew(r.stdout)
-		e := runCLIEvents(rec.ID)
-		var ev struct {
-			Type string `json:"type"`
-			Seq  int    `json:"seq"`
-		}
-		if err := json.Unmarshal([]byte(firstLine(e.stdout)), &ev); err != nil {
-			panic(err)
-		}
-		Expect([]any{e.exit, len(lines(e.stdout)), ev.Type, ev.Seq}).To(Equal([]any{0, 1, "turn.start", 0}))
+	Context("emits a single turn.start JSONL event for a created session", func() {
+		var observedExit int
+		var observedEventCount int
+		var observedEventType string
+		var observedSequence int
+		BeforeEach(func() {
+			r := runCLINew("--provider", "p", "--model", "m", "--task", "hello")
+			rec := decodeNew(r.stdout)
+			e := runCLIEvents(rec.ID)
+			var ev struct {
+				Type string `json:"type"`
+				Seq  int    `json:"seq"`
+			}
+			if err := json.Unmarshal([]byte(firstLine(e.stdout)), &ev); err != nil {
+				panic(err)
+			}
+			observedExit = e.exit
+			observedEventCount = len(lines(e.stdout))
+			observedEventType = ev.Type
+			observedSequence = ev.Seq
+		})
+		It("lists events successfully", func() { Expect(observedExit).To(Equal(0)) })
+		It("lists one turn start event", func() { Expect(observedEventCount).To(Equal(1)) })
+		It("records the turn start type", func() { Expect(observedEventType).To(Equal("turn.start")) })
+		It("starts event numbering at zero", func() { Expect(observedSequence).To(Equal(0)) })
 	})
 })
 
@@ -221,17 +265,24 @@ var _ = Describe("Session close", func() {
 		Expect(runCLIClose("missing-id").exit).To(Equal(1))
 	})
 
-	It("cancels an active session with exit 0 and status output", func() {
-		r := runCLINew("--provider", "p", "--model", "m", "--task", "t")
-		rec := decodeNew(r.stdout)
-		c := runCLIClose(rec.ID)
-		var out struct {
-			Status string `json:"status"`
-		}
-		if err := json.Unmarshal([]byte(firstLine(c.stdout)), &out); err != nil {
-			panic(err)
-		}
-		Expect([]any{c.exit, out.Status}).To(Equal([]any{0, "cancelled"}))
+	Context("cancels an active session with exit 0 and status output", func() {
+		var observedExit int
+		var observedStatus string
+		BeforeEach(func() {
+			r := runCLINew("--provider", "p", "--model", "m", "--task", "t")
+			rec := decodeNew(r.stdout)
+			c := runCLIClose(rec.ID)
+			var out struct {
+				Status string `json:"status"`
+			}
+			if err := json.Unmarshal([]byte(firstLine(c.stdout)), &out); err != nil {
+				panic(err)
+			}
+			observedExit = c.exit
+			observedStatus = out.Status
+		})
+		It("closes the session successfully", func() { Expect(observedExit).To(Equal(0)) })
+		It("returns cancelled status", func() { Expect(observedStatus).To(Equal("cancelled")) })
 	})
 
 	It("exits 6 when closing an already closed session", func() {
@@ -241,19 +292,26 @@ var _ = Describe("Session close", func() {
 		Expect(runCLIClose(rec.ID).exit).To(Equal(6))
 	})
 
-	It("emits session.cancelled as the last event after close", func() {
-		r := runCLINew("--provider", "p", "--model", "m", "--task", "t")
-		rec := decodeNew(r.stdout)
-		runCLIClose(rec.ID)
-		e := runCLIEvents(rec.ID)
-		evs := lines(e.stdout)
-		var last struct {
-			Type string `json:"type"`
-		}
-		if err := json.Unmarshal([]byte(evs[1]), &last); err != nil {
-			panic(err)
-		}
-		Expect([]any{len(evs), last.Type}).To(Equal([]any{2, "session.cancelled"}))
+	Context("emits session.cancelled as the last event after close", func() {
+		var observedEventCount int
+		var observedLastType string
+		BeforeEach(func() {
+			r := runCLINew("--provider", "p", "--model", "m", "--task", "t")
+			rec := decodeNew(r.stdout)
+			runCLIClose(rec.ID)
+			e := runCLIEvents(rec.ID)
+			evs := lines(e.stdout)
+			var last struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal([]byte(evs[1]), &last); err != nil {
+				panic(err)
+			}
+			observedEventCount = len(evs)
+			observedLastType = last.Type
+		})
+		It("persists two events", func() { Expect(observedEventCount).To(Equal(2)) })
+		It("emits the expected final event type", func() { Expect(observedLastType).To(Equal("session.cancelled")) })
 	})
 })
 
