@@ -101,3 +101,13 @@ type EventLog interface {
 	// Replay returns the hash-verified event log for one session.
 	Replay(ctx context.Context, sessionID string) ([]store.RecordedEvent, error)
 }
+
+// turnState accumulates one turn stream's content, consumption and
+// stop reason while events are consumed.
+type turnState struct {
+	content        string
+	consumed       int64
+	streamErr      bool
+	budgetExceeded bool
+	err            error
+}
