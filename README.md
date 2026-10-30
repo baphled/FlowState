@@ -48,3 +48,29 @@ application data belongs in configured user storage, not the code checkout.
 A green source check does not certify complete product implementation, live model
 availability, T019 qualification or merge permission. Current decisions and
 candidate-bound acceptance evidence determine the next eligible work item.
+
+## Security regression gate
+
+CI pins gosec v2.30.0 and scans immutable Git snapshots of the candidate and
+its actual PR base (or the push event's before SHA). New findings at every severity
+fail the build; inherited findings are reported as unresolved debt. This gate is
+not a security clearance or proof that each scanner alert is exploitable.
+
+With Go from `go.mod`, Python 3.11+ and pinned gosec on `PATH`, run from the
+repository root (use an actual full ancestor commit SHA and a fresh output path):
+
+```bash
+python3 -B scripts/security_gate.py --base "$BASE_SHA" --output /tmp/security-results
+```
+
+The gate retains full native JSON and SARIF reports for both revisions, plus
+scanner exits and logs. Missing bases, scanner/import errors and invalid reports
+fail closed. Snapshots include all tracked regular blobs regardless of archive
+attributes; tracked symlinks and gitlinks are rejected. Reports must be outside the
+Git worktree and common directory.
+Matching uses file, rule, details, offending code, severity and
+confidence with duplicate counts; line shifts alone do not create a new finding.
+Renames or changed offending code require review as new findings. Detection remains
+limited to gosec's active-build analysis. Both scans ignore source `#nosec`
+suppressions so new annotations cannot hide alerts; inherited debt requires
+separate security review and remediation.

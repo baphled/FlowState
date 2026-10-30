@@ -11,7 +11,7 @@ permissions:
   security-events: write
 
 env:
-  GOSEC_VERSION: "v2.22.7"
+  GOSEC_VERSION: "v2.30.0"
 
 jobs:
   commitlint:
@@ -178,9 +178,27 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
-    needs: [lint, quality, test]
+    if: ${{ always() }}
+    needs: [lint, quality, test, security]
     steps:
+      - name: Require successful prerequisites
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, sys
+          results = json.loads(os.environ["NEEDS_JSON"])
+          failures = {job: data.get("result") for job, data in results.items()
+                      if data.get("result") != "success"}
+          if not results or failures:
+              print("Build blocked by unsuccessful prerequisites:", failures)
+              sys.exit(1)
+          PYTHON
+
       - uses: actions/checkout@v4
+
+      - name: Test required Build failure handling
+        run: python3 -B -m unittest discover -s scripts/tests -p test_required_build.py -v
 
       - uses: actions/setup-go@v5
         with:
@@ -198,6 +216,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
@@ -207,19 +227,24 @@ jobs:
       - name: Install gosec (pinned)
         run: go install github.com/securego/gosec/v2/cmd/gosec@${{ env.GOSEC_VERSION }}
 
-      # gosec findings fail the job (exit 1); tune/annotate via #nosec or
-      # .golangci.yml excludes rather than suppressing the exit code.
-      - name: Run gosec
-        run: gosec -severity medium -confidence medium -exclude G304 -no-fail -fmt sarif -out gosec-results.sarif ./...
+      - name: Test security regression gate
+        run: python3 -B -m unittest discover -s scripts/tests -p test_security_gate.py -v
 
-      - name: Enforce gosec gate (errors must be zero)
-        run: |
-          errors=$(jq '[.runs[0].results[] | select(.level == "error")] | length' gosec-results.sarif)
-          echo "gosec errors: $errors"
-          [ "$errors" -eq 0 ]
+      # Compare full scans; inherited findings remain visible unresolved debt.
+      - name: Reject new gosec findings
+        env:
+          SECURITY_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python3 -B scripts/security_gate.py --base "$SECURITY_BASE_SHA" --output "$RUNNER_TEMP/security-results"
+
+      - name: Retain full base and candidate scanner reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-reports
+          path: ${{ runner.temp }}/security-results
 
       - name: Upload SARIF results
         uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
-          sarif_file: gosec-results.sarif
+          sarif_file: ${{ runner.temp }}/security-results/candidate.sarif
