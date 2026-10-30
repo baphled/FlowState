@@ -153,10 +153,6 @@ jobs:
           l_label: "size/L"
           l_max_size: 500
           xl_label: "size/XL"
-          fail_if_xl: false
+          fail_if_xl: true
           message_if_xl: >
-            This PR is very large. Consider breaking it into smaller PRs
-            for easier review.
-          files_to_ignore: |
-            "go.sum"
-            "*.lock"
+            This PR exceeds the review budget. Split it into bounded PRs.

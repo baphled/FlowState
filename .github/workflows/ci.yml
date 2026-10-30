@@ -14,6 +14,30 @@ env:
   GOSEC_VERSION: "v2.30.0"
 
 jobs:
+  scope:
+    name: PR Review Budget
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Test review budget boundaries and bypass controls
+        run: python3 -B -m unittest discover -s scripts/tests -p test_pr_size.py -v
+
+      - name: Enforce base policy on the entire committed diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          checker="$RUNNER_TEMP/pr_size_base.py"
+          if git cat-file -e "$BASE_SHA:scripts/pr_size.py" 2>/dev/null; then
+            git show "$BASE_SHA:scripts/pr_size.py" > "$checker"
+          else
+            cp scripts/pr_size.py "$checker"
+          fi
+          python3 -B "$checker" --base "$BASE_SHA" --head "$HEAD_SHA"
+
   commitlint:
     name: Lint Commits
     runs-on: ubuntu-latest
@@ -36,6 +60,7 @@ jobs:
 
   lint:
     name: Lint & Format
+    needs: [scope]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -100,6 +125,7 @@ jobs:
 
   quality:
     name: Static Analysis (staticcheck + deadcode)
+    needs: [scope]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -122,6 +148,7 @@ jobs:
 
   test:
     name: Test (${{ matrix.os }})
+    needs: [scope]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -146,6 +173,7 @@ jobs:
 
   coverage:
     name: Coverage
+    needs: [scope]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -179,7 +207,7 @@ jobs:
     name: Build
     runs-on: ubuntu-latest
     if: ${{ always() }}
-    needs: [lint, quality, test, security]
+    needs: [lint, quality, test, security, scope]
     steps:
       - name: Require successful prerequisites
         env:
@@ -213,6 +241,7 @@ jobs:
 
   security:
     name: Security Scan
+    needs: [scope]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
