@@ -127,9 +127,27 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
+    if: ${{ always() }}
     needs: [lint, test, metadata]
     steps:
+      - name: Require successful prerequisites
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, sys
+          results = json.loads(os.environ["NEEDS_JSON"])
+          failures = {job: data.get("result") for job, data in results.items()
+                      if data.get("result") != "success"}
+          if not results or failures:
+              print("Build blocked by unsuccessful prerequisites:", failures)
+              sys.exit(1)
+          PYTHON
+
       - uses: actions/checkout@v4
+
+      - name: Test required Build failure handling
+        run: python3 -B -m unittest discover -s scripts/tests -p test_required_build.py -v
 
       - uses: actions/setup-go@v5
         with:
