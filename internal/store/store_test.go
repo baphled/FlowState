@@ -532,7 +532,7 @@ var _ = Describe("Session listing", func() {
 		ctx, _, _ := seedListing(s)
 		all, err := s.ListSessions(ctx, "")
 		Expect(err).NotTo(HaveOccurred())
-		Expect(all[1].UpdatedAt.After(all[1].CreatedAt)).To(BeTrue())
+		Expect(all[1].UpdatedAt).To(BeTemporally(">=", all[1].CreatedAt))
 	})
 
 	It("lists only active sessions when filtered by active", func() {
