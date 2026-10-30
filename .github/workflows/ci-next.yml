@@ -19,6 +19,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Test metadata contract and commit helper
+        run: python3 -B -m unittest discover -s scripts/tests -p test_project_metadata.py -v
+
       - name: Guard every new commit and changed blob
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
