@@ -91,6 +91,16 @@ func TurnWithOptions(ctx context.Context, st *store.Store, sess *store.Session, 
 	return &runtime.TurnResult{SessionID: sess.ID, FinalContent: s.content}, nil
 }
 
+// turnState accumulates one turn stream's content, consumption and
+// stop reason while events are consumed.
+type turnState struct {
+	content        string
+	consumed       int64
+	streamErr      bool
+	budgetExceeded bool
+	err            error
+}
+
 // consumeStreamEvent appends one stream event to the log and updates
 // s; it reports whether the stream loop should stop.
 func consumeStreamEvent(ctx context.Context, w *store.EventWriter, st *store.Store, sess *store.Session, opts runtime.TurnOptions, ev provider.StreamEvent, s *turnState) bool {
