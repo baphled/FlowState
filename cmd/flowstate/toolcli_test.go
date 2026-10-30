@@ -28,31 +28,55 @@ func newTestSession() string {
 }
 
 var _ = Describe("Session tool", func() {
-	It("persists tool.call and tool.result events for an allowed echo invocation", func() {
-		id := newTestSession()
-		r := runTool(id, "--tool", "echo", "--tool-arg", `{"a":1}`, "--allow", "echo")
-		ev := runCLIEvents(id)
-		Expect([]any{
-			r.exit,
-			strings.Contains(r.stdout, `"ok":true`),
-			strings.Contains(ev.stdout, tool.TypeToolCall),
-			strings.Contains(ev.stdout, tool.TypeToolResult),
-			strings.Contains(ev.stdout, `"tool:echo"`),
-		}).To(Equal([]any{0, true, true, true, true}))
+	Context("persists tool.call and tool.result events for an allowed echo invocation", func() {
+		var observedExit int
+		var observedSucceeded bool
+		var observedHasToolCall bool
+		var observedHasToolResult bool
+		var observedHasActor bool
+		BeforeEach(func() {
+			id := newTestSession()
+			r := runTool(id, "--tool", "echo", "--tool-arg", `{"a":1}`, "--allow", "echo")
+			ev := runCLIEvents(id)
+			observedExit = r.exit
+			observedSucceeded = strings.Contains(r.stdout, `"ok":true`)
+			observedHasToolCall = strings.Contains(ev.stdout, tool.TypeToolCall)
+			observedHasToolResult = strings.Contains(ev.stdout, tool.TypeToolResult)
+			observedHasActor = strings.Contains(ev.stdout, `"tool:echo"`)
+		})
+		It("returns the expected exit status", func() { Expect(observedExit).To(Equal(0)) })
+		It("prints a successful tool response", func() { Expect(observedSucceeded).To(BeTrue()) })
+		It("records the expected tool call presence", func() { Expect(observedHasToolCall).To(BeTrue()) })
+		It("records a tool result", func() { Expect(observedHasToolResult).To(BeTrue()) })
+		It("attributes the event to the echo tool", func() { Expect(observedHasActor).To(BeTrue()) })
 	})
 
-	It("denies an un-allowlisted tool with a typed event and usage exit", func() {
-		id := newTestSession()
-		r := runTool(id, "--tool", "echo")
-		ev := runCLIEvents(id)
-		Expect([]any{r.exit, strings.Contains(ev.stdout, "tool_denied")}).To(Equal([]any{exitUsage, true}))
+	Context("denies an un-allowlisted tool with a typed event and usage exit", func() {
+		var observedExit int
+		var observedHasDenial bool
+		BeforeEach(func() {
+			id := newTestSession()
+			r := runTool(id, "--tool", "echo")
+			ev := runCLIEvents(id)
+			observedExit = r.exit
+			observedHasDenial = strings.Contains(ev.stdout, "tool_denied")
+		})
+		It("returns the expected exit status", func() { Expect(observedExit).To(Equal(exitUsage)) })
+		It("records a tool denial", func() { Expect(observedHasDenial).To(BeTrue()) })
 	})
 
-	It("exits usage for an unknown tool without emitting a tool.call event", func() {
-		id := newTestSession()
-		r := runTool(id, "--tool", "ghost", "--allow", "ghost")
-		ev := runCLIEvents(id)
-		Expect([]any{r.exit, strings.Contains(ev.stdout, tool.TypeToolCall)}).To(Equal([]any{exitUsage, false}))
+	Context("exits usage for an unknown tool without emitting a tool.call event", func() {
+		var observedExit int
+		var observedHasToolCall bool
+		BeforeEach(func() {
+			id := newTestSession()
+			r := runTool(id, "--tool", "ghost", "--allow", "ghost")
+			ev := runCLIEvents(id)
+			observedExit = r.exit
+			observedHasToolCall = strings.Contains(ev.stdout, tool.TypeToolCall)
+		})
+		It("returns the expected exit status", func() { Expect(observedExit).To(Equal(exitUsage)) })
+		It("records the expected tool call presence", func() { Expect(observedHasToolCall).To(BeFalse()) })
 	})
 
 	It("allows a tool listed in an allow-file manifest", func() {
