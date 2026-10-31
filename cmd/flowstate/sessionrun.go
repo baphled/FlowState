@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/registry"
-	"github.com/baphled/flowstate/internal/runtime"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/store"
 )
@@ -58,7 +58,7 @@ func cmdRun(ctx context.Context, st *store.Store, id string, stdout, stderr *os.
 		writeError(stderr, fmt.Errorf("%w: provider %s does not support streaming turns", errProvider, sess.Provider))
 		return exitProviderError
 	}
-	res, err := runtime.Turn(ctx, st, sess, streamer)
+	res, err := app.Turn(ctx, st, sess, streamer)
 	_ = res
 	evts, rerr := st.Replay(ctx, id)
 	if rerr != nil {
