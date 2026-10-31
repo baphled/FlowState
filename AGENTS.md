@@ -40,9 +40,11 @@ and split before exceeding it. Refactoring is a separate prerequisite, not paddi
 
 ```sh
 make check
+make check-size-live        # live working-tree budget check after each save, before ai-commit
 make check-pr-size BASE_SHA=<actual-pr-base-sha>
 make check-code-quality BASE_SHA=<actual-pr-base-sha>
 make check-documentation BASE_SHA=<actual-pr-base-sha>
+make install-hooks          # once per clone: repo-managed pre-commit/pre-push hooks
 ```
 
 Keep packets, outputs, qualifications, AI attribution and review receipts only in

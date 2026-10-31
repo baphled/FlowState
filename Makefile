@@ -1,7 +1,14 @@
-.PHONY: all build run test fmt lint check clean help ai-commit check-ai-attribution list-ai-commits install-tools check-pr-size
+.PHONY: all build run test fmt lint check clean help ai-commit check-ai-attribution list-ai-commits install-tools check-pr-size check-size-live install-hooks
 
 check-pr-size: ## Bound the complete committed PR diff (BASE_SHA=actual target)
 	python3 -B scripts/pr_size.py --base "$(BASE_SHA)" --head "$$(git rev-parse HEAD)"
+
+check-size-live: ## Live working-tree (staged+unstaged+untracked) budget check, no commit needed
+	@BASE="$${BASE_SHA:-$$(git merge-base HEAD origin/next 2>/dev/null || git rev-parse origin/next)}"; \
+	python3 -B scripts/pr_size.py --live --base "$$BASE"
+
+install-hooks: ## Point git at the repo-managed .githooks directory
+	git config core.hooksPath .githooks
 
 # Binary name
 BINARY_NAME=flowstate

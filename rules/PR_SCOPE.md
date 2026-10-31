@@ -18,6 +18,17 @@ Before pushing, from the checkout with committed work and a freshly fetched targ
 make check-pr-size BASE_SHA="$(git rev-parse origin/next)"
 ```
 
+Before committing further, get live feedback on the uncommitted working tree
+(staged, unstaged and untracked all count) with no commit required:
+
+```sh
+make check-size-live
+```
+
+Run it after each save and before `make ai-commit`. With `make install-hooks`
+(run once per clone) the same check runs automatically at commit time, and the
+committed-diff check runs at push time.
+
 The target must be an ancestor. Refresh stale branches before checking. Budget the
 whole diff before delegation; checkpoint and split before exceeding the cap. Keep
 each agent on one item. Size is necessary, but separate review still checks cohesion.

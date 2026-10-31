@@ -58,3 +58,4 @@ coverage-func.txt
 
 # local dev artifact database (never commit)
 cmd/flowstate/flowstate.db
+__pycache__/
