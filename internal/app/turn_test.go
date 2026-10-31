@@ -180,24 +180,8 @@ var _ = Describe("Turn", func() {
 			}}
 
 			_, err = Turn(ctx, st, sess, fake)
-			observedProvider := errors.Is(err, runtime.ErrProvider)
-			Expect(observedProvider).To(BeTrue())
-		})
-
-		It("wraps the streamer error in the provider error", func() {
-			st := newStore()
-			ctx := context.Background()
-			sess, err := session.Create(ctx, st, "fake", "fake-model", session.DefaultHarness, "sha", "boom")
-			Expect(err).NotTo(HaveOccurred())
-			boom := errors.New("upstream exploded")
-			fake := &fakeStreamer{events: []provider.StreamEvent{
-				{Content: "par"},
-				{Err: boom},
-			}}
-
-			_, err = Turn(ctx, st, sess, fake)
-			observedWrapped := errors.Is(err, boom)
-			Expect(observedWrapped).To(BeTrue())
+			Expect(errors.Is(err, runtime.ErrProvider)).To(BeTrue())
+			Expect(errors.Is(err, boom)).To(BeTrue())
 		})
 
 		It("persists the typed provider.error event stream on streamer error", func() {
