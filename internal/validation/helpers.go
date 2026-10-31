@@ -8,4 +8,3 @@ func appendIf(violations []string, cond bool, message string) []string {
 	}
 	return violations
 }
-
