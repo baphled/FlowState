@@ -1,0 +1,3 @@
+#!/bin/sh
+# Committed-diff budget check before pushing to the shared target.
+python3 -B scripts/pr_size.py --base "$(git rev-parse origin/next)" --head "$(git rev-parse HEAD)"
