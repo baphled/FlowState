@@ -1,0 +1,127 @@
+version: "2"
+
+run:
+  timeout: 5m
+  go: "1.26"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - ginkgolinter
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gocritic
+    - revive
+    - unparam
+    - copyloopvar
+    - bodyclose
+    - errorlint
+    - gocyclo
+    - misspell
+    - nakedret
+    - prealloc
+    - rowserrcheck
+    - unconvert
+    - whitespace
+  settings:
+    ginkgolinter:
+      forbid-focus-container: true
+      forbid-spec-pollution: true
+      force-expect-to: true
+      validate-async-intervals: true
+    errcheck:
+      check-blank: false
+    revive:
+      rules:
+        - name: exported
+          arguments:
+            - disableStutteringCheck
+        - name: package-comments
+        - name: var-naming
+        - name: indent-error-flow
+        - name: error-strings
+        - name: error-return
+        - name: if-return
+        - name: superfluous-else
+        - name: unreachable-code
+        - name: redefines-builtin-id
+    gocyclo:
+      min-complexity: 25
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+      disabled-checks:
+        - octalLiteral
+        - httpNoBody
+        - emptyStringTest
+        - unnamedResult
+    misspell:
+      locale: UK
+  exclusions:
+    rules:
+      # Legacy plain tests are migrating to Ginkgo per rules/BDD_WORKFLOW.md;
+      # style rules are relaxed there but behaviour rules still apply.
+      - path: _test\.go
+        linters:
+          - revive
+          - gocyclo
+          - goconst
+          - unparam
+          - prealloc
+      # deferred Close on read/write paths is intentionally unchecked
+      # (best-effort cleanup); explicit error paths handle failures.
+      - linters:
+          - errcheck
+        source: "^\\s*defer .*\\.Close\\(\\)"
+      # os.Rename for corrupted-token backup is best-effort.
+      - linters:
+          - errcheck
+        source: "os\\.Rename"
+      # gosec g304: token storage paths are built from a user-configured,
+      # trusted storage dir - not attacker-controlled input.
+      - linters:
+          - gosec
+        text: "Potential file inclusion via variable"
+      # Legacy commit-message wording in comments uses US spellings; misspell
+    # UK locale flags them but comment-only rewording is churn, not behaviour.
+      - linters:
+          - misspell
+        source: "(?i)(serializ|unauthoriz|summariz)"
+      # errorlint non-wrapping verbs: the wrapped sentinel is already the first
+    # verb; the trailing cause is context only and callers branch on the
+    # sentinel, so %v avoids accidental double-unwrapping.
+      - linters:
+          - errorlint
+        text: "non-wrapping format verb"
+      # scripts/test-contract is a standalone AST guard utility with its own
+    # review path; complexity is inherent to AST walking.
+      - linters:
+          - gocyclo
+        path: ^scripts/
+      # Legacy migration-era tests query via database/sql helpers; rows.Err
+    # handling is present in the migrated Ginkgo suites.
+      - linters:
+          - rowserrcheck
+        path: _test\.go
+      # Standalone AST guard utilities under scripts/ follow their own contract
+    # (governance/RULE-TEST-FRAMEWORK.md), not the package layout rules.
+      - linters:
+          - revive
+          - goimports
+        path: ^scripts/
+      # Exported identifiers in modules still under active M1 migration lack
+    # godoc headers in places; CODE_STYLE.md requires them and debt is being
+    # paid down package by package rather than in a lint-gating churn PR.
+      - linters:
+          - revive
+        text: "should have comment or be unexported|should have a package comment|comment on exported"
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+

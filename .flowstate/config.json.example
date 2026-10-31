@@ -1,0 +1,54 @@
+{
+  "provider": {
+    "default": "ollama",
+    "ollama": {
+      "host": "http://localhost:11434",
+      "model": "llama3.2"
+    },
+    "openai": {
+      "api_key": "",
+      "model": "gpt-4o"
+    },
+    "anthropic": {
+      "api_key": "",
+      "model": "claude-sonnet-4-20250514"
+    }
+  },
+  "tools": {
+    "bash": {
+      "permission": "ask",
+      "allowed_commands": [],
+      "blocked_commands": ["rm -rf", "sudo"]
+    },
+    "file_read": {
+      "permission": "allow",
+      "allowed_paths": ["~/*"],
+      "blocked_paths": ["~/.ssh/*", "~/.gnupg/*"]
+    },
+    "file_write": {
+      "permission": "ask",
+      "allowed_paths": [],
+      "blocked_paths": ["~/.ssh/*", "~/.gnupg/*"]
+    },
+    "web_fetch": {
+      "permission": "allow"
+    }
+  },
+  "ui": {
+    "theme": "default",
+    "task_panel": {
+      "visible": true,
+      "width": 40
+    },
+    "vim_mode": true
+  },
+  "memory": {
+    "enabled": false,
+    "auto_save": false,
+    "approval_required": true
+  },
+  "session": {
+    "auto_save": true,
+    "auto_title": true
+  }
+}

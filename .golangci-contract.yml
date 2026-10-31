@@ -1,0 +1,61 @@
+version: "2"
+run:
+  timeout: 5m
+  relative-path-mode: gomod
+linters:
+  default: none
+  enable: [depguard, revive, funlen, gocyclo, interfacebloat]
+  settings:
+    funlen:
+      lines: 60
+      statements: 40
+    gocyclo:
+      min-complexity: 15
+    interfacebloat:
+      max: 10
+    revive:
+      rules:
+        - name: exported
+          arguments: [check-private-receivers, check-public-interface]
+        - name: package-comments
+    depguard:
+      rules:
+        no-inward-cli:
+          files: ["**/internal/**/*.go", "!$test"]
+          deny:
+            - pkg: github.com/baphled/flowstate/cmd/
+              desc: Internal packages must not depend on CLI adapters.
+        cli:
+          files: ["**/cmd/**/*.go", "!$test"]
+          list-mode: original
+          allow: [$gostd, github.com/baphled/flowstate/internal/app$, github.com/baphled/flowstate/internal/app/, github.com/baphled/flowstate/internal/config$, github.com/baphled/flowstate/internal/config/]
+        domain:
+          files: ["**/internal/runtime/*.go", "**/internal/runtime/**/*.go", "**/internal/session/*.go", "**/internal/session/**/*.go", "**/internal/tool/*.go", "**/internal/tool/**/*.go", "**/internal/provider/*.go", "!$test"]
+          list-mode: original
+          allow: [$gostd, github.com/baphled/flowstate/internal/provider$, github.com/baphled/flowstate/internal/runtime$, github.com/baphled/flowstate/internal/runtime/, github.com/baphled/flowstate/internal/session$, github.com/baphled/flowstate/internal/session/, github.com/baphled/flowstate/internal/tool$, github.com/baphled/flowstate/internal/tool/]
+          deny:
+            - pkg: net/http
+              desc: HTTP transport belongs in adapters.
+            - pkg: database/sql
+              desc: Storage belongs behind consumer-owned ports.
+        adapters:
+          files: ["**/internal/store/*.go", "**/internal/store/**/*.go", "**/internal/storage/*.go", "**/internal/storage/**/*.go", "**/internal/oauth/*.go", "**/internal/oauth/**/*.go", "**/internal/provider/*/*.go", "**/internal/provider/*/**/*.go", "!$test"]
+          deny:
+            - pkg: github.com/baphled/flowstate/internal/app$
+              desc: Composition depends on adapters, not the reverse.
+            - pkg: github.com/baphled/flowstate/internal/runtime$
+              desc: Adapters must not own engine lifecycle.
+            - pkg: github.com/baphled/flowstate/internal/app/
+              desc: Composition belongs outside adapters.
+            - pkg: github.com/baphled/flowstate/internal/runtime/
+              desc: Engine lifecycle belongs outside adapters.
+            - pkg: github.com/baphled/flowstate/cmd/
+              desc: Adapters must not depend on CLI.
+  exclusions:
+    generated: disable
+    rules:
+      - path: _test\.go$
+        linters: [revive, funlen, gocyclo, interfacebloat]
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

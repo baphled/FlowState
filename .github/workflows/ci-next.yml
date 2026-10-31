@@ -1,0 +1,228 @@
+name: CI (next)
+
+on:
+  push:
+    branches: [next]
+  pull_request:
+    branches: [next, chore/ginkgo-test-contract-20261028, chore/ginkgo-test-enforcement-20261028, chore/code-modularity-20261028, chore/documentation-tools-20261028, fix/metadata-contract-20261029]
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  scope:
+    name: PR Review Budget
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Test review budget boundaries and bypass controls
+        run: python3 -B -m unittest discover -s scripts/tests -p test_pr_size.py -v
+
+      - name: Enforce base policy on the entire committed diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          checker="$RUNNER_TEMP/pr_size_base.py"
+          if git cat-file -e "$BASE_SHA:scripts/pr_size.py" 2>/dev/null; then
+            git show "$BASE_SHA:scripts/pr_size.py" > "$checker"
+          else
+            cp scripts/pr_size.py "$checker"
+          fi
+          python3 -B "$checker" --base "$BASE_SHA" --head "$HEAD_SHA"
+
+  metadata:
+    name: Project Metadata Guard
+    needs: [scope]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Test metadata contract and commit helper
+        run: python3 -B -m unittest discover -s scripts/tests -p test_project_metadata.py -v
+
+      - name: Guard every new commit and changed blob
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 -B scripts/project_metadata.py --changed --base "$BASE_SHA" --head "$HEAD_SHA"
+
+  commitlint:
+    name: Lint Commits
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install commitlint
+        run: npm ci
+
+      - name: Validate PR commits
+        run: npx commitlint --from ${{ github.event.pull_request.base.sha }} --to ${{ github.event.pull_request.head.sha }} --verbose
+
+  lint:
+    name: Lint & Format
+    needs: [scope]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Files not formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Enforce changed test contract
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: make check-test-contract BASE_SHA="$BASE_SHA"
+
+      - name: Enforce changed production structure
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: make check-code-contract BASE_SHA="$BASE_SHA"
+
+      - name: Set up documentation tools
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install pinned documentation dependencies
+        run: npm ci
+
+      - name: Enforce documentation contract
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: make check-documentation BASE_SHA="$BASE_SHA"
+
+      - name: Run make check
+        run: make check
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.11.3
+
+      - name: Enforce modularity and API documentation
+        if: github.event_name == 'pull_request'
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.11.3
+          args: --config .golangci-contract.yml --new-from-rev=${{ github.event.pull_request.base.sha }} --whole-files
+
+  test:
+    name: Test (${{ matrix.os }})
+    needs: [scope]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run Go tests with race detection
+        run: make test
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    if: ${{ always() }}
+    needs: [lint, test, metadata, security, scope]
+    steps:
+      - name: Require successful prerequisites
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, sys
+          results = json.loads(os.environ["NEEDS_JSON"])
+          failures = {job: data.get("result") for job, data in results.items()
+                      if data.get("result") != "success"}
+          if not results or failures:
+              print("Build blocked by unsuccessful prerequisites:", failures)
+              sys.exit(1)
+          PYTHON
+
+      - uses: actions/checkout@v4
+
+      - name: Test required Build failure handling
+        run: python3 -B -m unittest discover -s scripts/tests -p test_required_build.py -v
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build binary
+        run: make build
+
+      - name: Verify binary exists
+        run: test -f build/flowstate
+
+  security:
+    name: Security Scan
+    needs: [scope]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install gosec (pinned)
+        run: go install github.com/securego/gosec/v2/cmd/gosec@v2.30.0
+
+      - name: Test security regression gate
+        run: python3 -B -m unittest discover -s scripts/tests -p test_security_gate.py -v
+
+      # Compare full scans; inherited findings remain visible unresolved debt.
+      - name: Reject new gosec findings
+        env:
+          SECURITY_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python3 -B scripts/security_gate.py --base "$SECURITY_BASE_SHA" --output "$RUNNER_TEMP/security-results"
+
+      - name: Retain full base and candidate scanner reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-reports
+          path: ${{ runner.temp }}/security-results
+
+      - name: Upload SARIF results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: ${{ runner.temp }}/security-results/candidate.sarif

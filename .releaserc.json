@@ -1,0 +1,72 @@
+{
+  "branches": ["main"],
+  "repositoryUrl": "https://github.com/baphled/FlowState.git",
+  "plugins": [
+    [
+      "@semantic-release/commit-analyzer",
+      {
+        "preset": "conventionalcommits",
+        "releaseRules": [
+          { "type": "feat", "release": "minor" },
+          { "type": "fix", "release": "patch" },
+          { "type": "perf", "release": "patch" },
+          { "type": "refactor", "release": "patch" },
+          { "type": "docs", "release": false },
+          { "type": "test", "release": false },
+          { "type": "ci", "release": false },
+          { "type": "chore", "release": false },
+          { "breaking": true, "release": "major" }
+        ]
+      }
+    ],
+    [
+      "@semantic-release/release-notes-generator",
+      {
+        "preset": "conventionalcommits",
+        "presetConfig": {
+          "types": [
+            { "type": "feat", "section": "Features" },
+            { "type": "fix", "section": "Bug Fixes" },
+            { "type": "perf", "section": "Performance Improvements" },
+            { "type": "refactor", "section": "Code Refactoring" },
+            { "type": "docs", "section": "Documentation", "hidden": true },
+            { "type": "test", "section": "Tests", "hidden": true },
+            { "type": "ci", "section": "CI/CD", "hidden": true },
+            { "type": "chore", "section": "Maintenance", "hidden": true }
+          ]
+        }
+      }
+    ],
+    [
+      "@semantic-release/changelog",
+      {
+        "changelogFile": "CHANGELOG.md",
+        "changelogTitle": "# FlowState Changelog\n\nAll notable changes to the FlowState project will be documented in this file."
+      }
+    ],
+    [
+      "@semantic-release/exec",
+      {
+        "prepareCmd": "echo ${nextRelease.version} > VERSION"
+      }
+    ],
+    [
+      "@semantic-release/git",
+      {
+        "assets": ["CHANGELOG.md", "VERSION"],
+        "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
+      }
+    ],
+    [
+      "@semantic-release/github",
+      {
+        "assets": [
+          { "path": "release-assets/flowstate-linux-amd64", "label": "FlowState Linux (amd64)" },
+          { "path": "release-assets/flowstate-darwin-amd64", "label": "FlowState macOS (amd64)" },
+          { "path": "release-assets/flowstate-darwin-arm64", "label": "FlowState macOS (Apple Silicon)" },
+          { "path": "release-assets/flowstate-windows-amd64.exe", "label": "FlowState Windows (amd64)" }
+        ]
+      }
+    ]
+  ]
+}
