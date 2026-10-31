@@ -11,18 +11,6 @@ import (
 	"time"
 )
 
-// RecordedEvent is an event row read back from the store. PayloadJSON
-// is the stored canonical bytes; the digest is re-verified on read.
-type RecordedEvent struct {
-	SessionID   string
-	Seq         int64
-	CreatedAt   time.Time
-	Actor       string
-	Type        string
-	PayloadSHA  string
-	PayloadJSON string
-}
-
 // Replay reads the full event log for a session in seq order, asserts
 // seq contiguity from 0 (DATA-MODEL §3) and verifies
 // sha256(payload_json) == payload_sha256 for every row (VA-E1). A gap
@@ -79,48 +67,6 @@ func (s *Store) ExportJSONL(ctx context.Context, sessionID string) ([]byte, erro
 			e.Actor, iso(e.CreatedAt), e.PayloadJSON, e.PayloadSHA, e.Seq, e.SessionID, e.Type)
 	}
 	return buf.Bytes(), nil
-}
-
-// updateSessionStatus is a minimal status transition helper for event
-// semantics; full terminal semantics is a later packet.
-func (s *Store) updateSessionStatus(ctx context.Context, sessionID, status string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET status=?, updated_at_utc=? WHERE id=?`,
-		status, iso(time.Now().UTC()), sessionID)
-	if err != nil {
-		return fmt.Errorf("set status %s: %w", status, err)
-	}
-	return nil
-}
-
-// PauseBudget records a budget pause: it atomically appends a
-// `session.paused` event via the session's writer and sets
-// sessions.status='paused'. The payload must describe reason, consumed
-// budget, next safe operation and any uncertain tool effect
-// (DATA-MODEL §7). No terminal turn.end is emitted.
-func (w *EventWriter) PauseBudget(ctx context.Context, payload any) error {
-	seq, err := w.Append(ctx, "engine", "session.paused", payload)
-	if err != nil {
-		return err
-	}
-	if err := w.store.updateSessionStatus(ctx, w.session, "paused"); err != nil {
-		return fmt.Errorf("pause after event seq %d: %w", seq, err)
-	}
-	return nil
-}
-
-// Resume records a `session.resumed` event via the session's writer and
-// sets sessions.status='active'. Callers must ensure an explicit fresh
-// bounded run owns the session; this helper only performs the
-// event-level transition.
-func (w *EventWriter) Resume(ctx context.Context, payload any) error {
-	seq, err := w.Append(ctx, "engine", "session.resumed", payload)
-	if err != nil {
-		return err
-	}
-	if err := w.store.updateSessionStatus(ctx, w.session, "active"); err != nil {
-		return fmt.Errorf("resume after event seq %d: %w", seq, err)
-	}
-	return nil
 }
 
 // SessionExists reports whether a session row with the given id exists.
