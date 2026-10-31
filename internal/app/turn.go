@@ -140,7 +140,3 @@ func pauseOnBudget(ctx context.Context, w *store.EventWriter, sess *store.Sessio
 	}
 	return &TurnResult{SessionID: sess.ID, FinalContent: s.content, BudgetExceeded: true, ConsumedBudget: s.consumed}, nil
 }
-
-// ErrProvider marks terminal provider failures surfaced by the turn
-// loop (code provider_error, exit 3 per CLI-AND-API-CONTRACT §1).
-var ErrProvider = fmt.Errorf("provider_error")
