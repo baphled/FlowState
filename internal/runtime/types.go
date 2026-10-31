@@ -1,27 +1,21 @@
-// Package runtime implements the engine turn loop (M1-SESSION): one
-// provider turn streamed through the provider port and persisted as
-// ordered attributable events via the session store's single writer.
-// It owns session lifecycle and event ordering only; provider
-// transport details stay in the adapters.
+// Package runtime defines the turn-loop contract types shared by the
+// engine application logic in internal/app.
 package runtime
 
-import (
-	"github.com/baphled/flowstate/internal/session/internalapp"
-)
+// TypeUserMessage is the user-turn event type (DATA-MODEL §3).
+const TypeUserMessage = "user.message"
 
-// DomainEventLog is the full persistence port used by the engine
-// turn loop: replay, writer factory and status projection. The
-// concrete adapter (*store.Store) satisfies it structurally, keeping
-// the dependency direction store → domain correct.
-type DomainEventLog = internalapp.TurnEventLog
+// TypeAssistantDelta is one streamed assistant chunk event type.
+const TypeAssistantDelta = "assistant.delta"
 
-// DomainSession is the session view consumed by the engine turn
-// loop. *store.Session satisfies it structurally.
-type DomainSession = internalapp.TurnSession
+// TypeAssistantMessage is the final assistant event type.
+const TypeAssistantMessage = "assistant.message"
 
-// PausePayload carries the pause metadata the engine hands to the
-// writer when a budget cap stops a turn.
-type PausePayload = internalapp.PausePayload
+// TypeTurnEnd is the turn-completion event type.
+const TypeTurnEnd = "turn.end"
+
+// TypeProviderError is the terminal provider-failure event type.
+const TypeProviderError = "provider.error"
 
 // TurnOptions configures one engine turn; the zero value preserves
 // the existing unlimited behaviour.
