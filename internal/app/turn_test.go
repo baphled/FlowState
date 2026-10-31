@@ -1,23 +1,18 @@
-package runtime
+package app
 
 import (
 	"context"
 	"errors"
 	"strings"
-	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/runtime"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/store"
 )
-
-func TestRuntime(t *testing.T) {
-	RegisterFailHandler(Fail)
-	RunSpecs(t, "Runtime Suite")
-}
 
 // fakeStreamer is an injectable provider double for engine-loop tests;
 // the engine never requires registry.Resolve (M1-COMPOSITION).
@@ -185,7 +180,24 @@ var _ = Describe("Turn", func() {
 			}}
 
 			_, err = Turn(ctx, st, sess, fake)
-			Expect(errors.Is(err, boom)).To(BeTrue())
+			observedProvider := errors.Is(err, runtime.ErrProvider)
+			Expect(observedProvider).To(BeTrue())
+		})
+
+		It("wraps the streamer error in the provider error", func() {
+			st := newStore()
+			ctx := context.Background()
+			sess, err := session.Create(ctx, st, "fake", "fake-model", session.DefaultHarness, "sha", "boom")
+			Expect(err).NotTo(HaveOccurred())
+			boom := errors.New("upstream exploded")
+			fake := &fakeStreamer{events: []provider.StreamEvent{
+				{Content: "par"},
+				{Err: boom},
+			}}
+
+			_, err = Turn(ctx, st, sess, fake)
+			observedWrapped := errors.Is(err, boom)
+			Expect(observedWrapped).To(BeTrue())
 		})
 
 		It("persists the typed provider.error event stream on streamer error", func() {
@@ -222,29 +234,22 @@ var _ = Describe("Turn", func() {
 			Expect(evts[len(evts)-1].Actor).To(Equal(session.ActorEngine))
 		})
 
-		Context("serialises the terminal error payload in the provider.error event", func() {
-			var observedHasError bool
-			var observedIsTerminal bool
-			BeforeEach(func() {
-				st := newStore()
-				ctx := context.Background()
-				sess, err := session.Create(ctx, st, "fake", "fake-model", session.DefaultHarness, "sha", "boom")
-				Expect(err).NotTo(HaveOccurred())
-				boom := errors.New("upstream exploded")
-				fake := &fakeStreamer{events: []provider.StreamEvent{
-					{Content: "par"},
-					{Err: boom},
-				}}
+		It("serialises the terminal error payload in the provider.error event", func() {
+			st := newStore()
+			ctx := context.Background()
+			sess, err := session.Create(ctx, st, "fake", "fake-model", session.DefaultHarness, "sha", "boom")
+			Expect(err).NotTo(HaveOccurred())
+			boom := errors.New("upstream exploded")
+			fake := &fakeStreamer{events: []provider.StreamEvent{
+				{Content: "par"},
+				{Err: boom},
+			}}
 
-				_, _ = Turn(ctx, st, sess, fake)
-				evts, err := st.Replay(ctx, sess.ID)
-				Expect(err).NotTo(HaveOccurred())
-				last := evts[len(evts)-1].PayloadJSON
-				observedHasError = strings.Contains(last, `"error"`)
-				observedIsTerminal = strings.Contains(last, `"terminal":true`)
-			})
-			It("includes the error in the payload", func() { Expect(observedHasError).To(BeTrue()) })
-			It("marks the provider error terminal", func() { Expect(observedIsTerminal).To(BeTrue()) })
+			_, _ = Turn(ctx, st, sess, fake)
+			evts, err := st.Replay(ctx, sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			last := evts[len(evts)-1].PayloadJSON
+			Expect([]bool{strings.Contains(last, `"error"`), strings.Contains(last, `"terminal":true`)}).To(Equal([]bool{true, true}))
 		})
 
 		It("marks the session failed on streamer error", func() {
