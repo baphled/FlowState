@@ -3,181 +3,190 @@ package store
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"path/filepath"
-	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
-// newStoreWriter builds a temp store, session and writer; the spec
-// asserts the returned setup error.
-func newStoreWriter() (*Store, *EventWriter, string, error) {
-	s, err := Open(filepath.Join(GinkgoT().TempDir(), "ws.db"))
+// newPausedFixture opens a fresh temp-DB store, creates a session and
+// writer, and returns them for the spec to drive.
+func newPausedFixture() (*Store, *EventWriter, string) {
+	s := newTestStore()
+	sid := mustSession(s)
+	w, err := s.NewEventWriter(context.Background(), sid)
 	if err != nil {
-		return nil, nil, "", err
+		panic(err)
 	}
-	DeferCleanup(func() { _ = s.Close() })
-	id := fmt.Sprintf("sid-%d", time.Now().UnixNano())
-	if _, err := s.CreateSession(context.Background(), id, "zai", "glm-4.6", "test-harness", "cfgsha"); err != nil {
-		return nil, nil, "", err
+	DeferCleanup(func() { _ = w.Close() })
+	return s, w, sid
+}
+
+func payloadMap(e RecordedEvent) map[string]any {
+	var m map[string]any
+	err := json.Unmarshal([]byte(e.PayloadJSON), &m)
+	if err != nil {
+		panic(err)
 	}
-	w, err := s.NewEventWriter(context.Background(), id)
-	return s, w, id, err
+	return m
 }
 
-// pauseFor pauses w with pi, returning any error for the spec to assert.
-func pauseFor(w *EventWriter, pi PauseInfo) error {
-	return w.Pause(context.Background(), pi)
+func pauseForTest(w *EventWriter) {
+	if err := w.Pause(context.Background(), PauseInfo{Reason: "budget"}); err != nil {
+		panic(err)
+	}
 }
 
-// resumeFor resumes w, returning any error for the spec to assert.
-func resumeFor(w *EventWriter) error {
-	return w.Resume(context.Background())
-}
-
-// replayEvents returns the full event log for sid plus any error.
-func replayEvents(s *Store, sid string) ([]RecordedEvent, error) {
-	return s.Replay(context.Background(), sid)
-}
-
-// getSession returns the session row for sid plus any error.
-func getSession(s *Store, sid string) (*Session, error) {
-	return s.GetSession(context.Background(), sid)
+func replayForTest(s *Store, sid string) []RecordedEvent {
+	evs, err := s.Replay(context.Background(), sid)
+	if err != nil {
+		panic(err)
+	}
+	return evs
 }
 
 var _ = Describe("EventWriter Pause/Resume", func() {
-	It("pause appends a session.paused event with the pause payload", func() {
-		s, w, sid, err := newStoreWriter()
-		Expect(err).NotTo(HaveOccurred())
-		err = pauseFor(w, PauseInfo{Reason: "budget", ConsumedBudget: 42, NextSafeOp: "rerun tool"})
-		Expect(err).NotTo(HaveOccurred())
-		evs, _ := replayEvents(s, sid)
-		var m map[string]any
-		mErr := json.Unmarshal([]byte(evs[0].PayloadJSON), &m)
-		Expect(mErr).NotTo(HaveOccurred())
-		Expect(m).To(Equal(map[string]any{
+	It("pause appends a session.paused event", func() {
+		s, w, sid := newPausedFixture()
+		err := w.Pause(context.Background(), PauseInfo{Reason: "budget", ConsumedBudget: 42, NextSafeOp: "rerun tool"})
+		if err != nil {
+			panic(err)
+		}
+		evs := replayForTest(s, sid)
+		Expect(evs[0].Type).To(Equal("session.paused"))
+	})
+
+	It("pause appends the pause payload with reason, budget and next_safe_op", func() {
+		s, w, sid := newPausedFixture()
+		err := w.Pause(context.Background(), PauseInfo{Reason: "budget", ConsumedBudget: 42, NextSafeOp: "rerun tool"})
+		if err != nil {
+			panic(err)
+		}
+		evs := replayForTest(s, sid)
+		Expect(payloadMap(evs[0])).To(Equal(map[string]any{
 			"reason":          "budget",
 			"consumed_budget": float64(42),
 			"next_safe_op":    "rerun tool",
 		}))
 	})
 
-	It("pause appends a session.paused event", func() {
-		s, w, sid, err := newStoreWriter()
-		Expect(err).NotTo(HaveOccurred())
-		err = pauseFor(w, PauseInfo{Reason: "budget"})
-		Expect(err).NotTo(HaveOccurred())
-		evs, _ := replayEvents(s, sid)
-		Expect(evs[0].Type).To(Equal("session.paused"))
+	It("pause sets the session status to paused", func() {
+		s, w, sid := newPausedFixture()
+		err := w.Pause(context.Background(), PauseInfo{Reason: "budget"})
+		if err != nil {
+			panic(err)
+		}
+		sess, err := s.GetSession(context.Background(), sid)
+		if err != nil {
+			panic(err)
+		}
+		Expect(sess.Status).To(Equal("paused"))
 	})
 
 	It("pause records engine as the actor", func() {
-		s, w, sid, err := newStoreWriter()
-		Expect(err).NotTo(HaveOccurred())
-		err = pauseFor(w, PauseInfo{Reason: "budget"})
-		Expect(err).NotTo(HaveOccurred())
-		evs, _ := replayEvents(s, sid)
+		s, w, sid := newPausedFixture()
+		err := w.Pause(context.Background(), PauseInfo{Reason: "budget"})
+		if err != nil {
+			panic(err)
+		}
+		evs := replayForTest(s, sid)
 		Expect(evs[0].Actor).To(Equal("engine"))
 	})
 
 	It("pause with empty NextSafeOp defaults it to session run <id>", func() {
-		s, w, sid, err := newStoreWriter()
-		Expect(err).NotTo(HaveOccurred())
-		err = pauseFor(w, PauseInfo{Reason: "budget"})
-		Expect(err).NotTo(HaveOccurred())
-		evs, _ := replayEvents(s, sid)
-		var m map[string]any
-		mErr := json.Unmarshal([]byte(evs[0].PayloadJSON), &m)
-		Expect(mErr).NotTo(HaveOccurred())
-		Expect(m["next_safe_op"]).To(Equal("session run <id>"))
-	})
-
-	It("pause sets the session status to paused", func() {
-		s, w, sid, err := newStoreWriter()
-		Expect(err).NotTo(HaveOccurred())
-		err = pauseFor(w, PauseInfo{Reason: "budget"})
-		Expect(err).NotTo(HaveOccurred())
-		sess, _ := getSession(s, sid)
-		Expect(sess.Status).To(Equal("paused"))
-	})
-
-	It("resume appends a session.resumed event with the from_status payload", func() {
-		s, w, sid, err := newStoreWriter()
-		Expect(err).NotTo(HaveOccurred())
-		err = pauseFor(w, PauseInfo{Reason: "budget"})
-		Expect(err).NotTo(HaveOccurred())
-		err = resumeFor(w)
-		Expect(err).NotTo(HaveOccurred())
-		evs, _ := replayEvents(s, sid)
-		var m map[string]any
-		mErr := json.Unmarshal([]byte(evs[1].PayloadJSON), &m)
-		Expect(mErr).NotTo(HaveOccurred())
-		Expect(m).To(Equal(map[string]any{"from_status": "paused"}))
-	})
-
-	It("resume appends a session.resumed event with user actor", func() {
-		s, w, sid, err := newStoreWriter()
-		Expect(err).NotTo(HaveOccurred())
-		err = pauseFor(w, PauseInfo{Reason: "budget"})
-		Expect(err).NotTo(HaveOccurred())
-		err = resumeFor(w)
-		Expect(err).NotTo(HaveOccurred())
-		evs, _ := replayEvents(s, sid)
-		Expect(evs[1].Actor).To(Equal("user"))
+		s, w, sid := newPausedFixture()
+		err := w.Pause(context.Background(), PauseInfo{Reason: "budget"})
+		if err != nil {
+			panic(err)
+		}
+		evs := replayForTest(s, sid)
+		Expect(payloadMap(evs[0])["next_safe_op"]).To(Equal("session run <id>"))
 	})
 
 	It("resume appends a session.resumed event", func() {
-		s, w, sid, err := newStoreWriter()
-		Expect(err).NotTo(HaveOccurred())
-		err = pauseFor(w, PauseInfo{Reason: "budget"})
-		Expect(err).NotTo(HaveOccurred())
-		err = resumeFor(w)
-		Expect(err).NotTo(HaveOccurred())
-		evs, _ := replayEvents(s, sid)
+		s, w, sid := newPausedFixture()
+		pauseForTest(w)
+		err := w.Resume(context.Background())
+		if err != nil {
+			panic(err)
+		}
+		evs := replayForTest(s, sid)
 		Expect(evs[1].Type).To(Equal("session.resumed"))
 	})
 
+	It("resume records the user as the actor", func() {
+		s, w, sid := newPausedFixture()
+		pauseForTest(w)
+		err := w.Resume(context.Background())
+		if err != nil {
+			panic(err)
+		}
+		evs := replayForTest(s, sid)
+		Expect(evs[1].Actor).To(Equal("user"))
+	})
+
+	It("resume appends a from_status paused payload", func() {
+		s, w, sid := newPausedFixture()
+		pauseForTest(w)
+		err := w.Resume(context.Background())
+		if err != nil {
+			panic(err)
+		}
+		evs := replayForTest(s, sid)
+		Expect(payloadMap(evs[1])).To(Equal(map[string]any{"from_status": "paused"}))
+	})
+
 	It("resume sets the session status back to active", func() {
-		s, w, sid, err := newStoreWriter()
-		Expect(err).NotTo(HaveOccurred())
-		err = pauseFor(w, PauseInfo{Reason: "budget"})
-		Expect(err).NotTo(HaveOccurred())
-		err = resumeFor(w)
-		Expect(err).NotTo(HaveOccurred())
-		sess, _ := getSession(s, sid)
+		s, w, sid := newPausedFixture()
+		pauseForTest(w)
+		err := w.Resume(context.Background())
+		if err != nil {
+			panic(err)
+		}
+		sess, err := s.GetSession(context.Background(), sid)
+		if err != nil {
+			panic(err)
+		}
 		Expect(sess.Status).To(Equal("active"))
 	})
 
 	It("resume on a never-paused writer returns ErrNotPaused", func() {
-		_, w, _, _ := newStoreWriter()
+		_, w, _ := newPausedFixture()
 		err := w.Resume(context.Background())
 		Expect(err).To(MatchError(ErrNotPaused))
 	})
 
 	It("resume on a never-paused writer appends no event", func() {
-		s, w, sid, err := newStoreWriter()
-		Expect(err).NotTo(HaveOccurred())
+		s, w, sid := newPausedFixture()
 		_ = w.Resume(context.Background())
-		evs, _ := replayEvents(s, sid)
+		evs := replayForTest(s, sid)
 		Expect(evs).To(BeEmpty())
 	})
 
-	It("pause and resume keep seq contiguous after existing appends", func() {
-		s, w, sid, err := newStoreWriter()
-		Expect(err).NotTo(HaveOccurred())
-		_, err = w.Append(context.Background(), "user", "turn.begin", map[string]any{"n": 1})
-		Expect(err).NotTo(HaveOccurred())
-		err = pauseFor(w, PauseInfo{Reason: "budget"})
-		Expect(err).NotTo(HaveOccurred())
-		err = resumeFor(w)
-		Expect(err).NotTo(HaveOccurred())
-		evs, _ := replayEvents(s, sid)
-		seqs := []int64{}
-		for _, e := range evs {
-			seqs = append(seqs, e.Seq)
+	It("pause and resume append exactly three events after an existing append", func() {
+		s, w, sid := newPausedFixture()
+		_, err := w.Append(context.Background(), "user", "turn.begin", map[string]any{"n": 1})
+		if err != nil {
+			panic(err)
 		}
-		Expect(seqs).To(Equal([]int64{0, 1, 2}))
+		pauseForTest(w)
+		if err := w.Resume(context.Background()); err != nil {
+			panic(err)
+		}
+		evs := replayForTest(s, sid)
+		Expect(evs).To(HaveLen(3))
+	})
+
+	It("pause and resume keep seq contiguous after existing appends", func() {
+		s, w, sid := newPausedFixture()
+		_, err := w.Append(context.Background(), "user", "turn.begin", map[string]any{"n": 1})
+		if err != nil {
+			panic(err)
+		}
+		pauseForTest(w)
+		if err := w.Resume(context.Background()); err != nil {
+			panic(err)
+		}
+		evs := replayForTest(s, sid)
+		Expect([]int64{evs[0].Seq, evs[1].Seq, evs[2].Seq}).To(Equal([]int64{0, 1, 2}))
 	})
 })

@@ -35,9 +35,9 @@ var (
 	// session is not currently paused.
 	ErrNotPaused = errors.New("store: session is not paused")
 
-	// ErrEmptyActor rejects empty event attribution actors.
+	// ErrEmptyActor / ErrEmptyType reject empty attribution fields.
 	ErrEmptyActor = errors.New("store: event actor must not be empty")
 
-	// ErrEmptyType rejects empty event types.
+	// ErrEmptyType rejects an empty event type on append.
 	ErrEmptyType = errors.New("store: event type must not be empty")
 )
