@@ -11,18 +11,6 @@ import (
 	"time"
 )
 
-// RecordedEvent is an event row read back from the store. PayloadJSON
-// is the stored canonical bytes; the digest is re-verified on read.
-type RecordedEvent struct {
-	SessionID   string
-	Seq         int64
-	CreatedAt   time.Time
-	Actor       string
-	Type        string
-	PayloadSHA  string
-	PayloadJSON string
-}
-
 // Replay reads the full event log for a session in seq order, asserts
 // seq contiguity from 0 (DATA-MODEL §3) and verifies
 // sha256(payload_json) == payload_sha256 for every row (VA-E1). A gap
