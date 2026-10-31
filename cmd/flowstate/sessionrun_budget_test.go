@@ -127,11 +127,42 @@ var _ = Describe("Session run budget", func() {
 		}
 		DeferCleanup(st.Close)
 		sess, serr := st.GetSession(context.Background(), id)
-		Expect(serr).NotTo(HaveOccurred())
+		if serr != nil {
+			panic(serr)
+		}
 		Expect(sess.Status).To(Equal("paused"))
 	})
 
-	It("resumes a paused session before the next turn", func() {
+	It("exits 0 when a paused session is resumed for the next turn", func() {
+		withFakeZai(longChunkStream())
+		id := newZaiSession()
+		first := runSplitArgv("session", "run", "--db", dbFor(), id, "--budget", "8")
+		if first.exit != 5 {
+			panic("expected budget stop")
+		}
+		second := runSplitArgv("session", "run", "--db", dbFor(), id, "--max-tokens", "1000")
+		Expect(second.exit).To(Equal(0))
+	})
+
+	It("emits a session.resumed event before the next turn", func() {
+		withFakeZai(longChunkStream())
+		id := newZaiSession()
+		first := runSplitArgv("session", "run", "--db", dbFor(), id, "--budget", "8")
+		if first.exit != 5 {
+			panic("expected budget stop")
+		}
+		second := runSplitArgv("session", "run", "--db", dbFor(), id, "--max-tokens", "1000")
+		lines := jsonLines(second.stdout)
+		resumedAt := -1
+		for i, l := range lines {
+			if l["type"] == "session.resumed" {
+				resumedAt = i
+			}
+		}
+		Expect(resumedAt).To(BeNumerically(">=", 0))
+	})
+
+	It("resumes the paused session before the next user message", func() {
 		withFakeZai(longChunkStream())
 		id := newZaiSession()
 		first := runSplitArgv("session", "run", "--db", dbFor(), id, "--budget", "8")
@@ -150,15 +181,30 @@ var _ = Describe("Session run budget", func() {
 				messageAt = i
 			}
 		}
-		Expect(second.exit).To(Equal(0))
-		Expect(resumedAt).To(BeNumerically(">=", 0))
 		Expect(resumedAt).To(BeNumerically("<", messageAt))
+	})
+
+	It("resumes the paused session with the user as actor", func() {
+		withFakeZai(longChunkStream())
+		id := newZaiSession()
+		first := runSplitArgv("session", "run", "--db", dbFor(), id, "--budget", "8")
+		if first.exit != 5 {
+			panic("expected budget stop")
+		}
+		second := runSplitArgv("session", "run", "--db", dbFor(), id, "--max-tokens", "1000")
+		lines := jsonLines(second.stdout)
+		resumedAt := -1
+		for i, l := range lines {
+			if l["type"] == "session.resumed" {
+				resumedAt = i
+			}
+		}
 		Expect(lines[resumedAt]["actor"]).To(Equal("user"))
 	})
 })
 
 var _ = Describe("Session run interrupt", func() {
-	It("cancels an active session and returns 130", func() {
+	It("cancels an active session with exit code 130", func() {
 		withFakeZai(longChunkStream())
 		id := newZaiSession()
 		st, err := store.Open(dbFor())
@@ -168,14 +214,41 @@ var _ = Describe("Session run interrupt", func() {
 		DeferCleanup(st.Close)
 		ctx := context.Background()
 		code := cancelOnInterrupt(ctx, st, id)
-		sess, serr := st.GetSession(ctx, id)
-		Expect(serr).NotTo(HaveOccurred())
-		evts, rerr := st.Replay(ctx, id)
-		Expect(rerr).NotTo(HaveOccurred())
-		lastType := evts[len(evts)-1].Type
 		Expect(code).To(Equal(130))
+	})
+
+	It("marks an interrupted session as cancelled in the store", func() {
+		withFakeZai(longChunkStream())
+		id := newZaiSession()
+		st, err := store.Open(dbFor())
+		if err != nil {
+			panic(err)
+		}
+		DeferCleanup(st.Close)
+		ctx := context.Background()
+		_ = cancelOnInterrupt(ctx, st, id)
+		sess, serr := st.GetSession(ctx, id)
+		if serr != nil {
+			panic(serr)
+		}
 		Expect(sess.Status).To(Equal("cancelled"))
-		Expect(lastType).To(Equal("session.cancelled"))
+	})
+
+	It("persists a session.cancelled event on interrupt", func() {
+		withFakeZai(longChunkStream())
+		id := newZaiSession()
+		st, err := store.Open(dbFor())
+		if err != nil {
+			panic(err)
+		}
+		DeferCleanup(st.Close)
+		ctx := context.Background()
+		_ = cancelOnInterrupt(ctx, st, id)
+		evts, rerr := st.Replay(ctx, id)
+		if rerr != nil {
+			panic(rerr)
+		}
+		Expect(evts[len(evts)-1].Type).To(Equal("session.cancelled"))
 	})
 
 	It("returns 6 when cancelling an already-terminal session", func() {
