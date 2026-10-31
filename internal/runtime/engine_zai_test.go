@@ -8,6 +8,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/provider/registry"
 	"github.com/baphled/flowstate/internal/provider/zai"
 	"github.com/baphled/flowstate/internal/session"
@@ -40,6 +41,23 @@ type zaiTurn struct {
 	store         *store.Store
 }
 
+func newStore() *store.Store {
+	st, err := store.OpenMemory()
+	if err != nil {
+		panic(err)
+	}
+	DeferCleanup(func() { _ = st.Close() })
+	return st
+}
+
+func types(evts []store.RecordedEvent) []string {
+	out := make([]string, len(evts))
+	for i, e := range evts {
+		out[i] = e.Type
+	}
+	return out
+}
+
 // mustTurnOverHTTP drives a z.ai Turn against the given server; fixture
 // failures panic so specs keep exactly one behavioural expectation.
 func mustTurnOverHTTP(srv *httptest.Server, prompt string) zaiTurn {
@@ -50,7 +68,7 @@ func mustTurnOverHTTP(srv *httptest.Server, prompt string) zaiTurn {
 	if err != nil {
 		panic(err)
 	}
-	res, turnErr := Turn(ctx, st, sess, p)
+	res, turnErr := app.Turn(ctx, st, sess, p)
 	evts, err := st.Replay(ctx, sess.ID)
 	if err != nil {
 		panic(err)
