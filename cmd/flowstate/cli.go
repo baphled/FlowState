@@ -32,15 +32,6 @@ const (
 	codeReplayMismatch = "replay_mismatch"
 )
 
-// cliError is a failure carrying one of the closed error codes; it
-// renders as a single JSON object on stderr.
-type cliError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-}
-
-func (e *cliError) Error() string { return e.Message }
-
 // errConfigInvalid marks configuration failures (code config_invalid).
 var errConfigInvalid = errors.New("config_invalid")
 
