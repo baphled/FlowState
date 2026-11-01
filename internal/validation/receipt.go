@@ -1,6 +1,20 @@
 package validation
 
-import "regexp"
+import (
+	"fmt"
+	"regexp"
+)
+
+func appendIf(violations []string, cond bool, message string) []string {
+	if cond {
+		return append(violations, message)
+	}
+	return violations
+}
+
+func itoa(value int) string {
+	return fmt.Sprintf("%d", value)
+}
 
 var (
 	sha1Pattern         = regexp.MustCompile(`^[0-9a-f]{40}$`)
