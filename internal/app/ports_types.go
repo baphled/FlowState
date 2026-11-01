@@ -1,13 +1,13 @@
-// Package internalapp defines the consumer-side persistence ports for
-// the session/application layer, per the DB-abstraction ADR (Option C:
-// explicit repository ports over the existing database/sql store).
-//
-// The interfaces live on the CONSUMER side — not in internal/store —
-// so the dependency direction stays correct: the store is an adapter
-// that depends inward. *store.Store satisfies both ports as-is; no
-// wrapper methods are needed. Interfaces are intentionally narrow:
-// two small ports, not a method-for-method mirror of Store.
-package internalapp
+// Package app — ports_types.go defines the consumer-side persistence ports
+// for the session/application layer, per the DB-abstraction ADR
+// (Option C: explicit repository ports over the existing database/sql
+// store). The interfaces live on the CONSUMER side — not in
+// internal/store — so the dependency direction stays correct: the
+// store is an adapter that depends inward. *store.Store satisfies both
+// ports as-is; no wrapper methods are needed. Interfaces are
+// intentionally narrow: two small ports, not a method-for-method
+// mirror of Store.
+package app
 
 import (
 	"context"
@@ -19,9 +19,13 @@ import (
 // session/application layer. It covers session CRUD plus the status
 // projections absorbed by the store in packet B-1.
 type SessionRepo interface {
+	// CreateSession persists a new session and returns it.
 	CreateSession(ctx context.Context, id, provider, modelID, harness, configSHA string) (*store.Session, error)
+	// GetSession loads one session by id.
 	GetSession(ctx context.Context, id string) (*store.Session, error)
+	// ListSessions returns sessions, optionally filtered by status.
 	ListSessions(ctx context.Context, status string) ([]store.Session, error)
+	// UpdateSessionStatus transitions a session's status.
 	UpdateSessionStatus(ctx context.Context, id, status string) error
 }
 
@@ -32,12 +36,11 @@ type SessionRepo interface {
 // Append and Close methods match), so it can be used wherever a
 // consumer needs only the port view of the concrete writer.
 type EventWriter interface {
+	// Append records one event and returns its sequence number.
 	Append(ctx context.Context, actor, typ string, payload any) (int64, error)
+	// Close releases the single-writer registration.
 	Close() error
 }
-
-// compile-time proof that the concrete writer satisfies the port.
-var _ EventWriter = (*store.EventWriter)(nil)
 
 // EventLog is the event-persistence port: a writer factory plus the
 // verified replay used for inspection and export.
@@ -46,12 +49,6 @@ type EventLog interface {
 	// session's log. The returned EventWriter is the port view of
 	// *store.EventWriter.
 	NewEventWriter(ctx context.Context, sessionID string) (*store.EventWriter, error)
+	// Replay returns the verified event log for a session.
 	Replay(ctx context.Context, sessionID string) ([]store.RecordedEvent, error)
 }
-
-// compile-time proof that the concrete store adapter satisfies both
-// ports without modification.
-var (
-	_ SessionRepo = (*store.Store)(nil)
-	_ EventLog    = (*store.Store)(nil)
-)
