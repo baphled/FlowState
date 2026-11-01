@@ -13,22 +13,6 @@ import (
 // defaultDBPath is the SQLite database used when --db is absent.
 const defaultDBPath = "flowstate.db"
 
-// flags holds the parsed global flags for one invocation.
-type flags struct {
-	db     string
-	json   bool
-	status string
-	// session new
-	provider string
-	model    string
-	task     string
-	// session tool
-	tool      string
-	toolArg   string
-	allow     []string
-	allowFile string
-}
-
 // dispatch routes one CLI invocation and returns its exit code.
 func dispatch(args []string, stdout, stderr *os.File) int {
 	if len(args) < 1 {
@@ -97,15 +81,6 @@ func dispatch(args []string, stdout, stderr *os.File) int {
 
 // errUsageCmd wraps the usage sentinel for CLI-level rejections.
 var errUsageCmd = usageSentinel{}
-
-// usageSentinel satisfies errors.Is against session.ErrUsage while
-// formatting a usage message.
-type usageSentinel struct{}
-
-func (usageSentinel) Error() string { return "usage" }
-
-// Is reports equality with the session package usage sentinel.
-func (usageSentinel) Is(target error) bool { return target.Error() == "usage" }
 
 // parseFlags extracts --db, --json, --status, --provider, --model and
 // --task flags; positional arguments are returned in order.
