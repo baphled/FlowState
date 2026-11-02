@@ -14,10 +14,11 @@ import (
 	"github.com/baphled/flowstate/internal/store"
 )
 
-// result captures the exit code and stdout of one CLI run.
+// result captures the exit code, stdout and stderr of one CLI run.
 type result struct {
 	exit   int
 	stdout string
+	stderr string
 }
 
 // runCLI executes dispatch against the per-spec DB with captured stdout.
@@ -33,16 +34,28 @@ func runArgv(argv []string) result {
 	if err != nil {
 		panic(err)
 	}
+	errR, errW, perr := os.Pipe()
+	if perr != nil {
+		panic(perr)
+	}
 	done := make(chan string, 1)
 	go func() {
 		b, _ := io.ReadAll(outR)
 		done <- string(b)
 	}()
-	exit := dispatch(argv, outW, outW)
+	errDone := make(chan string, 1)
+	go func() {
+		b, _ := io.ReadAll(errR)
+		errDone <- string(b)
+	}()
+	exit := dispatch(argv, outW, errW)
 	_ = outW.Close()
+	_ = errW.Close()
 	out := <-done
+	errs := <-errDone
 	_ = outR.Close()
-	return result{exit: exit, stdout: out}
+	_ = errR.Close()
+	return result{exit: exit, stdout: out, stderr: errs}
 }
 
 // firstLine returns the first non-empty line of s.
