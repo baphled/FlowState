@@ -145,7 +145,8 @@ func indexReceipt(ctx context.Context, db *sql.DB, a Attempt, dir, now string, d
 		ReceiptPath: filepath.Join(dir, "receipt.json"), PacketSHA256: digests["packet.json"],
 		ReceiptSHA256: digests["receipt.json"]}
 	ins := storage.Receipt{ID: a.ID, CapabilityID: a.CapabilityID, CommitSHA: a.CommitSHA,
-		ReceiptSHA256: rec.ReceiptSHA256, GateOutcome: a.GateOutcome, RecordedAtUTC: now}
+		ReceiptRef: rec.ReceiptPath, ReceiptSHA256: rec.ReceiptSHA256,
+		GateOutcome: a.GateOutcome, RecordedAtUTC: now}
 	if err := storage.InsertReceipt(ctx, db, ins); err != nil {
 		return nil, err
 	}

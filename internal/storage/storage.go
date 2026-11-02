@@ -15,17 +15,6 @@ import (
 	_ "modernc.org/sqlite" // pure-Go SQLite driver (CGO-free)
 )
 
-// OpenInfo records the effective runtime configuration observed after opening
-// a database. T019 requires these to be recorded, not assumed.
-type OpenInfo struct {
-	DriverName    string            `json:"driver_name"`
-	DriverVersion string            `json:"driver_version"`
-	GoVersion     string            `json:"go_version"`
-	SQLiteVersion string            `json:"sqlite_version"`
-	PragmaTimeUTC string            `json:"pragma_time_utc"`
-	Pragmas       map[string]string `json:"pragmas"`
-}
-
 // Open opens (creating if necessary) the database at path with the mandated
 // pragmas: journal_mode=wal, foreign_keys=on, synchronous=normal. Because
 // modernc.org/sqlite applies per-connection settings, a file DSN is used that
@@ -108,6 +97,14 @@ CREATE TABLE receipts (
 
 CREATE INDEX idx_events_session_type ON events(session_id, type);
 CREATE INDEX idx_sessions_status ON sessions(status);
+`,
+	},
+	{
+		Version: 2,
+		// receipt_ref records the Dropbox path of the verified
+		// receipt document (M1-DOGFOOD attempt indexing).
+		SQL: `
+ALTER TABLE receipts ADD COLUMN receipt_ref TEXT NOT NULL DEFAULT '';
 `,
 	},
 }
