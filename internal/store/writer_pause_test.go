@@ -200,6 +200,27 @@ var _ = Describe("EventWriter paused restore", func() {
 		}
 		DeferCleanup(func() { _ = w2.Close() })
 		Expect(w2.Resume(context.Background())).To(Succeed())
+	})
+
+	It("restores the resumed session status to active", func() {
+		s, w, sid, err := newStoreWriter()
+		if err != nil {
+			panic(err)
+		}
+		if err := pauseFor(w, PauseInfo{Reason: "budget"}); err != nil {
+			panic(err)
+		}
+		if err := w.Close(); err != nil {
+			panic(err)
+		}
+		w2, err := s.NewEventWriter(context.Background(), sid)
+		if err != nil {
+			panic(err)
+		}
+		DeferCleanup(func() { _ = w2.Close() })
+		if err := w2.Resume(context.Background()); err != nil {
+			panic(err)
+		}
 		sess, err := getSession(s, sid)
 		if err != nil {
 			panic(err)
