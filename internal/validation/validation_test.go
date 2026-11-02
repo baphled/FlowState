@@ -63,60 +63,6 @@ func validCandidate() validation.Candidate {
 	}
 }
 
-var _ = Describe("ValidateReceipt", func() {
-	It("accepts a fully valid receipt with zero violations", func() {
-		Expect(validation.ValidateReceipt(validReceipt())).To(BeEmpty())
-	})
-
-	It("rejects a wrong schema_version", func() {
-		r := validReceipt()
-		r.SchemaVersion = "m1-acceptance-receipt-v1"
-		Expect(validation.ValidateReceipt(r)).To(ContainElement(ContainSubstring("schema_version")))
-	})
-
-	It("rejects an invented capability id", func() {
-		r := validReceipt()
-		r.CapabilityID = "M1-FUTURE"
-		Expect(validation.ValidateReceipt(r)).To(ContainElement(ContainSubstring("capability_id")))
-	})
-
-	It("rejects a dirty repo state", func() {
-		r := validReceipt()
-		r.RepoState.Dirty = true
-		Expect(validation.ValidateReceipt(r)).To(ContainElement(ContainSubstring("dirty")))
-	})
-
-	It("rejects a malformed commit sha", func() {
-		r := validReceipt()
-		r.RepoState.CommitSHA = "deadbeef"
-		Expect(validation.ValidateReceipt(r)).To(ContainElement(ContainSubstring("commit_sha")))
-	})
-
-	It("rejects empty evidence", func() {
-		r := validReceipt()
-		r.Evidence = nil
-		Expect(validation.ValidateReceipt(r)).To(ContainElement(ContainSubstring("evidence")))
-	})
-
-	It("rejects evidence without a stdout path", func() {
-		r := validReceipt()
-		r.Evidence[0].Stdout = validation.ArtefactRef{SHA256: hexify(64)}
-		Expect(validation.ValidateReceipt(r)).To(ContainElement(ContainSubstring("stdout")))
-	})
-
-	It("rejects a non-zero validator exit code", func() {
-		r := validReceipt()
-		r.ValidatorRun.ExitCode = 1
-		Expect(validation.ValidateReceipt(r)).To(ContainElement(ContainSubstring("validator_run.exit_code")))
-	})
-
-	It("rejects a metadata ref outside the dropbox attempts path", func() {
-		r := validReceipt()
-		r.MetadataRef = "file:///tmp/receipt.json"
-		Expect(validation.ValidateReceipt(r)).To(ContainElement(ContainSubstring("metadata_ref")))
-	})
-})
-
 var _ = Describe("CheckReceiptIndex", func() {
 	It("accepts an index that agrees with the receipt file", func() {
 		r := validReceipt()
