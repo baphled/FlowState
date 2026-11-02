@@ -25,13 +25,14 @@ func dispatchContexted(ctx context.Context, args []string, stdout, stderr *os.Fi
 		writeError(stderr, fmt.Errorf("%w: missing command", errUsageCmd))
 		return exitUsage
 	}
-	if args[0] == "--version" {
-		_, _ = fmt.Fprintf(stdout, "flowstate %s\n", Version)
+	if isMetaCommand(args[0], stdout) {
 		return exitOK
 	}
-	if args[0] == "--help" || args[0] == "-h" || args[0] == "help" {
-		usage(stdout)
-		return exitOK
+	if code, routed := routeReplay(ctx, args, stdout, stderr); routed {
+		return code
+	}
+	if code, routed := routeReceipt(args, stdout, stderr); routed {
+		return code
 	}
 	if args[0] != "session" {
 		writeError(stderr, fmt.Errorf("%w: unknown command %q", errUsageCmd, args[0]))
@@ -62,6 +63,50 @@ func dispatchContexted(ctx context.Context, args []string, stdout, stderr *os.Fi
 	return dispatchSession(ctx, args[1], fl, id, stdout, stderr)
 }
 
+// isMetaCommand handles --version/--help and reports whether the
+// invocation was one of them.
+func isMetaCommand(arg string, stdout *os.File) bool {
+	switch arg {
+	case "--version":
+		_, _ = fmt.Fprintf(stdout, "flowstate %s\n", Version)
+	case "--help", "-h", "help":
+		usage(stdout)
+	default:
+		return false
+	}
+	return true
+}
+
+// routeReplay handles `flowstate replay <id>`; routed reports whether
+// the invocation belonged to this route.
+func routeReplay(ctx context.Context, args []string, stdout, stderr *os.File) (int, bool) {
+	if len(args) < 1 || args[0] != "replay" {
+		return exitOK, false
+	}
+	fl, rest, err := parseFlags(args[1:])
+	if err != nil {
+		writeError(stderr, fmt.Errorf("%w: %v", errUsageCmd, err))
+		return exitUsage, true
+	}
+	if len(rest) != 1 {
+		writeError(stderr, fmt.Errorf("%w: replay requires exactly one session id", errUsageCmd))
+		return exitUsage, true
+	}
+	return dispatchSession(ctx, "replay", fl, rest[0], stdout, stderr), true
+}
+
+// routeReceipt handles `flowstate receipt validate <file...>`.
+func routeReceipt(args []string, stdout, stderr *os.File) (int, bool) {
+	if len(args) < 1 || args[0] != "receipt" {
+		return exitOK, false
+	}
+	if len(args) < 2 || args[1] != "validate" {
+		writeError(stderr, fmt.Errorf("%w: expected receipt validate <file...>", errUsageCmd))
+		return exitUsage, true
+	}
+	return cmdReceiptValidate(args[2:], stdout, stderr), true
+}
+
 // dispatchSession opens the store and routes one session subcommand.
 func dispatchSession(ctx context.Context, sub string, fl *flags, id string, stdout, stderr *os.File) int {
 	st, err := openStore(fl.db)
@@ -81,6 +126,8 @@ func dispatchSession(ctx context.Context, sub string, fl *flags, id string, stdo
 		return cmdEvents(ctx, st, id, stdout, stderr)
 	case "cancel":
 		return cmdCancel(ctx, st, id, stdout, stderr)
+	case "replay":
+		return cmdReplay(ctx, st, id, stdout, stderr)
 	case "close":
 		return cmdClose(ctx, st, id, stdout, stderr)
 	case "tool":
@@ -230,6 +277,8 @@ session run    <id> [--budget <n>] [--max-tokens <n>] [--db path]
 session events <id> [--db path]
 session close  <id> [--db path]
 session cancel <id> [--db path]
+session replay <id> [--db path]
+receipt validate <file...>
 session tool   <id> --tool <name> [--tool-arg <json>] [--allow <name>]... [--allow-file <manifest>] [--db path]
 
 common flags: --db <path> (default ./flowstate.db), --json
