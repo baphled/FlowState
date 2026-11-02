@@ -14,10 +14,27 @@ import (
 	"github.com/baphled/flowstate/internal/store"
 )
 
-// result captures the exit code and stdout of one CLI run.
+// result captures the exit code, stdout and stderr of one CLI run.
 type result struct {
 	exit   int
 	stdout string
+	stderr string
+}
+
+// stderrJSON decodes the single error object the contract (§2)
+// guarantees on stderr for failing runs.
+func (r result) stderrJSON() struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+} {
+	var e struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(firstLine(r.stderr)), &e); err != nil {
+		panic(err)
+	}
+	return e
 }
 
 // runCLI executes dispatch against the per-spec DB with captured stdout.
@@ -33,16 +50,28 @@ func runArgv(argv []string) result {
 	if err != nil {
 		panic(err)
 	}
+	errR, errW, err := os.Pipe()
+	if err != nil {
+		panic(err)
+	}
 	done := make(chan string, 1)
 	go func() {
 		b, _ := io.ReadAll(outR)
 		done <- string(b)
 	}()
-	exit := dispatch(argv, outW, outW)
+	errDone := make(chan string, 1)
+	go func() {
+		b, _ := io.ReadAll(errR)
+		errDone <- string(b)
+	}()
+	exit := dispatch(argv, outW, errW)
 	_ = outW.Close()
+	_ = errW.Close()
 	out := <-done
+	errOut := <-errDone
 	_ = outR.Close()
-	return result{exit: exit, stdout: out}
+	_ = errR.Close()
+	return result{exit: exit, stdout: out, stderr: errOut}
 }
 
 // firstLine returns the first non-empty line of s.

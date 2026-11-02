@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/store"
@@ -30,6 +31,8 @@ const (
 	codeSessionTerm    = "session_terminal"
 	codeSessionMissing = "session_not_found"
 	codeReplayMismatch = "replay_mismatch"
+	codeBudget         = "budget_exceeded"
+	codeProviderError  = "provider_error"
 )
 
 // cliError is a failure carrying one of the closed error codes; it
@@ -61,6 +64,10 @@ func asCliError(err error) *cliError {
 		return &cliError{Code: codeSessionMissing, Message: err.Error()}
 	case errors.Is(err, store.ErrHashMismatch), errors.Is(err, store.ErrSeqGap):
 		return &cliError{Code: codeReplayMismatch, Message: err.Error()}
+	case strings.Contains(err.Error(), "provider_error"):
+		return &cliError{Code: codeProviderError, Message: err.Error()}
+	case strings.Contains(err.Error(), "budget_exceeded"):
+		return &cliError{Code: codeBudget, Message: err.Error()}
 	default:
 		return &cliError{Code: codeInternal, Message: err.Error()}
 	}

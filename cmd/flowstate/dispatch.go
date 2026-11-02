@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/baphled/flowstate/internal/store"
@@ -27,6 +28,11 @@ type flags struct {
 	toolArg   string
 	allow     []string
 	allowFile string
+	// session run (CLI-AND-API-CONTRACT §1): --max-tokens and
+	// --budget both bound the turn; effective cap is the minimum
+	// of the two when both are set (<=0 means unset).
+	maxTokens int64
+	budget    int64
 }
 
 // dispatch routes one CLI invocation and returns its exit code.
@@ -53,7 +59,7 @@ func dispatch(args []string, stdout, stderr *os.File) int {
 	}
 	fl, rest, err := parseFlags(args[2:])
 	if err != nil {
-		writeError(stderr, err)
+		writeError(stderr, fmt.Errorf("%w: %v", errUsageCmd, err))
 		return exitUsage
 	}
 	if args[1] == "new" || args[1] == "list" {
@@ -82,7 +88,7 @@ func dispatch(args []string, stdout, stderr *os.File) int {
 	case "list":
 		return cmdList(ctx, st, fl, stdout, stderr)
 	case "run":
-		return cmdRun(ctx, st, id, stdout, stderr)
+		return cmdRun(ctx, st, id, fl, stdout, stderr)
 	case "events":
 		return cmdEvents(ctx, st, id, stdout, stderr)
 	case "close":
@@ -154,37 +160,65 @@ func parseFlags(args []string) (*flags, []string, error) {
 				return nil, nil, err
 			}
 			fl.task = v
-		case a == "--tool":
-			v, err := take()
+		case a == "--budget" || a == "--max-tokens" ||
+			strings.HasPrefix(a, "--budget=") || strings.HasPrefix(a, "--max-tokens="):
+			n, err := parseBudgetFlag(a, take)
 			if err != nil {
 				return nil, nil, err
 			}
-			fl.tool = v
-		case a == "--tool-arg" || a == "--tool-arg=json.RawMessage":
-			v, err := flagValue(a, take)
-			if err != nil {
-				return nil, nil, err
+			if a == "--budget" || strings.HasPrefix(a, "--budget=") {
+				fl.budget = n
+			} else {
+				fl.maxTokens = n
 			}
-			fl.toolArg = v
-		case a == "--allow":
-			v, err := flagValue(a, take)
-			if err != nil {
-				return nil, nil, err
-			}
-			fl.allow = append(fl.allow, v)
-		case a == "--allow-file":
-			v, err := flagValue(a, take)
-			if err != nil {
-				return nil, nil, err
-			}
-			fl.allowFile = v
-		case strings.HasPrefix(a, "--"):
-			return nil, nil, fmt.Errorf("unknown flag %s", a)
 		default:
-			positional = append(positional, a)
+			handled, terr := parseFlagsTool(fl, a, take)
+			if terr != nil {
+				return nil, nil, terr
+			}
+			if !handled {
+				if strings.HasPrefix(a, "--") {
+					return nil, nil, fmt.Errorf("unknown flag %s", a)
+				}
+				positional = append(positional, a)
+			}
 		}
 	}
 	return fl, positional, nil
+}
+
+// parseFlagsTool handles the tool-only flags (--tool, --tool-arg,
+// --allow, --allow-file); it returns handled=false for other args.
+func parseFlagsTool(fl *flags, a string, take func() (string, error)) (bool, error) {
+	switch a {
+	case "--tool":
+		v, err := take()
+		if err != nil {
+			return true, err
+		}
+		fl.tool = v
+	case "--tool-arg", "--tool-arg=json.RawMessage":
+		v, err := take()
+		if err != nil {
+			return true, err
+		}
+		fl.toolArg = v
+	case "--allow":
+		v, err := take()
+		if err != nil {
+			return true, err
+		}
+		fl.allow = append(fl.allow, v)
+	case "--allow-file":
+		v, err := take()
+		if err != nil {
+			return true, err
+		}
+		fl.allowFile = v
+	default:
+		return false, nil
+	}
+	return true, nil
 }
 
 // flagValue resolves either `--flag value` or `--flag=value`.
@@ -193,6 +227,20 @@ func flagValue(a string, take func() (string, error)) (string, error) {
 		return a[eq+1:], nil
 	}
 	return take()
+}
+
+// parseBudgetFlag parses the value of --budget/--max-tokens as a
+// non-negative integer (either `--flag n` or `--flag=n` form).
+func parseBudgetFlag(a string, take func() (string, error)) (int64, error) {
+	v, err := flagValue(a, take)
+	if err != nil {
+		return 0, err
+	}
+	n, perr := strconv.ParseInt(v, 10, 64)
+	if perr != nil || n < 0 {
+		return 0, fmt.Errorf("flag %s requires a non-negative integer", a)
+	}
+	return n, nil
 }
 
 // openStore opens (creating directories for) the SQLite database.
@@ -212,7 +260,7 @@ func usage(w *os.File) {
 
 session new    --provider <p> --model <m> --task <text|@file> [--db path]
 session list   [--status <s>] [--db path]
-session run    <id> [--db path]
+session run    <id> [--max-tokens <n>] [--budget <cap>] [--db path]
 session events <id> [--db path]
 session close  <id> [--db path]
 session tool   <id> --tool <name> [--tool-arg <json>] [--allow <name>]... [--allow-file <manifest>] [--db path]
