@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"regexp"
 )
 
 // AllowedPathPrefixes is the closed VA-D1 path allowlist for M1 changes.
@@ -15,6 +16,41 @@ var AllowedPathPrefixes = []string{
 
 // T019Pass is the prerequisite state required before implementation (VA-D1).
 const T019Pass = "T019"
+
+var (
+	sha1Pattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+)
+
+// CapabilityIDs is the closed M1 capability enum from the receipt schema.
+var CapabilityIDs = map[string]bool{
+	"M1-SESSION": true, "M1-PROVIDER": true, "M1-EVENTS": true, "M1-TOOLS": true,
+	"M1-TERMINAL": true, "M1-COMPOSITION": true, "M1-DOGFOOD": true, "M1-VALIDATION": true,
+}
+
+// CheckReceiptIndex verifies the receipt files agree with the DB receipt
+// index keyed by capability id to metadata ref; any disagreement is a
+// violation (VA-D4 index agreement).
+func CheckReceiptIndex(receipts []Receipt, index map[string]string) []string {
+	var violations []string
+	seen := map[string]string{}
+	for _, r := range receipts {
+		seen[r.CapabilityID] = r.MetadataRef
+		if ref, ok := index[r.CapabilityID]; ok && ref != r.MetadataRef {
+			violations = append(violations, "index disagrees with receipt "+r.CapabilityID)
+		}
+	}
+	for capability := range index {
+		if _, ok := seen[capability]; !ok {
+			violations = append(violations, "index entry missing receipt file "+capability)
+		}
+	}
+	for capability := range seen {
+		if _, ok := index[capability]; !ok {
+			violations = append(violations, "receipt file missing from index "+capability)
+		}
+	}
+	return violations
+}
 
 // ValidateWorkPacket checks VA-D0: schema validity and proposed-not-admitted.
 func ValidateWorkPacket(p WorkPacket) []string {
