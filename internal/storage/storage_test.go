@@ -67,7 +67,7 @@ var _ = Describe("Migrations", func() {
 
 	It("records exactly one migration row", func() {
 		db, _, _ := openT()
-		Expect(appliedRows(db)).To(HaveLen(1))
+		Expect(appliedRows(db)).To(HaveLen(2))
 	})
 
 	for _, tbl := range []string{"sessions", "events", "receipts"} {
@@ -355,7 +355,7 @@ var _ = Describe("T019 qualification capture", func() {
 			var versions []int
 			err := json.Unmarshal(captured[field], &versions)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(versions).To(Equal([]int{1}))
+			Expect(versions).To(Equal([]int{1, 2}))
 		})
 	}
 	It("captures the migration no-op result", func() {

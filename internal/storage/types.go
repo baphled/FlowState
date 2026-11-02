@@ -14,6 +14,7 @@ type Receipt struct {
 	CommitSHA     string
 	ReceiptSHA256 string
 	GateOutcome   string
+	ReceiptRef    string
 	RecordedAtUTC string
 }
 
