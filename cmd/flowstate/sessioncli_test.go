@@ -18,6 +18,7 @@ import (
 type result struct {
 	exit   int
 	stdout string
+	stderr string
 }
 
 // runCLI executes dispatch against the per-spec DB with captured stdout.
@@ -33,16 +34,28 @@ func runArgv(argv []string) result {
 	if err != nil {
 		panic(err)
 	}
+	errR, errW, err2 := os.Pipe()
+	if err2 != nil {
+		panic(err2)
+	}
 	done := make(chan string, 1)
+	doneE := make(chan string, 1)
 	go func() {
 		b, _ := io.ReadAll(outR)
 		done <- string(b)
 	}()
-	exit := dispatch(argv, outW, outW)
+	go func() {
+		b, _ := io.ReadAll(errR)
+		doneE <- string(b)
+	}()
+	exit := dispatch(argv, outW, errW)
 	_ = outW.Close()
+	_ = errW.Close()
 	out := <-done
+	errs := <-doneE
 	_ = outR.Close()
-	return result{exit: exit, stdout: out}
+	_ = errR.Close()
+	return result{exit: exit, stdout: out, stderr: errs}
 }
 
 // firstLine returns the first non-empty line of s.

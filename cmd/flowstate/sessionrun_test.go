@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -183,6 +184,179 @@ var _ = Describe("Session run", func() {
 
 	It("exits 2 with usage when the session id is missing", func() {
 		Expect(runCLIRun().exit).To(Equal(2))
+	})
+
+	Context("exits 5 and pauses the session when the budget is exceeded", func() {
+		var observedExit int
+		var observedCode string
+		var observedLastType string
+		var observedPausedPayload bool
+		var observedStatus string
+		BeforeEach(func() {
+			srv := fakeZaiServer(
+				`{"choices":[{"delta":{"content":"hello world"}}]}`,
+				`{"choices":[{"delta":{"content":" again"}}]}`,
+			)
+			withFakeZai(srv)
+
+			created := runCLINew("--provider", "z.ai", "--model", "glm-4.6", "--task", "greet")
+			if created.exit != 0 {
+				panic("session new failed")
+			}
+			rec := decodeNew(created.stdout)
+
+			run := runArgv([]string{"session", "run", "--db", dbFor(), "--budget", "5", rec.ID})
+			var ec struct {
+				Code string `json:"code"`
+			}
+			if err := json.Unmarshal([]byte(strings.SplitN(run.stderr, "\n", 2)[0]), &ec); err != nil {
+				panic(err)
+			}
+			got := nonEmpty(strings.Split(run.stdout, "\n"))
+			var last struct {
+				Type    string          `json:"type"`
+				Payload json.RawMessage `json:"payload"`
+			}
+			if err := json.Unmarshal([]byte(got[len(got)-1]), &last); err != nil {
+				panic(err)
+			}
+			observedExit = run.exit
+			observedCode = ec.Code
+			observedLastType = last.Type
+			observedPausedPayload = strings.Contains(string(last.Payload), "budget_exceeded")
+
+			list := runArgv([]string{"session", "list", "--db", dbFor(), "--json"})
+			for _, l := range nonEmpty(strings.Split(list.stdout, "\n")) {
+				var s struct {
+					ID     string `json:"id"`
+					Status string `json:"status"`
+				}
+				if err := json.Unmarshal([]byte(l), &s); err != nil {
+					panic(err)
+				}
+				if s.ID == rec.ID {
+					observedStatus = s.Status
+				}
+			}
+		})
+		It("returns the budget exit status", func() { Expect(observedExit).To(Equal(5)) })
+		It("emits budget_exceeded on stderr", func() { Expect(observedCode).To(Equal("budget_exceeded")) })
+		It("emits session.paused as the final stdout event", func() { Expect(observedLastType).To(Equal("session.paused")) })
+		It("records reason budget_exceeded in the paused payload", func() { Expect(observedPausedPayload).To(BeTrue()) })
+		It("marks the session paused", func() { Expect(observedStatus).To(Equal("paused")) })
+	})
+
+	Context("completes normally when the budget is not reached", func() {
+		var observedExit int
+		var observedLastType string
+		BeforeEach(func() {
+			srv := fakeZaiServer(
+				`{"choices":[{"delta":{"content":"he"}}]}`,
+				`{"choices":[{"delta":{"content":"y"}}]}`,
+			)
+			withFakeZai(srv)
+
+			created := runCLINew("--provider", "z.ai", "--model", "glm-4.6", "--task", "greet")
+			if created.exit != 0 {
+				panic("session new failed")
+			}
+			rec := decodeNew(created.stdout)
+			run := runArgv([]string{"session", "run", "--db", dbFor(), "--budget", "1000", rec.ID})
+			got := nonEmpty(strings.Split(run.stdout, "\n"))
+			var last struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal([]byte(got[len(got)-1]), &last); err != nil {
+				panic(err)
+			}
+			observedExit = run.exit
+			observedLastType = last.Type
+		})
+		It("returns the expected exit status", func() { Expect(observedExit).To(Equal(0)) })
+		It("completes the turn", func() { Expect(observedLastType).To(Equal("turn.end")) })
+	})
+
+	Context("passes --max-tokens through to the provider request", func() {
+		var observedMaxTokens float64
+		BeforeEach(func() {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					panic(err)
+				}
+				var req struct {
+					MaxTokens float64 `json:"max_tokens"`
+				}
+				if err := json.Unmarshal(body, &req); err != nil {
+					panic(err)
+				}
+				observedMaxTokens = req.MaxTokens
+				w.Header().Set("Content-Type", "text/event-stream")
+				fl := w.(http.Flusher)
+				_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"))
+				_, _ = w.Write([]byte("data: [DONE]\n\n"))
+				fl.Flush()
+			}))
+			DeferCleanup(srv.Close)
+			withFakeZai(srv)
+
+			created := runCLINew("--provider", "z.ai", "--model", "glm-4.6", "--task", "greet")
+			if created.exit != 0 {
+				panic("session new failed")
+			}
+			rec := decodeNew(created.stdout)
+			run := runArgv([]string{"session", "run", "--db", dbFor(), "--max-tokens", "42", rec.ID})
+			if run.exit != 0 {
+				panic("session run failed")
+			}
+		})
+		It("sends max_tokens in the request body", func() { Expect(observedMaxTokens).To(Equal(42.0)) })
+	})
+
+	Context("rejects a negative budget with usage", func() {
+		var observedExit int
+		var observedCode string
+		BeforeEach(func() {
+			created := runCLINew("--provider", "z.ai", "--model", "glm-4.6", "--task", "greet")
+			if created.exit != 0 {
+				panic("session new failed")
+			}
+			rec := decodeNew(created.stdout)
+			run := runArgv([]string{"session", "run", "--db", dbFor(), "--budget", "-3", rec.ID})
+			var ec struct {
+				Code string `json:"code"`
+			}
+			if err := json.Unmarshal([]byte(strings.SplitN(run.stderr, "\n", 2)[0]), &ec); err != nil {
+				panic(err)
+			}
+			observedExit = run.exit
+			observedCode = ec.Code
+		})
+		It("rejects with the usage exit status", func() { Expect(observedExit).To(Equal(2)) })
+		It("rejects with the usage code", func() { Expect(observedCode).To(Equal("usage")) })
+	})
+
+	Context("rejects a non-numeric budget with usage", func() {
+		var observedExit int
+		var observedCode string
+		BeforeEach(func() {
+			created := runCLINew("--provider", "z.ai", "--model", "glm-4.6", "--task", "greet")
+			if created.exit != 0 {
+				panic("session new failed")
+			}
+			rec := decodeNew(created.stdout)
+			run := runArgv([]string{"session", "run", "--db", dbFor(), "--budget", "abc", rec.ID})
+			var ec struct {
+				Code string `json:"code"`
+			}
+			if err := json.Unmarshal([]byte(strings.SplitN(run.stderr, "\n", 2)[0]), &ec); err != nil {
+				panic(err)
+			}
+			observedExit = run.exit
+			observedCode = ec.Code
+		})
+		It("rejects with the usage exit status", func() { Expect(observedExit).To(Equal(2)) })
+		It("rejects with the usage code", func() { Expect(observedCode).To(Equal("usage")) })
 	})
 
 	It("exits 1 for an unknown session", func() {

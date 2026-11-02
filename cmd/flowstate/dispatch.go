@@ -4,30 +4,14 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
+	"strconv"
 	"strings"
 
-	"github.com/baphled/flowstate/internal/store"
+	"github.com/baphled/flowstate/internal/app"
 )
 
 // defaultDBPath is the SQLite database used when --db is absent.
 const defaultDBPath = "flowstate.db"
-
-// flags holds the parsed global flags for one invocation.
-type flags struct {
-	db     string
-	json   bool
-	status string
-	// session new
-	provider string
-	model    string
-	task     string
-	// session tool
-	tool      string
-	toolArg   string
-	allow     []string
-	allowFile string
-}
 
 // dispatch routes one CLI invocation and returns its exit code.
 func dispatch(args []string, stdout, stderr *os.File) int {
@@ -53,7 +37,7 @@ func dispatch(args []string, stdout, stderr *os.File) int {
 	}
 	fl, rest, err := parseFlags(args[2:])
 	if err != nil {
-		writeError(stderr, err)
+		writeError(stderr, fmt.Errorf("%w: %v", errUsageCmd, err))
 		return exitUsage
 	}
 	if args[1] == "new" || args[1] == "list" {
@@ -69,20 +53,25 @@ func dispatch(args []string, stdout, stderr *os.File) int {
 	if len(rest) == 1 {
 		id = rest[0]
 	}
+	return dispatchSession(args[1], fl, id, stdout, stderr)
+}
+
+// dispatchSession opens the store and routes one session subcommand.
+func dispatchSession(sub string, fl *flags, id string, stdout, stderr *os.File) int {
 	st, err := openStore(fl.db)
 	if err != nil {
-		writeError(stderr, fmt.Errorf("%w: cannot open database %q: %v", errConfigInvalid, fl.db, err))
+		writeError(stderr, fmt.Errorf("%w: cannot open database %q: %v", app.ErrConfigInvalid, fl.db, err))
 		return exitConfigInvalid
 	}
 	defer st.Close()
 	ctx := context.Background()
-	switch args[1] {
+	switch sub {
 	case "new":
 		return cmdNew(ctx, st, fl, stdout, stderr)
 	case "list":
 		return cmdList(ctx, st, fl, stdout, stderr)
 	case "run":
-		return cmdRun(ctx, st, id, stdout, stderr)
+		return cmdRun(ctx, st, id, fl, stdout, stderr)
 	case "events":
 		return cmdEvents(ctx, st, id, stdout, stderr)
 	case "close":
@@ -90,7 +79,7 @@ func dispatch(args []string, stdout, stderr *os.File) int {
 	case "tool":
 		return cmdTool(ctx, st, fl, id, stdout, stderr)
 	default:
-		writeError(stderr, fmt.Errorf("%w: unknown session subcommand %q", errUsageCmd, args[1]))
+		writeError(stderr, fmt.Errorf("%w: unknown session subcommand %q", errUsageCmd, sub))
 		return exitUsage
 	}
 }
@@ -98,13 +87,10 @@ func dispatch(args []string, stdout, stderr *os.File) int {
 // errUsageCmd wraps the usage sentinel for CLI-level rejections.
 var errUsageCmd = usageSentinel{}
 
-// usageSentinel satisfies errors.Is against session.ErrUsage while
-// formatting a usage message.
-type usageSentinel struct{}
-
+// Error reports the usage sentinel's message.
 func (usageSentinel) Error() string { return "usage" }
 
-// Is reports equality with the session package usage sentinel.
+// Is reports equality with the app usage sentinel.
 func (usageSentinel) Is(target error) bool { return target.Error() == "usage" }
 
 // parseFlags extracts --db, --json, --status, --provider, --model and
@@ -130,54 +116,23 @@ func parseFlags(args []string) (*flags, []string, error) {
 			fl.db = v
 		case a == "--json":
 			fl.json = true
-		case strings.HasPrefix(a, "--status"):
+		case strings.HasPrefix(a, "--status"), strings.HasPrefix(a, "--provider"),
+			strings.HasPrefix(a, "--model"), strings.HasPrefix(a, "--task"):
+			if serr := fl.setString(a, take); serr != nil {
+				return nil, nil, serr
+			}
+		case strings.HasPrefix(a, "--tool"), a == "--allow", a == "--allow-file":
+			if serr := fl.setToolFlag(a, take); serr != nil {
+				return nil, nil, serr
+			}
+		case a == "--budget", a == "--max-tokens":
 			v, err := flagValue(a, take)
 			if err != nil {
 				return nil, nil, err
 			}
-			fl.status = v
-		case strings.HasPrefix(a, "--provider"):
-			v, err := flagValue(a, take)
-			if err != nil {
-				return nil, nil, err
+			if lerr := setLimit(fl, a, v); lerr != nil {
+				return nil, nil, lerr
 			}
-			fl.provider = v
-		case strings.HasPrefix(a, "--model"):
-			v, err := flagValue(a, take)
-			if err != nil {
-				return nil, nil, err
-			}
-			fl.model = v
-		case strings.HasPrefix(a, "--task"):
-			v, err := flagValue(a, take)
-			if err != nil {
-				return nil, nil, err
-			}
-			fl.task = v
-		case a == "--tool":
-			v, err := take()
-			if err != nil {
-				return nil, nil, err
-			}
-			fl.tool = v
-		case a == "--tool-arg" || a == "--tool-arg=json.RawMessage":
-			v, err := flagValue(a, take)
-			if err != nil {
-				return nil, nil, err
-			}
-			fl.toolArg = v
-		case a == "--allow":
-			v, err := flagValue(a, take)
-			if err != nil {
-				return nil, nil, err
-			}
-			fl.allow = append(fl.allow, v)
-		case a == "--allow-file":
-			v, err := flagValue(a, take)
-			if err != nil {
-				return nil, nil, err
-			}
-			fl.allowFile = v
 		case strings.HasPrefix(a, "--"):
 			return nil, nil, fmt.Errorf("unknown flag %s", a)
 		default:
@@ -185,6 +140,63 @@ func parseFlags(args []string) (*flags, []string, error) {
 		}
 	}
 	return fl, positional, nil
+}
+
+// setString assigns one prefixed string flag (--status, --provider,
+// --model, --task) by name, resolving `--flag value` or `--flag=value`.
+func (f *flags) setString(name string, take func() (string, error)) error {
+	v, err := flagValue(name, take)
+	if err != nil {
+		return err
+	}
+	switch {
+	case strings.HasPrefix(name, "--status"):
+		f.status = v
+	case strings.HasPrefix(name, "--provider"):
+		f.provider = v
+	case strings.HasPrefix(name, "--model"):
+		f.model = v
+	case strings.HasPrefix(name, "--task"):
+		f.task = v
+	default:
+		return fmt.Errorf("unknown flag %s", name)
+	}
+	return nil
+}
+
+// setToolFlag assigns one tool-related flag (--tool, --tool-arg,
+// --allow, --allow-file), resolving `--flag value` or `--flag=value`.
+func (f *flags) setToolFlag(name string, take func() (string, error)) error {
+	v, err := flagValue(name, take)
+	if err != nil {
+		return err
+	}
+	switch {
+	case name == "--tool":
+		f.tool = v
+	case strings.HasPrefix(name, "--tool-arg"):
+		f.toolArg = v
+	case name == "--allow":
+		f.allow = append(f.allow, v)
+	default:
+		f.allowFile = v
+	}
+	return nil
+}
+
+// setLimit assigns one non-negative integer limit flag (--budget,
+// --max-tokens); non-numeric or negative input is a usage error.
+func setLimit(fl *flags, name, v string) error {
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n < 0 {
+		return fmt.Errorf("flag %s expects a non-negative integer, got %q", name, v)
+	}
+	if name == "--budget" {
+		fl.budget = n
+	} else {
+		fl.maxTokens = n
+	}
+	return nil
 }
 
 // flagValue resolves either `--flag value` or `--flag=value`.
@@ -195,15 +207,10 @@ func flagValue(a string, take func() (string, error)) (string, error) {
 	return take()
 }
 
-// openStore opens (creating directories for) the SQLite database.
-func openStore(path string) (*store.Store, error) {
-	if path != ":memory:" {
-		dir := filepath.Dir(path)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return nil, err
-		}
-	}
-	return store.Open(path)
+// openStore opens (creating parent directories for) the SQLite
+// database via the composition root, which owns directory creation.
+func openStore(path string) (*app.Store, error) {
+	return app.OpenStore(path)
 }
 
 // usage prints the CLI help text.
@@ -212,7 +219,7 @@ func usage(w *os.File) {
 
 session new    --provider <p> --model <m> --task <text|@file> [--db path]
 session list   [--status <s>] [--db path]
-session run    <id> [--db path]
+session run    <id> [--budget <n>] [--max-tokens <n>] [--db path]
 session events <id> [--db path]
 session close  <id> [--db path]
 session tool   <id> --tool <name> [--tool-arg <json>] [--allow <name>]... [--allow-file <manifest>] [--db path]

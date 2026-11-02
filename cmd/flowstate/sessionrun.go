@@ -6,22 +6,12 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/baphled/flowstate/internal/provider"
-	"github.com/baphled/flowstate/internal/provider/registry"
-	"github.com/baphled/flowstate/internal/runtime"
-	"github.com/baphled/flowstate/internal/session"
-	"github.com/baphled/flowstate/internal/store"
+	"github.com/baphled/flowstate/internal/app"
 )
 
 // providerResolver is the CLI's provider factory seam; tests swap it
 // for an httptest-backed adapter, production uses the registry.
-var providerResolver = defaultProviderResolver
-
-// defaultProviderResolver resolves a provider by name through the
-// registry (the only place a concrete adapter is selected).
-func defaultProviderResolver(name string) (provider.Provider, error) {
-	return registry.Resolve(name)
-}
+var providerResolver app.ProviderResolver = app.ResolveProvider
 
 // errProvider marks provider failures (code provider_error, exit 3
 // per CLI-AND-API-CONTRACT §1).
@@ -34,9 +24,13 @@ const exitProviderError = 3
 // provider turn, projects the persisted events as JSONL on stdout and
 // ends with a terminal event envelope. Exit 0 completed; 1 unknown
 // session; 2 usage; 3 provider error; 6 already terminal.
-func cmdRun(ctx context.Context, st *store.Store, id string, stdout, stderr *os.File) int {
+func cmdRun(ctx context.Context, st *app.Store, id string, fl *flags, stdout, stderr *os.File) int {
 	if id == "" {
-		writeError(stderr, fmt.Errorf("%w: session id required", session.ErrUsage))
+		writeError(stderr, fmt.Errorf("%w: session id required", app.ErrUsage))
+		return exitUsage
+	}
+	if fl.budget < 0 || fl.maxTokens < 0 {
+		writeError(stderr, fmt.Errorf("%w: --budget and --max-tokens must not be negative", app.ErrUsage))
 		return exitUsage
 	}
 	sess, err := st.GetSession(ctx, id)
@@ -45,7 +39,7 @@ func cmdRun(ctx context.Context, st *store.Store, id string, stdout, stderr *os.
 		return exitCodeFor(err)
 	}
 	if sess.Status != "active" && sess.Status != "paused" {
-		writeError(stderr, fmt.Errorf("%w: session %s is %s", session.ErrTerminal, id, sess.Status))
+		writeError(stderr, fmt.Errorf("%w: session %s is %s", app.ErrTerminal, id, sess.Status))
 		return exitTerminal
 	}
 	p, err := providerResolver(sess.Provider)
@@ -53,13 +47,15 @@ func cmdRun(ctx context.Context, st *store.Store, id string, stdout, stderr *os.
 		writeError(stderr, fmt.Errorf("%w: %v", errProvider, err))
 		return exitProviderError
 	}
-	streamer, ok := p.(provider.Streamer)
+	s, ok := p.(app.Streamer)
 	if !ok {
 		writeError(stderr, fmt.Errorf("%w: provider %s does not support streaming turns", errProvider, sess.Provider))
 		return exitProviderError
 	}
-	res, err := runtime.Turn(ctx, st, sess, streamer)
-	_ = res
+	res, err := app.TurnWithOptions(ctx, st, sess, s, app.TurnOptions{
+		Budget:    fl.budget,
+		MaxTokens: fl.maxTokens,
+	})
 	evts, rerr := st.Replay(ctx, id)
 	if rerr != nil {
 		writeError(stderr, rerr)
@@ -82,6 +78,10 @@ func cmdRun(ctx context.Context, st *store.Store, id string, stdout, stderr *os.
 	if err != nil {
 		writeError(stderr, fmt.Errorf("%w: %v", errProvider, err))
 		return exitProviderError
+	}
+	if res != nil && res.BudgetExceeded {
+		writeError(stderr, fmt.Errorf("%w: budget of %d exceeded after %d tokens; session paused", app.ErrBudgetExceeded, fl.budget, res.ConsumedBudget))
+		return exitBudget
 	}
 	return exitOK
 }
