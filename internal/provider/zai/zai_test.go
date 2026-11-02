@@ -237,3 +237,44 @@ var _ = Describe("Zai provider", func() {
 		close(release)
 	})
 })
+
+var _ = Describe("max_tokens passthrough", func() {
+	It("sends max_tokens in the request body", func() {
+		var got float64
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				panic(err)
+			}
+			var req struct {
+				MaxTokens float64 `json:"max_tokens"`
+			}
+			if err := json.Unmarshal(body, &req); err != nil {
+				panic(err)
+			}
+			got = req.MaxTokens
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		}))
+		DeferCleanup(srv.Close)
+		p := zai.New("k", zai.WithBaseURL(srv.URL))
+		for range p.Stream(context.Background(), &provider.ChatRequest{Model: "glm-4.6", MaxTokens: 42}) {
+		}
+		Expect(got).To(Equal(42.0))
+	})
+	It("omits max_tokens when unset", func() {
+		var raw string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			raw = string(body)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		}))
+		DeferCleanup(srv.Close)
+		p := zai.New("k", zai.WithBaseURL(srv.URL))
+		for range p.Stream(context.Background(), &provider.ChatRequest{Model: "glm-4.6"}) {
+		}
+		Expect(raw).NotTo(ContainSubstring("max_tokens"))
+	})
+})
