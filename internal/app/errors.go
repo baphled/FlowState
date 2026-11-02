@@ -26,6 +26,8 @@ const (
 	CodeBudgetExceeded = "budget_exceeded"
 	// CodeSessionCancelled marks interrupt-driven cancellation.
 	CodeSessionCancelled = "session_cancelled"
+	// CodeReceiptInvalid marks receipts failing schema validation.
+	CodeReceiptInvalid = "receipt_invalid"
 	// CodeProvider marks provider failures.
 	CodeProvider = "provider_error"
 )

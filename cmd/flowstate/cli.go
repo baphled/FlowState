@@ -20,6 +20,7 @@ const (
 	exitSigint         = 130
 	exitTerminal       = 6
 	exitReplayMismatch = 7
+	exitReceiptInvalid = 8
 )
 
 // Error-code strings of the closed error contract.
@@ -30,6 +31,7 @@ const (
 	codeSessionTerm    = app.CodeSessionTerminal
 	codeSessionMissing = app.CodeSessionMissing
 	codeReplayMismatch = app.CodeReplayMismatch
+	codeReceiptInvalid = app.CodeReceiptInvalid
 )
 
 // Error renders the cliError as its message.
@@ -54,7 +56,6 @@ func writeError(stderr io.Writer, err error) {
 	_, _ = fmt.Fprintln(stderr, string(b))
 }
 
-// exitCodeFor maps an error onto its stable exit code.
 func exitCodeFor(err error) int {
 	switch asCliError(err).Code {
 	case codeUsage:
@@ -71,6 +72,8 @@ func exitCodeFor(err error) int {
 		return exitUnknownSession
 	case codeReplayMismatch:
 		return exitReplayMismatch
+	case codeReceiptInvalid:
+		return exitReceiptInvalid
 	default:
 		return exitUnknownSession
 	}
