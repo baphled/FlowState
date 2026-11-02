@@ -12,7 +12,6 @@ import (
 	"github.com/baphled/flowstate/internal/store"
 )
 
-// validReceipt builds a schema-valid M1 acceptance receipt.
 func validReceipt() map[string]any {
 	return map[string]any{
 		"schema_version": "m1-acceptance-receipt-v2",
@@ -45,16 +44,13 @@ func validReceipt() map[string]any {
 		"validator_run": map[string]any{
 			"exit_code":                 0,
 			"docs_pack_manifest_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-			"artifact":                  map[string]any{"path": "art.json", "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
+			"artefact":                  map[string]any{"path": "art.json", "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
 		},
 		"metadata_ref":  "dropbox:/FlowState/Metadata/attempts/x/receipt.json",
-		"artifact_root": "dropbox:/FlowState/Metadata/attempts/x",
+		"artefact_root": "dropbox:/FlowState/Metadata/attempts/x",
 	}
 }
 
-// writeReceipt marshals doc to a temp file and returns its path; a
-// write failure panics because the spec cannot proceed without its
-// fixture.
 func writeReceipt(doc map[string]any) string {
 	p := filepath.Join(GinkgoT().TempDir(), "receipt.json")
 	b, err := json.Marshal(doc)
@@ -106,9 +102,7 @@ var _ = Describe("receipt validate", func() {
 var _ = Describe("replay", func() {
 	var db string
 
-	BeforeEach(func() {
-		db = filepath.Join(GinkgoT().TempDir(), "test.db")
-	})
+	BeforeEach(func() { db = filepath.Join(GinkgoT().TempDir(), "test.db") })
 
 	It("exits 2 without a session id", func() {
 		Expect(runArgv([]string{"replay", "--db", db}).exit).To(Equal(2))
@@ -134,30 +128,30 @@ var _ = Describe("replay", func() {
 
 	It("exits 7 on a tampered event payload", func() {
 		tamperedDB := filepath.Join(GinkgoT().TempDir(), "t.db")
-		st, openErr := store.Open(tamperedDB)
-		if openErr != nil {
-			panic(openErr)
+		st, err := store.Open(tamperedDB)
+		if err != nil {
+			panic(err)
 		}
 		ctx := context.Background()
-		sess, createErr := st.CreateSession(ctx, "sid-replay-tamper", "p", "m", "h", "sha")
-		if createErr != nil {
-			panic(createErr)
+		sess, err := st.CreateSession(ctx, "sid-replay-tamper", "p", "m", "h", "sha")
+		if err != nil {
+			panic(err)
 		}
-		w, writerErr := st.NewEventWriter(ctx, sess.ID)
-		if writerErr != nil {
-			panic(writerErr)
+		w, err := st.NewEventWriter(ctx, sess.ID)
+		if err != nil {
+			panic(err)
 		}
-		if _, appendErr := w.Append(ctx, "user", "turn.start", map[string]any{"task": "t"}); appendErr != nil {
-			panic(appendErr)
+		if _, err := w.Append(ctx, "user", "turn.start", map[string]any{"task": "t"}); err != nil {
+			panic(err)
 		}
-		if closeErr := w.Close(); closeErr != nil {
-			panic(closeErr)
+		if err := w.Close(); err != nil {
+			panic(err)
 		}
-		if tpErr := st.TamperEventPayload(ctx, sess.ID, 0, `{"task":"tampered"}`); tpErr != nil {
-			panic(tpErr)
+		if err := st.TamperEventPayload(ctx, sess.ID, 0, `{"task":"tampered"}`); err != nil {
+			panic(err)
 		}
-		if stCloseErr := st.Close(); stCloseErr != nil {
-			panic(stCloseErr)
+		if err := st.Close(); err != nil {
+			panic(err)
 		}
 		Expect(runArgv([]string{"replay", "--db", tamperedDB, sess.ID}).exit).To(Equal(7))
 	})

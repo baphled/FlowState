@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 )
 
@@ -33,7 +34,7 @@ var (
 // ValidateReceiptFile validates one receipt file; failures wrap
 // ErrReceiptInvalid.
 func ValidateReceiptFile(path string) error {
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return fmt.Errorf("%w: cannot read %q: %v", ErrReceiptInvalid, path, err)
 	}
@@ -52,12 +53,12 @@ func validateReceipt(doc map[string]any) error {
 	if v, _ := doc["schema_version"].(string); v != "m1-acceptance-receipt-v2" {
 		return errors.New("schema_version must be m1-acceptance-receipt-v2")
 	}
-	if cap, _ := doc["capability_id"].(string); !receiptCapabilities[cap] {
+	if capID, _ := doc["capability_id"].(string); !receiptCapabilities[capID] {
 		return errors.New("capability_id is not in the M1 capability enum")
 	}
 	for _, key := range []string{"repo_state", "author_identity", "evidence",
 		"gate_outcome", "observed_model", "review", "validator_run",
-		"metadata_ref", "artifact_root"} {
+		"metadata_ref", "artefact_root"} {
 		if _, present := doc[key]; !present {
 			return fmt.Errorf("missing required field %q", key)
 		}
@@ -206,5 +207,5 @@ func validateValidatorRun(v any) error {
 	if sha, _ := w["docs_pack_manifest_sha256"].(string); !sha64.MatchString(sha) {
 		return errors.New("validator_run.docs_pack_manifest_sha256 must be a 64-char hex sha")
 	}
-	return validateArtifact(w["artifact"], "validator_run.artifact")
+	return validateArtifact(w["artefact"], "validator_run.artefact")
 }
