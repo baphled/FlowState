@@ -72,13 +72,7 @@ func TurnWithOptions(ctx context.Context, st *store.Store, sess *store.Session, 
 	if err != nil {
 		return nil, fmt.Errorf("load session log: %w", err)
 	}
-	var task string
-	for _, e := range events {
-		if e.Type == session.TypeTurnStart {
-			task = payloadTask(e.PayloadJSON)
-			break
-		}
-	}
+	task := taskFromEvents(events)
 	w, err := st.NewEventWriter(ctx, sess.ID)
 	if err != nil {
 		return nil, err
@@ -100,6 +94,9 @@ func TurnWithOptions(ctx context.Context, st *store.Store, sess *store.Session, 
 	if s.budgetExceeded {
 		return pauseOnBudget(ctx, w, sess, s)
 	}
+	if ctx.Err() != nil {
+		return nil, cancelOnInterrupt(ctx, w, st, sess)
+	}
 	if s.streamErr {
 		return nil, fmt.Errorf("%w: %w", ErrProvider, s.err)
 	}
@@ -113,6 +110,33 @@ func TurnWithOptions(ctx context.Context, st *store.Store, sess *store.Session, 
 		return nil, fmt.Errorf("mark session completed: %w", err)
 	}
 	return &TurnResult{SessionID: sess.ID, FinalContent: s.content}, nil
+}
+
+// cancelOnInterrupt cancels the session cleanly on SIGINT so the CLI
+// can exit 130 without partial silent writes; a detached context
+// completes the cancellation writes even though the parent is
+// cancelled.
+func cancelOnInterrupt(ctx context.Context, w *store.EventWriter, st *store.Store, sess *store.Session) error {
+	cctx := context.WithoutCancel(ctx)
+	if serr := st.UpdateSessionStatus(cctx, sess.ID, "cancelled"); serr != nil {
+		return fmt.Errorf("mark session cancelled: %w", serr)
+	}
+	if _, aerr := w.Append(cctx, session.ActorEngine, session.TypeSessionCancelled,
+		map[string]any{"status": "cancelled", "reason": "sigint"}); aerr != nil {
+		return aerr
+	}
+	return ErrSessionCancelled
+}
+
+// taskFromEvents extracts the original task from the replayed
+// turn.start event, if present.
+func taskFromEvents(events []store.RecordedEvent) string {
+	for _, e := range events {
+		if e.Type == session.TypeTurnStart {
+			return payloadTask(e.PayloadJSON)
+		}
+	}
+	return ""
 }
 
 // consumeStreamEvent appends one stream event to the log and updates

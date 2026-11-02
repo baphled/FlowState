@@ -17,6 +17,7 @@ const (
 	exitUsage          = 2
 	exitConfigInvalid  = 4
 	exitBudget         = 5
+	exitSigint         = 130
 	exitTerminal       = 6
 	exitReplayMismatch = 7
 )
@@ -62,6 +63,8 @@ func exitCodeFor(err error) int {
 		return exitConfigInvalid
 	case app.CodeBudgetExceeded:
 		return exitBudget
+	case app.CodeSessionCancelled:
+		return exitSigint
 	case codeSessionTerm:
 		return exitTerminal
 	case codeSessionMissing:
