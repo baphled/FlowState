@@ -1,4 +1,3 @@
-// Package main implements the flowstate CLI entry point.
 package main
 
 import (
@@ -11,7 +10,7 @@ import (
 )
 
 // Exit codes per specs/CLI-AND-API-CONTRACT.md §1–2 (stable; CI
-// asserts them via VA-C1).
+// depends on them).
 const (
 	exitOK             = 0
 	exitUnknownSession = 1
@@ -22,14 +21,14 @@ const (
 	exitReplayMismatch = 7
 )
 
-// Error codes of the closed set in the contract §2.
+// Error-code strings of the closed error contract.
 const (
-	codeUsage          = "usage"
-	codeConfigInvalid  = "config_invalid"
-	codeInternal       = "internal"
-	codeSessionTerm    = "session_terminal"
-	codeSessionMissing = "session_not_found"
-	codeReplayMismatch = "replay_mismatch"
+	codeUsage          = app.CodeUsage
+	codeConfigInvalid  = app.CodeConfigInvalid
+	codeInternal       = app.CodeInternal
+	codeSessionTerm    = app.CodeSessionTerminal
+	codeSessionMissing = app.CodeSessionMissing
+	codeReplayMismatch = app.CodeReplayMismatch
 )
 
 // Error renders the cliError as its message.

@@ -1,10 +1,13 @@
 package main
 
+// cliError is a failure carrying one of the closed error codes; it
+// renders as a single JSON object on stderr.
 type cliError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }
 
+// flags holds the parsed global flags for one invocation.
 type flags struct {
 	db     string
 	json   bool
@@ -23,4 +26,6 @@ type flags struct {
 	maxTokens int64
 }
 
+// usageSentinel satisfies errors.Is against app.ErrUsage while
+// formatting a usage message.
 type usageSentinel struct{}
