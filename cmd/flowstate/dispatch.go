@@ -15,6 +15,12 @@ const defaultDBPath = "flowstate.db"
 
 // dispatch routes one CLI invocation and returns its exit code.
 func dispatch(args []string, stdout, stderr *os.File) int {
+	return dispatchContexted(context.Background(), args, stdout, stderr)
+}
+
+// dispatchContexted routes with a context that may carry the SIGINT
+// marker into session subcommands.
+func dispatchContexted(ctx context.Context, args []string, stdout, stderr *os.File) int {
 	if len(args) < 1 {
 		writeError(stderr, fmt.Errorf("%w: missing command", errUsageCmd))
 		return exitUsage
@@ -53,18 +59,17 @@ func dispatch(args []string, stdout, stderr *os.File) int {
 	if len(rest) == 1 {
 		id = rest[0]
 	}
-	return dispatchSession(args[1], fl, id, stdout, stderr)
+	return dispatchSession(ctx, args[1], fl, id, stdout, stderr)
 }
 
 // dispatchSession opens the store and routes one session subcommand.
-func dispatchSession(sub string, fl *flags, id string, stdout, stderr *os.File) int {
+func dispatchSession(ctx context.Context, sub string, fl *flags, id string, stdout, stderr *os.File) int {
 	st, err := openStore(fl.db)
 	if err != nil {
 		writeError(stderr, fmt.Errorf("%w: cannot open database %q: %v", app.ErrConfigInvalid, fl.db, err))
 		return exitConfigInvalid
 	}
 	defer st.Close()
-	ctx := context.Background()
 	switch sub {
 	case "new":
 		return cmdNew(ctx, st, fl, stdout, stderr)
@@ -74,6 +79,8 @@ func dispatchSession(sub string, fl *flags, id string, stdout, stderr *os.File) 
 		return cmdRun(ctx, st, id, fl, stdout, stderr)
 	case "events":
 		return cmdEvents(ctx, st, id, stdout, stderr)
+	case "cancel":
+		return cmdCancel(ctx, st, id, stdout, stderr)
 	case "close":
 		return cmdClose(ctx, st, id, stdout, stderr)
 	case "tool":
@@ -222,6 +229,7 @@ session list   [--status <s>] [--db path]
 session run    <id> [--budget <n>] [--max-tokens <n>] [--db path]
 session events <id> [--db path]
 session close  <id> [--db path]
+session cancel <id> [--db path]
 session tool   <id> --tool <name> [--tool-arg <json>] [--allow <name>]... [--allow-file <manifest>] [--db path]
 
 common flags: --db <path> (default ./flowstate.db), --json

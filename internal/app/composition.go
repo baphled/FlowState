@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/store"
 	"github.com/baphled/flowstate/internal/tool"
 )
@@ -56,6 +57,12 @@ func (c *Composition) Registry() *tool.Registry { return c.registry }
 
 // Allowed reports whether name is wired into the allowlist.
 func (c *Composition) Allowed(name string) bool { return c.allow[name] }
+
+// CancelSession transitions an active or paused session to
+// cancelled (session.cancelled event) so cmd stays app-only.
+func CancelSession(ctx context.Context, st *store.Store, id string) (*store.Session, error) {
+	return session.Close(ctx, st, id)
+}
 
 // Close releases the loop's event-writer registration.
 func (h *LoopHandle) Close() error { return h.close() }

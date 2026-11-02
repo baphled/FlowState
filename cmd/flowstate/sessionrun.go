@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 
@@ -44,6 +45,10 @@ func cmdRun(ctx context.Context, st *app.Store, id string, fl *flags, stdout, st
 	}
 	p, err := providerResolver(sess.Provider)
 	if err != nil {
+		if errors.Is(err, app.ErrSessionCancelled) {
+			writeError(stderr, fmt.Errorf("%w: interrupted; session cancelled", app.ErrSessionCancelled))
+			return exitSigint
+		}
 		writeError(stderr, fmt.Errorf("%w: %v", errProvider, err))
 		return exitProviderError
 	}
@@ -56,7 +61,9 @@ func cmdRun(ctx context.Context, st *app.Store, id string, fl *flags, stdout, st
 		Budget:    fl.budget,
 		MaxTokens: fl.maxTokens,
 	})
-	evts, rerr := st.Replay(ctx, id)
+	// Replay on a fresh context: after SIGINT the cancel path still
+	// needs to project the persisted events before exiting 130.
+	evts, rerr := st.Replay(context.WithoutCancel(ctx), id)
 	if rerr != nil {
 		writeError(stderr, rerr)
 		return exitCodeFor(rerr)
@@ -75,7 +82,17 @@ func cmdRun(ctx context.Context, st *app.Store, id string, fl *flags, stdout, st
 			return exitCodeFor(err)
 		}
 	}
+	return finishRun(err, res, fl, stderr)
+}
+
+// finishRun maps the turn outcome onto its exit code: SIGINT
+// cancellation exits 130, provider failures 3, budget stops 5.
+func finishRun(err error, res *app.TurnResult, fl *flags, stderr *os.File) int {
 	if err != nil {
+		if errors.Is(err, app.ErrSessionCancelled) {
+			writeError(stderr, fmt.Errorf("%w: interrupted; session cancelled", app.ErrSessionCancelled))
+			return exitSigint
+		}
 		writeError(stderr, fmt.Errorf("%w: %v", errProvider, err))
 		return exitProviderError
 	}

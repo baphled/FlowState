@@ -29,3 +29,7 @@ type flags struct {
 // usageSentinel satisfies errors.Is against app.ErrUsage while
 // formatting a usage message.
 type usageSentinel struct{}
+
+// sigintCancelledKey marks a context cancelled by SIGINT; its
+// presence routes session cancel to the exit-130 contract path.
+type sigintCancelledKey struct{}

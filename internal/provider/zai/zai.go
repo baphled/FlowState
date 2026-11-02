@@ -53,7 +53,11 @@ func NewFromEnv() (*Provider, error) {
 	if key == "" {
 		return nil, errors.New("zai: ZAI_API_KEY is not set")
 	}
-	return New(key), nil
+	opts := []Option{}
+	if u := os.Getenv("ZAI_BASE_URL"); u != "" {
+		opts = append(opts, WithBaseURL(u))
+	}
+	return New(key, opts...), nil
 }
 
 // WithBaseURL overrides the API base URL.
