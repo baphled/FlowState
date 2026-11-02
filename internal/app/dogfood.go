@@ -13,9 +13,6 @@ import (
 	"github.com/baphled/flowstate/internal/store"
 )
 
-// Session aliases the session row so cmd depends only on app.
-type Session = store.Session
-
 // DogfoodCreate creates a dogfood session via the standard
 // session-create path.
 func DogfoodCreate(ctx context.Context, st *store.Store, providerName, modelID, task string) (*Session, error) {
@@ -28,19 +25,13 @@ var receiptsOpen = openReceipts
 // EmitDogfoodReceipt emits one immutable metadata attempt against the
 // receipts database at dbPath; the cmd-facing seam over metadata.Emit
 // so cmd never imports metadata or storage directly.
-func EmitDogfoodReceipt(ctx context.Context, dbPath string, a metadata.Attempt) (*metadata.AttemptRecord, error) {
+func EmitDogfoodReceipt(ctx context.Context, dbPath string, a Attempt) (*AttemptRecord, error) {
 	db, err := receiptsOpen(dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("app: open receipts db: %w", err)
 	}
 	defer func() { _ = db.Close() }()
 	return metadata.Emit(ctx, db.db(), a)
-}
-
-// receiptsDB is the narrow handle over the receipts database the
-// dogfood path needs (hides *sql.DB from cmd).
-type receiptsDB struct {
-	sqlDB *sql.DB
 }
 
 // db exposes the underlying *sql.DB for metadata.Emit.
