@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/registry"
-	"github.com/baphled/flowstate/internal/runtime"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/store"
 )
@@ -30,11 +30,32 @@ var errProvider = fmt.Errorf("provider_error")
 // exitProviderError is the stable provider-failure exit code.
 const exitProviderError = 3
 
+// exitBudgetStop is the stable budget-pause exit code (contract §1:
+// `session run` exits 5 on a budget stop, which is not terminal).
+const exitBudgetStop = 5
+
+// errBudgetExceeded marks budget-stop failures (code budget_exceeded
+// of the closed error set in the contract §2).
+var errBudgetExceeded = fmt.Errorf("budget_exceeded")
+
+// budgetCap resolves the effective turn cap from the --budget and
+// --max-tokens flags: both bound the turn, so when both are set the
+// tighter (minimum) applies; <=0 means unset (unlimited).
+func budgetCap(fl *flags) int64 {
+	c := fl.budget
+	if fl.maxTokens > 0 && (c <= 0 || fl.maxTokens < c) {
+		c = fl.maxTokens
+	}
+	return c
+}
+
 // cmdRun implements `flowstate session run <id>`: runs one bounded
-// provider turn, projects the persisted events as JSONL on stdout and
-// ends with a terminal event envelope. Exit 0 completed; 1 unknown
-// session; 2 usage; 3 provider error; 6 already terminal.
-func cmdRun(ctx context.Context, st *store.Store, id string, stdout, stderr *os.File) int {
+// provider turn through the app turn loop (budget-aware), projects
+// the persisted events as JSONL on stdout and ends with a terminal
+// event envelope. Exit 0 completed; 1 unknown session; 2 usage;
+// 3 provider error; 5 budget stop (session.paused, not terminal);
+// 6 already terminal.
+func cmdRun(ctx context.Context, st *store.Store, id string, fl *flags, stdout, stderr *os.File) int {
 	if id == "" {
 		writeError(stderr, fmt.Errorf("%w: session id required", session.ErrUsage))
 		return exitUsage
@@ -58,7 +79,7 @@ func cmdRun(ctx context.Context, st *store.Store, id string, stdout, stderr *os.
 		writeError(stderr, fmt.Errorf("%w: provider %s does not support streaming turns", errProvider, sess.Provider))
 		return exitProviderError
 	}
-	res, err := runtime.Turn(ctx, st, sess, streamer)
+	res, err := app.TurnWithOptions(ctx, st, sess, streamer, app.TurnOptions{Budget: budgetCap(fl)})
 	_ = res
 	evts, rerr := st.Replay(ctx, id)
 	if rerr != nil {
@@ -82,6 +103,10 @@ func cmdRun(ctx context.Context, st *store.Store, id string, stdout, stderr *os.
 	if err != nil {
 		writeError(stderr, fmt.Errorf("%w: %v", errProvider, err))
 		return exitProviderError
+	}
+	if res != nil && res.BudgetExceeded {
+		writeError(stderr, fmt.Errorf("%w: budget stop after %d units; session paused, resume with session run %s", errBudgetExceeded, res.ConsumedBudget, id))
+		return exitBudgetStop
 	}
 	return exitOK
 }

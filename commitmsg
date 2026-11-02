@@ -1,0 +1,13 @@
+feat(cli): wire budget flags through session run
+
+Add --budget and --max-tokens to session run per CLI-AND-API-CONTRACT
+§1 (M1-DOGFOOD support). session run now uses app.TurnWithOptions so
+the existing budget-pause path is reachable from the CLI; a budget stop
+exits 5 with final stdout event session.paused (not terminal) and a
+single budget_exceeded JSON error object on stderr per §2. Both flags
+bound the turn, the tighter cap wins, --flag=value is supported and a
+non-integer cap is rejected as usage (exit 2). asCliError maps
+provider_error/budget_exceeded message sentinels onto the closed code
+set. Tests use the httptest fake zai server; no live calls.
+
+Project-Metadata: dropbox:/FlowState/Metadata/attempts/2026-11-02-m1-dogfood-pr-a/commit-metadata.json
