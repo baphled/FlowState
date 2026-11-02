@@ -27,41 +27,10 @@ const DefaultBaseURL = "https://api.z.ai/api/paas/v4"
 // 2026-10-22; glm-4.6 per M1 evidence).
 const DefaultModel = "glm-4.6"
 
-// Sentinel error classes so callers can branch without string
-// matching. Only ErrUnauthorized is distinguished; other failures
-// stay generic per the no-silent-retry failure path.
+// ErrUnauthorized marks Z.ai authentication failures so callers can
+// branch without string matching; other failures stay generic per
+// the no-silent-retry failure path.
 var ErrUnauthorized = errors.New("zai: unauthorized")
-
-// APIError is a typed provider failure with the observed HTTP status
-// and the provider's own error code/message. It surfaces to callers
-// as a typed error event; the adapter never retries (M1-BUILD-SPEC
-// M1-PROVIDER failure path).
-type APIError struct {
-	Status  int
-	Code    string
-	Message string
-}
-
-func (e *APIError) Error() string {
-	return fmt.Sprintf("zai: api error %d code=%s: %s", e.Status, e.Code, e.Message)
-}
-
-// Unwrap maps auth failures onto ErrUnauthorized.
-func (e *APIError) Unwrap() error {
-	if e.Status == http.StatusUnauthorized || e.Status == http.StatusForbidden {
-		return ErrUnauthorized
-	}
-	return nil
-}
-
-// Provider is the Z.ai adapter. It implements provider.Provider and
-// adds Stream for streamed turns.
-type Provider struct {
-	apiKey  string
-	baseURL string
-	model   string
-	client  *http.Client
-}
 
 // New returns a provider bound to an explicit API key.
 func New(apiKey string, opts ...Option) *Provider {
@@ -87,9 +56,6 @@ func NewFromEnv() (*Provider, error) {
 	return New(key), nil
 }
 
-// Option customises the adapter (tests inject a fake base URL).
-type Option func(*Provider)
-
 // WithBaseURL overrides the API base URL.
 func WithBaseURL(u string) Option { return func(p *Provider) { p.baseURL = strings.TrimRight(u, "/") } }
 
@@ -105,23 +71,18 @@ func (p *Provider) Name() string { return "z.ai" }
 // Models lists models offered by the current delivery route.
 func (p *Provider) Models() []string { return []string{DefaultModel, "glm-4.5"} }
 
-// request is the OpenAI-compatible request body.
-type request struct {
-	Model    string             `json:"model"`
-	Messages []provider.Message `json:"messages"`
-	Stream   bool               `json:"stream,omitempty"`
+// Error implements error for the typed provider failure; see
+// types.go for the declaration.
+func (e *APIError) Error() string {
+	return fmt.Sprintf("zai: api error %d code=%s: %s", e.Status, e.Code, e.Message)
 }
 
-type message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-// response is the OpenAI-compatible (non-streaming) response shape.
-type response struct {
-	Choices []struct {
-		Message message `json:"message"`
-	} `json:"choices"`
+// Unwrap maps auth failures onto ErrUnauthorized.
+func (e *APIError) Unwrap() error {
+	if e.Status == http.StatusUnauthorized || e.Status == http.StatusForbidden {
+		return ErrUnauthorized
+	}
+	return nil
 }
 
 // Chat performs one non-streaming turn.
@@ -139,15 +100,6 @@ func (p *Provider) Chat(ctx context.Context, req *provider.ChatRequest) (*provid
 		return nil, errors.New("zai: empty choices in response")
 	}
 	return &provider.ChatResponse{Content: resp.Choices[0].Message.Content}, nil
-}
-
-// streamChunk is one SSE `data:` payload of the streaming response.
-type streamChunk struct {
-	Choices []struct {
-		Delta struct {
-			Content string `json:"content"`
-		} `json:"delta"`
-	} `json:"choices"`
 }
 
 // Stream performs one streaming turn, emitting content deltas in
@@ -213,7 +165,7 @@ func (p *Provider) post(ctx context.Context, req *provider.ChatRequest, stream b
 	if model == "" {
 		model = p.model
 	}
-	buf, err := json.Marshal(request{Model: model, Messages: req.Messages, Stream: stream})
+	buf, err := json.Marshal(request{Model: model, Messages: req.Messages, MaxTokens: req.MaxTokens, Stream: stream})
 	if err != nil {
 		return nil, err
 	}

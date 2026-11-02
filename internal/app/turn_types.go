@@ -1,5 +1,10 @@
 package app
 
+import (
+	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/store"
+)
+
 // TypeUserMessage is the user-turn event type (DATA-MODEL §3).
 const TypeUserMessage = "user.message"
 
@@ -30,6 +35,8 @@ type turnState struct {
 type TurnOptions struct {
 	// Budget caps the turn; values <= 0 mean unlimited.
 	Budget int64
+	// MaxTokens caps the provider response; <= 0 means provider default.
+	MaxTokens int64
 }
 
 // TurnResult reports one completed engine turn.
@@ -45,3 +52,12 @@ type TurnResult struct {
 	// content (sum of len(ev.Content) over the streamed chunks).
 	ConsumedBudget int64
 }
+
+// Store aliases the session store so cmd depends only on app.
+type Store = store.Store
+
+// Streamer aliases the streaming-provider port for cmd use.
+type Streamer = provider.Streamer
+
+// ProviderResolver resolves a provider by name (registry-backed).
+type ProviderResolver = func(name string) (provider.Provider, error)

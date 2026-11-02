@@ -9,11 +9,30 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/provider/registry"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/store"
 )
+
+// ErrTerminal aliases the session terminal sentinel for cmd use.
+var ErrTerminal = session.ErrTerminal
+
+// ResolveProvider is the registry-backed default resolver.
+var ResolveProvider ProviderResolver = registry.Resolve
+
+// OpenStore opens (creating parent dirs) the SQLite database.
+func OpenStore(path string) (*Store, error) {
+	if path != ":memory:" {
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			return nil, err
+		}
+	}
+	return store.Open(path)
+}
 
 // payloadTask extracts the task text from a stored turn.start
 // payload without failing on unknown shapes.
@@ -70,8 +89,9 @@ func TurnWithOptions(ctx context.Context, st *store.Store, sess *store.Session, 
 	}
 	s := &turnState{}
 	for ev := range p.Stream(ctx, &provider.ChatRequest{
-		Messages: []provider.Message{{Role: "user", Content: task}},
-		Model:    sess.ModelID,
+		Messages:  []provider.Message{{Role: "user", Content: task}},
+		Model:     sess.ModelID,
+		MaxTokens: opts.MaxTokens,
 	}) {
 		if stop := consumeStreamEvent(ctx, w, st, sess, opts, ev, s); stop {
 			break
