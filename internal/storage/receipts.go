@@ -17,10 +17,13 @@ func InsertReceipt(ctx context.Context, db QueryExecer, r Receipt) error {
 	if r.RecordedAtUTC == "" {
 		r.RecordedAtUTC = time.Now().UTC().Format(time.RFC3339)
 	}
+	if r.ReceiptRef == "" {
+		return fmt.Errorf("storage: receipt_ref must not be empty")
+	}
 	_, err := db.ExecContext(ctx,
-		`INSERT INTO receipts (id, capability_id, commit_sha, receipt_sha256, gate_outcome, recorded_at_utc)
-		 VALUES (?,?,?,?,?,?)`,
-		r.ID, r.CapabilityID, r.CommitSHA, r.ReceiptSHA256, r.GateOutcome, r.RecordedAtUTC)
+		`INSERT INTO receipts (id, capability_id, commit_sha, receipt_ref, receipt_sha256, gate_outcome, recorded_at_utc)
+		 VALUES (?,?,?,?,?,?,?)`,
+		r.ID, r.CapabilityID, r.CommitSHA, r.ReceiptRef, r.ReceiptSHA256, r.GateOutcome, r.RecordedAtUTC)
 	if err != nil {
 		return fmt.Errorf("storage: insert receipt: %w", err)
 	}
