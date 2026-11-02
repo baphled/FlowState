@@ -181,3 +181,50 @@ var _ = Describe("EventWriter Pause/Resume", func() {
 		Expect(seqs).To(Equal([]int64{0, 1, 2}))
 	})
 })
+
+var _ = Describe("EventWriter paused restore", func() {
+	It("restores a fresh writer for a paused session as paused", func() {
+		s, w, sid, err := newStoreWriter()
+		if err != nil {
+			panic(err)
+		}
+		if err := pauseFor(w, PauseInfo{Reason: "budget"}); err != nil {
+			panic(err)
+		}
+		if err := w.Close(); err != nil {
+			panic(err)
+		}
+		w2, err := s.NewEventWriter(context.Background(), sid)
+		if err != nil {
+			panic(err)
+		}
+		DeferCleanup(func() { _ = w2.Close() })
+		Expect(w2.Resume(context.Background())).To(Succeed())
+	})
+
+	It("restores the resumed session status to active", func() {
+		s, w, sid, err := newStoreWriter()
+		if err != nil {
+			panic(err)
+		}
+		if err := pauseFor(w, PauseInfo{Reason: "budget"}); err != nil {
+			panic(err)
+		}
+		if err := w.Close(); err != nil {
+			panic(err)
+		}
+		w2, err := s.NewEventWriter(context.Background(), sid)
+		if err != nil {
+			panic(err)
+		}
+		DeferCleanup(func() { _ = w2.Close() })
+		if err := w2.Resume(context.Background()); err != nil {
+			panic(err)
+		}
+		sess, err := getSession(s, sid)
+		if err != nil {
+			panic(err)
+		}
+		Expect(sess.Status).To(Equal("active"))
+	})
+})

@@ -102,6 +102,13 @@ func (s *Store) NewEventWriter(ctx context.Context, sessionID string) (*EventWri
 		return nil, err
 	}
 	w := &EventWriter{store: s, session: sessionID}
+	// Restore paused writers as paused: a fresh writer for a session
+	// whose persisted status is paused must keep the pause invariant
+	// (Resume stays available; Append stays guarded) across processes.
+	var status string
+	if err := s.db.QueryRowContext(ctx, `SELECT status FROM sessions WHERE id=?`, sessionID).Scan(&status); err == nil && status == "paused" {
+		w.paused = true
+	}
 	if _, loaded := writerRegistry.LoadOrStore(sessionID, w); loaded {
 		return nil, fmt.Errorf("%w: %s", ErrWriterExists, sessionID)
 	}
