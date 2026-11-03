@@ -106,26 +106,26 @@ var _ = Describe("coding (Anthropic-compatible) route", func() {
 		Expect(bodies()).To(ContainSubstring(`"max_tokens":131072`))
 	})
 
-	It("clamps a zero max_tokens to 1 on the coding route", func() {
+	It("clamps a zero max_tokens to the default floor on the coding route", func() {
 		srv, bodies := codingServer(`{"content":[]}`, "")
 		defer srv.Close()
 		p := New("k", WithBaseURL(srv.URL), WithCoding(), WithCodingRoute("anthropic"))
 		_, _ = p.Chat(context.Background(), &provider.ChatRequest{})
-		Expect(bodies()).To(ContainSubstring(`"max_tokens":1`))
+		Expect(bodies()).To(ContainSubstring(`"max_tokens":8192`))
 	})
 })
 
 var _ = Describe("ClampMaxTokens", func() {
-	It("lifts values below one", func() {
-		Expect(ClampMaxTokens(0)).To(Equal(int64(1)))
+	It("lifts values below the default floor", func() {
+		Expect(ClampMaxTokens(0)).To(Equal(int64(MaxTokensDefault)))
 	})
 
-	It("lifts negative values to one", func() {
-		Expect(ClampMaxTokens(-5)).To(Equal(int64(1)))
+	It("lifts negative values to the default floor", func() {
+		Expect(ClampMaxTokens(-5)).To(Equal(int64(MaxTokensDefault)))
 	})
 
 	It("keeps in-range values unchanged", func() {
-		Expect(ClampMaxTokens(42)).To(Equal(int64(42)))
+		Expect(ClampMaxTokens(9000)).To(Equal(int64(9000)))
 	})
 
 	It("keeps the exact maximum unchanged", func() {

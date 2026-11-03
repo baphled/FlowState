@@ -112,11 +112,19 @@ func WithBaseURL(u string) Option {
 // with 400 error 1210 (evidence 2026-11-03).
 const MaxTokensMax = 131072
 
-// ClampMaxTokens bounds max_tokens into [1, MaxTokensMax] so
-// unset (0) or oversized budgets never trigger error 1210.
+// MaxTokensDefault is the floor applied when a turn leaves
+// max_tokens unset: glm-5.x reasoning models spend hidden
+// reasoning tokens against the same budget, so a 1-token floor
+// starves the answer and streaming completes empty (live evidence
+// 2026-11-03, both coding surfaces).
+const MaxTokensDefault = 8192
+
+// ClampMaxTokens bounds max_tokens into [MaxTokensDefault,
+// MaxTokensMax] so unset (0) or oversized budgets never trigger
+// error 1210 and never starve reasoning models.
 func ClampMaxTokens(n int64) int64 {
-	if n < 1 {
-		return 1
+	if n < MaxTokensDefault {
+		return MaxTokensDefault
 	}
 	if n > MaxTokensMax {
 		return MaxTokensMax
