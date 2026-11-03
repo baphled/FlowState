@@ -12,7 +12,7 @@ import (
 
 func receiptRow() storage.Receipt {
 	return storage.Receipt{
-		ID: "2026-11-02-m1-dogfood", CapabilityID: "M1-DOGFOOD",
+		ID: "2026-11-02-m1-selftest", CapabilityID: "M1-SELFTEST",
 		CommitSHA:     "1cc6d53b00000000000000000000000000000000",
 		ReceiptRef:    "/tmp/receipt.json",
 		ReceiptSHA256: digest64("r"), GateOutcome: "pass",

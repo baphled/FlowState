@@ -26,7 +26,7 @@ type Artefact struct {
 
 // Attempt is the inbound attempt record awaiting emission.
 type Attempt struct {
-	ID           string // e.g. 2026-11-02-m1-dogfood
+	ID           string // e.g. 2026-11-02-m1-selftest
 	CapabilityID string
 	CommitSHA    string
 	GateOutcome  string // pass or fail

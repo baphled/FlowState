@@ -25,7 +25,7 @@ type (
 )
 
 // receiptsDB is the narrow handle over the receipts database the
-// dogfood path needs (hides *sql.DB from cmd).
+// live self-test path needs (hides *sql.DB from cmd).
 type receiptsDB struct {
 	sqlDB *sql.DB
 }

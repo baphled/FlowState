@@ -68,7 +68,7 @@ func gateOutcome(ctx context.Context, db *sql.DB, id string) string {
 
 func sampleAttempt() metadata.Attempt {
 	return metadata.Attempt{
-		ID: "2026-11-02-m1-dogfood", CapabilityID: "M1-DOGFOOD",
+		ID: "2026-11-02-m1-selftest", CapabilityID: "M1-SELFTEST",
 		CommitSHA:   "1cc6d53b00000000000000000000000000000000",
 		GateOutcome: "pass",
 		Attribution: metadata.Attribution{
@@ -91,7 +91,7 @@ var _ = Describe("Emit", func() {
 
 		rec := emit(ctx, db, sampleAttempt())
 
-		Expect(rec.AttemptDir).To(Equal(filepath.Join(root, "attempts", "2026-11-02-m1-dogfood")))
+		Expect(rec.AttemptDir).To(Equal(filepath.Join(root, "attempts", "2026-11-02-m1-selftest")))
 	})
 
 	It("records a sha-256 digest for the emitted receipt", func() {
@@ -109,7 +109,7 @@ var _ = Describe("Emit", func() {
 
 		rec := emit(ctx, db, sampleAttempt())
 
-		Expect(receiptDoc(rec)["capability_id"]).To(Equal("M1-DOGFOOD"))
+		Expect(receiptDoc(rec)["capability_id"]).To(Equal("M1-SELFTEST"))
 	})
 
 	It("indexes the gate outcome in the receipts table", func() {
@@ -118,7 +118,7 @@ var _ = Describe("Emit", func() {
 
 		emit(ctx, db, sampleAttempt())
 
-		Expect(gateOutcome(ctx, db, "2026-11-02-m1-dogfood")).To(Equal("pass"))
+		Expect(gateOutcome(ctx, db, "2026-11-02-m1-selftest")).To(Equal("pass"))
 	})
 
 	It("rejects rewriting an existing attempt dir as immutable", func() {

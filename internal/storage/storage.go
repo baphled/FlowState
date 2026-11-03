@@ -102,7 +102,7 @@ CREATE INDEX idx_sessions_status ON sessions(status);
 	{
 		Version: 2,
 		// receipt_ref records the Dropbox path of the verified
-		// receipt document (M1-DOGFOOD attempt indexing).
+		// receipt document (M1-SELFTEST attempt indexing).
 		SQL: `
 ALTER TABLE receipts ADD COLUMN receipt_ref TEXT NOT NULL DEFAULT '';
 `,
