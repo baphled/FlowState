@@ -46,22 +46,35 @@ func New(apiKey string, opts ...Option) *Provider {
 	return p
 }
 
-// The Anthropic-compatible coding endpoint lives in anthropic.go
-// endpoint serving GLM Coding Plan subscriptions.
+// The coding-plan routes live in coding.go: the OpenAI-compatible
+// endpoint (default) and the Anthropic-compatible endpoint (route
+// "anthropic").
 
-// WithCoding switches the provider onto the coding-plan (Anthropic-
-// compatible) delivery route. Coding-plan keys receive 429 code=1113
-// on the OpenAI-compatible route for models like glm-5.3; the
-// anthropic route serves them (evidence 2026-11-03).
+// WithCoding switches the provider onto the coding-plan delivery
+// route. Default wire format is the OpenAI-compatible endpoint
+// https://api.z.ai/api/coding/paas/v4 (live-verified 2026-11-03:
+// HTTP 200 for glm-5.3 with a coding-plan key). Use WithCodingRoute
+// ("anthropic") for the Anthropic-compatible endpoint, which is also
+// live-verified. An explicitly set base URL (ZAI_BASE_URL /
+// WithBaseURL, e.g. providers.zai.host) still wins for the host.
 func WithCoding() Option {
 	return func(p *Provider) {
 		p.coding = true
-		// The coding route must hit the Anthropic-compatible
-		// endpoint; switch baseURL unless explicitly overridden
-		// (ZAI_BASE_URL / WithBaseURL still wins — those options
-		// run later in the chain and set baseURLSet).
-		if !p.baseURLSet {
-			p.baseURL = codingBaseURL
+		if p.codingRoute == "" {
+			p.codingRoute = codingRouteOpenAI
+		}
+	}
+}
+
+// WithCodingRoute selects the coding-plan wire format: "openai"
+// (default) or "anthropic". Unknown values fall back to openai.
+func WithCodingRoute(route string) Option {
+	return func(p *Provider) {
+		switch route {
+		case codingRouteAnthropic:
+			p.codingRoute = codingRouteAnthropic
+		default:
+			p.codingRoute = codingRouteOpenAI
 		}
 	}
 }
@@ -79,6 +92,9 @@ func NewFromEnv() (*Provider, error) {
 	}
 	if os.Getenv("ZAI_PLAN") == "coding" {
 		opts = append(opts, WithCoding())
+	}
+	if r := os.Getenv("ZAI_CODING_ROUTE"); r != "" {
+		opts = append(opts, WithCodingRoute(r))
 	}
 	return New(key, opts...), nil
 }

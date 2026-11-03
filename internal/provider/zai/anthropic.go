@@ -1,12 +1,11 @@
 package zai
 
-// anthropic.go implements the Z.ai coding-plan delivery route:
-// GLM Coding Plan subscriptions are served via the dedicated
-// Anthropic-compatible endpoint (https://api.z.ai/api/anthropic),
-// NOT the OpenAI-compatible paas/v4 endpoint. Evidence 2026-11-03:
-// paas/v4 returns 429 code=1113 ("Insufficient balance or no
-// resource package") for glm-4.6/glm-5.x with a coding-plan key,
-// while the anthropic endpoint serves glm-4.5/4.5-air/4.6/5.3.
+// anthropic.go implements the selectable Anthropic-compatible
+// coding-plan route (https://api.z.ai/api/anthropic), chosen via
+// WithCodingRoute("anthropic") / providers.zai.route=anthropic /
+// ZAI_CODING_ROUTE=anthropic. The default coding route is the
+// OpenAI-compatible endpoint in coding.go; both surfaces are
+// live-verified for coding-plan keys (evidence 2026-11-03).
 
 import (
 	"bufio"
@@ -22,12 +21,16 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 )
 
-// codingBaseURL is the Z.ai Anthropic-compatible endpoint used by
-// GLM Coding Plan subscriptions; overridable in tests.
+// codingBaseURL is the Anthropic-compatible endpoint used by the
+// selectable anthropic coding route; overridable in tests.
 var codingBaseURL = "https://api.z.ai/api/anthropic"
 
-// codingChat performs one non-streaming turn via the coding plan route.
-func (p *Provider) codingChat(ctx context.Context, req *provider.ChatRequest) (*provider.ChatResponse, error) {
+// TestHookSetAnthropicBaseURL redirects the anthropic coding default
+// for httptest-backed specs outside this package.
+func TestHookSetAnthropicBaseURL(u string) { codingBaseURL = u }
+
+// codingChatAnthropic performs one non-streaming anthropic-route turn.
+func (p *Provider) codingChatAnthropic(ctx context.Context, req *provider.ChatRequest) (*provider.ChatResponse, error) {
 	body, err := p.codingPost(ctx, req, false)
 	if err != nil {
 		return nil, err
@@ -46,9 +49,8 @@ func (p *Provider) codingChat(ctx context.Context, req *provider.ChatRequest) (*
 	return &provider.ChatResponse{Content: sb.String()}, nil
 }
 
-// codingStream performs one streaming turn via the coding plan route,
-// emitting text deltas from content_block_delta events.
-func (p *Provider) codingStream(ctx context.Context, req *provider.ChatRequest) <-chan provider.StreamEvent {
+// codingStreamAnthropic streams text deltas from content_block_delta events.
+func (p *Provider) codingStreamAnthropic(ctx context.Context, req *provider.ChatRequest) <-chan provider.StreamEvent {
 	out := make(chan provider.StreamEvent)
 	go func() {
 		defer close(out)
@@ -85,7 +87,7 @@ func (p *Provider) codingStream(ctx context.Context, req *provider.ChatRequest) 
 	return out
 }
 
-// codingPost sends one request to the Anthropic-compatible endpoint.
+// codingPost sends one request to the Anthropic-compatible endpoint; the host honours codingBase() so explicit config hosts still win.
 func (p *Provider) codingPost(ctx context.Context, req *provider.ChatRequest, stream bool) (io.ReadCloser, error) {
 	if p.apiKey == "" {
 		return nil, errors.New("zai: empty API key")
@@ -98,7 +100,7 @@ func (p *Provider) codingPost(ctx context.Context, req *provider.ChatRequest, st
 	if err != nil {
 		return nil, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages", bytes.NewReader(buf))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.codingBase()+"/v1/messages", bytes.NewReader(buf))
 	if err != nil {
 		return nil, err
 	}

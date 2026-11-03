@@ -20,10 +20,13 @@ type Provider struct {
 	baseURL string
 	model   string
 	client  *http.Client
-	// coding selects the Anthropic-compatible coding-plan route.
+	// coding selects the coding-plan delivery route (coding.go).
 	coding bool
-	// baseURLSet marks an explicit base-URL override; WithCoding
-	// then respects it instead of switching endpoints.
+	// codingRoute is the coding-plan wire format: "openai" (default)
+	// or "anthropic"; empty means the openai default.
+	codingRoute string
+	// baseURLSet marks an explicit base-URL override (config host /
+	// env); the coding routes then use it as the host.
 	baseURLSet bool
 }
 

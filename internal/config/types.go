@@ -13,8 +13,12 @@ type ProviderConfig struct {
 	APIKey string `yaml:"api_key,omitempty"`
 	Model  string `yaml:"model"`
 	// Plan selects the delivery route for providers with plan-tiered
-	// endpoints; zai honours "coding" (Anthropic-compatible route).
-	Plan     string         `yaml:"plan,omitempty"`
+	// endpoints; zai honours "coding" (default OpenAI-compatible coding
+	// endpoint).
+	Plan string `yaml:"plan,omitempty"`
+	// Route selects the coding-plan wire format: "openai" (default) or
+	// "anthropic" (https://api.z.ai/api/anthropic, live-verified).
+	Route    string         `yaml:"route,omitempty"`
 	AuthType oauth.AuthType `yaml:"auth_type"`
 	OAuth    *oauth.Config  `yaml:"oauth,omitempty"`
 }
