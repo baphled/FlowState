@@ -37,6 +37,9 @@ type TurnOptions struct {
 	Budget int64
 	// MaxTokens caps the provider response; <= 0 means provider default.
 	MaxTokens int64
+	// ModelID overrides the session's stored model for this turn
+	// when non-empty; empty keeps the config-driven session default.
+	ModelID string
 }
 
 // TurnResult reports one completed engine turn.
