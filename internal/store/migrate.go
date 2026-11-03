@@ -5,13 +5,6 @@ import (
 	"fmt"
 )
 
-// migration is one forward-only schema step. Migrations must never be
-// edited once shipped; append new ones with an incremented Version.
-type migration struct {
-	version int64
-	stmts   []string
-}
-
 var migrations = []migration{
 	{
 		// Version 1 is the schema_migrations bootstrap itself; the table
@@ -52,6 +45,22 @@ var migrations = []migration{
 			)`,
 			`CREATE INDEX idx_events_session_type ON events(session_id, type)`,
 			`CREATE INDEX idx_sessions_status ON sessions(status)`,
+		},
+	},
+	{
+		version: 3,
+		stmts: []string{
+			`CREATE TABLE leases (
+				item            TEXT PRIMARY KEY,
+				agent           TEXT NOT NULL,
+				token           INTEGER NOT NULL,
+				acquired_at_utc TEXT NOT NULL
+			) WITHOUT ROWID`,
+			`CREATE TABLE lease_history (
+				item     TEXT NOT NULL,
+				token    INTEGER NOT NULL,
+				PRIMARY KEY (item, token)
+			) WITHOUT ROWID`,
 		},
 	},
 }

@@ -17,6 +17,13 @@ type Session struct {
 	ConfigSHA string
 }
 
+// migration is one forward-only schema step. Migrations must never be
+// edited once shipped; append new ones with an incremented Version.
+type migration struct {
+	version int64
+	stmts   []string
+}
+
 // EventWriter is the single serialized event writer for one session
 // (DATA-MODEL §5). It owns the next-seq allocation and every events
 // insert inside a transaction. Release it with Close so a later writer
