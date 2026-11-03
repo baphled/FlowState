@@ -117,6 +117,9 @@ func WithClient(c *http.Client) Option { return func(p *Provider) { p.client = c
 // Name identifies the provider in session records and attribution.
 func (p *Provider) Name() string { return "z.ai" }
 
+// Coding reports whether the provider is on the coding-plan route.
+func (p *Provider) Coding() bool { return p.coding }
+
 // Models lists models offered by the current delivery route.
 func (p *Provider) Models() []string { return []string{DefaultModel, "glm-4.5"} }
 
