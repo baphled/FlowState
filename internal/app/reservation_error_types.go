@@ -3,9 +3,6 @@ package app
 // ReservationError reports why a reservation operation failed.
 type ReservationError string
 
-// Error implements error for ReservationError.
-func (e ReservationError) Error() string { return string(e) }
-
 // ErrReservationChildEmpty reports that the child id must not be empty.
 const ErrReservationChildEmpty ReservationError = "child id must not be empty"
 

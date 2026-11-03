@@ -17,8 +17,3 @@ type ReservationLedger struct {
 	pool    *BudgetPool
 	byChild map[string]*reservation
 }
-
-// NewReservationLedger wraps pool with charge-once accounting.
-func NewReservationLedger(pool *BudgetPool) *ReservationLedger {
-	return &ReservationLedger{pool: pool, byChild: map[string]*reservation{}}
-}

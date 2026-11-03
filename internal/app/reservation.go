@@ -1,5 +1,13 @@
 package app
 
+// Error implements error for ReservationError.
+func (e ReservationError) Error() string { return string(e) }
+
+// NewReservationLedger wraps pool with charge-once accounting.
+func NewReservationLedger(pool *BudgetPool) *ReservationLedger {
+	return &ReservationLedger{pool: pool, byChild: map[string]*reservation{}}
+}
+
 // Reserve draws at most want from the pool for child and records the
 // granted amount. It fails closed on an empty child id, a non-positive
 // amount or a duplicate reservation; the pool is untouched on error.
