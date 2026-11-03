@@ -1,4 +1,4 @@
-// Package app — dogfood.go holds the M1-DOGFOOD seams the CLI needs
+// Package app — selftest.go holds the live self-test seams the CLI needs
 // so cmd imports only app.
 package app
 
@@ -13,19 +13,19 @@ import (
 	"github.com/baphled/flowstate/internal/store"
 )
 
-// DogfoodCreate creates a dogfood session via the standard
-// session-create path.
-func DogfoodCreate(ctx context.Context, st *store.Store, providerName, modelID, task string) (*Session, error) {
+// CreateSelfTestSession creates a live self-test session via the
+// standard session-create path.
+func CreateSelfTestSession(ctx context.Context, st *store.Store, providerName, modelID, task string) (*Session, error) {
 	return session.Create(ctx, st, providerName, modelID, session.DefaultHarness, "", task)
 }
 
 // receiptsOpen is the receipts-database opener seam (test-swappable).
 var receiptsOpen = openReceipts
 
-// EmitDogfoodReceipt emits one immutable metadata attempt against the
+// EmitAttemptReceipt emits one immutable metadata attempt against the
 // receipts database at dbPath; the cmd-facing seam over metadata.Emit
 // so cmd never imports metadata or storage directly.
-func EmitDogfoodReceipt(ctx context.Context, dbPath string, a metadata.Attempt) (*metadata.AttemptRecord, error) {
+func EmitAttemptReceipt(ctx context.Context, dbPath string, a metadata.Attempt) (*metadata.AttemptRecord, error) {
 	db, err := receiptsOpen(dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("app: open receipts db: %w", err)

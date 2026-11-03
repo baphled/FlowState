@@ -21,7 +21,7 @@ var ErrReceiptInvalid = errors.New("receipt_invalid")
 var receiptCapabilities = map[string]bool{
 	"M1-SESSION": true, "M1-PROVIDER": true, "M1-EVENTS": true,
 	"M1-TOOLS": true, "M1-TERMINAL": true, "M1-COMPOSITION": true,
-	"M1-DOGFOOD": true, "M1-VALIDATION": true,
+	"M1-SELFTEST": true, "M1-VALIDATION": true,
 }
 
 var (

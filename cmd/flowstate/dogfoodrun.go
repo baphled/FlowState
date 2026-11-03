@@ -98,7 +98,7 @@ func emitDogfoodReceipt(ctx context.Context, fl *flags, sess *app.Session, res *
 	if err != nil {
 		return err
 	}
-	_, rerr := app.EmitDogfoodReceipt(ctx, fl.db, app.Attempt{
+	_, rerr := app.EmitAttemptReceipt(ctx, fl.db, app.Attempt{
 		ID:           "dogfood-" + sess.ID,
 		CapabilityID: "M1-DOGFOOD",
 		CommitSHA:    sha,
@@ -182,7 +182,7 @@ func cmdDogfoodRun(ctx context.Context, st *app.Store, fl *flags, stdout, stderr
 // dogfoodCreate creates the dogfood session via the standard
 // session-create path.
 func dogfoodCreate(ctx context.Context, st *app.Store, task string) (*app.Session, error) {
-	return app.DogfoodCreate(ctx, st, dogfoodProvider, dogfoodModel, task)
+	return app.CreateSelfTestSession(ctx, st, dogfoodProvider, dogfoodModel, task)
 }
 
 // runDogfoodTurn creates the session, applies the default budget cap
