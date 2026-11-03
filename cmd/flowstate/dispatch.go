@@ -34,9 +34,6 @@ func dispatchContexted(ctx context.Context, args []string, stdout, stderr *os.Fi
 	if code, routed := routeReceipt(args, stdout, stderr); routed {
 		return code
 	}
-	if code, routed := routeDogfood(ctx, args, stdout, stderr); routed {
-		return code
-	}
 	if args[0] != "session" {
 		writeError(stderr, fmt.Errorf("%w: unknown command %q", errUsageCmd, args[0]))
 		return exitUsage
@@ -108,33 +105,6 @@ func routeReceipt(args []string, stdout, stderr *os.File) (int, bool) {
 		return exitUsage, true
 	}
 	return cmdReceiptValidate(args[2:], stdout, stderr), true
-}
-
-// routeDogfood handles `flowstate dogfood run`.
-func routeDogfood(ctx context.Context, args []string, stdout, stderr *os.File) (int, bool) {
-	if len(args) < 1 || args[0] != "dogfood" {
-		return exitOK, false
-	}
-	if len(args) < 2 || args[1] != "run" {
-		writeError(stderr, fmt.Errorf("%w: expected dogfood run", errUsageCmd))
-		return exitUsage, true
-	}
-	fl, rest, err := parseFlags(args[2:])
-	if err != nil {
-		writeError(stderr, fmt.Errorf("%w: %v", errUsageCmd, err))
-		return exitUsage, true
-	}
-	if len(rest) > 0 {
-		writeError(stderr, fmt.Errorf("%w: unexpected argument %q", errUsageCmd, rest[0]))
-		return exitUsage, true
-	}
-	st, serr := openStore(fl.db)
-	if serr != nil {
-		writeError(stderr, fmt.Errorf("%w: cannot open database %q: %v", app.ErrConfigInvalid, fl.db, serr))
-		return exitConfigInvalid, true
-	}
-	defer st.Close()
-	return cmdDogfoodRun(ctx, st, fl, stdout, stderr), true
 }
 
 // dispatchSession opens the store and routes one session subcommand.
@@ -303,14 +273,13 @@ func usage(w *os.File) {
 
 session new    --provider <p> --model <m> --task <text|@file> [--db path]
 session list   [--status <s>] [--db path]
-session run    <id> [--budget <n>] [--max-tokens <n>] [--db path]
+session run    <id> | --task <text|@file> [--budget <n>] [--max-tokens <n>] [--db path]
 session events <id> [--db path]
 session close  <id> [--db path]
 session cancel <id> [--db path]
 session replay <id> [--db path]
 receipt validate <file...>
 session tool   <id> --tool <name> [--tool-arg <json>] [--allow <name>]... [--allow-file <manifest>] [--db path]
-dogfood run    --task <text|@file> [--budget <n>] [--max-tokens <n>] [--db path]
 
 common flags: --db <path> (default ./flowstate.db), --json
 `)
