@@ -2,7 +2,9 @@ package metadata_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/metadata"
 	"github.com/baphled/flowstate/internal/storage"
 )
@@ -138,5 +141,62 @@ var _ = Describe("Emit", func() {
 		a.Attribution.ModelID = ""
 		_, err := metadata.Emit(ctx, db, a)
 		Expect(err).To(MatchError(metadata.ErrUsage))
+	})
+})
+
+// validateAgainstApp runs the production v2 validator over the
+// emitted receipt file (cross-package contract check).
+func validateAgainstApp(rec *metadata.AttemptRecord) error {
+	return app.ValidateReceiptFile(rec.ReceiptPath)
+}
+
+var _ = Describe("Emit v2 receipt schema", func() {
+	var ctx context.Context
+
+	BeforeEach(func() { ctx = context.Background() })
+
+	It("emits a receipt that passes the v2 validator", func() {
+		withRoot()
+		db := mustDB()
+
+		rec := emit(ctx, db, sampleAttempt())
+
+		Expect(validateAgainstApp(rec)).To(Succeed())
+	})
+
+	It("round-trips a fail-gate attempt through the v2 validator", func() {
+		withRoot()
+		db := mustDB()
+
+		a := sampleAttempt()
+		a.GateOutcome = "fail"
+		rec := emit(ctx, db, a)
+
+		Expect(validateAgainstApp(rec)).To(Succeed())
+	})
+
+	It("keeps the evidence digest bound to the artefact body", func() {
+		withRoot()
+		db := mustDB()
+
+		rec := emit(ctx, db, sampleAttempt())
+		doc := receiptDoc(rec)
+		ev := doc["evidence"].([]any)[0].(map[string]any)
+		stdout := ev["stdout"].(map[string]any)
+		Expect(stdout["path"]).To(Equal("artefacts/attempt-record.json"))
+		body, err := os.ReadFile(filepath.Join(rec.AttemptDir, "artefacts", "attempt-record.json"))
+		Expect(err).NotTo(HaveOccurred())
+		sum := sha256.Sum256(body)
+		Expect(stdout["sha256"]).To(Equal(hex.EncodeToString(sum[:])))
+	})
+
+	It("no longer stamps schema-less v1 fields", func() {
+		withRoot()
+		db := mustDB()
+
+		doc := receiptDoc(emit(ctx, db, sampleAttempt()))
+
+		Expect(doc["schema_version"]).To(Equal("m1-acceptance-receipt-v2"))
+		Expect(doc).NotTo(HaveKey("artefact_digests"))
 	})
 })
