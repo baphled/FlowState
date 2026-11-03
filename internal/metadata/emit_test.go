@@ -2,7 +2,9 @@ package metadata_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/metadata"
 	"github.com/baphled/flowstate/internal/storage"
 )
@@ -55,6 +58,20 @@ func receiptDoc(rec *metadata.AttemptRecord) map[string]any {
 	err = json.Unmarshal(raw, &doc)
 	Expect(err).NotTo(HaveOccurred())
 	return doc
+}
+
+// sha256Of is the hex sha256 of body (fixture helper).
+func sha256Of(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
+
+// evidenceStdoutSHA extracts the evidence row's stdout sha256 from
+// the emitted receipt (fixture helper).
+func evidenceStdoutSHA(rec *metadata.AttemptRecord) any {
+	doc := receiptDoc(rec)
+	ev := doc["evidence"].([]any)[0].(map[string]any)
+	return ev["stdout"].(map[string]any)["sha256"]
 }
 
 // gateOutcome reads the indexed receipts-table row as fixture setup.
@@ -138,5 +155,54 @@ var _ = Describe("Emit", func() {
 		a.Attribution.ModelID = ""
 		_, err := metadata.Emit(ctx, db, a)
 		Expect(err).To(MatchError(metadata.ErrUsage))
+	})
+})
+
+// validateAgainstApp runs the production v2 validator over the
+// emitted receipt file (cross-package contract check).
+func validateAgainstApp(rec *metadata.AttemptRecord) error {
+	return app.ValidateReceiptFile(rec.ReceiptPath)
+}
+
+var _ = Describe("Emit v2 receipt schema", func() {
+	var ctx context.Context
+
+	BeforeEach(func() { ctx = context.Background() })
+
+	It("emits a receipt that passes the v2 validator", func() {
+		withRoot()
+		db := mustDB()
+
+		rec := emit(ctx, db, sampleAttempt())
+
+		Expect(validateAgainstApp(rec)).To(Succeed())
+	})
+
+	It("round-trips a fail-gate attempt through the v2 validator", func() {
+		withRoot()
+		db := mustDB()
+
+		a := sampleAttempt()
+		a.GateOutcome = "fail"
+
+		Expect(validateAgainstApp(emit(ctx, db, a))).To(Succeed())
+	})
+
+	It("keeps the evidence digest bound to the artefact body", func() {
+		withRoot()
+		db := mustDB()
+
+		rec := emit(ctx, db, sampleAttempt())
+
+		Expect(evidenceStdoutSHA(rec)).To(Equal(sha256Of([]byte(`{}`))))
+	})
+
+	It("no longer stamps schema-less v1 fields", func() {
+		withRoot()
+		db := mustDB()
+
+		doc := receiptDoc(emit(ctx, db, sampleAttempt()))
+
+		Expect(doc).NotTo(HaveKey("artefact_digests"))
 	})
 })
