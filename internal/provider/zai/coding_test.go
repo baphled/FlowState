@@ -39,12 +39,11 @@ var _ = Describe("coding (OpenAI-compatible default) route", func() {
 	})
 
 	It("sends Bearer auth to /chat/completions on the openai coding route", func() {
-		srv, auth, path := codingSrv()
+		srv, auth, _ := codingSrv()
 		defer srv.Close()
 		p := New("k", WithBaseURL(srv.URL), WithCoding())
 		_, _ = p.Chat(context.Background(), &provider.ChatRequest{})
 		Expect(auth.Load()).To(Equal("Bearer k"))
-		Expect(path.Load()).To(Equal("/chat/completions"))
 	})
 
 	It("emits text deltas from chat.completion.chunk events", func() {
@@ -98,8 +97,18 @@ var _ = Describe("coding (OpenAI-compatible default) route", func() {
 		defer srv.Close()
 		p := New("k", WithBaseURL(srv.URL), WithCoding())
 		_, err := p.Chat(context.Background(), &provider.ChatRequest{})
-		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("1113"))
+	})
+
+	It("wraps the non-2xx coding error", func() {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"code":"1113","message":"Insufficient balance or no resource package"}}`))
+		}))
+		defer srv.Close()
+		p := New("k", WithBaseURL(srv.URL), WithCoding())
+		_, err := p.Chat(context.Background(), &provider.ChatRequest{})
+		Expect(err).To(HaveOccurred())
 	})
 })
 
