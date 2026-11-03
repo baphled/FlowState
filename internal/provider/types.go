@@ -6,8 +6,8 @@ import "context"
 
 // Message is one turn message addressed to the provider.
 type Message struct {
-	Role    string
-	Content string
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
 // ChatRequest is one provider chat-turn request.
