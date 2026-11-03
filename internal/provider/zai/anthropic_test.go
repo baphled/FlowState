@@ -80,4 +80,77 @@ var _ = Describe("coding (Anthropic-compatible) route", func() {
 		}
 		Expect(n).To(Equal(0))
 	})
+
+	It("uses the anthropic coding endpoint URL when no base URL is overridden", func() {
+		var hitPath string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			hitPath = r.URL.Path
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"content":[]}`)
+		}))
+		defer srv.Close()
+		// Redirect the coding endpoint to the test server.
+		old := codingBaseURL
+		codingBaseURL = srv.URL + "/api/anthropic"
+		defer func() { codingBaseURL = old }()
+		p := New("k", WithCoding())
+		_, _ = p.Chat(context.Background(), &provider.ChatRequest{})
+		Expect(hitPath).To(Equal("/api/anthropic/v1/messages"))
+	})
+
+	It("clamps max_tokens into [1,131072] on the coding route", func() {
+		srv, bodies := codingServer(`{"content":[]}`, "")
+		defer srv.Close()
+		p := New("k", WithBaseURL(srv.URL), WithCoding())
+		_, _ = p.Chat(context.Background(), &provider.ChatRequest{MaxTokens: 500000})
+		Expect(bodies()).To(ContainSubstring(`"max_tokens":131072`))
+	})
+
+	It("clamps a zero max_tokens to 1 on the coding route", func() {
+		srv, bodies := codingServer(`{"content":[]}`, "")
+		defer srv.Close()
+		p := New("k", WithBaseURL(srv.URL), WithCoding())
+		_, _ = p.Chat(context.Background(), &provider.ChatRequest{})
+		Expect(bodies()).To(ContainSubstring(`"max_tokens":1`))
+	})
+})
+
+var _ = Describe("ClampMaxTokens", func() {
+	It("lifts values below one", func() {
+		Expect(ClampMaxTokens(0)).To(Equal(int64(1)))
+	})
+
+	It("lifts negative values to one", func() {
+		Expect(ClampMaxTokens(-5)).To(Equal(int64(1)))
+	})
+
+	It("keeps in-range values unchanged", func() {
+		Expect(ClampMaxTokens(42)).To(Equal(int64(42)))
+	})
+
+	It("keeps the exact maximum unchanged", func() {
+		Expect(ClampMaxTokens(131072)).To(Equal(int64(131072)))
+	})
+
+	It("caps values above the maximum", func() {
+		Expect(ClampMaxTokens(131073)).To(Equal(int64(131072)))
+	})
+})
+
+var _ = Describe("WithCoding base URL", func() {
+	It("honours an explicit base URL override over the coding endpoint", func() {
+		var hitPath string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			hitPath = r.URL.Path
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"content":[]}`)
+		}))
+		defer srv.Close()
+		old := codingBaseURL
+		codingBaseURL = "https://zai-invalid.example.invalid"
+		defer func() { codingBaseURL = old }()
+		p := New("k", WithBaseURL(srv.URL), WithCoding())
+		_, _ = p.Chat(context.Background(), &provider.ChatRequest{})
+		Expect(hitPath).To(Equal("/v1/messages"))
+	})
 })
