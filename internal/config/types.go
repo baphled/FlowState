@@ -9,9 +9,12 @@ type Config struct {
 
 // ProviderConfig configures a single AI provider.
 type ProviderConfig struct {
-	Host     string         `yaml:"host"`
-	APIKey   string         `yaml:"api_key,omitempty"`
-	Model    string         `yaml:"model"`
+	Host   string `yaml:"host"`
+	APIKey string `yaml:"api_key,omitempty"`
+	Model  string `yaml:"model"`
+	// Plan selects the delivery route for providers with plan-tiered
+	// endpoints; zai honours "coding" (Anthropic-compatible route).
+	Plan     string         `yaml:"plan,omitempty"`
 	AuthType oauth.AuthType `yaml:"auth_type"`
 	OAuth    *oauth.Config  `yaml:"oauth,omitempty"`
 }
