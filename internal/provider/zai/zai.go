@@ -46,7 +46,7 @@ func New(apiKey string, opts ...Option) *Provider {
 	return p
 }
 
-// CodingBaseURL is defined in anthropic.go: the Anthropic-compatible
+// The Anthropic-compatible coding endpoint lives in anthropic.go
 // endpoint serving GLM Coding Plan subscriptions.
 
 // WithCoding switches the provider onto the coding-plan (Anthropic-
@@ -54,7 +54,16 @@ func New(apiKey string, opts ...Option) *Provider {
 // on the OpenAI-compatible route for models like glm-5.3; the
 // anthropic route serves them (evidence 2026-11-03).
 func WithCoding() Option {
-	return func(p *Provider) { p.coding = true }
+	return func(p *Provider) {
+		p.coding = true
+		// The coding route must hit the Anthropic-compatible
+		// endpoint; switch baseURL unless explicitly overridden
+		// (ZAI_BASE_URL / WithBaseURL still wins — those options
+		// run later in the chain and set baseURLSet).
+		if !p.baseURLSet {
+			p.baseURL = codingBaseURL
+		}
+	}
 }
 
 // NewFromEnv builds the provider from ZAI_API_KEY, matching the
@@ -75,7 +84,29 @@ func NewFromEnv() (*Provider, error) {
 }
 
 // WithBaseURL overrides the API base URL.
-func WithBaseURL(u string) Option { return func(p *Provider) { p.baseURL = strings.TrimRight(u, "/") } }
+func WithBaseURL(u string) Option {
+	return func(p *Provider) {
+		p.baseURL = strings.TrimRight(u, "/")
+		p.baseURLSet = true
+	}
+}
+
+// MaxTokensMax is the largest max_tokens the Z.ai Anthropic-
+// compatible endpoint accepts; values outside [1,131072] fail
+// with 400 error 1210 (evidence 2026-11-03).
+const MaxTokensMax = 131072
+
+// ClampMaxTokens bounds max_tokens into [1, MaxTokensMax] so
+// unset (0) or oversized budgets never trigger error 1210.
+func ClampMaxTokens(n int64) int64 {
+	if n < 1 {
+		return 1
+	}
+	if n > MaxTokensMax {
+		return MaxTokensMax
+	}
+	return n
+}
 
 // WithModel overrides the default model.
 func WithModel(m string) Option { return func(p *Provider) { p.model = m } }

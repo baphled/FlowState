@@ -22,9 +22,9 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 )
 
-// CodingBaseURL is the Z.ai Anthropic-compatible endpoint used by
-// GLM Coding Plan subscriptions.
-const CodingBaseURL = "https://api.z.ai/api/anthropic"
+// codingBaseURL is the Z.ai Anthropic-compatible endpoint used by
+// GLM Coding Plan subscriptions; overridable in tests.
+var codingBaseURL = "https://api.z.ai/api/anthropic"
 
 // codingChat performs one non-streaming turn via the coding plan route.
 func (p *Provider) codingChat(ctx context.Context, req *provider.ChatRequest) (*provider.ChatResponse, error) {
@@ -94,7 +94,7 @@ func (p *Provider) codingPost(ctx context.Context, req *provider.ChatRequest, st
 	if model == "" {
 		model = p.model
 	}
-	buf, err := json.Marshal(anthropicRequest{Model: model, MaxTokens: req.MaxTokens, Stream: stream, Messages: req.Messages})
+	buf, err := json.Marshal(anthropicRequest{Model: model, MaxTokens: ClampMaxTokens(req.MaxTokens), Stream: stream, Messages: req.Messages})
 	if err != nil {
 		return nil, err
 	}

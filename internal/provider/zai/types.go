@@ -22,6 +22,9 @@ type Provider struct {
 	client  *http.Client
 	// coding selects the Anthropic-compatible coding-plan route.
 	coding bool
+	// baseURLSet marks an explicit base-URL override; WithCoding
+	// then respects it instead of switching endpoints.
+	baseURLSet bool
 }
 
 // Option customises the adapter.
