@@ -20,7 +20,7 @@ func newStoreWriter() (*Store, *EventWriter, string, error) {
 	}
 	DeferCleanup(func() { _ = s.Close() })
 	id := fmt.Sprintf("sid-%d", time.Now().UnixNano())
-	if _, err := s.CreateSession(context.Background(), id, "zai", "glm-4.6", "test-harness", "cfgsha"); err != nil {
+	if _, err := s.CreateSession(context.Background(), id, "zai", "glm-5.3", "test-harness", "cfgsha"); err != nil {
 		return nil, nil, "", err
 	}
 	w, err := s.NewEventWriter(context.Background(), id)

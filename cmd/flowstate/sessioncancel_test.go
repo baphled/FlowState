@@ -21,7 +21,7 @@ var _ = Describe("session cancel and SIGINT", func() {
 	// newTestSession creates an active session and returns its id.
 	newTestSession := func() (string, error) {
 		res := runArgv([]string{"session", "new", "--db", db,
-			"--provider", "zai", "--model", "glm-4.6", "--task", "hi"})
+			"--provider", "zai", "--model", "glm-5.3", "--task", "hi"})
 		if res.exit != 0 {
 			return "", errors.New(res.stderr)
 		}

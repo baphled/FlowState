@@ -55,7 +55,7 @@ func firstStreamErr(p *zai.Provider, req *provider.ChatRequest) error {
 }
 
 func chat(p *zai.Provider) (*provider.ChatResponse, error) {
-	return p.Chat(context.Background(), &provider.ChatRequest{Model: "glm-4.6"})
+	return p.Chat(context.Background(), &provider.ChatRequest{Model: "glm-5.3"})
 }
 
 var _ = Describe("Zai provider", func() {
@@ -97,7 +97,7 @@ var _ = Describe("Zai provider", func() {
 					gotPathOK = "path-ok"
 				}
 				b, _ := io.ReadAll(r.Body)
-				if strings.Contains(string(b), `"model":"glm-4.6"`) {
+				if strings.Contains(string(b), `"model":"glm-5.3"`) {
 					gotBodyOK = "body-ok"
 				}
 				w.Header().Set("Content-Type", "application/json")
@@ -107,7 +107,7 @@ var _ = Describe("Zai provider", func() {
 				})
 			})
 			resp, err := p.Chat(context.Background(), &provider.ChatRequest{
-				Model:    "glm-4.6",
+				Model:    "glm-5.3",
 				Messages: []provider.Message{{Role: "user", Content: "hi"}},
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -198,7 +198,7 @@ var _ = Describe("Zai provider", func() {
 					fl.Flush()
 				}
 			})
-			content := collectStream(p, &provider.ChatRequest{Model: "glm-4.6"})
+			content := collectStream(p, &provider.ChatRequest{Model: "glm-5.3"})
 			observedAcceptsEvents = strings.Contains(accept, "text/event-stream")
 			observedContent = content
 		})
@@ -211,7 +211,7 @@ var _ = Describe("Zai provider", func() {
 			w.WriteHeader(http.StatusTooManyRequests)
 			_, _ = w.Write([]byte(`{"error":{"code":"1302","message":"rate limited"}}`))
 		})
-		gotErr := firstStreamErr(p, &provider.ChatRequest{Model: "glm-4.6"})
+		gotErr := firstStreamErr(p, &provider.ChatRequest{Model: "glm-5.3"})
 		var apiErr *zai.APIError
 		if !errors.As(gotErr, &apiErr) {
 			panic("expected *zai.APIError from stream")
@@ -228,7 +228,7 @@ var _ = Describe("Zai provider", func() {
 		DeferCleanup(cancel)
 		done := make(chan struct{})
 		go func() {
-			for range p.Stream(ctx, &provider.ChatRequest{Model: "glm-4.6"}) {
+			for range p.Stream(ctx, &provider.ChatRequest{Model: "glm-5.3"}) {
 			}
 			close(done)
 		}()
@@ -259,7 +259,7 @@ var _ = Describe("max_tokens passthrough", func() {
 		}))
 		DeferCleanup(srv.Close)
 		p := zai.New("k", zai.WithBaseURL(srv.URL))
-		for range p.Stream(context.Background(), &provider.ChatRequest{Model: "glm-4.6", MaxTokens: 42}) {
+		for range p.Stream(context.Background(), &provider.ChatRequest{Model: "glm-5.3", MaxTokens: 42}) {
 		}
 		Expect(got).To(Equal(42.0))
 	})
@@ -273,7 +273,7 @@ var _ = Describe("max_tokens passthrough", func() {
 		}))
 		DeferCleanup(srv.Close)
 		p := zai.New("k", zai.WithBaseURL(srv.URL))
-		for range p.Stream(context.Background(), &provider.ChatRequest{Model: "glm-4.6"}) {
+		for range p.Stream(context.Background(), &provider.ChatRequest{Model: "glm-5.3"}) {
 		}
 		Expect(raw).NotTo(ContainSubstring("max_tokens"))
 	})

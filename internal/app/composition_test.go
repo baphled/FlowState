@@ -112,7 +112,7 @@ var _ = Describe("Wire", func() {
 		}
 		c, err := Wire(&Dependencies{Store: st, Registry: reg, Allowlist: allow})
 		Expect(err).NotTo(HaveOccurred())
-		sess, err := st.CreateSession(context.Background(), "s-1", "z.ai", "glm-4.6", "flowstate-cli", "")
+		sess, err := st.CreateSession(context.Background(), "s-1", "z.ai", "glm-5.3", "flowstate-cli", "")
 		Expect(err).NotTo(HaveOccurred())
 		h, err := c.SessionLoop(context.Background(), sess.ID)
 		Expect(err).NotTo(HaveOccurred())
@@ -128,7 +128,7 @@ var _ = Describe("Wire", func() {
 		}
 		c, err := Wire(&Dependencies{Store: st, Registry: reg, Allowlist: allow})
 		Expect(err).NotTo(HaveOccurred())
-		sess, err := st.CreateSession(context.Background(), "s-2", "z.ai", "glm-4.6", "flowstate-cli", "")
+		sess, err := st.CreateSession(context.Background(), "s-2", "z.ai", "glm-5.3", "flowstate-cli", "")
 		Expect(err).NotTo(HaveOccurred())
 		h, err := c.SessionLoop(context.Background(), sess.ID)
 		Expect(err).NotTo(HaveOccurred())
@@ -144,7 +144,7 @@ var _ = Describe("Wire", func() {
 		}
 		c, err := Wire(&Dependencies{Store: st, Registry: reg, Allowlist: allow})
 		Expect(err).NotTo(HaveOccurred())
-		sess, err := st.CreateSession(context.Background(), "s-3", "z.ai", "glm-4.6", "flowstate-cli", "")
+		sess, err := st.CreateSession(context.Background(), "s-3", "z.ai", "glm-5.3", "flowstate-cli", "")
 		Expect(err).NotTo(HaveOccurred())
 		h, err := c.SessionLoop(context.Background(), sess.ID)
 		Expect(err).NotTo(HaveOccurred())
@@ -162,7 +162,7 @@ var _ = Describe("Wire", func() {
 		}
 		c, err := Wire(&Dependencies{Store: st, Registry: reg, Allowlist: allow})
 		Expect(err).NotTo(HaveOccurred())
-		sess, err := st.CreateSession(context.Background(), "s-4", "z.ai", "glm-4.6", "flowstate-cli", "")
+		sess, err := st.CreateSession(context.Background(), "s-4", "z.ai", "glm-5.3", "flowstate-cli", "")
 		Expect(err).NotTo(HaveOccurred())
 		h, err := c.SessionLoop(context.Background(), sess.ID)
 		Expect(err).NotTo(HaveOccurred())

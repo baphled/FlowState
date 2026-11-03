@@ -24,8 +24,8 @@ import (
 const DefaultBaseURL = "https://api.z.ai/api/paas/v4"
 
 // DefaultModel is the current delivery-route model (owner direction
-// 2026-10-22; glm-4.6 per M1 evidence).
-const DefaultModel = "glm-4.6"
+// 2026-11-03: glm-5.3 flagship, glm-4.5-flash free fallback).
+const DefaultModel = "glm-5.3"
 
 // ErrUnauthorized marks Z.ai authentication failures so callers can
 // branch without string matching; other failures stay generic per

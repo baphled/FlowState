@@ -30,7 +30,7 @@ func newTestStore() *Store {
 
 func mustSession(s *Store) string {
 	id := fmt.Sprintf("sid-%d", time.Now().UnixNano())
-	_, err := s.CreateSession(context.Background(), id, "zai", "glm-4.6", "test-harness", "cfgsha")
+	_, err := s.CreateSession(context.Background(), id, "zai", "glm-5.3", "test-harness", "cfgsha")
 	Expect(err).NotTo(HaveOccurred())
 	return id
 }

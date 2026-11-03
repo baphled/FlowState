@@ -29,7 +29,7 @@ const exitProviderError = 3
 // labels; attribution always comes from the runtime session row.
 const (
 	selftestProvider = "z.ai"
-	selftestModel    = "glm-4.6"
+	selftestModel    = "glm-5.3"
 )
 
 // selftestDefaultBudget is the hard cap applied when --budget is not

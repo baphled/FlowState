@@ -114,7 +114,7 @@ var _ = Describe("replay", func() {
 
 	It("exits 0 and prints the deterministic transcript", func() {
 		res := runArgv([]string{"session", "new", "--db", db,
-			"--provider", "zai", "--model", "glm-4.6", "--task", "hi"})
+			"--provider", "zai", "--model", "glm-5.3", "--task", "hi"})
 		if res.exit != 0 {
 			panic(res.stderr)
 		}
