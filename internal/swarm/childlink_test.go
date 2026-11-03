@@ -25,20 +25,12 @@ var _ = Describe("LinkChild", func() {
 	It("links an admitted packet to a child session", func() {
 		log := swarm.NewAdmissionLog()
 		admitForLink(log, "pkt-1")
-
 		linkedErr := log.LinkChild(linkFixture("sess-p", "sess-c", "pkt-1"))
-
 		Expect(linkedErr).NotTo(HaveOccurred())
-	})
 
-	It("makes the linked child visible via Children", func() {
-		log := swarm.NewAdmissionLog()
-		admitForLink(log, "pkt-1")
-		if err := log.LinkChild(linkFixture("sess-p", "sess-c", "pkt-1")); err != nil {
-			panic("fixture link failed: " + err.Error())
-		}
+		kids := log.Children("sess-p")
 
-		Expect(log.Children("sess-p")).To(HaveLen(1))
+		Expect(kids).To(HaveLen(1))
 	})
 
 	It("rejects a link with an empty parent session id", func() {
