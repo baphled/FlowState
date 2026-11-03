@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -72,5 +74,21 @@ var _ = Describe("zai coding route precedence", func() {
 		_, err = p.Chat(tctx(), &provider.ChatRequest{})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(path.Load()).To(Equal("POST /custom/chat/completions"))
+	})
+
+	It("infers the anthropic route from a config host naming /api/anthropic", func() {
+		srv, path := routeServer()
+		defer srv.Close()
+		zai.TestHookSetCodingBaseURL("https://zai-invalid.example.invalid")
+		dir := GinkgoT().TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
+			"providers:\n  zai:\n    plan: coding\n    host: "+srv.URL+"/api/anthropic\n"), 0o600); err != nil {
+			panic(err)
+		}
+		GinkgoT().Setenv("FLOWSTATE_CONFIG_DIR", dir)
+		p, err := resolveForRoute()
+		Expect(err).NotTo(HaveOccurred())
+		_, _ = p.Chat(tctx(), &provider.ChatRequest{})
+		Expect(path.Load()).To(Equal("POST /api/anthropic/v1/messages"))
 	})
 })
