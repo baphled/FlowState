@@ -34,6 +34,9 @@ func dispatchContexted(ctx context.Context, args []string, stdout, stderr *os.Fi
 	if code, routed := routeReceipt(args, stdout, stderr); routed {
 		return code
 	}
+	if args[0] == "swarm" {
+		return routeSwarm(ctx, args, stdout, stderr)
+	}
 	if args[0] != "session" {
 		writeError(stderr, fmt.Errorf("%w: unknown command %q", errUsageCmd, args[0]))
 		return exitUsage
