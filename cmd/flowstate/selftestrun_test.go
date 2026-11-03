@@ -48,12 +48,11 @@ var _ = Describe("Session run live self-test path", func() {
 		Expect(res.exit).To(Equal(exitOK))
 	})
 
-	It("emits the standard session events on the run path", func() {
+	It("emits the standard turn events on the run path", func() {
 		srv := fakeZaiServer(`{"choices":[{"delta":{"content":"x"}}]}`)
 		withFakeZai(srv)
 		res, _ := runSelfTestLive("--task", "greet")
 		Expect(res.stdout).To(ContainSubstring("turn.start"))
-		Expect(res.stdout).To(ContainSubstring("turn."))
 	})
 
 	It("records runtime-observed attribution from the session row", func() {
