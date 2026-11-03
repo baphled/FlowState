@@ -18,6 +18,14 @@ func TestRegistry(t *testing.T) {
 }
 
 var _ = Describe("Registry", func() {
+	// The resolver reads config.yaml (providers.zai.api_key), so
+	// specs that assume env-only state must pin an empty config
+	// dir; otherwise a developer machine's real key leaks in and
+	// flips the no-key expectations.
+	BeforeEach(func() {
+		GinkgoT().Setenv("FLOWSTATE_CONFIG_DIR", GinkgoT().TempDir())
+	})
+
 	It("resolves z.ai from env to the concrete provider type", func() {
 		GinkgoT().Setenv("ZAI_API_KEY", "k")
 		p, err := registry.Resolve("z.ai")
