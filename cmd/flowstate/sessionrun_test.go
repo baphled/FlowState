@@ -71,7 +71,7 @@ var _ = Describe("Session run", func() {
 			)
 			withFakeZai(srv)
 
-			created := runCLINew("--provider", "z.ai", "--model", "glm-4.6", "--task", "greet")
+			created := runCLINew("--provider", "z.ai", "--model", "glm-5.3", "--task", "greet")
 			if created.exit != 0 {
 				panic("session new failed")
 			}
@@ -111,7 +111,7 @@ var _ = Describe("Session run", func() {
 			)
 			withFakeZai(srv)
 
-			created := runCLINew("--provider", "z.ai", "--model", "glm-4.6", "--task", "greet")
+			created := runCLINew("--provider", "z.ai", "--model", "glm-5.3", "--task", "greet")
 			if created.exit != 0 {
 				panic("session new failed")
 			}
@@ -152,7 +152,7 @@ var _ = Describe("Session run", func() {
 			DeferCleanup(srv.Close)
 			withFakeZai(srv)
 
-			created := runCLINew("--provider", "z.ai", "--model", "glm-4.6", "--task", "greet")
+			created := runCLINew("--provider", "z.ai", "--model", "glm-5.3", "--task", "greet")
 			if created.exit != 0 {
 				panic("session new failed")
 			}
@@ -199,7 +199,7 @@ var _ = Describe("Session run", func() {
 			)
 			withFakeZai(srv)
 
-			created := runCLINew("--provider", "z.ai", "--model", "glm-4.6", "--task", "greet")
+			created := runCLINew("--provider", "z.ai", "--model", "glm-5.3", "--task", "greet")
 			if created.exit != 0 {
 				panic("session new failed")
 			}
@@ -256,7 +256,7 @@ var _ = Describe("Session run", func() {
 			)
 			withFakeZai(srv)
 
-			created := runCLINew("--provider", "z.ai", "--model", "glm-4.6", "--task", "greet")
+			created := runCLINew("--provider", "z.ai", "--model", "glm-5.3", "--task", "greet")
 			if created.exit != 0 {
 				panic("session new failed")
 			}
@@ -300,7 +300,7 @@ var _ = Describe("Session run", func() {
 			DeferCleanup(srv.Close)
 			withFakeZai(srv)
 
-			created := runCLINew("--provider", "z.ai", "--model", "glm-4.6", "--task", "greet")
+			created := runCLINew("--provider", "z.ai", "--model", "glm-5.3", "--task", "greet")
 			if created.exit != 0 {
 				panic("session new failed")
 			}
@@ -317,7 +317,7 @@ var _ = Describe("Session run", func() {
 		var observedExit int
 		var observedCode string
 		BeforeEach(func() {
-			created := runCLINew("--provider", "z.ai", "--model", "glm-4.6", "--task", "greet")
+			created := runCLINew("--provider", "z.ai", "--model", "glm-5.3", "--task", "greet")
 			if created.exit != 0 {
 				panic("session new failed")
 			}
@@ -340,7 +340,7 @@ var _ = Describe("Session run", func() {
 		var observedExit int
 		var observedCode string
 		BeforeEach(func() {
-			created := runCLINew("--provider", "z.ai", "--model", "glm-4.6", "--task", "greet")
+			created := runCLINew("--provider", "z.ai", "--model", "glm-5.3", "--task", "greet")
 			if created.exit != 0 {
 				panic("session new failed")
 			}
@@ -369,7 +369,7 @@ var _ = Describe("Session run", func() {
 		BeforeEach(func() {
 			srv := fakeZaiServer(`{"choices":[{"delta":{"content":"x"}}]}`)
 			withFakeZai(srv)
-			created := runCLINew("--provider", "z.ai", "--model", "glm-4.6", "--task", "greet")
+			created := runCLINew("--provider", "z.ai", "--model", "glm-5.3", "--task", "greet")
 			var rec struct {
 				ID string `json:"id"`
 			}

@@ -46,7 +46,7 @@ func mustTurnOverHTTP(srv *httptest.Server, prompt string) zaiTurn {
 	p := zai.New("test-key", zai.WithBaseURL(srv.URL))
 	st := newStore()
 	ctx := context.Background()
-	sess, err := session.Create(ctx, st, "z.ai", "glm-4.6", session.DefaultHarness, "sha", prompt)
+	sess, err := session.Create(ctx, st, "z.ai", "glm-5.3", session.DefaultHarness, "sha", prompt)
 	if err != nil {
 		panic(err)
 	}
