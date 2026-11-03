@@ -49,6 +49,9 @@ func allowedImport(path, name string) bool {
 	if isDomain(path) {
 		return allowedDomainImport(path, name)
 	}
+	if strings.HasPrefix(path, "internal/swarm/") {
+		return true
+	}
 	if isAdapter(path) {
 		return !withinAny(internal, []string{"internal/app", "internal/runtime", "cmd"})
 	}
@@ -87,7 +90,7 @@ func allowedDomainImport(path, name string) bool {
 }
 
 func sameDomain(source, target string) bool {
-	for _, owner := range []string{"internal/runtime", "internal/session", "internal/tool"} {
+	for _, owner := range []string{"internal/runtime", "internal/session", "internal/tool", "internal/swarm"} {
 		if within(source, owner) && within(target, owner) {
 			return true
 		}
