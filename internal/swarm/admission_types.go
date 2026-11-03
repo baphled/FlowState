@@ -28,4 +28,6 @@ type Packet struct {
 // store; it owns admission decisions only.
 type AdmissionLog struct {
 	admitted map[string]Packet
+	// children records child-session links per parent session id.
+	children map[string][]ChildLink
 }
