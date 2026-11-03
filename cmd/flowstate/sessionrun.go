@@ -65,7 +65,11 @@ func runSelfTestTask(ctx context.Context, st *app.Store, fl *flags, stdout, stde
 		writeError(stderr, err)
 		return exitUsage
 	}
-	sess, err := app.CreateSelfTestSession(ctx, st, selftestProvider, selftestModel, task)
+	model := selftestModel
+	if fl.model != "" {
+		model = fl.model
+	}
+	sess, err := app.CreateSelfTestSession(ctx, st, selftestProvider, model, task)
 	if err != nil {
 		writeError(stderr, err)
 		return exitCodeFor(err)
@@ -213,6 +217,7 @@ func runSessionTurn(ctx context.Context, st *app.Store, sess *app.Session, fl *f
 	res, terr := app.TurnWithOptions(ctx, st, sess, s, app.TurnOptions{
 		Budget:    fl.budget,
 		MaxTokens: fl.maxTokens,
+		ModelID:   fl.model,
 	})
 	// Receipt hook: live self-test runs emit their attempt record as
 	// a post-turn side-effect of the same run path.

@@ -82,9 +82,13 @@ func TurnWithOptions(ctx context.Context, st *store.Store, sess *store.Session, 
 		return nil, err
 	}
 	s := &turnState{}
+	model := sess.ModelID
+	if opts.ModelID != "" {
+		model = opts.ModelID
+	}
 	for ev := range p.Stream(ctx, &provider.ChatRequest{
 		Messages:  []provider.Message{{Role: "user", Content: task}},
-		Model:     sess.ModelID,
+		Model:     model,
 		MaxTokens: opts.MaxTokens,
 	}) {
 		if stop := consumeStreamEvent(ctx, w, st, sess, opts, ev, s); stop {
