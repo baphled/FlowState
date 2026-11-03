@@ -46,6 +46,17 @@ func New(apiKey string, opts ...Option) *Provider {
 	return p
 }
 
+// CodingBaseURL is defined in anthropic.go: the Anthropic-compatible
+// endpoint serving GLM Coding Plan subscriptions.
+
+// WithCoding switches the provider onto the coding-plan (Anthropic-
+// compatible) delivery route. Coding-plan keys receive 429 code=1113
+// on the OpenAI-compatible route for models like glm-5.3; the
+// anthropic route serves them (evidence 2026-11-03).
+func WithCoding() Option {
+	return func(p *Provider) { p.coding = true }
+}
+
 // NewFromEnv builds the provider from ZAI_API_KEY, matching the
 // existing provider conventions (per-adapter env var).
 func NewFromEnv() (*Provider, error) {
@@ -56,6 +67,9 @@ func NewFromEnv() (*Provider, error) {
 	opts := []Option{}
 	if u := os.Getenv("ZAI_BASE_URL"); u != "" {
 		opts = append(opts, WithBaseURL(u))
+	}
+	if os.Getenv("ZAI_PLAN") == "coding" {
+		opts = append(opts, WithCoding())
 	}
 	return New(key, opts...), nil
 }
@@ -91,6 +105,9 @@ func (e *APIError) Unwrap() error {
 
 // Chat performs one non-streaming turn.
 func (p *Provider) Chat(ctx context.Context, req *provider.ChatRequest) (*provider.ChatResponse, error) {
+	if p.coding {
+		return p.codingChat(ctx, req)
+	}
 	body, err := p.post(ctx, req, false)
 	if err != nil {
 		return nil, err
@@ -110,6 +127,9 @@ func (p *Provider) Chat(ctx context.Context, req *provider.ChatRequest) (*provid
 // order. The channel closes after the stream ends or a terminal
 // error event is emitted; ctx cancellation stops the stream.
 func (p *Provider) Stream(ctx context.Context, req *provider.ChatRequest) <-chan provider.StreamEvent {
+	if p.coding {
+		return p.codingStream(ctx, req)
+	}
 	out := make(chan provider.StreamEvent)
 	go func() {
 		defer close(out)

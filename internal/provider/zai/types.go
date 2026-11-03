@@ -20,6 +20,8 @@ type Provider struct {
 	baseURL string
 	model   string
 	client  *http.Client
+	// coding selects the Anthropic-compatible coding-plan route.
+	coding bool
 }
 
 // Option customises the adapter.
