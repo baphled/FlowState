@@ -153,30 +153,56 @@ func cmdRun(ctx context.Context, st *app.Store, id string, fl *flags, stdout, st
 		defer func() { selfTestRun = false }()
 		return runSelfTestTask(ctx, st, fl, stdout, stderr)
 	}
+	if code, done := runSessionByID(id, fl, stderr); done {
+		return code
+	}
+	sess, loadErr := loadRunnableSession(ctx, st, id)
+	if loadErr != nil {
+		writeError(stderr, loadErr)
+		return exitCodeFor(loadErr)
+	}
+	return runSessionTurn(ctx, st, sess, fl, stdout, stderr)
+}
+
+// runSessionByID validates the plain id invocation's usage and
+// reports whether the run finished (or failed) without a turn.
+func runSessionByID(id string, fl *flags, stderr *os.File) (int, bool) {
 	if id == "" {
 		writeError(stderr, fmt.Errorf("%w: session id required", app.ErrUsage))
-		return exitUsage
+		return exitUsage, true
 	}
 	if fl.budget < 0 || fl.maxTokens < 0 {
 		writeError(stderr, fmt.Errorf("%w: --budget and --max-tokens must not be negative", app.ErrUsage))
-		return exitUsage
+		return exitUsage, true
 	}
+	return exitOK, false
+}
+
+// loadRunnableSession loads the session row and rejects terminal
+// states ahead of the provider turn.
+func loadRunnableSession(ctx context.Context, st *app.Store, id string) (*app.Session, error) {
 	sess, err := st.GetSession(ctx, id)
 	if err != nil {
-		writeError(stderr, err)
-		return exitCodeFor(err)
+		return nil, err
 	}
 	if sess.Status != "active" && sess.Status != "paused" {
-		writeError(stderr, fmt.Errorf("%w: session %s is %s", app.ErrTerminal, id, sess.Status))
-		return exitTerminal
+		return nil, fmt.Errorf("%w: session %s is %s", app.ErrTerminal, id, sess.Status)
 	}
-	p, err := providerResolver(sess.Provider)
-	if err != nil {
-		if errors.Is(err, app.ErrSessionCancelled) {
+	return sess, nil
+}
+
+// runSessionTurn resolves the provider, runs one bounded turn, fires
+// the receipt hook for live self-tests, projects the persisted events
+// and maps the outcome onto its exit code.
+func runSessionTurn(ctx context.Context, st *app.Store, sess *app.Session, fl *flags, stdout, stderr *os.File) int {
+	id := sess.ID
+	p, perr := providerResolver(sess.Provider)
+	if perr != nil {
+		if errors.Is(perr, app.ErrSessionCancelled) {
 			writeError(stderr, fmt.Errorf("%w: interrupted; session cancelled", app.ErrSessionCancelled))
 			return exitSigint
 		}
-		writeError(stderr, fmt.Errorf("%w: %v", errProvider, err))
+		writeError(stderr, fmt.Errorf("%w: %v", errProvider, perr))
 		return exitProviderError
 	}
 	s, ok := p.(app.Streamer)
@@ -184,14 +210,14 @@ func cmdRun(ctx context.Context, st *app.Store, id string, fl *flags, stdout, st
 		writeError(stderr, fmt.Errorf("%w: provider %s does not support streaming turns", errProvider, sess.Provider))
 		return exitProviderError
 	}
-	res, err := app.TurnWithOptions(ctx, st, sess, s, app.TurnOptions{
+	res, terr := app.TurnWithOptions(ctx, st, sess, s, app.TurnOptions{
 		Budget:    fl.budget,
 		MaxTokens: fl.maxTokens,
 	})
 	// Receipt hook: live self-test runs emit their attempt record as
 	// a post-turn side-effect of the same run path.
 	if selfTestRun {
-		if recErr := emitSelfTestReceipt(ctx, fl, sess, res, err); recErr != nil {
+		if recErr := emitSelfTestReceipt(ctx, fl, sess, res, terr); recErr != nil {
 			writeError(stderr, recErr)
 			return exitCodeFor(recErr)
 		}
@@ -217,7 +243,7 @@ func cmdRun(ctx context.Context, st *app.Store, id string, fl *flags, stdout, st
 			return exitCodeFor(err)
 		}
 	}
-	return finishRun(err, res, fl, stderr)
+	return finishRun(terr, res, fl, stderr)
 }
 
 // finishRun maps the turn outcome onto its exit code: SIGINT
