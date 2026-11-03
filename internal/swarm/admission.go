@@ -19,7 +19,12 @@ func sha256Hex(body []byte) string {
 }
 
 // NewAdmissionLog builds an empty admission log.
-func NewAdmissionLog() *AdmissionLog { return &AdmissionLog{admitted: map[string]Packet{}} }
+func NewAdmissionLog() *AdmissionLog {
+	return &AdmissionLog{
+		admitted: map[string]Packet{},
+		children: map[string][]ChildLink{},
+	}
+}
 
 // Admission-control typed errors.
 var (
