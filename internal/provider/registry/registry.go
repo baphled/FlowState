@@ -25,8 +25,11 @@ func Resolve(name string) (provider.Provider, error) {
 }
 
 // resolveZai builds the z.ai adapter from config.yaml
-// (providers.zai.plan / host), with env vars still overriding:
-// ZAI_API_KEY, ZAI_BASE_URL and ZAI_PLAN win over config values.
+// (providers.zai.plan / host / route), with env vars still overriding:
+// ZAI_API_KEY, ZAI_BASE_URL, ZAI_PLAN and ZAI_CODING_ROUTE win over
+// config values. Precedence for the coding-plan host: explicit
+// config host / ZAI_BASE_URL > plan-tag default (openai coding
+// endpoint, selectable "anthropic" via providers.zai.route).
 func resolveZai() (provider.Provider, error) {
 	var cfg *config.ProviderConfig
 	if doc, err := config.LoadDefault(); err == nil {
@@ -44,6 +47,13 @@ func resolveZai() (provider.Provider, error) {
 	}
 	if plan == "coding" {
 		opts = append(opts, zai.WithCoding())
+		route := os.Getenv("ZAI_CODING_ROUTE")
+		if route == "" && cfg != nil {
+			route = cfg.Route
+		}
+		if route != "" {
+			opts = append(opts, zai.WithCodingRoute(route))
+		}
 	}
 	key := os.Getenv("ZAI_API_KEY")
 	if key == "" && cfg != nil {

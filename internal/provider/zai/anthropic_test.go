@@ -34,7 +34,7 @@ var _ = Describe("coding (Anthropic-compatible) route", func() {
 	It("chats via the anthropic messages shape", func() {
 		srv, _ := codingServer(`{"content":[{"type":"text","text":"hello"}]}`, "")
 		defer srv.Close()
-		p := New("k", WithBaseURL(srv.URL), WithCoding())
+		p := New("k", WithBaseURL(srv.URL), WithCoding(), WithCodingRoute("anthropic"))
 		resp, err := p.Chat(context.Background(), &provider.ChatRequest{})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resp.Content).To(Equal("hello"))
@@ -43,7 +43,7 @@ var _ = Describe("coding (Anthropic-compatible) route", func() {
 	It("sends the anthropic request shape", func() {
 		srv, bodies := codingServer(`{"content":[]}`, "")
 		defer srv.Close()
-		p := New("k", WithBaseURL(srv.URL), WithCoding())
+		p := New("k", WithBaseURL(srv.URL), WithCoding(), WithCodingRoute("anthropic"))
 		_, _ = p.Chat(context.Background(), &provider.ChatRequest{})
 		Expect(bodies()).To(ContainSubstring(`"max_tokens"`))
 	})
@@ -51,7 +51,7 @@ var _ = Describe("coding (Anthropic-compatible) route", func() {
 	It("sends x-api-key and anthropic-version headers", func() {
 		srv, hdrs := codingServer(`{"content":[]}`, "x-api-key")
 		defer srv.Close()
-		p := New("k", WithBaseURL(srv.URL), WithCoding())
+		p := New("k", WithBaseURL(srv.URL), WithCoding(), WithCodingRoute("anthropic"))
 		_, _ = p.Chat(context.Background(), &provider.ChatRequest{})
 		Expect(hdrs()).To(Equal("k"))
 	})
@@ -62,7 +62,7 @@ var _ = Describe("coding (Anthropic-compatible) route", func() {
 			"data: {\"type\":\"message_stop\"}\n\n"
 		srv, _ := codingServer(sse, "")
 		defer srv.Close()
-		p := New("k", WithBaseURL(srv.URL), WithCoding())
+		p := New("k", WithBaseURL(srv.URL), WithCoding(), WithCodingRoute("anthropic"))
 		var got string
 		for ev := range p.Stream(context.Background(), &provider.ChatRequest{}) {
 			got += ev.Content
@@ -73,7 +73,7 @@ var _ = Describe("coding (Anthropic-compatible) route", func() {
 	It("stops streaming at message_stop", func() {
 		srv, _ := codingServer("data: {\"type\":\"message_stop\"}\n\n", "")
 		defer srv.Close()
-		p := New("k", WithBaseURL(srv.URL), WithCoding())
+		p := New("k", WithBaseURL(srv.URL), WithCoding(), WithCodingRoute("anthropic"))
 		var n int
 		for range p.Stream(context.Background(), &provider.ChatRequest{}) {
 			n++
@@ -89,11 +89,11 @@ var _ = Describe("coding (Anthropic-compatible) route", func() {
 			_, _ = io.WriteString(w, `{"content":[]}`)
 		}))
 		defer srv.Close()
-		// Redirect the coding endpoint to the test server.
+		// Redirect the anthropic endpoint to the test server.
 		old := codingBaseURL
 		codingBaseURL = srv.URL + "/api/anthropic"
 		defer func() { codingBaseURL = old }()
-		p := New("k", WithCoding())
+		p := New("k", WithCoding(), WithCodingRoute("anthropic"))
 		_, _ = p.Chat(context.Background(), &provider.ChatRequest{})
 		Expect(hitPath).To(Equal("/api/anthropic/v1/messages"))
 	})
@@ -101,7 +101,7 @@ var _ = Describe("coding (Anthropic-compatible) route", func() {
 	It("clamps max_tokens into [1,131072] on the coding route", func() {
 		srv, bodies := codingServer(`{"content":[]}`, "")
 		defer srv.Close()
-		p := New("k", WithBaseURL(srv.URL), WithCoding())
+		p := New("k", WithBaseURL(srv.URL), WithCoding(), WithCodingRoute("anthropic"))
 		_, _ = p.Chat(context.Background(), &provider.ChatRequest{MaxTokens: 500000})
 		Expect(bodies()).To(ContainSubstring(`"max_tokens":131072`))
 	})
@@ -109,7 +109,7 @@ var _ = Describe("coding (Anthropic-compatible) route", func() {
 	It("clamps a zero max_tokens to 1 on the coding route", func() {
 		srv, bodies := codingServer(`{"content":[]}`, "")
 		defer srv.Close()
-		p := New("k", WithBaseURL(srv.URL), WithCoding())
+		p := New("k", WithBaseURL(srv.URL), WithCoding(), WithCodingRoute("anthropic"))
 		_, _ = p.Chat(context.Background(), &provider.ChatRequest{})
 		Expect(bodies()).To(ContainSubstring(`"max_tokens":1`))
 	})
@@ -149,7 +149,7 @@ var _ = Describe("WithCoding base URL", func() {
 		old := codingBaseURL
 		codingBaseURL = "https://zai-invalid.example.invalid"
 		defer func() { codingBaseURL = old }()
-		p := New("k", WithBaseURL(srv.URL), WithCoding())
+		p := New("k", WithBaseURL(srv.URL), WithCoding(), WithCodingRoute("anthropic"))
 		_, _ = p.Chat(context.Background(), &provider.ChatRequest{})
 		Expect(hitPath).To(Equal("/v1/messages"))
 	})
