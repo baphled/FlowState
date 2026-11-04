@@ -68,7 +68,6 @@ jobs:
   commitlint:
     name: Lint Commits
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -82,7 +81,56 @@ jobs:
         run: npm ci
 
       - name: Validate PR commits
-        run: npx commitlint --from ${{ github.event.pull_request.base.sha }} --to ${{ github.event.pull_request.head.sha }} --verbose
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: npx commitlint --from "$BASE_SHA" --to "$HEAD_SHA" --verbose
+
+      - name: Validate pushed commits
+        if: github.event_name == 'push'
+        env:
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          BASE_SHA="$(git rev-parse HEAD^)"
+          npx commitlint --from "$BASE_SHA" --to "$HEAD_SHA" --verbose
+
+  pr-policy:
+    name: PR Policy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate source branch naming
+        if: github.event_name == 'pull_request'
+        env:
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          pattern='^(feature|fix|chore|docs|refactor|test|perf|revert)/[a-z0-9]+(-[a-z0-9]+)*(-[0-9]{8})?$'
+          if ! [[ "$BRANCH" =~ $pattern ]]; then
+            echo "::error::Source branch violates rules/branch-naming.md"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        if: github.event_name == 'pull_request'
+
+      - uses: actions/setup-node@v4
+        if: github.event_name == 'pull_request'
+        with:
+          node-version: "22"
+
+      - name: Install PR title validator
+        if: github.event_name == 'pull_request'
+        run: npm ci
+
+      - name: Check PR title
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: printf '%s\n' "$PR_TITLE" | npx commitlint
+
+      - name: Push event has no PR title or source branch
+        if: github.event_name == 'push'
+        run: echo "PR-only policy is not applicable to a direct next push"
 
   lint:
     name: Lint & Format
@@ -170,7 +218,7 @@ jobs:
     name: Build
     runs-on: ubuntu-latest
     if: ${{ always() }}
-    needs: [lint, test, metadata, security, scope]
+    needs: [lint, test, metadata, security, scope, commitlint, pr-policy]
     steps:
       - name: Require successful prerequisites
         env:

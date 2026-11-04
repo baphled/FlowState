@@ -30,6 +30,10 @@ behavioural functions. Read the current Dropbox test rule before test work.
 
 ## Delivery and evidence
 
+Read [CI and merge admission](rules/CI_QUALITY.md) before changing CI.
+Every mandatory Build prerequisite must succeed. Separate exact-head review,
+observed agent identity and merge authorisation remain required.
+
 Fetch actual `origin/next`; work in a registered feature worktree inside the
 verified bare root. Do not commit directly to `main`/`next` or transplant prototype
 runtime. An unmerged prerequisite needs an explicit scoped disposition in Dropbox.
