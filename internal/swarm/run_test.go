@@ -1,6 +1,7 @@
 package swarm_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 
@@ -58,7 +59,90 @@ gates:
 		Expect(runErr).NotTo(HaveOccurred())
 		Expect(res.Gates.Accepted).To(BeTrue())
 	})
+	It("rejects acceptance even if gates pass when admission was rejected", func() {
+		m, parseErr := swarm.ParseManifest([]byte(manifestYAML))
+		Expect(parseErr).NotTo(HaveOccurred())
+		m.Packets[0].SourceSHA256 = swarm.SHA256HexForTest([]byte("incorrect-source"))
+		res, runErr := swarm.Run(m, hashFor(), swarm.NewGateRunner(), nil, nil)
+		Expect(runErr).NotTo(HaveOccurred())
+		Expect(res.Gates.Accepted).To(BeFalse())
+	})
+
+	It("records successful packet admissions before completing", func() {
+		m, parseErr := swarm.ParseManifest([]byte(manifestYAML))
+		Expect(parseErr).NotTo(HaveOccurred())
+		receipts := &runReceipts{}
+		_, runErr := swarm.Run(m, hashFor(), swarm.NewGateRunner(), nil, receipts)
+		Expect(runErr).NotTo(HaveOccurred())
+		Expect(receipts.admissions).To(Equal([]bool{true, true}))
+	})
+
+	It("records packet rejections before gate evaluation", func() {
+		m, parseErr := swarm.ParseManifest([]byte(manifestYAML))
+		Expect(parseErr).NotTo(HaveOccurred())
+		m.Packets[0].SourceSHA256 = swarm.SHA256HexForTest([]byte("incorrect-source"))
+		receipts := &runReceipts{}
+		_, runErr := swarm.Run(m, hashFor(), swarm.NewGateRunner(), nil, receipts)
+		Expect(runErr).NotTo(HaveOccurred())
+		Expect(receipts.admissions).To(Equal([]bool{false, false}))
+	})
+
+	It("fails the run if admission evidence cannot be persisted", func() {
+		m, parseErr := swarm.ParseManifest([]byte(manifestYAML))
+		Expect(parseErr).NotTo(HaveOccurred())
+		receipts := &runReceipts{admissionErr: errors.New("durable admission unavailable")}
+		_, runErr := swarm.Run(m, hashFor(), swarm.NewGateRunner(), nil, receipts)
+		Expect(runErr).To(MatchError(ContainSubstring("durable admission unavailable")))
+	})
+
+	It("fails the run if rejection evidence cannot be persisted", func() {
+		m, parseErr := swarm.ParseManifest([]byte(manifestYAML))
+		Expect(parseErr).NotTo(HaveOccurred())
+		m.Packets[0].SourceSHA256 = swarm.SHA256HexForTest([]byte("incorrect-source"))
+		receipts := &runReceipts{admissionErr: errors.New("durable rejection unavailable")}
+		_, runErr := swarm.Run(m, hashFor(), swarm.NewGateRunner(), nil, receipts)
+		Expect(runErr).To(MatchError(ContainSubstring("durable rejection unavailable")))
+	})
+
+	It("propagates failed gate evidence persistence", func() {
+		m, parseErr := swarm.ParseManifest([]byte(manifestYAML))
+		Expect(parseErr).NotTo(HaveOccurred())
+		receipts := &runReceipts{gatesErr: errors.New("durable gates unavailable")}
+		_, runErr := swarm.Run(m, hashFor(), swarm.NewGateRunner(), nil, receipts)
+		Expect(runErr).To(MatchError(ContainSubstring("durable gates unavailable")))
+	})
+
+	It("revokes gate acceptance after evidence persistence fails", func() {
+		m, parseErr := swarm.ParseManifest([]byte(manifestYAML))
+		Expect(parseErr).NotTo(HaveOccurred())
+		receipts := &runReceipts{gatesErr: errors.New("durable gates unavailable")}
+		res, _ := swarm.Run(m, hashFor(), swarm.NewGateRunner(), nil, receipts)
+		Expect(res.Gates.Accepted).To(BeFalse())
+	})
+
+	It("rejects missing admission collaborators instead of panicking", func() {
+		m, parseErr := swarm.ParseManifest([]byte(manifestYAML))
+		Expect(parseErr).NotTo(HaveOccurred())
+		_, runErr := swarm.Run(m, nil, swarm.NewGateRunner(), nil, nil)
+		Expect(runErr).To(HaveOccurred())
+	})
+
 })
+
+type runReceipts struct {
+	admissionErr error
+	gatesErr     error
+	admissions   []bool
+}
+
+func (r *runReceipts) RecordAdmission(_ string, _ swarm.Packet, admitted bool, _ string) error {
+	r.admissions = append(r.admissions, admitted)
+	return r.admissionErr
+}
+
+func (r *runReceipts) RecordGates(_ string, _ swarm.GatesDecision) error {
+	return r.gatesErr
+}
 
 // hashFor builds an admitter that computes each packet's source
 // hash from its task text (the run loop's default body).
