@@ -41,3 +41,26 @@ required Actions jobs. ginkgolinter additionally checks matcher usage, async
 intervals, focused containers and container-state pollution. Passing syntax/lint
 checks does not prove that an assertion is meaningful; independent review remains
 required. No merge is authorized by this testing change.
+
+## Test-file ownership and pairing
+
+**One implementation file, at most one companion test file.** A changed or
+new `foo_test.go` must have an existing `foo.go` in the same package and
+directory in the committed candidate. A companion may contain many independent
+Ginkgo `It`/table specifications; this is a file-ownership rule, **not** a
+limit of one behavioural test. Do not introduce acceptance-number, fixture,
+qualification, or catch-all `*_test.go` suites that are not companions to
+an implementation file. Move coverage to its owning implementation's test
+file, preserving existing behavioural assertions.
+
+The sole structural exception is `suite_test.go`, which bootstraps Ginkgo.
+That exception must not become a catch-all behavioural suite. Existing
+untouched legacy files remain migration debt; any changed test file must
+satisfy this rule. New implementation files should have an appropriately
+scoped companion rather than gathering unrelated tests in a shared file.
+
+`make check-test-contract BASE_SHA=<actual PR base>` now validates exact
+committed test-to-implementation pairing before the AST/Ginkgo contract.
+The same command is enforced in PR CI against `next`. An explicit
+`--worktree` run is only a local preview, not a merge receipt. Semantic
+ownership of methods spanning files is still checked by independent review.
