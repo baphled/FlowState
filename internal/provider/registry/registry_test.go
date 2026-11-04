@@ -94,7 +94,26 @@ var _ = Describe("zai config wiring", func() {
 			writeConfig("providers:\n  zai:\n    model: glm-5.3\n")
 			observedCoding = resolveCoding()
 		})
-		It("keeps the default openai route", func() { Expect(observedCoding).To(BeFalse()) })
+		It("defaults to the coding plan", func() { Expect(observedCoding).To(BeTrue()) })
+	})
+
+	Context("with no zai config at all", func() {
+		var observedCoding bool
+		BeforeEach(func() {
+			GinkgoT().Setenv("ZAI_API_KEY", "env-key")
+			writeConfig("providers:\n  default: zai\n")
+			observedCoding = resolveCoding()
+		})
+		It("defaults to the coding plan", func() { Expect(observedCoding).To(BeTrue()) })
+	})
+
+	Context("with plan explicitly general", func() {
+		var observedCoding bool
+		BeforeEach(func() {
+			writeConfig("providers:\n  zai:\n    plan: general\n")
+			observedCoding = resolveCoding()
+		})
+		It("honours the explicit general plan", func() { Expect(observedCoding).To(BeFalse()) })
 	})
 
 	Context("with ZAI_PLAN=coding and config plan general", func() {
