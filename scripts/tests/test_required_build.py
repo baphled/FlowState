@@ -47,6 +47,19 @@ class RequiredBuild(unittest.TestCase):
                         results[job]['result'] = state
                         self.assertNotEqual(self.execute(script, results).returncode, 0)
 
+    def test_next_build_includes_commit_and_pr_policy(self):
+        name, jobs, _ = next(x for x in gates() if x[0] == 'ci-next.yml')
+        self.assertIn('commitlint', jobs)
+        self.assertIn('pr-policy', jobs)
+
+    def test_next_pr_policy_cannot_be_skipped_as_a_job(self):
+        source = (ROOT / '.github/workflows/ci-next.yml').read_text()
+        job = source.split('  pr-policy:' + chr(10), 1)[1].split(chr(10) + '  lint:', 1)[0]
+        self.assertNotIn('    if: github.event_name', job.split('    steps:', 1)[0])
+        self.assertIn('PR_TITLE: ${{ github.event.pull_request.title }}', job)
+        self.assertIn('BRANCH: ${{ github.event.pull_request.head.ref }}', job)
+        self.assertNotIn('run: echo "${{ github.event.pull_request.title }}"', job)
+
     def test_empty_or_malformed_results_fail(self):
         for name, _, script in gates():
             for results in ({}, {'lint': {}}, {'lint': None}, []):
