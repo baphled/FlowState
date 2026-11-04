@@ -100,6 +100,13 @@ func MigrateSwarmTables(db *sql.DB) error {
 			outcome TEXT NOT NULL CHECK (outcome IN ('pass','fail')),
 			recorded_at_utc TEXT NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS swarm_member_receipts (
+			run_name TEXT NOT NULL,
+			packet_id TEXT NOT NULL,
+			gate_outcome TEXT NOT NULL CHECK (gate_outcome IN ('pass','fail')),
+			evidence_sha256 TEXT NOT NULL,
+			recorded_at_utc TEXT NOT NULL
+		)`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
 			return fmt.Errorf("app: migrate swarm tables: %w", err)
