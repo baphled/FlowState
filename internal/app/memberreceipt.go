@@ -1,6 +1,8 @@
 package app
 
 import (
+	"fmt"
+
 	"github.com/baphled/flowstate/internal/storage"
 	"github.com/baphled/flowstate/internal/swarm"
 )
@@ -14,7 +16,10 @@ func SwarmEmitMemberReceipt(dbPath, runName string, admitted []string, claim swa
 		return swarm.MemberReceipt{}, err
 	}
 	defer func() { _ = db.Close() }()
-	rec := storage.NewSwarmReceipts(db.db())
+	rec, err := storage.NewSwarmReceipts(db.db())
+	if err != nil {
+		return swarm.MemberReceipt{}, fmt.Errorf("app: initialize swarm persistence: %w", err)
+	}
 	auth := swarm.NewMemberAuthorizer(runName, admitted)
 	return swarm.EmitMemberReceipt(auth, claim, swarmMemberReceipts{rec: rec})
 }
