@@ -56,6 +56,37 @@ var _ = Describe("configured swarm manifest and gates", func() {
 		Expect(swarm.ValidateManifest(m)).To(MatchError(ContainSubstring("source_sha256")))
 	})
 
+	It("rejects unknown prerequisites before scheduling work", func() {
+		m := validManifest()
+		m.Packets[0].Prerequisites = []string{"missing"}
+		Expect(swarm.ValidateManifest(m)).To(MatchError(ContainSubstring("unknown prerequisite")))
+	})
+
+	It("rejects repeated prerequisite edges", func() {
+		m := validManifest()
+		child := swarm.Packet{ID: "child", Scope: "m2.child", Task: "child work",
+			SourceSHA256: bodyHashOf("child"), Prerequisites: []string{"root", "root"}}
+		m.Packets = append(m.Packets, child)
+		Expect(swarm.ValidateManifest(m)).To(MatchError(ContainSubstring("duplicate prerequisite")))
+	})
+
+	It("rejects cycles in manifest prerequisites", func() {
+		m := validManifest()
+		m.Packets[0].Prerequisites = []string{"child"}
+		child := swarm.Packet{ID: "child", Scope: "m2.child", Task: "child work",
+			SourceSHA256: bodyHashOf("child"), Prerequisites: []string{"root"}}
+		m.Packets = append(m.Packets, child)
+		Expect(swarm.ValidateManifest(m)).To(MatchError(ContainSubstring("prerequisite cycle")))
+	})
+
+	It("accepts a valid two-packet dependency chain", func() {
+		m := validManifest()
+		child := swarm.Packet{ID: "child", Scope: "m2.child", Task: "child work",
+			SourceSHA256: bodyHashOf("child"), Prerequisites: []string{"root"}}
+		m.Packets = append(m.Packets, child)
+		Expect(swarm.ValidateManifest(m)).To(Succeed())
+	})
+
 	It("rejects a gate without a command", func() {
 		m := validManifest()
 		m.Gates[0].Command = ""
