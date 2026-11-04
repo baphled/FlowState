@@ -20,8 +20,9 @@ func swarmDB() *sql.DB {
 
 // storedAdmission arranges an admitted packet and reads its persisted outcome.
 func storedAdmission(db *sql.DB) string {
-	rec := storage.NewSwarmReceipts(db)
-	err := rec.RecordAdmission("run", swarm.Packet{ID: "p1"}, true, "")
+	rec, err := storage.NewSwarmReceipts(db)
+	Expect(err).NotTo(HaveOccurred())
+	err = rec.RecordAdmission("run", swarm.Packet{ID: "p1"}, true, "")
 	Expect(err).NotTo(HaveOccurred())
 	var outcome string
 	err = db.QueryRow("SELECT outcome FROM swarm_admissions WHERE packet_id = ?", "p1").Scan(&outcome)
@@ -31,8 +32,9 @@ func storedAdmission(db *sql.DB) string {
 
 // storedMemberDigest arranges a member receipt and reads its persisted digest.
 func storedMemberDigest(db *sql.DB) string {
-	rec := storage.NewSwarmReceipts(db)
-	err := rec.RecordMemberReceipt(swarm.MemberReceipt{
+	rec, err := storage.NewSwarmReceipts(db)
+	Expect(err).NotTo(HaveOccurred())
+	err = rec.RecordMemberReceipt(swarm.MemberReceipt{
 		Identity:    swarm.MemberIdentity{RunName: "run", PacketID: "p1"},
 		GateOutcome: "pass", EvidenceSHA256: "known-digest",
 	})
