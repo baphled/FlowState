@@ -22,18 +22,18 @@ var _ = Describe("Inline SQL architecture guard", func() {
 	)
 
 	DescribeTable("literal SQL detection",
-		func(path, code string, rejected bool) {
+		func(path, code string, expectedCount int) {
 			found := inspectInlineSQL(sourceFile{Name: path, Source: code})
-			Expect(len(found) > 0).To(Equal(rejected))
+			Expect(found).To(HaveLen(expectedCount))
 		},
-		Entry("select in runtime", "internal/runtime/service.go", "package runtime\nvar q = `SELECT id FROM events`", true),
-		Entry("insert in application", "internal/app/usecase.go", "package app\nvar q = `INSERT INTO sessions(id) VALUES (1)`", true),
-		Entry("update in session", "internal/session/session.go", "package session\nvar q = `UPDATE sessions SET state = 1`", true),
-		Entry("delete in tool", "internal/tool/executor.go", "package tool\nvar q = `DELETE FROM runs`", true),
-		Entry("multiline select", "internal/runtime/loop/turn.go", "package loop\nvar q = `\n SELECT id\n FROM events`", true),
-		Entry("non-SQL text remains legal", "internal/app/usecase.go", "package app\nvar text = `Select the active model`", false),
-		Entry("adapter may own SQL", "internal/store/sqlite.go", "package store\nvar q = `SELECT id FROM events`", false),
-		Entry("transport is exempt", "internal/provider/zai/client.go", "package zai\nvar q = `SELECT id FROM events`", false),
+		Entry("select in runtime", "internal/runtime/service.go", "package runtime\nvar q = `SELECT id FROM events`", 1),
+		Entry("insert in application", "internal/app/usecase.go", "package app\nvar q = `INSERT INTO sessions(id) VALUES (1)`", 1),
+		Entry("update in session", "internal/session/session.go", "package session\nvar q = `UPDATE sessions SET state = 1`", 1),
+		Entry("delete in tool", "internal/tool/executor.go", "package tool\nvar q = `DELETE FROM runs`", 1),
+		Entry("multiline select", "internal/runtime/loop/turn.go", "package loop\nvar q = `\n SELECT id\n FROM events`", 1),
+		Entry("non-SQL text remains legal", "internal/app/usecase.go", "package app\nvar text = `Select the active model`", 0),
+		Entry("adapter may own SQL", "internal/store/sqlite.go", "package store\nvar q = `SELECT id FROM events`", 0),
+		Entry("transport is exempt", "internal/provider/zai/client.go", "package zai\nvar q = `SELECT id FROM events`", 0),
 	)
 
 	It("reports exact source locations for a rejected SQL literal", func() {
