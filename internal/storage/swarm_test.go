@@ -33,7 +33,7 @@ func storedAdmission(db *sql.DB) string {
 func storedMemberDigest(db *sql.DB) string {
 	rec := storage.NewSwarmReceipts(db)
 	err := rec.RecordMemberReceipt(swarm.MemberReceipt{
-		Identity: swarm.MemberIdentity{RunName: "run", PacketID: "p1"},
+		Identity:    swarm.MemberIdentity{RunName: "run", PacketID: "p1"},
 		GateOutcome: "pass", EvidenceSHA256: "known-digest",
 	})
 	Expect(err).NotTo(HaveOccurred())
