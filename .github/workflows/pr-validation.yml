@@ -24,8 +24,13 @@ jobs:
       - name: Install commitlint
         run: npm ci
 
+      - name: Check untrusted PR input handling
+        run: python3 -B -m unittest discover -s scripts/tests -p test_pr_validation_security.py -v
+
       - name: Validate PR title
-        run: echo "${{ github.event.pull_request.title }}" | npx commitlint
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: printf '%s\n' "$PR_TITLE" | npx commitlint
 
   check-ai-attribution:
     name: Check AI Attribution
@@ -115,9 +120,11 @@ jobs:
       - name: Comment on breaking changes
         if: steps.breaking.outputs.has_breaking == 'true'
         uses: actions/github-script@v7
+        env:
+          BREAKING_COMMITS: ${{ steps.breaking.outputs.commits }}
         with:
           script: |
-            const commits = `${{ steps.breaking.outputs.commits }}`;
+            const commits = process.env.BREAKING_COMMITS;
             const body = `## ⚠️ Breaking Changes Detected
 
             The following commits contain breaking changes:
