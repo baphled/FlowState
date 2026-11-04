@@ -1,3 +1,8 @@
 #!/bin/sh
-# Committed-diff budget check before pushing to the shared target.
-python3 -B scripts/pr_size.py --base "$(git rev-parse origin/next)" --head "$(git rev-parse HEAD)"
+# Enforce exact committed source boundaries before pushing to next.
+set -eu
+BASE=$(git rev-parse origin/next)
+HEAD=$(git rev-parse HEAD)
+python3 -B scripts/pr_size.py --base "$BASE" --head "$HEAD"
+python3 -B -m unittest discover -s scripts/tests -p test_code_contract.py
+python3 -B scripts/check_code_contract.py --base "$BASE"
