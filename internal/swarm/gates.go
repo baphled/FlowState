@@ -31,6 +31,9 @@ func ValidateManifest(m Manifest) error {
 			return fmt.Errorf("packet %s scope %q escapes manifest scope %q", p.ID, p.Scope, m.Scope)
 		}
 	}
+	if err := validatePrerequisiteGraph(m.Packets); err != nil {
+		return err
+	}
 	gates := map[string]bool{}
 	for _, g := range m.Gates {
 		if strings.TrimSpace(g.Name) == "" {
@@ -43,6 +46,52 @@ func ValidateManifest(m Manifest) error {
 		if strings.TrimSpace(g.Command) == "" {
 			return fmt.Errorf("gate %s: command is required", g.Name)
 		}
+	}
+	return nil
+}
+
+// validatePrerequisiteGraph rejects unknown, repeated and cyclic dependencies
+// before RunOrder can silently omit work from the execution sequence.
+func validatePrerequisiteGraph(packets []Packet) error {
+	degree := map[string]int{}
+	dependents := map[string][]string{}
+	for _, p := range packets {
+		degree[p.ID] = 0
+	}
+	for _, p := range packets {
+		seen := map[string]bool{}
+		for _, prerequisite := range p.Prerequisites {
+			if _, exists := degree[prerequisite]; !exists {
+				return fmt.Errorf("packet %s: unknown prerequisite %q", p.ID, prerequisite)
+			}
+			if seen[prerequisite] {
+				return fmt.Errorf("packet %s: duplicate prerequisite %q", p.ID, prerequisite)
+			}
+			seen[prerequisite] = true
+			degree[p.ID]++
+			dependents[prerequisite] = append(dependents[prerequisite], p.ID)
+		}
+	}
+	var ready []string
+	for _, p := range packets {
+		if degree[p.ID] == 0 {
+			ready = append(ready, p.ID)
+		}
+	}
+	processed := 0
+	for len(ready) > 0 {
+		id := ready[0]
+		ready = ready[1:]
+		processed++
+		for _, child := range dependents[id] {
+			degree[child]--
+			if degree[child] == 0 {
+				ready = append(ready, child)
+			}
+		}
+	}
+	if processed != len(packets) {
+		return fmt.Errorf("manifest prerequisite cycle detected")
 	}
 	return nil
 }
