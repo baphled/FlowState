@@ -18,6 +18,10 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			failed = true
 		}
+		for _, err := range inspectInlineSQL(f) {
+			fmt.Fprintln(os.Stderr, err)
+			failed = true
+		}
 	}
 	if failed {
 		os.Exit(1)

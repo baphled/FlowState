@@ -63,3 +63,28 @@ cohesion, correct invariants, real independence or runtime readiness.
 Use the [Ginkgo test contract](BDD_WORKFLOW.md). A separate verifier checks
 responsibility, public surface, failure/cancellation semantics, documentation and
 preserved behaviour. No merge is authorized by a source-contract PASS.
+
+## ORM-only persistence boundary
+
+All new or modified production code under `internal/` must use mapped ORM
+models and operations for persistence. This includes application, runtime,
+provider transports and persistence adapters. Relocating raw SQL from
+`internal/app` into `internal/storage` is **not** compliance.
+
+The committed-source guard (`make check-code-contract BASE_SHA=<actual PR
+base>`) rejects recognisable SQL statement literals, including DDL, and common
+direct query APIs such as `Exec`, `QueryRow`, `Prepare` and `Raw`. It runs
+on every changed non-test Go source in `internal/`, including build-tagged
+variants. The same gate is invoked in CI for PRs against `next` and via the
+local pre-push hook. Ginkgo negative fixtures cover core, storage, transport,
+dynamic query API calls and allowed ORM operations.
+
+Existing untouched SQL in the legacy event store and schema migrator is
+known debt, not a broad exemption for newly changed files. If one of those
+files changes, its entire changed-file contract applies; migrate it in a
+bounded follow-up instead of adding waivers.
+
+This is a defensive AST heuristic, not proof of ORM usage: composed SQL,
+unusual method names, reflection and semantic dependency violations still
+require independent design and code review. Never claim a green source
+guard substitutes for an independent review.
