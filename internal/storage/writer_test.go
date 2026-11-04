@@ -4,146 +4,143 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
-	"testing"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
-// openT45 opens a migrated temp database for the acceptance 4/5 tests
-// (kept independent of the Ginkgo suite's openT).
-func openT45(t *testing.T) (*sql.DB, string) {
-	t.Helper()
-	db, _, err := Open(filepath.Join(t.TempDir(), "t45.db"))
-	if err != nil {
-		t.Fatal(err)
+// cancelledSession arranges a session with three committed effects
+// (seq 0..2) and then cancels mid-turn. It asserts nothing behavioural.
+func cancelledSession(db *sql.DB) (context.Context, string) {
+	w, sess, err := NewEventWriter(db, Session{Provider: "p", ModelID: "m", Harness: "t"})
+	Expect(err).NotTo(HaveOccurred())
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		err := w.Append(ctx, EventIn{Actor: "provider:fake", Type: "provider.delta",
+			Payload: map[string]any{"i": i}})
+		Expect(err).NotTo(HaveOccurred())
 	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := Migrate(db); err != nil {
-		t.Fatal(err)
-	}
-	return db, t.TempDir()
+	err = w.Cancel(ctx, "user abort", 2)
+	Expect(err).NotTo(HaveOccurred())
+	return ctx, sess.ID
 }
 
-// TestWriterCancelMidTurn proves acceptance item 4: cancelling mid-turn
-// atomically commits a cancel.checkpoint (recording last committed seq) and
-// the terminal session.cancelled event, marks the session cancelled, and
-// rejects all late effects afterwards.
-func TestWriterCancelMidTurn(t *testing.T) {
-	db, _ := openT45(t)
-	w, sess, err := NewEventWriter(db, Session{Provider: "p", ModelID: "m", Harness: "t"})
+// openWT opens a migrated temp database for the writer acceptance specs
+// (kept independent of the storage suite's openT).
+func openWT() (*sql.DB, string) {
+	db, _, err := Open(filepath.Join(GinkgoT().TempDir(), "wt.db"))
+	Expect(err).NotTo(HaveOccurred())
+	err = Migrate(db)
+	Expect(err).NotTo(HaveOccurred())
+	DeferCleanup(func() { _ = db.Close() })
+	return db, GinkgoT().TempDir()
+}
+
+// eventTypes reads the ordered event types recorded for a session. It
+// asserts nothing behavioural; scan/query failures are returned as errors.
+func eventTypes(ctx context.Context, db *sql.DB, sessionID string) ([]string, error) {
+	rows, err := db.Query(`SELECT seq, type FROM events WHERE session_id=? ORDER BY seq`, sessionID)
 	if err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
-	ctx := context.Background()
-	// Half a turn: 3 committed effects (seq 0..2), then a mid-turn cancel.
-	for i := 0; i < 3; i++ {
-		if err := w.Append(ctx, EventIn{Actor: "provider:fake", Type: "provider.delta",
-			Payload: map[string]any{"i": i}}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := VerifyContiguous(ctx, db, sess.ID); err != nil {
-		t.Fatalf("pre-cancel contiguity: %v", err)
-	}
-	if err := w.Cancel(ctx, "user abort", 2); err != nil {
-		t.Fatal(err)
-	}
-	// Session is terminal and cancelled in the sessions table.
-	var status string
-	if err := db.QueryRow(`SELECT status FROM sessions WHERE id=?`, sess.ID).Scan(&status); err != nil {
-		t.Fatal(err)
-	}
-	if status != "cancelled" {
-		t.Fatalf("status = %q, want cancelled", status)
-	}
-	// Late effects rejected: Append, Pause, Resume, second Cancel.
-	if err := w.Append(ctx, EventIn{Actor: "provider:fake", Type: "provider.delta"}); err == nil {
-		t.Fatal("late append accepted after cancel")
-	}
-	if err := w.Pause(ctx, PauseInfo{Reason: "late"}); err == nil {
-		t.Fatal("late pause accepted after cancel")
-	}
-	if _, err := w.Resume(ctx, ""); err == nil {
-		t.Fatal("late resume accepted after cancel")
-	}
-	if err := w.Cancel(ctx, "again", 0); err == nil {
-		t.Fatal("second cancel accepted")
-	}
-	// Checkpoint + terminal event committed contiguously after the effects.
-	if err := VerifyContiguous(ctx, db, sess.ID); err != nil {
-		t.Fatalf("post-cancel contiguity: %v", err)
-	}
-	rows, err := db.Query(`SELECT seq, type FROM events WHERE session_id=? ORDER BY seq`, sess.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	var types []string
+	DeferCleanup(rows.Close)
+	var out []string
 	for rows.Next() {
 		var seq int
 		var typ string
 		if err := rows.Scan(&seq, &typ); err != nil {
-			t.Fatal(err)
+			return nil, err
 		}
-		types = append(types, typ)
+		out = append(out, typ)
 	}
-	if len(types) != 5 {
-		t.Fatalf("events = %d, want 5 (3 effects + checkpoint + cancelled)", len(types))
-	}
-	if types[3] != "cancel.checkpoint" || types[4] != "session.cancelled" {
-		t.Fatalf("terminal events = %v", types[3:])
-	}
+	return out, rows.Err()
 }
 
-// TestWriterDurablePauseResume proves acceptance item 5: Pause durably
-// records the pause checkpoint (status + session.paused event), Append is
-// rejected while paused, and a fresh writer re-attached via AttachWriter
-// resumes from the persisted high-water mark with a contiguous sequence.
-func TestWriterDurablePauseResume(t *testing.T) {
-	db, _ := openT45(t)
-	w, sess, err := NewEventWriter(db, Session{Provider: "p", ModelID: "m", Harness: "t"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	for i := 0; i < 4; i++ {
-		if err := w.Append(ctx, EventIn{Actor: "provider:fake", Type: "provider.delta",
-			Payload: map[string]any{"i": i}}); err != nil {
-			t.Fatal(err)
+var _ = Describe("Writer cancel mid-turn", func() {
+	It("marks the session cancelled in the sessions table", func() {
+		db, _ := openWT()
+		_, sid := cancelledSession(db)
+		var status string
+		err := db.QueryRow(`SELECT status FROM sessions WHERE id=?`, sid).Scan(&status)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(status).To(Equal("cancelled"))
+	})
+
+	It("rejects late effects after the cancel", func() {
+		db, _ := openWT()
+		w, _, err := NewEventWriter(db, Session{Provider: "p", ModelID: "m", Harness: "t"})
+		Expect(err).NotTo(HaveOccurred())
+		ctx := context.Background()
+		for i := 0; i < 3; i++ {
+			err := w.Append(ctx, EventIn{Actor: "provider:fake", Type: "provider.delta",
+				Payload: map[string]any{"i": i}})
+			Expect(err).NotTo(HaveOccurred())
 		}
-	}
-	if err := w.Pause(ctx, PauseInfo{Reason: "budget exhausted", ConsumedBudget: 4096,
-		UncertainTool: "shell"}); err != nil {
-		t.Fatal(err)
-	}
-	// Durably paused: status persisted, appends rejected.
-	var status string
-	if err := db.QueryRow(`SELECT status FROM sessions WHERE id=?`, sess.ID).Scan(&status); err != nil {
-		t.Fatal(err)
-	}
-	if status != "paused" {
-		t.Fatalf("status = %q, want paused", status)
-	}
-	if err := w.Append(ctx, EventIn{Actor: "provider:fake", Type: "provider.delta"}); err == nil {
-		t.Fatal("append accepted while paused")
-	}
-	// Simulate process restart: attach a fresh writer to the same DB.
-	w2, err := AttachWriter(ctx, db, sess.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := w2.Resume(ctx, "shell"); err != nil {
-		t.Fatal(err)
-	}
-	// Sequence continues contiguously from the persisted high-water mark.
-	for i := 4; i < 7; i++ {
-		if err := w2.Append(ctx, EventIn{Actor: "provider:fake", Type: "provider.delta",
-			Payload: map[string]any{"i": i}}); err != nil {
-			t.Fatal(err)
+		err = w.Cancel(ctx, "user abort", 2)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = w.Resume(ctx, "")
+		Expect(err).To(HaveOccurred(), "late resume accepted after cancel")
+	})
+
+	It("commits checkpoint and terminal event contiguously after the effects", func() {
+		db, _ := openWT()
+		ctx, sid := cancelledSession(db)
+		err := VerifyContiguous(ctx, db, sid)
+		Expect(err).NotTo(HaveOccurred())
+		types, err := eventTypes(ctx, db, sid)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(types).To(Equal([]string{
+			"provider.delta", "provider.delta", "provider.delta",
+			"cancel.checkpoint", "session.cancelled",
+		}))
+	})
+})
+
+var _ = Describe("Writer durable pause and resume", func() {
+	It("persists the paused status and rejects appends while paused", func() {
+		db, _ := openWT()
+		w, sess, err := NewEventWriter(db, Session{Provider: "p", ModelID: "m", Harness: "t"})
+		Expect(err).NotTo(HaveOccurred())
+		ctx := context.Background()
+		for i := 0; i < 4; i++ {
+			err := w.Append(ctx, EventIn{Actor: "provider:fake", Type: "provider.delta",
+				Payload: map[string]any{"i": i}})
+			Expect(err).NotTo(HaveOccurred())
 		}
-	}
-	if err := VerifyContiguous(ctx, db, sess.ID); err != nil {
-		t.Fatalf("post-resume contiguity: %v", err)
-	}
-	if s := w2.Session().Status; s != "active" {
-		t.Fatalf("status after resume = %q, want active", s)
-	}
-}
+		err = w.Pause(ctx, PauseInfo{Reason: "budget exhausted", ConsumedBudget: 4096,
+			UncertainTool: "shell"})
+		Expect(err).NotTo(HaveOccurred())
+		var status string
+		err = db.QueryRow(`SELECT status FROM sessions WHERE id=?`, sess.ID).Scan(&status)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(status).To(Equal("paused"))
+	})
+
+	It("resumes from the persisted high-water mark after a restart", func() {
+		db, _ := openWT()
+		w, sess, err := NewEventWriter(db, Session{Provider: "p", ModelID: "m", Harness: "t"})
+		Expect(err).NotTo(HaveOccurred())
+		ctx := context.Background()
+		for i := 0; i < 4; i++ {
+			err := w.Append(ctx, EventIn{Actor: "provider:fake", Type: "provider.delta",
+				Payload: map[string]any{"i": i}})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		err = w.Pause(ctx, PauseInfo{Reason: "budget exhausted", ConsumedBudget: 4096,
+			UncertainTool: "shell"})
+		Expect(err).NotTo(HaveOccurred())
+		// Simulate process restart: attach a fresh writer to the same DB.
+		w2, err := AttachWriter(ctx, db, sess.ID)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = w2.Resume(ctx, "shell")
+		Expect(err).NotTo(HaveOccurred())
+		for i := 4; i < 7; i++ {
+			err := w2.Append(ctx, EventIn{Actor: "provider:fake", Type: "provider.delta",
+				Payload: map[string]any{"i": i}})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		err = VerifyContiguous(ctx, db, sess.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(w2.Session().Status).To(Equal("active"))
+	})
+})
