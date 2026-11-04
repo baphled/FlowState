@@ -109,9 +109,8 @@ func (l *AdmissionLog) checkPrerequisites(p Packet) error {
 	return nil
 }
 
-// checkGraph walks up the parent chain from the packet: the chain
-// must terminate without revisiting the packet (acyclic) and every
-// ancestor scope must prefix the packet scope (scope-bound).
+// checkGraph walks the admitted parent chain before evaluating scope.
+// A cycle remains a cycle even when the proposed edge also widens scope.
 func (l *AdmissionLog) checkGraph(p Packet) error {
 	if p.ParentID == "" {
 		return nil
@@ -121,23 +120,26 @@ func (l *AdmissionLog) checkGraph(p Packet) error {
 		return fmt.Errorf("%w: parent %s not admitted", ErrPrerequisite, p.ParentID)
 	}
 	cursor := parent
-	if !scopeWithin(p.Scope, parent.Scope) && !scopeWithin(parent.Scope, p.Scope) {
-		return fmt.Errorf("%w: %s outside parent scope %s", ErrScopeEscape, p.Scope, parent.Scope)
-	}
 	for cursor.ID != p.ID {
 		if cursor.ParentID == "" {
-			return nil
+			break
 		}
 		next, ok := l.admitted[cursor.ParentID]
 		if !ok {
-			return nil
+			break
 		}
 		if next.ID == p.ID {
 			return fmt.Errorf("%w: %s is already an ancestor of %s", ErrCycle, p.ID, cursor.ID)
 		}
 		cursor = next
 	}
-	return fmt.Errorf("%w: %s revisited", ErrCycle, p.ID)
+	if cursor.ID == p.ID {
+		return fmt.Errorf("%w: %s revisited", ErrCycle, p.ID)
+	}
+	if !scopeWithin(p.Scope, parent.Scope) {
+		return fmt.Errorf("%w: %s outside parent scope %s", ErrScopeEscape, p.Scope, parent.Scope)
+	}
+	return nil
 }
 
 // scopeWithin reports whether child equals parent or extends it with

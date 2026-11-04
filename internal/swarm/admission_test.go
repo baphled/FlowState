@@ -65,6 +65,19 @@ var _ = Describe("AdmissionLog", func() {
 		Expect(err).To(MatchError(swarm.ErrPrerequisite))
 	})
 
+	It("rejects a child that widens its parent's scope", func() {
+		log := swarm.NewAdmissionLog()
+		parent := swarm.Packet{ID: "parent", Scope: "m2.runtime",
+			Task: "parent work", SourceSHA256: bodyHashOf("parent-source")}
+		admitErr := log.Admit(parent, []byte("parent-source"))
+		Expect(admitErr).NotTo(HaveOccurred())
+
+		child := childOf("parent", "m2")
+		err := log.Admit(child, []byte("m2"))
+
+		Expect(err).To(MatchError(swarm.ErrScopeEscape))
+	})
+
 	It("rejects a child scope escaping its parent scope", func() {
 		log := swarm.NewAdmissionLog()
 		admitFixture{log}.admits(rootPacket(), "root-src")
