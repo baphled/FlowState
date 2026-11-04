@@ -7,6 +7,9 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
+import sys
+sys.path.insert(0, str(ROOT))
+from scripts.project_metadata import message_errors
 GUARD = ROOT / 'scripts/project_metadata.py'
 HELPER = ROOT / 'scripts/ai-commit.sh'
 REF = 'dropbox:/FlowState/Metadata/attempts/synthetic-fixture/record.json'
@@ -147,6 +150,14 @@ class MetadataCLI(unittest.TestCase):
         result = subprocess.run(['python3', str(GUARD), '--changed', '--base', self.base], cwd=self.repo, capture_output=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(b'reports/actual run.txt', result.stderr)
+
+
+class MessageErrors(unittest.TestCase):
+    def test_merge_commit_with_multiple_trailers_gets_specific_error(self):
+        message = ('Merge branch feature into next\n\n'
+                   'Project-Metadata: dropbox:/FlowState/Metadata/attempts/a/r1.json\n'
+                   'Project-Metadata: dropbox:/FlowState/Metadata/attempts/b/r2.json\n')
+        self.assertTrue(any('merge' in e and 'multiple' in e for e in message_errors(message)))
 
 
 if __name__ == '__main__':
