@@ -30,7 +30,7 @@ func SwarmRunManifest(ctx context.Context, dbPath string, m swarm.Manifest) (swa
 	defer func() { _ = db.Close() }()
 	rec, err := storage.NewSwarmReceipts(db.db())
 	if err != nil {
-		return swarm.RunResult{}, fmt.Errorf("app: initialize swarm persistence: %w", err)
+		return swarm.RunResult{}, fmt.Errorf("app: initialise swarm persistence: %w", err)
 	}
 	ev := &runEventsTo{rec: rec, runID: m.Name}
 	res, err := swarm.Run(m, swarm.NewAdmissionLog(), swarm.NewGateRunner(), ev, rec)
