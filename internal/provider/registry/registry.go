@@ -31,6 +31,7 @@ func Resolve(name string) (provider.Provider, error) {
 // config values. Precedence for the coding-plan host: explicit
 // config host / ZAI_BASE_URL > plan-tag default (openai coding
 // endpoint, selectable "anthropic" via providers.zai.route).
+// An unset plan defaults to coding (see the note in the body).
 func resolveZai() (provider.Provider, error) {
 	var cfg *config.ProviderConfig
 	if doc, err := config.LoadDefault(); err == nil {
@@ -45,6 +46,17 @@ func resolveZai() (provider.Provider, error) {
 	plan := os.Getenv("ZAI_PLAN")
 	if plan == "" && cfg != nil {
 		plan = cfg.Plan
+	}
+	if plan == "" {
+		// Live evidence 2026-11-04 (chain meta-70faf6fe0e1f): a
+		// coding-plan subscription key 429s (code 1113) on every
+		// call to the general pay-per-token endpoint, while the
+		// coding endpoint serves it 200. An unset plan must
+		// therefore default to the coding route — the silent
+		// general-endpoint fallback breaks every coding-plan key.
+		// Operators on pay-per-token keys opt out explicitly with
+		// plan: general.
+		plan = "coding"
 	}
 	if plan == "coding" {
 		opts = append(opts, zai.WithCoding())
