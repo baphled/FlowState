@@ -63,3 +63,17 @@ cohesion, correct invariants, real independence or runtime readiness.
 Use the [Ginkgo test contract](BDD_WORKFLOW.md). A separate verifier checks
 responsibility, public surface, failure/cancellation semantics, documentation and
 preserved behaviour. No merge is authorized by a source-contract PASS.
+
+## Core SQL boundary
+
+Core application, runtime, session, tool-policy and provider-port code must not
+contain executable SQL statements. Persistence queries belong in store/storage
+adapters behind consumer-owned interfaces. This is enforced for changed committed
+Go files by `make check-code-contract BASE_SHA=<actual-pr-base-sha>` and the
+repository pre-push hook; CI also runs the same source gate on `next` PRs.
+A SQL literal inside a core package is rejected, including multiline literals.
+SQL literals in persistence adapters remain permitted.
+
+The static guard deliberately identifies clear SQL statement literals; dynamically
+assembled SQL, misleading literals and architectural cohesion require independent
+review. Green static checks do not replace the design or verifier gate.
