@@ -62,7 +62,7 @@ func inspectDeclaration(declaration ast.Decl, typesFile bool, positions *token.F
 }
 
 func knownOwner(path string) bool {
-	for _, prefix := range []string{"cmd/flowstate/", "scripts/", "internal/app/", "internal/config/", "internal/runtime/", "internal/session/", "internal/provider/", "internal/tool/", "internal/store/", "internal/storage/", "internal/metadata/", "internal/oauth/", "internal/swarm/", "internal/skill/"} {
+	for _, prefix := range []string{"cmd/flowstate/", "scripts/", "internal/app/", "internal/config/", "internal/runtime/", "internal/session/", "internal/provider/", "internal/tool/", "internal/store/", "internal/storage/", "internal/metadata/", "internal/oauth/", "internal/swarm/"} {
 		if strings.HasPrefix(path, prefix) {
 			return true
 		}
