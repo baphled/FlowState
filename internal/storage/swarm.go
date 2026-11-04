@@ -3,87 +3,103 @@ package storage
 import (
 	"database/sql"
 	"fmt"
+	"time"
+
+	sqlite "github.com/libtnb/sqlite"
+	"gorm.io/gorm"
 
 	"github.com/baphled/flowstate/internal/swarm"
 )
 
-// NewSwarmReceipts binds a persistent swarm receipt sink to an open database.
-// The caller owns the database lifecycle and must migrate the schema first.
-func NewSwarmReceipts(db *sql.DB) *SwarmReceipts {
-	return &SwarmReceipts{db: db}
+// NewSwarmReceipts binds GORM to the existing qualified SQLite connection.
+// The caller owns the database handle and its lifecycle.
+func NewSwarmReceipts(db *sql.DB) (*SwarmReceipts, error) {
+	mapped, err := gorm.Open(sqlite.New(sqlite.Config{Conn: db}), &gorm.Config{
+		SkipDefaultTransaction: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("storage: open swarm ORM: %w", err)
+	}
+	return &SwarmReceipts{db: mapped}, nil
 }
 
-// RecordAdmission persists one admitted or rejected packet for a run.
+// TableName preserves the existing swarm_admissions table name.
+func (swarmAdmission) TableName() string { return "swarm_admissions" }
+
+// TableName preserves the existing swarm_gate_receipts table name.
+func (swarmGateReceipt) TableName() string { return "swarm_gate_receipts" }
+
+// TableName preserves the existing swarm_member_receipts table name.
+func (swarmMemberReceipt) TableName() string { return "swarm_member_receipts" }
+
+// swarmTimestamp matches the existing sortable UTC timestamp format.
+func swarmTimestamp() string {
+	return time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+}
+
+// RecordAdmission persists an admission decision through a mapped model.
 func (r *SwarmReceipts) RecordAdmission(runID string, p swarm.Packet, admitted bool, reason string) error {
 	outcome := "reject"
 	if admitted {
 		outcome = "admit"
 	}
-	_, err := r.db.Exec(
-		`INSERT INTO swarm_admissions (run_id, packet_id, outcome, reason, recorded_at_utc)
-		 VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
-		runID, p.ID, outcome, reason)
-	if err != nil {
+	row := &swarmAdmission{
+		RunID: runID, PacketID: p.ID, Outcome: outcome,
+		Reason: reason, RecordedAtUTC: swarmTimestamp(),
+	}
+	if err := r.db.Create(row).Error; err != nil {
 		return fmt.Errorf("storage: record admission: %w", err)
 	}
 	return nil
 }
 
-// RecordGates persists one receipt for each gate outcome.
+// RecordGates persists gate outcomes atomically through GORM.
 func (r *SwarmReceipts) RecordGates(runID string, d swarm.GatesDecision) error {
-	for _, o := range d.Outcomes {
-		outcome := "fail"
-		if o.Passed {
-			outcome = "pass"
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		for _, outcome := range d.Outcomes {
+			state := "fail"
+			if outcome.Passed {
+				state = "pass"
+			}
+			row := &swarmGateReceipt{
+				RunID: runID, GateName: outcome.Gate.Name, Outcome: state,
+				RecordedAtUTC: swarmTimestamp(),
+			}
+			if err := tx.Create(row).Error; err != nil {
+				return fmt.Errorf("storage: record gate receipt: %w", err)
+			}
 		}
-		if _, err := r.db.Exec(
-			`INSERT INTO swarm_gate_receipts (run_id, gate_name, outcome, recorded_at_utc)
-			 VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
-			runID, o.Gate.Name, outcome); err != nil {
-			return fmt.Errorf("storage: record gate receipt: %w", err)
-		}
-	}
-	return nil
+		return nil
+	})
 }
 
-// RecordMemberReceipt persists one admitted member's receipt.
+// RecordMemberReceipt persists a member receipt using its mapped model.
 func (r *SwarmReceipts) RecordMemberReceipt(rec swarm.MemberReceipt) error {
-	_, err := r.db.Exec(
-		`INSERT INTO swarm_member_receipts (run_name, packet_id, gate_outcome, evidence_sha256, recorded_at_utc)
-		 VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
-		rec.Identity.RunName, rec.Identity.PacketID, rec.GateOutcome, rec.EvidenceSHA256)
-	if err != nil {
+	row := &swarmMemberReceipt{
+		RunName: rec.Identity.RunName, PacketID: rec.Identity.PacketID,
+		GateOutcome: rec.GateOutcome, EvidenceSHA256: rec.EvidenceSHA256,
+		RecordedAtUTC: swarmTimestamp(),
+	}
+	if err := r.db.Create(row).Error; err != nil {
 		return fmt.Errorf("storage: record member receipt: %w", err)
 	}
 	return nil
 }
 
-// MigrateSwarmTables creates the swarm run and receipt tables if missing.
-// It is idempotent for databases that already contain these tables.
+// MigrateSwarmTables creates missing tables through ORM model mappings.
+// Existing tables are left intact to avoid rewriting deployed constraints.
 func MigrateSwarmTables(db *sql.DB) error {
-	for _, ddl := range []string{
-		`CREATE TABLE IF NOT EXISTS swarm_admissions (
-			run_id TEXT NOT NULL,
-			packet_id TEXT NOT NULL,
-			outcome TEXT NOT NULL CHECK (outcome IN ('admit','reject')),
-			reason TEXT NOT NULL,
-			recorded_at_utc TEXT NOT NULL
-		)`,
-		`CREATE TABLE IF NOT EXISTS swarm_gate_receipts (
-			run_id TEXT NOT NULL,
-			gate_name TEXT NOT NULL,
-			outcome TEXT NOT NULL CHECK (outcome IN ('pass','fail')),
-			recorded_at_utc TEXT NOT NULL
-		)`,
-		`CREATE TABLE IF NOT EXISTS swarm_member_receipts (
-			run_name TEXT NOT NULL,
-			packet_id TEXT NOT NULL,
-			gate_outcome TEXT NOT NULL CHECK (gate_outcome IN ('pass','fail')),
-			evidence_sha256 TEXT NOT NULL,
-			recorded_at_utc TEXT NOT NULL
-		)`,
+	mapped, err := NewSwarmReceipts(db)
+	if err != nil {
+		return err
+	}
+	for _, model := range []any{
+		&swarmAdmission{}, &swarmGateReceipt{}, &swarmMemberReceipt{},
 	} {
-		if _, err := db.Exec(ddl); err != nil {
+		if mapped.db.Migrator().HasTable(model) {
+			continue
+		}
+		if err := mapped.db.Migrator().CreateTable(model); err != nil {
 			return fmt.Errorf("storage: migrate swarm tables: %w", err)
 		}
 	}
