@@ -50,5 +50,9 @@ func openReceipts(path string) (receiptsDB, error) {
 		_ = db.Close()
 		return receiptsDB{}, err
 	}
+	if err := MigrateSwarmTables(db); err != nil {
+		_ = db.Close()
+		return receiptsDB{}, err
+	}
 	return receiptsDB{sqlDB: db}, nil
 }
