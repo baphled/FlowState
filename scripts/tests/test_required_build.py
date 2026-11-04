@@ -60,6 +60,12 @@ class RequiredBuild(unittest.TestCase):
         self.assertIn('BRANCH: ${{ github.event.pull_request.head.ref }}', job)
         self.assertNotIn('run: echo "${{ github.event.pull_request.title }}"', job)
 
+    def test_commitlint_push_uses_reachable_first_parent(self):
+        content = (ROOT / '.github/workflows/ci-next.yml').read_text()
+        block = content.split('  commitlint:\n', 1)[1].split('\n  pr-policy:', 1)[0]
+        self.assertIn('BASE_SHA="$(git rev-parse HEAD^)"', block)
+        self.assertNotIn('github.event.before', block)
+
     def test_empty_or_malformed_results_fail(self):
         for name, _, script in gates():
             for results in ({}, {'lint': {}}, {'lint': None}, []):
