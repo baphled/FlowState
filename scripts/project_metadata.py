@@ -26,7 +26,11 @@ def message_errors(message):
     if CLAIM.search(message):
         errors.append('identity/review trailers belong in Dropbox, not commit messages')
     references = re.findall(r'^Project-Metadata: (.+)$', message, re.M)
-    if len(references) != 1 or not REFERENCE.fullmatch(references[0]):
+    if len(references) >= 2:
+        # Merge commits can inherit a trailer from each parent; the
+        # generic single-reference error would mislead in that case.
+        errors.append('merge commit carries multiple Project-Metadata trailers')
+    elif not references or not REFERENCE.fullmatch(references[0]):
         errors.append('one valid Project-Metadata: dropbox:/FlowState/Metadata/attempts/<attempt>/<record>.json is required')
     return errors
 
