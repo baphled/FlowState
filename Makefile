@@ -55,6 +55,7 @@ test: ## Run legacy Go tests and parallel Ginkgo suites during migration
 
 check-test-contract: ## Check changed tests (BASE_SHA=exact PR base)
 	python3 -B -m unittest discover -s scripts/tests -p test_test_contract.py
+	python3 -B -m unittest discover -s scripts/tests -p test_test_layout.py
 	python3 -B scripts/check_test_contract.py --base "$(BASE_SHA)"
 
 test-coverage: ## Run tests with coverage

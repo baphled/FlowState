@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from test_layout import test_layout_errors
+
 
 def git(*args):
     return subprocess.check_output(['git', *args])
@@ -44,6 +46,15 @@ def main():
             if modes.get(name) not in (b'100644', b'100755'):
                 raise ValueError('test sources must be regular committed files: ' + path)
             files.append({'Name': path, 'Source': git('show', 'HEAD:' + path).decode('utf-8')})
+    if args.worktree:
+        present = {str(path.as_posix()) for path in Path('.').rglob('*.go') if path.is_file()}
+    else:
+        present = {name.decode('utf-8') for name in modes}
+    violations = test_layout_errors(present, [f['Name'] for f in files])
+    for violation in violations:
+        print('FAIL: ' + violation, file=sys.stderr)
+    if violations:
+        return 1
     return subprocess.run(['go', 'run', './scripts/test-contract'], input=json.dumps(files).encode()).returncode
 
 
