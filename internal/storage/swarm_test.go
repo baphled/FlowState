@@ -73,7 +73,7 @@ func invalidSwarmMemberOutcome(db *sql.DB) error {
 	rec, err := storage.NewSwarmReceipts(db)
 	Expect(err).NotTo(HaveOccurred())
 	return rec.RecordMemberReceipt(swarm.MemberReceipt{
-		Identity: swarm.MemberIdentity{RunName: "run", PacketID: "bad"},
+		Identity:    swarm.MemberIdentity{RunName: "run", PacketID: "bad"},
 		GateOutcome: "neither-pass-nor-fail", EvidenceSHA256: "digest",
 	})
 }
