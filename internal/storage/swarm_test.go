@@ -3,6 +3,9 @@ package storage_test
 import (
 	"database/sql"
 
+	sqlite "github.com/libtnb/sqlite"
+	"gorm.io/gorm"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -24,10 +27,12 @@ func storedAdmission(db *sql.DB) string {
 	Expect(err).NotTo(HaveOccurred())
 	err = rec.RecordAdmission("run", swarm.Packet{ID: "p1"}, true, "")
 	Expect(err).NotTo(HaveOccurred())
-	var outcome string
-	err = db.QueryRow("SELECT outcome FROM swarm_admissions WHERE packet_id = ?", "p1").Scan(&outcome)
+	mapped, err := gorm.Open(sqlite.New(sqlite.Config{Conn: db}), &gorm.Config{})
 	Expect(err).NotTo(HaveOccurred())
-	return outcome
+	var row struct{ Outcome string }
+	err = mapped.Table("swarm_admissions").Where(map[string]any{"packet_id": "p1"}).Take(&row).Error
+	Expect(err).NotTo(HaveOccurred())
+	return row.Outcome
 }
 
 // storedMemberDigest arranges a member receipt and reads its persisted digest.
@@ -39,10 +44,12 @@ func storedMemberDigest(db *sql.DB) string {
 		GateOutcome: "pass", EvidenceSHA256: "known-digest",
 	})
 	Expect(err).NotTo(HaveOccurred())
-	var digest string
-	err = db.QueryRow("SELECT evidence_sha256 FROM swarm_member_receipts WHERE packet_id = ?", "p1").Scan(&digest)
+	mapped, err := gorm.Open(sqlite.New(sqlite.Config{Conn: db}), &gorm.Config{})
 	Expect(err).NotTo(HaveOccurred())
-	return digest
+	var row struct{ EvidenceSHA256 string }
+	err = mapped.Table("swarm_member_receipts").Where(map[string]any{"packet_id": "p1"}).Take(&row).Error
+	Expect(err).NotTo(HaveOccurred())
+	return row.EvidenceSHA256
 }
 
 var _ = Describe("Swarm receipt persistence", func() {
