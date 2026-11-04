@@ -4,11 +4,13 @@ on:
   schedule:
     - cron: "0 6 * * 1" # weekly, Mondays 06:00 UTC
   pull_request:
-    branches: [main]
+    branches: [main, next]
     paths:
       - "**.go"
       - "go.mod"
       - "go.sum"
+      - ".github/workflows/security.yml"
+      - "scripts/tests/test_security_workflow.py"
 
 permissions:
   contents: read
@@ -23,8 +25,11 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.7"
+          go-version-file: go.mod
           cache: true
+
+      - name: Test security workflow contract
+        run: python3 -B -m unittest discover -s scripts/tests -p test_security_workflow.py -v
 
       - name: Run govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
