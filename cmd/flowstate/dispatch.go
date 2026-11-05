@@ -182,6 +182,12 @@ func parseFlags(args []string) (*flags, []string, error) {
 			if serr := fl.setToolFlag(a, take); serr != nil {
 				return nil, nil, serr
 			}
+		case a == "--workdir":
+			v, err := take()
+			if err != nil {
+				return nil, nil, err
+			}
+			fl.workdir = v
 		case a == "--budget", a == "--max-tokens":
 			v, err := flagValue(a, take)
 			if err != nil {

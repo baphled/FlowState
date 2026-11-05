@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 
+	"path/filepath"
+
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/store"
 	"github.com/baphled/flowstate/internal/tool"
@@ -53,6 +55,20 @@ func cmdTool(ctx context.Context, st *store.Store, fl *flags, id string, stdout,
 		writeError(stderr, err)
 		return exitCodeFor(err)
 	}
+	// --workdir defaults to the store's session directory (decision
+	// per principal verdict: acceptable for M2 while tools run only
+	// within the CLI process lifetime; a persisted schema field
+	// becomes mandatory once tools outlive the process).
+	workdir := fl.workdir
+	if workdir == "" {
+		workdir = filepath.Join(sessionWorkdirRoot(fl.db), id)
+	}
+	for _, t := range []tool.Tool{tool.NewFSRead(workdir), tool.NewFSWrite(workdir)} {
+		if err := registry.Register(t); err != nil {
+			writeError(stderr, err)
+			return exitCodeFor(err)
+		}
+	}
 	loop, err := tool.NewLoop(registry, w, allowlist)
 	if err != nil {
 		writeError(stderr, err)
@@ -76,6 +92,12 @@ func cmdTool(ctx context.Context, st *store.Store, fl *flags, id string, stdout,
 		return exitCodeFor(err)
 	}
 	return exitOK
+}
+
+// sessionWorkdirRoot returns the per-session working-directory root
+// beside the store database (same parent directory as the db file).
+func sessionWorkdirRoot(dbPath string) string {
+	return filepath.Join(filepath.Dir(dbPath), "sessions")
 }
 
 // terminalStatus reports whether a session status is terminal
