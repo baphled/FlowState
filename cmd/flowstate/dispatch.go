@@ -134,7 +134,7 @@ func dispatchSession(ctx context.Context, sub string, fl *flags, id string, stdo
 	case "close":
 		return cmdClose(ctx, st, id, stdout, stderr)
 	case "tool":
-		return cmdTool(ctx, st, fl, id, stdout, stderr)
+		return cmdTool(ctx, fl.db, fl, id, stdout, stderr)
 	default:
 		writeError(stderr, fmt.Errorf("%w: unknown session subcommand %q", errUsageCmd, sub))
 		return exitUsage
