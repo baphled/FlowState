@@ -2,7 +2,7 @@ package tool
 
 // fsOptions carries the overridable size caps.
 type fsOptions struct {
-	maxRead, maxWrite int64
+	maxRead, maxWrite, maxEdit int64
 }
 
 // FSOption customises an fs tool constructor.
@@ -18,4 +18,18 @@ type fsReadTool struct {
 type fsWriteTool struct {
 	workdir string
 	max     int64
+}
+
+// fsEditTool applies bounded string replacements under the workdir.
+type fsEditTool struct {
+	workdir string
+	max     int64
+}
+
+// fsEditArgs is the fs.edit argument payload.
+type fsEditArgs struct {
+	Path    string `json:"path"`
+	OldText string `json:"old_text"`
+	NewText string `json:"new_text"`
+	All     bool   `json:"all"`
 }
