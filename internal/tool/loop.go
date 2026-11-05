@@ -92,11 +92,14 @@ func (l *Loop) Invoke(ctx context.Context, name string, args json.RawMessage) (a
 	}
 	result, invokeErr := t.Invoke(ctx, args)
 	if invokeErr != nil {
+		// Typed tool errors keep their own error.code (fs_* etc.);
+		// unmapped errors fall back to the generic tool_error code.
+		code := errorCodeFor(invokeErr)
 		if _, aerr := l.writer.Append(ctx, actor, TypeToolResult, map[string]any{
 			"tool": name,
 			"ok":   false,
 			"error": map[string]any{
-				"code":    "tool_error",
+				"code":    code,
 				"message": invokeErr.Error(),
 			},
 		}); aerr != nil {
