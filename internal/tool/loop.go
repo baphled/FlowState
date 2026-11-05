@@ -9,32 +9,23 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-
-	"github.com/baphled/flowstate/internal/store"
 )
 
 // Event types emitted by the loop (DATA-MODEL §2 examples).
 const (
-	TypeToolCall   = "tool.call"
+	// TypeToolCall is the pre-execution tool.call event type.
+	TypeToolCall = "tool.call"
+	// TypeToolResult is the post-execution tool.result event type.
 	TypeToolResult = "tool.result"
 )
 
 // ActorPrefix is the attribution prefix for tools: `tool:<name>`.
 const ActorPrefix = "tool:"
 
-// Loop executes tool invocations for one session against a registry,
-// enforcing the per-session allowlist and recording ordered
-// tool.call / tool.result events through the session's EventWriter.
-type Loop struct {
-	registry  *Registry
-	writer    *store.EventWriter
-	allowlist map[string]bool
-}
-
 // NewLoop builds the tool loop for one session. The allowlist is
 // manifest-driven per CLI-AND-API-CONTRACT §4; an empty or nil
 // allowlist denies every tool (deny-by-default).
-func NewLoop(registry *Registry, writer *store.EventWriter, allowlist []string) (*Loop, error) {
+func NewLoop(registry *Registry, writer EventSink, allowlist []string) (*Loop, error) {
 	if registry == nil {
 		return nil, errors.New("tool: registry must not be nil")
 	}
@@ -92,11 +83,14 @@ func (l *Loop) Invoke(ctx context.Context, name string, args json.RawMessage) (a
 	}
 	result, invokeErr := t.Invoke(ctx, args)
 	if invokeErr != nil {
+		// Typed tool errors keep their own error.code (fs_* etc.);
+		// unmapped errors fall back to the generic tool_error code.
+		code := errorCodeFor(invokeErr)
 		if _, aerr := l.writer.Append(ctx, actor, TypeToolResult, map[string]any{
 			"tool": name,
 			"ok":   false,
 			"error": map[string]any{
-				"code":    "tool_error",
+				"code":    code,
 				"message": invokeErr.Error(),
 			},
 		}); aerr != nil {
