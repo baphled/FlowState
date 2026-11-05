@@ -19,3 +19,9 @@ type fsWriteTool struct {
 	workdir string
 	max     int64
 }
+
+// fsEditTool replaces a unique plain-string match under the workdir.
+type fsEditTool struct {
+	workdir           string
+	maxRead, maxWrite int64
+}

@@ -29,6 +29,10 @@ const (
 	ErrCodeNotFound = "fs_not_found"
 	// ErrCodeOversize maps ErrOversize.
 	ErrCodeOversize = "fs_oversize"
+	// ErrCodeEditAmbiguous maps ErrEditAmbiguous (fs.edit).
+	ErrCodeEditAmbiguous = "fs_edit_ambiguous"
+	// ErrCodeEditNotFound maps ErrEditNotFound (fs.edit).
+	ErrCodeEditNotFound = "fs_edit_not_found"
 )
 
 // Byte caps for reads (memory) and writes (pre-touch).
@@ -59,6 +63,10 @@ func errorCodeFor(err error) string {
 		return ErrCodeNotFound
 	case errors.Is(err, ErrOversize):
 		return ErrCodeOversize
+	case errors.Is(err, ErrEditAmbiguous):
+		return ErrCodeEditAmbiguous
+	case errors.Is(err, ErrEditNotFound):
+		return ErrCodeEditNotFound
 	default:
 		return "tool_error"
 	}

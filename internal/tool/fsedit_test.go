@@ -37,9 +37,9 @@ var _ = Describe("fs.edit", func() {
 	})
 	It("edits a nested path", func() {
 		write(workdir, "sub/b.txt", "aaa")
-		_, err := invoke(l, FSEditName, `{"path":"sub/b.txt","find":"a","replace":"b"}`)
+		_, err := invoke(l, FSEditName, `{"path":"sub/b.txt","find":"aa","replace":"b"}`)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(read(workdir, "sub/b.txt")).To(Equal("b"))
+		Expect(read(workdir, "sub/b.txt")).To(Equal("ba"))
 	})
 	It("errors fs_edit_ambiguous when find occurs more than once", func() {
 		write(workdir, "dup.txt", "x x x")
@@ -103,7 +103,7 @@ var _ = Describe("fs.edit symlink escape", func() {
 		workdir := GinkgoT().TempDir()
 		out := GinkgoT().TempDir()
 		Expect(os.Symlink(out, filepath.Join(workdir, "link"))).To(Succeed())
-		_, err := fsEditLoop(workdir).Invoke(context.Background(),
+		_, err := fsEditLoop(workdir).Invoke(context.Background(), FSEditName,
 			json.RawMessage(`{"path":"link/esc.txt","find":"a","replace":"b"}`))
 		Expect(errors.Is(err, ErrPathOutsideWorkdir)).To(BeTrue())
 	})
@@ -118,4 +118,3 @@ var _ = Describe("fs.edit allowlist integration", func() {
 		Expect(errors.Is(err, ErrDenied)).To(BeTrue())
 	})
 })
-
