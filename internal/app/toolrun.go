@@ -57,6 +57,20 @@ func RunSessionTool(ctx context.Context, st *store.Store, dbPath string, req Too
 		return nil, err
 	}
 	defer w.Close()
+	loop, err := newSessionToolLoop(w, dbPath, req, allowlist)
+	if err != nil {
+		return nil, err
+	}
+	result, invokeErr := loop.Invoke(ctx, req.Tool, json.RawMessage(req.ToolArg))
+	if invokeErr != nil {
+		return nil, wrapGateFailure(invokeErr)
+	}
+	return &ToolOutcome{SessionID: req.SessionID, Tool: req.Tool, Result: result}, nil
+}
+
+// newSessionToolLoop builds the registry (echo plus fs.read/fs.write
+// confined to the session workdir) and the allowlist-gated loop.
+func newSessionToolLoop(w tool.EventSink, dbPath string, req ToolRequest, allowlist []string) (*tool.Loop, error) {
 	registry := tool.NewRegistry()
 	if err := registry.Register(tool.NewEcho()); err != nil {
 		return nil, err
@@ -74,22 +88,19 @@ func RunSessionTool(ctx context.Context, st *store.Store, dbPath string, req Too
 			return nil, err
 		}
 	}
-	loop, err := tool.NewLoop(registry, w, allowlist)
-	if err != nil {
-		return nil, err
+	return tool.NewLoop(registry, w, allowlist)
+}
+
+// wrapGateFailure maps allowlist-gate failures (unknown tool, deny,
+// usage) to session usage errors for the CLI; anything else passes
+// through unchanged.
+func wrapGateFailure(err error) error {
+	if errors.Is(err, tool.ErrUnknownTool) ||
+		errors.Is(err, tool.ErrDenied) ||
+		errors.Is(err, tool.ErrEmptyName) {
+		return fmt.Errorf("%w: %v", session.ErrUsage, err)
 	}
-	result, invokeErr := loop.Invoke(ctx, req.Tool, json.RawMessage(req.ToolArg))
-	if invokeErr != nil {
-		// Gate failures (unknown tool, deny, usage) map to usage for
-		// the CLI; anything else keeps the generic mapping.
-		if errors.Is(invokeErr, tool.ErrUnknownTool) ||
-			errors.Is(invokeErr, tool.ErrDenied) ||
-			errors.Is(invokeErr, tool.ErrEmptyName) {
-			invokeErr = fmt.Errorf("%w: %v", session.ErrUsage, invokeErr)
-		}
-		return nil, invokeErr
-	}
-	return &ToolOutcome{SessionID: req.SessionID, Tool: req.Tool, Result: result}, nil
+	return err
 }
 
 // SessionWorkdirRoot returns the per-session working-directory root

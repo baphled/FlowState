@@ -178,7 +178,7 @@ func parseFlags(args []string) (*flags, []string, error) {
 			if serr := fl.setString(a, take); serr != nil {
 				return nil, nil, serr
 			}
-		case strings.HasPrefix(a, "--tool"), a == "--allow", a == "--allow-file":
+		case strings.HasPrefix(a, "--tool"), a == "--allow", a == "--allow-file", a == "--workdir":
 			if serr := fl.setToolFlag(a, take); serr != nil {
 				return nil, nil, serr
 			}
@@ -222,7 +222,8 @@ func (f *flags) setString(name string, take func() (string, error)) error {
 }
 
 // setToolFlag assigns one tool-related flag (--tool, --tool-arg,
-// --allow, --allow-file), resolving `--flag value` or `--flag=value`.
+// --allow, --allow-file, --workdir), resolving `--flag value` or
+// `--flag=value`.
 func (f *flags) setToolFlag(name string, take func() (string, error)) error {
 	v, err := flagValue(name, take)
 	if err != nil {

@@ -21,6 +21,7 @@ type flags struct {
 	toolArg   string
 	allow     []string
 	allowFile string
+	workdir   string
 	// session run
 	budget    int64
 	maxTokens int64
