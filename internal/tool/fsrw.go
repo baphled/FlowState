@@ -59,6 +59,10 @@ func errorCodeFor(err error) string {
 		return ErrCodeNotFound
 	case errors.Is(err, ErrOversize):
 		return ErrCodeOversize
+	case errors.Is(err, ErrOldTextNotUnique):
+		return ErrCodeOldTextNotUnique
+	case errors.Is(err, ErrOldTextNotFound):
+		return ErrCodeOldTextNotFound
 	default:
 		return "tool_error"
 	}

@@ -83,7 +83,7 @@ func newSessionToolLoop(w tool.EventSink, dbPath string, req ToolRequest, allowl
 	if workdir == "" {
 		workdir = filepath.Join(SessionWorkdirRoot(dbPath), req.SessionID)
 	}
-	for _, t := range []tool.Tool{tool.NewFSRead(workdir), tool.NewFSWrite(workdir)} {
+	for _, t := range []tool.Tool{tool.NewFSRead(workdir), tool.NewFSWrite(workdir), tool.NewFSEdit(workdir)} {
 		if err := registry.Register(t); err != nil {
 			return nil, err
 		}
