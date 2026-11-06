@@ -40,7 +40,7 @@ func execHelperMain(verb string) {
 		fmt.Println("leak=" + os.Getenv("FLOWSTATE_TEST_LEAK"))
 		fmt.Println("path=" + os.Getenv("PATH"))
 	case "block":
-		time.Sleep(10 * time.Second) // portable timeout fixture; avoids Go runtime deadlock exit
+		<-time.After(10 * time.Second) // active runtime timer; child must be killed by timeout
 	case "big":
 		fmt.Println(strings.Repeat("x", 4096))
 	case "fail":
@@ -142,7 +142,7 @@ var _ = Describe("exec.run", func() {
 		Expect(res.(map[string]any)["stdout"]).To(Equal("hi\n"))
 	})
 	It("rejects flags before the approved subcommand", func() {
-		_, err := invoke(l, ExecRunName, `{"cmd":"git","args":["-c","alias.status=!sh"]}`)
+		_, err := invoke(l, ExecRunName, `{"cmd":"helper","args":["-c","alias.status=!sh"]}`)
 		Expect(errors.Is(err, ErrExecDeniedSubcommand)).To(BeTrue())
 	})
 	It("rejects empty arguments and embedded NULs", func() {

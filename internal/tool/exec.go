@@ -159,19 +159,19 @@ func childEnv() []string {
 
 // cappedExecOutput discards bytes after the limit without growing memory.
 type cappedExecOutput struct {
-	bytes.Buffer
+	data     bytes.Buffer
 	limit    int64
 	overflow bool
 }
 
 func (b *cappedExecOutput) Write(p []byte) (int, error) {
-	remaining := b.limit - int64(b.Len())
+	remaining := b.limit - int64(b.data.Len())
 	if remaining > 0 {
 		keep := len(p)
 		if int64(keep) > remaining {
 			keep = int(remaining)
 		}
-		_, _ = b.Buffer.Write(p[:keep])
+		_, _ = b.data.Write(p[:keep])
 	}
 	if int64(len(p)) > remaining {
 		b.overflow = true
@@ -222,7 +222,7 @@ func (t *execTool) run(ctx context.Context, path string, args []string) (map[str
 	if cerr != nil {
 		return nil, cerr
 	}
-	return map[string]any{"stdout": buf.String(), "exit_code": exitCode}, nil
+	return map[string]any{"stdout": buf.data.String(), "exit_code": exitCode}, nil
 }
 
 // exitCodeFor maps a cmd.Run error to the child exit code; non-Exit
