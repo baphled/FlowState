@@ -17,7 +17,6 @@ package tool
 // loop construction AND at each Invoke, plus the session allowlist.
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -157,13 +156,7 @@ func childEnv() []string {
 	return []string{"PATH=" + path}
 }
 
-// cappedExecOutput discards bytes after the limit without growing memory.
-type cappedExecOutput struct {
-	data     bytes.Buffer
-	limit    int64
-	overflow bool
-}
-
+// Write copies up to the configured limit while consuming all child output.
 func (b *cappedExecOutput) Write(p []byte) (int, error) {
 	remaining := b.limit - int64(b.data.Len())
 	if remaining > 0 {

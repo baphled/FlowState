@@ -2,7 +2,10 @@ package tool
 
 // exec.run types (M2-P3). Types live here per the code contract.
 
-import "time"
+import (
+	"bytes"
+	"time"
+)
 
 const (
 	// ExecRunName is the name of the session command tool.
@@ -44,6 +47,13 @@ type execOptions struct {
 
 // ExecOption customises the exec tool constructor.
 type ExecOption func(*execOptions)
+
+// cappedExecOutput buffers at most limit bytes while flagging excess output.
+type cappedExecOutput struct {
+	data     bytes.Buffer
+	limit    int64
+	overflow bool
+}
 
 // execTool runs allow-listed binaries in the session workdir.
 type execTool struct {
