@@ -29,7 +29,8 @@ its presence is not permission to add another dependency or a new global.
 result correlation through `ToolCallID`. `ChatRequest.Validate` rejects malformed
 identifiers, non-object JSON arguments/parameters, duplicate call IDs and unmatched
 or repeated results. Identifiers use 1–128 ASCII letters, digits, underscores or
-hyphens; tool names additionally permit dots for namespaces. Arguments are complete JSON objects; schema evaluation is outside this
+hyphens; tool names additionally permit dots for namespaces. Arguments are complete
+JSON objects; schema evaluation is outside this
 contract. Calls may remain unresolved at the end of history.
 
 `StreamValidator.Accept` validates typed text, complete call, finish and error
