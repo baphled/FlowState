@@ -23,6 +23,35 @@ See [the enforced code structure contract](../../rules/ARCHITECTURE.md) for exac
 ownership and import rules. Existing concrete-store coupling is refactoring debt;
 its presence is not permission to add another dependency or a new global.
 
+## Structured provider tools
+
+`internal/provider` owns `ToolDefinition`, complete `ToolCall` values and message
+result correlation through `ToolCallID`. `ChatRequest.Validate` rejects malformed
+identifiers, non-object JSON arguments/parameters, duplicate call IDs and unmatched
+or repeated results. Identifiers use 1–128 ASCII letters, digits, underscores or
+hyphens; tool names additionally permit dots for namespaces. Arguments are complete
+JSON objects; schema evaluation is outside this
+contract. Calls may remain unresolved at the end of history.
+
+`StreamValidator.Accept` validates typed text, complete call, finish and error
+events in order, rejecting duplicate calls and events after termination. Use a
+fresh zero-value validator for each stream on one consumer goroutine. Failed
+validation leaves its state unchanged. Adapters assemble wire fragments before
+emitting a complete call. Zero-kind legacy content/error events remain supported.
+Existing role/content JSON keys are preserved; new message fields are omitted
+when empty. Callers own slices and raw JSON and must avoid concurrent mutation.
+
+Consumers explicitly invoke validation before translating requests or consuming
+structured events. Existing adapters and engine consumers continue their legacy
+text behavior; advertising these types does not enable provider tool support or
+execute tools. Translation and execution need separate implementation.
+
+With the Go toolchain and module dependencies installed, run from repository root:
+
+```sh
+go run github.com/onsi/ginkgo/v2/ginkgo --procs=2 --randomize-all --randomize-suites --race --fail-on-pending --fail-on-empty --timeout=3m ./internal/provider
+```
+
 ## Changes and proof
 
 A bounded refactor preserves the public contract, failure behaviour and tests.

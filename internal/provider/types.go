@@ -8,10 +8,16 @@ import "context"
 type Message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+	// ToolCalls contains complete assistant calls; partial argument deltas are adapter-owned.
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	// ToolCallID correlates a tool-role result with one preceding assistant call.
+	ToolCallID string `json:"tool_call_id,omitempty"`
 }
 
 // ChatRequest is one provider chat-turn request.
 type ChatRequest struct {
+	// Tools advertises structured tools; adapters must explicitly support translating them.
+	Tools    []ToolDefinition
 	Messages []Message
 	Model    string
 	// MaxTokens caps the provider response; <= 0 means provider default.
@@ -21,7 +27,9 @@ type ChatRequest struct {
 // ChatResponse is one provider chat-turn response.
 type ChatResponse struct {
 	Content string
-	Error   error
+	// ToolCalls contains complete calls returned by a tool-capable adapter.
+	ToolCalls []ToolCall
+	Error     error
 }
 
 // Provider is the chat-provider port implemented by adapters.
@@ -46,8 +54,13 @@ type Streamer interface {
 }
 
 // StreamEvent is one incremental streamed-turn event: a content
-// delta or a terminal typed error.
+// delta, complete tool call, finish marker or terminal typed error.
+// Kind zero preserves legacy Content/Err events. Validate with StreamValidator
+// before consuming structured events; this port does not execute tools.
 type StreamEvent struct {
-	Content string
-	Err     error
+	Kind         StreamEventKind
+	ToolCall     *ToolCall
+	FinishReason string
+	Content      string
+	Err          error
 }
