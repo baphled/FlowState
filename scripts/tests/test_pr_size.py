@@ -8,6 +8,9 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / 'scripts/pr_size.py'
+CI_ENV = ROOT / '.env.ci'
+CI_MAX_LINES = int(dict(line.split('=', 1) for line in CI_ENV.read_text().splitlines()
+                        if line and not line.startswith('#'))['FLOWSTATE_PR_MAX_LINES'])
 
 
 class PRSize(unittest.TestCase):
@@ -36,16 +39,16 @@ class PRSize(unittest.TestCase):
         result = subprocess.run([sys.executable, '-B', str(SCRIPT), '--base',
                                  base or self.base, '--head', self.git('rev-parse', 'HEAD').strip(),
                                  *extra], cwd=self.root, capture_output=True, text=True,
-                                env=dict(os.environ, MAX_LINES='999999'))
+                                env=dict(os.environ, MAX_LINES='999999', FLOWSTATE_PR_MAX_LINES=str(CI_MAX_LINES)))
         self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
         return result
 
     def test_exact_line_boundary_passes(self):
-        self.write('source.go', 'line\n' * 500)
+        self.write('source.go', 'line\n' * CI_MAX_LINES)
         self.check(0)
 
     def test_one_extra_line_fails_even_with_environment_override(self):
-        self.write('source.go', 'line\n' * 501)
+        self.write('source.go', 'line\n' * (CI_MAX_LINES + 1))
         self.check(1)
 
     def test_exact_file_boundary_passes(self):
@@ -59,20 +62,20 @@ class PRSize(unittest.TestCase):
         self.check(1)
 
     def test_additions_and_deletions_are_summed(self):
-        self.write('source.go', 'old\n' * 251)
+        self.write('source.go', 'old\n' * (CI_MAX_LINES // 2 + 1))
         self.git('add', '-A'); self.git('commit', '-qm', 'fixture old content')
         self.base = self.git('rev-parse', 'HEAD').strip()
-        self.write('source.go', 'new\n' * 251)
+        self.write('source.go', 'new\n' * (CI_MAX_LINES // 2 + 1))
         self.check(1)
 
     def test_test_docs_lockfiles_and_attributes_cannot_hide_lines(self):
         for path in ('unit_test.go', 'guide.md', 'go.sum', 'deps.lock'):
-            self.write(path, 'line\n' * 126)
+            self.write(path, 'line\n' * (CI_MAX_LINES // 4 + 1))
         self.write('.gitattributes', '* -diff\n')
         self.check(1)
 
     def test_renames_count_as_removed_and_added_review_content(self):
-        self.write('before.go', 'line\n' * 251)
+        self.write('before.go', 'line\n' * (CI_MAX_LINES // 2 + 1))
         self.git('add', '-A'); self.git('commit', '-qm', 'fixture before move')
         self.base = self.git('rev-parse', 'HEAD').strip()
         (self.root / 'before.go').rename(self.root / 'after.go')
@@ -117,7 +120,7 @@ class PRSize(unittest.TestCase):
         self.check(1, stage=False)
 
     def test_unusual_filename_is_not_ignored(self):
-        self.write('space and\nnewline.go', 'line\n' * 501)
+        self.write('space and\nnewline.go', 'line\n' * (CI_MAX_LINES + 1))
         self.check(1)
 
     def test_unresolved_base_fails_closed(self):
@@ -128,6 +131,17 @@ class PRSize(unittest.TestCase):
 
     def test_no_command_line_limit_override(self):
         self.check(2, extra=('--max-lines', '999999'))
+
+    def test_ci_constant_is_the_documented_dotenv_default(self):
+        example = (ROOT / '.env.example').read_text()
+        self.assertIn(f'FLOWSTATE_PR_MAX_LINES={CI_MAX_LINES}', example)
+        self.assertGreater(CI_MAX_LINES, 0)
+
+    def test_workflows_load_budget_from_immutable_target(self):
+        for name in ('ci-next.yml', 'ci.yml'):
+            source = (ROOT / '.github/workflows' / name).read_text()
+            self.assertIn('git show "$BASE_SHA:.env.ci"', source)
+            self.assertIn('export FLOWSTATE_PR_MAX_LINES', source)
 
     def test_build_requires_scope_gate_in_both_workflows(self):
         for name in ('ci-next.yml', 'ci.yml'):

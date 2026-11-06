@@ -13,7 +13,16 @@ import subprocess
 import sys
 import tempfile
 
-MAX_LINES = 500
+# A trusted CI workflow exports this value from the target branch's .env.ci.
+# In its absence, use the previous, stricter limit rather than trusting PR content.
+def configured_max_lines():
+    raw = os.environ.get('FLOWSTATE_PR_MAX_LINES', '500')
+    if not re.fullmatch(r'[1-9][0-9]{0,5}', raw):
+        raise ValueError('FLOWSTATE_PR_MAX_LINES must be a positive integer <= 999999')
+    return int(raw)
+
+
+MAX_LINES = configured_max_lines()
 MAX_FILES = 10
 MAX_CHANGED_BYTES = 128 * 1024
 MAX_BLOB_BYTES = 1024 * 1024
