@@ -41,15 +41,26 @@ emitting a complete call. Zero-kind legacy content/error events remain supported
 Existing role/content JSON keys are preserved; new message fields are omitted
 when empty. Callers own slices and raw JSON and must avoid concurrent mutation.
 
-Consumers explicitly invoke validation before translating requests or consuming
-structured events. Existing adapters and engine consumers continue their legacy
-text behavior; advertising these types does not enable provider tool support or
-execute tools. Translation and execution need separate implementation.
+The Z.ai OpenAI-compatible coding route (`WithCoding`) validates requests before
+HTTP and encodes function definitions, assistant call history and correlated tool
+results. `Stream` assembles indexed, interleaved name/argument fragments and emits
+complete calls in index order, followed by `StreamEventFinish`. Structured turns
+require a finish reason and `[DONE]`; malformed JSON, missing/conflicting metadata,
+duplicate IDs, invalid complete arguments and truncated streams terminate with
+`*zai.ToolProtocolError`. Calls are withheld until every call validates and the
+stream completes. Context cancellation unblocks event sends and closes the body.
+
+The selectable Anthropic coding route rejects structured tools/history before
+HTTP. Nonstream coding `Chat` encodes tool requests but rejects tool responses
+with `ToolProtocolError`; use `Stream` for tool calls. Legacy text coding streams
+remain supported, while unsolicited tool deltas fail closed. Other adapters and
+the engine retain their existing behavior. Consumers still validate structured
+events with `StreamValidator`; this adapter does not execute tools.
 
 With the Go toolchain and module dependencies installed, run from repository root:
 
 ```sh
-go run github.com/onsi/ginkgo/v2/ginkgo --procs=2 --randomize-all --randomize-suites --race --fail-on-pending --fail-on-empty --timeout=3m ./internal/provider
+go run github.com/onsi/ginkgo/v2/ginkgo --procs=2 --randomize-all --randomize-suites --race --fail-on-pending --fail-on-empty --timeout=3m ./internal/provider ./internal/provider/zai
 ```
 
 ## Changes and proof

@@ -1,7 +1,6 @@
 package zai
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 
 	"github.com/baphled/flowstate/internal/provider"
 )
@@ -46,6 +44,9 @@ func (p *Provider) codingBase() string {
 
 // codingChat / codingStream dispatch on the selected wire format.
 func (p *Provider) codingChat(ctx context.Context, req *provider.ChatRequest) (*provider.ChatResponse, error) {
+	if err := p.validateCoding(req); err != nil {
+		return nil, err
+	}
 	if p.codingRoute == codingRouteAnthropic {
 		return p.codingChatAnthropic(ctx, req)
 	}
@@ -54,59 +55,42 @@ func (p *Provider) codingChat(ctx context.Context, req *provider.ChatRequest) (*
 		return nil, err
 	}
 	defer body.Close()
-	var resp response
+	var resp codingResponse
 	if err := json.NewDecoder(body).Decode(&resp); err != nil {
 		return nil, fmt.Errorf("zai: decode coding response: %w", err)
 	}
 	if len(resp.Choices) == 0 {
 		return nil, errors.New("zai: empty choices in coding response")
 	}
+	if calls := resp.Choices[0].Message.ToolCalls; len(calls) > 0 && string(calls) != "null" && string(calls) != "[]" {
+		return nil, &ToolProtocolError{Reason: "nonstream tool responses are unsupported"}
+	}
 	return &provider.ChatResponse{Content: resp.Choices[0].Message.Content}, nil
 }
 
 func (p *Provider) codingStream(ctx context.Context, req *provider.ChatRequest) <-chan provider.StreamEvent {
+	if err := p.validateCoding(req); err != nil {
+		return codingFailure(ctx, err)
+	}
 	if p.codingRoute == codingRouteAnthropic {
 		return p.codingStreamAnthropic(ctx, req)
 	}
 	return p.codingStreamOpenAI(ctx, req)
 }
 
-// codingStreamOpenAI emits content deltas from chat.completion.chunk
-// SSE events, ending at [DONE].
+// codingStreamOpenAI translates coding SSE into complete domain events. Structured
+// requests require both a finish reason and [DONE]; cancellation unblocks sends.
 func (p *Provider) codingStreamOpenAI(ctx context.Context, req *provider.ChatRequest) <-chan provider.StreamEvent {
 	out := make(chan provider.StreamEvent)
 	go func() {
 		defer close(out)
 		body, err := p.codingDo(ctx, req, true)
-		if err != nil {
-			out <- provider.StreamEvent{Err: err}
-			return
+		if err == nil {
+			defer body.Close()
+			err = codingRead(ctx, body, out, codingStructured(req))
 		}
-		defer body.Close()
-		rd := bufio.NewReader(body)
-		for {
-			line, err := rd.ReadString('\n')
-			if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "data:") {
-				payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
-				if payload == "[DONE]" {
-					return
-				}
-				var chunk streamChunk
-				if json.Unmarshal([]byte(payload), &chunk) == nil {
-					for _, c := range chunk.Choices {
-						if c.Delta.Content != "" {
-							select {
-							case out <- provider.StreamEvent{Content: c.Delta.Content}:
-							case <-ctx.Done():
-								return
-							}
-						}
-					}
-				}
-			}
-			if err != nil {
-				return
-			}
+		if err != nil {
+			codingSend(ctx, out, provider.StreamEvent{Kind: provider.StreamEventError, Err: err})
 		}
 	}()
 	return out
@@ -115,11 +99,14 @@ func (p *Provider) codingStreamOpenAI(ctx context.Context, req *provider.ChatReq
 // codingDo sends one request to the OpenAI-compatible coding
 // endpoint with Bearer auth; non-2xx bodies become typed APIErrors.
 func (p *Provider) codingDo(ctx context.Context, req *provider.ChatRequest, stream bool) (io.ReadCloser, error) {
+	if err := p.validateCoding(req); err != nil {
+		return nil, err
+	}
 	model := req.Model
 	if model == "" {
 		model = p.model
 	}
-	buf, err := json.Marshal(request{Model: model, Messages: req.Messages, MaxTokens: ClampMaxTokens(req.MaxTokens), Stream: stream})
+	buf, err := codingEncode(req, model, stream)
 	if err != nil {
 		return nil, err
 	}
