@@ -9,8 +9,9 @@ reviewer and acceptance records live in `/FlowState/Metadata`.
 
 - Start only from current `origin/next` on a scoped feature worktree; no
   direct writes to `next` or `main`. Target `next` in every product PR.
-- Enforce the committed 500-line, 10-path, 128 KiB review budget including
-  documentation, tests and generated files. No waivers in the changed files.
+- Enforce the changed-line limit from `FLOWSTATE_PR_MAX_LINES` in the protected
+  target branch's `.env.ci` (currently 600), plus the 10-path and 128 KiB review
+  budget including documentation, tests and generated files. No inline waivers.
 - The protected `Build` status is a **fail-closed aggregate**, not only
   binary compilation. It needs success from scope/metadata guards,
   source/lint, all supported test platforms, security, conventional
