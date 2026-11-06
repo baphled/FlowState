@@ -6,7 +6,9 @@ Split vertically along contracts; every intermediate PR must remain tested and u
 
 ## Hard review budget
 
-- At most 500 added plus deleted text lines and 10 changed paths.
+- Added plus deleted text lines are capped by `FLOWSTATE_PR_MAX_LINES` in the
+  protected target branch's [`.env.ci`](../.env.ci) (currently 600).
+- At most 10 changed paths.
 - Tests, documentation, dependency files, generated files and deletions all count.
 - Moves count as deletion plus addition; changed text/binary bytes share a 128 KiB cap.
 - A changed blob larger than 1 MiB fails closed. No label, title, environment flag,
