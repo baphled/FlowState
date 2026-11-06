@@ -63,6 +63,16 @@ func errorCodeFor(err error) string {
 		return ErrCodeOldTextNotUnique
 	case errors.Is(err, ErrOldTextNotFound):
 		return ErrCodeOldTextNotFound
+	case errors.Is(err, ErrExecNotEnabled):
+		return ErrCodeExecNotEnabled
+	case errors.Is(err, ErrExecNotAllowed):
+		return ErrCodeExecNotAllowed
+	case errors.Is(err, ErrExecDeniedSubcommand):
+		return ErrCodeExecDeniedSubcommand
+	case errors.Is(err, ErrExecTimeout):
+		return ErrCodeExecTimeout
+	case errors.Is(err, ErrExecOversize):
+		return ErrCodeExecOversize
 	default:
 		return "tool_error"
 	}
