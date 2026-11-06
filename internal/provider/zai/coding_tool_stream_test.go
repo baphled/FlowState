@@ -29,6 +29,7 @@ var _ = Describe("coding structured SSE", func() {
 		Expect(errors.As(last, &typed)).To(BeTrue())
 	},
 		Entry("malformed chunk", "data: {oops}\n"+done),
+		Entry("duplicate choice zero records", `data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"a","type":"function","function":{"name":"re","arguments":"{"}}]}},{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"ad","arguments":"}"}}]},"finish_reason":"tool_calls"}]}`+"\n"+done),
 		Entry("truncated transport", firstCall),
 		Entry("missing done", firstCall+lastCall),
 		Entry("missing finish", firstCall+done),

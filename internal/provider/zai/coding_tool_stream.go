@@ -39,6 +39,9 @@ func (state *codingAssembly) chunk(ctx context.Context, out chan<- provider.Stre
 	if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 		return &ToolProtocolError{Reason: "malformed stream JSON"}
 	}
+	if len(chunk.Choices) > 1 {
+		return &ToolProtocolError{Reason: "multiple choices in single-choice stream"}
+	}
 	for _, choice := range chunk.Choices {
 		if choice.Index != 0 || state.finish != "" {
 			return &ToolProtocolError{Reason: "unexpected choice or delta after finish"}
