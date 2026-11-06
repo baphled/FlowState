@@ -88,6 +88,14 @@ func newSessionToolLoop(w tool.EventSink, dbPath string, req ToolRequest, allowl
 			return nil, err
 		}
 	}
+	// exec.run double gate, arm 1: the env opt-in must be set when
+	// the session loop is constructed; the tool re-checks at every
+	// Invoke (arm 2) and the session allowlist still applies.
+	if tool.ExecEnabled() {
+		if err := registry.Register(tool.NewExecRun(workdir)); err != nil {
+			return nil, err
+		}
+	}
 	return tool.NewLoop(registry, w, allowlist)
 }
 
