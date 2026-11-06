@@ -148,6 +148,24 @@ jobs:
     name: PR Size Label
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Read review budget from target branch
+        id: review_budget
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if git cat-file -e "$PR_BASE_SHA:.env.ci" 2>/dev/null; then
+            budget="$(git show "$PR_BASE_SHA:.env.ci" | sed -n 's/^FLOWSTATE_PR_MAX_LINES=//p')"
+          else
+            budget=500
+          fi
+          if ! [[ "$budget" =~ ^[1-9][0-9]{0,5}$ ]]; then
+            echo "::error::Invalid review budget in target .env.ci"
+            exit 1
+          fi
+          echo "limit=$budget" >> "$GITHUB_OUTPUT"
       - uses: codelytv/pr-size-labeler@v1
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -158,7 +176,7 @@ jobs:
           m_label: "size/M"
           m_max_size: 200
           l_label: "size/L"
-          l_max_size: 500
+          l_max_size: ${{ steps.review_budget.outputs.limit }}
           xl_label: "size/XL"
           fail_if_xl: true
           message_if_xl: >

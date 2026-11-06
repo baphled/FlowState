@@ -1,3 +1,8 @@
+# Canonical non-secret CI budget, overridden locally by a private .env.
+-include .env.ci
+-include .env
+export FLOWSTATE_PR_MAX_LINES
+
 .PHONY: all build run test fmt lint check clean help ai-commit check-ai-attribution list-ai-commits install-tools check-pr-size check-size-live install-hooks
 
 check-pr-size: ## Bound the complete committed PR diff (BASE_SHA=actual target)

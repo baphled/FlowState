@@ -36,6 +36,18 @@ jobs:
           else
             cp scripts/pr_size.py "$checker"
           fi
+          # Read the budget only from the trusted target, never the candidate PR.
+          # Bootstrap before .env.ci exists on next with the original 500-line cap.
+          if git cat-file -e "$BASE_SHA:.env.ci" 2>/dev/null; then
+            budget="$(git show "$BASE_SHA:.env.ci" | sed -n 's/^FLOWSTATE_PR_MAX_LINES=//p')"
+          else
+            budget=500
+          fi
+          if ! [[ "$budget" =~ ^[1-9][0-9]{0,5}$ ]]; then
+            echo "::error::Invalid FLOWSTATE_PR_MAX_LINES in target .env.ci"
+            exit 1
+          fi
+          export FLOWSTATE_PR_MAX_LINES="$budget"
           python3 -B "$checker" --base "$BASE_SHA" --head "$HEAD_SHA"
 
   commitlint:
