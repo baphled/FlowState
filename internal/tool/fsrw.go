@@ -51,6 +51,10 @@ var (
 
 // errorCodeFor maps a tool error to its tool.result error.code;
 // unmapped errors keep the generic tool_error code.
+// ErrorCodeFor exposes the typed error-code mapping for callers
+// rendering tool outcomes outside the loop (e.g. the agent turn).
+func ErrorCodeFor(err error) string { return errorCodeFor(err) }
+
 func errorCodeFor(err error) string {
 	switch {
 	case errors.Is(err, ErrPathOutsideWorkdir):

@@ -81,6 +81,11 @@ linters:
       - linters:
           - errcheck
         source: "os\\.Rename"
+      # waitExec reaps the child after a kill; the wait result is
+      # irrelevant on the already-failing timeout path.
+      - linters:
+          - errcheck
+        source: "^\\s*<-done$"
       # gosec g304: token storage paths are built from a user-configured,
       # trusted storage dir - not attacker-controlled input.
       - linters:
