@@ -125,8 +125,6 @@ func dispatchSession(ctx context.Context, sub string, fl *flags, id string, stdo
 		return cmdList(ctx, st, fl, stdout, stderr)
 	case "run":
 		return cmdRun(ctx, st, id, fl, stdout, stderr)
-	case "agent":
-		return cmdAgent(ctx, fl.db, fl, id, stdout, stderr)
 	case "events":
 		return cmdEvents(ctx, st, id, stdout, stderr)
 	case "cancel":
