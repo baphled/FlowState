@@ -134,6 +134,14 @@ class OfflineAdmission(unittest.TestCase):
         self.assertRejected("token", lambda: Dropbox(""))
     def test_github_token_is_required(self):
         self.assertRejected("token", lambda: GitHub("baphled/FlowState", ""))
+    def test_read_client_uses_get_only(self):
+        gh = GitHub("baphled/FlowState", "read-token")
+        with patch("scripts.merge_admission.urlopen", return_value=BytesIO(b"{}")) as opener:
+            self.assertEqual(gh.request("/pulls/225"), {})
+        request = opener.call_args.args[0]
+        self.assertEqual(request.get_method(), "GET")
+        self.assertEqual(request.get_header("Authorization"), "Bearer read-token")
+
     def test_dropbox_404_is_rejected(self):
         missing = HTTPError("https://content.dropboxapi.com", 409, "not_found", None, BytesIO())
         with patch("scripts.merge_admission.urlopen", side_effect=missing):

@@ -12,11 +12,11 @@ class StatusPublisherError(ValueError):
 class GitHubStatusPublisher:
     """GitHub status writes require their own scoped App credential."""
 
-    def __init__(self, repository, token):
+    def __init__(self, repository, token, read_token):
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
             raise StatusPublisherError("invalid status repository")
-        if not token:
-            raise StatusPublisherError("trusted status credential is missing")
+        if not token or token == read_token:
+            raise StatusPublisherError("trusted status credential is missing or not isolated")
         self.endpoint = "https://api.github.com/repos/" + repository
         self.token = token
 

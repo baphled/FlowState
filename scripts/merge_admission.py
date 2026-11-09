@@ -14,7 +14,6 @@ import sys
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from scripts.merge_admission_status import GitHubStatusPublisher, StatusPublisherError
-STATUS_CONTEXT = "flowstate/merge-admission"
 REFERENCE = re.compile(
     r"dropbox:/FlowState/Metadata/attempts/"
     r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*\.json"
@@ -149,15 +148,13 @@ class GitHub:
             raise AdmissionError("missing GitHub token")
         self.base = "https://api.github.com/repos/" + repository
         self.token = token
-    def request(self, method, path, body=None):
+    def request(self, path):
         request = Request(
             self.base + path,
-            data=json.dumps(body).encode() if body is not None else None,
-            method=method,
+            method="GET",
             headers={"Authorization": "Bearer " + self.token,
                      "Accept": "application/vnd.github+json",
-                     "X-GitHub-Api-Version": "2022-11-28",
-                     "Content-Type": "application/json"},
+                     "X-GitHub-Api-Version": "2022-11-28"},
         )
         try:
             with urlopen(request, timeout=15) as response:
@@ -168,7 +165,7 @@ class GitHub:
         items = []
         for page in range(1, 11):
             suffix = ("&" if "?" in path else "?") + f"per_page=100&page={page}"
-            chunk = self.request("GET", path + suffix)
+            chunk = self.request(path + suffix)
             if not isinstance(chunk, list):
                 raise AdmissionError("invalid GitHub list response")
             items.extend(chunk)
@@ -178,7 +175,7 @@ class GitHub:
     def commit_files(self, sha):
         files = []
         for page in range(1, 11):
-            record = self.request("GET", f"/commits/{sha}?per_page=100&page={page}")
+            record = self.request(f"/commits/{sha}?per_page=100&page={page}")
             chunk = record.get("files")
             if record.get("sha") != sha or not isinstance(chunk, list):
                 raise AdmissionError("incomplete GitHub commit file evidence")
@@ -187,7 +184,7 @@ class GitHub:
                 return files
         raise AdmissionError("GitHub commit files exceed page bound")
     def blob(self, sha):
-        record = self.request("GET", "/git/blobs/" + sha)
+        record = self.request("/git/blobs/" + sha)
         if record.get("encoding") != "base64":
             raise AdmissionError("GitHub blob encoding unavailable")
         try:
@@ -196,7 +193,7 @@ class GitHub:
         except (KeyError, AttributeError, TypeError, ValueError, binascii.Error) as error:
             raise AdmissionError("invalid GitHub blob") from error
     def pr(self, number):
-        return self.request("GET", f"/pulls/{number}")
+        return self.request(f"/pulls/{number}")
 class Dropbox:
     """Read-only Dropbox evidence download; no PR-controlled commands or URLs."""
     def __init__(self, token):
@@ -269,10 +266,12 @@ def main():
             raise AdmissionError("GITHUB_EVENT_PATH not provided")
         with open(path, encoding="utf-8") as event_file:
             event = json.load(event_file)
-        github = GitHub(os.environ.get("GITHUB_REPOSITORY", ""), os.environ.get("GITHUB_TOKEN", ""))
+        repository = os.environ.get("GITHUB_REPOSITORY", "")
+        read_token = os.environ.get("GITHUB_TOKEN", "")
+        github = GitHub(repository, read_token)
         publisher = GitHubStatusPublisher(
-            os.environ.get("GITHUB_REPOSITORY", ""),
-            os.environ.get("FLOWSTATE_TRUSTED_STATUS_TOKEN", ""),
+            repository, os.environ.get("FLOWSTATE_TRUSTED_STATUS_TOKEN", ""),
+            read_token,
         )
         execute(event, github, os.environ.get("FLOWSTATE_DROPBOX_METADATA_READ_TOKEN", ""), publisher)
     except (AdmissionError, StatusPublisherError, ValueError, OSError) as error:
