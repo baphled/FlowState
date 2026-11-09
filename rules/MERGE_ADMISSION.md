@@ -1,41 +1,42 @@
 # Trusted merge-admission gate
 
-**Source:** [Issue #225](https://github.com/baphled/FlowState/issues/225). This
-verifier supplements PR-head `Build`, independent review and external evidence;
-it does not prove runtime qualification or enforce branch protection by itself.
+**Source:** [Issue #225](https://github.com/baphled/FlowState/issues/225).
+The trusted default-branch verifier checks GitHub commit blobs and external
+Dropbox evidence. It supplements the required PR-head `Build` check.
 
-## Install without bypassing `next`
+## Install only after qualification
 
-1. Deliver this script, tests, workflow and guide via reviewed PR to `next`, with a
-   genuine Dropbox record. Never fabricate a `Project-Metadata` reference.
-2. Promote reviewed source from `next` to default `main` through the protected
-   release path. `pull_request_target` uses default-branch workflow code, not
-   the PR target branch; a `next`-only workflow does not enforce admission.
-3. Configure `FLOWSTATE_DROPBOX_METADATA_READ_TOKEN` only after credential
-   isolation review. Dropbox Full Dropbox OAuth cannot restrict a token to an
-   arbitrary existing directory; use an isolated App Folder mirror or gateway.
-4. For affected public repositories, explicitly allow `pull_request_target` in
-   GitHub Actions policy before 2 December 2026; test its actual event delivery.
-5. Require **Build** and the exact-SHA **flowstate/merge-admission** status in
-   `next` protection, with trusted status App and agent-review evidence; set GitHub required approving
-   reviews to zero. Disable auto-merge until negative controls fail as expected.
-   Read back the real GitHub rules; this connector cannot administer them.
-6. Revalidate agent evidence through a trusted PR conversation comment or default-branch
-   `workflow_dispatch`. Do not run PR-supplied review-event workflow code.
-7. Verify missing evidence, malformed records, wrong head, quota comments and
-   credential failures all fail closed; only valid exact-head evidence and independent agent-review records may pass. A revoked credential alone triggers no recheck.
+1. Deliver reviewed source to `next` with real Dropbox commit metadata.
+2. Promote through the protected `next` to `main` release path. Privileged
+   `pull_request_target` uses the default branch, not the PR's source.
+3. Isolate the Dropbox read credential in an App Folder mirror or gateway.
+   Full Dropbox OAuth does not restrict it to the Metadata directory.
+4. For affected public repositories, allow and test `pull_request_target`
+   before 2 December 2026; verify both positive and negative triggering.
+5. Require trusted exact-head `flowstate/merge-admission` and `Build` statuses
+   in `next` protection, strict base checks and no bypasses.
+6. Set GitHub's required approving review count to zero. A separate agent
+   review remains mandatory through the trusted status, not GitHub approvals.
+7. Revalidate through trusted PR conversation comments or default-branch
+   dispatch; exercise revoked credentials, wrong heads and negative-control PRs.
 
 ## Operational semantics
 
-The privileged verifier never checks out candidate code. It obtains live PR,
-commit data from GitHub, reads canonical external JSON records and
-checks actual committed blobs. Its status targets the PR head SHA, never the merge
-ref or default branch. Required Build checks still prove code quality separately.
+The workflow never checks out or executes candidate code with secrets. It
+checks live GitHub PR and commit data, canonical Dropbox records and actual
+committed file bytes, posting the verdict on the PR head rather than a merge
+ref. Missing or invalid evidence must fail closed, including after success.
+Deployment alone does not install branch protection or authenticate reviewers.
 
-This is pre-merge source admission, not proof of immutable Dropbox retention,
-authenticated agent sessions or runtime acceptance. Deploying to `main` alone
-does not enforce it: verify branch protection and a failing negative-control PR.
-Merged #223/#224 retain historical evidence debts; do not rewrite old commits.
+## Sole-maintainer agent-review contract
 
-## Sole-maintainer agent review
-PR body contains exactly one `Agent-Review: dropbox:/FlowState/Metadata/attempts/<attempt>/<file>.json` reference. A separate reviewer run records `flowstate-agent-review-v1`: matching `metadata_ref`, `pr_number`, `head_sha`, `verdict: PASS`, `reviewer` (`role: verifier`, observed `run_id`, `identity_evidence`), `implementer` (different observed `run_id`, `identity_evidence`), substantive `summary`, `findings` and passing `negative_oracle` with evidence. Missing, stale, quota-only or same-run evidence fails closed. No GitHub APPROVED review is required. Dropbox records alone do not cryptographically establish session identity; qualify the trusted evidence writer and scoped credentials before enforcement.
+The PR description contains one `Agent-Review:` trailer referencing a JSON file
+under `dropbox:/FlowState/Metadata/attempts/<attempt>/`. The external record
+uses `flowstate-agent-review-v1` with matching `metadata_ref`, `pr_number`,
+`head_sha`, and `verdict: PASS`. A reviewer with `role: verifier` records an
+observed `run_id` and `identity_evidence`; the implementer supplies a distinct
+observed run and evidence. Substantive `summary` and `findings` are required,
+plus a passing `negative_oracle` with its own evidence. Missing, stale,
+quota-only and same-run reviews fail closed without a human GitHub approver.
+Dropbox content alone is not cryptographic agent identity proof: qualify the
+trusted writer, attribution and credential boundaries before live enforcement.
