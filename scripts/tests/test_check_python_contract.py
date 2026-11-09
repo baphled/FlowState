@@ -81,14 +81,14 @@ class CommittedCandidate(unittest.TestCase):
 
     def test_changed_but_unsaved_worktree_cannot_hide_failure(self):
         (self.directory / 'scripts/new.py').write_text('def task():\n' + '    pass\n' * 61)
-        (self.directory / 'scripts/tests/test_new.py').write_text('# test\n')
+        (self.directory / 'scripts/tests/test_new.py').write_text('def test_new():\n    assert True\n')
         self.commit()
         (self.directory / 'scripts/new.py').write_text(GOOD)
         self.assertIn('exceeds', self.guard().stderr)
 
     def test_matching_test_allows_source(self):
         (self.directory / 'scripts/new.py').write_text(GOOD)
-        (self.directory / 'scripts/tests/test_new.py').write_text('# test\n')
+        (self.directory / 'scripts/tests/test_new.py').write_text('def test_new():\n    assert True\n')
         self.commit()
         self.assertEqual(self.guard().returncode, 0)
 
@@ -96,6 +96,19 @@ class CommittedCandidate(unittest.TestCase):
         (self.directory / 'scripts/tests/test_new_extra.py').write_text('# orphan\n')
         self.commit()
         self.assertIn('no matching implementation', self.guard().stderr)
+
+    def test_nested_orphan_test_file_is_rejected(self):
+        nested = self.directory / 'scripts/package/tests'
+        nested.mkdir(parents=True)
+        (nested / 'test_orphan.py').write_text('def test_orphan():\n    assert True\n')
+        self.commit()
+        self.assertIn('no matching implementation', self.guard().stderr)
+
+    def test_empty_test_file_is_rejected(self):
+        (self.directory / 'scripts/new.py').write_text(GOOD)
+        (self.directory / 'scripts/tests/test_new.py').write_text('# no tests\n')
+        self.commit()
+        self.assertIn('no test_* function', self.guard().stderr)
 
     def test_symlink_test_file_cannot_pass(self):
         (self.directory / 'scripts/new.py').write_text(GOOD)

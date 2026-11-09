@@ -59,6 +59,24 @@ def owning_test(path):
     return f"{parent}/tests/test_{stem}"
 
 
+def owning_implementation(test_path):
+    """Resolve the implementation of a root or nested test module."""
+    parent, separator, name = test_path.rpartition('/tests/test_')
+    return f"{parent}/{name}" if separator and name else None
+
+
+def test_violations(path, tree):
+    """Require a regular Python test file with at least one test entry point."""
+    try:
+        source = read_blob(tree, path)
+        module = ast.parse(source, filename=path)
+    except (ValueError, UnicodeError, SyntaxError) as error:
+        return [f"{path}: invalid owning test: {error}"]
+    tested = any(isinstance(item, FUNCTION_NODES) and item.name.startswith('test_')
+                 for item in ast.walk(module))
+    return [] if tested else [f"{path}: no test_* function or method present"]
+
+
 def candidate_errors(base):
     """Use the committed candidate tree and an exact SHA base, never local edits."""
     tree, changed = snapshot(base, '*.py')
@@ -66,10 +84,11 @@ def candidate_errors(base):
     failures = []
     for path in scripts:
         if '/tests/' in path:
-            if path.endswith('.py') and path.startswith('scripts/tests/test_'):
-                source = 'scripts/' + path.removeprefix('scripts/tests/test_')
-                if source not in tree:
-                    failures.append(f"{path}: no matching implementation {source}")
+            owner = owning_implementation(path)
+            if owner:
+                if owner not in tree:
+                    failures.append(f"{path}: no matching implementation {owner}")
+                failures.extend(test_violations(path, tree))
             continue
         if path.endswith('/__init__.py'):
             continue
@@ -77,10 +96,7 @@ def candidate_errors(base):
         if required not in tree:
             failures.append(f"{path}: missing owning test {required}")
         else:
-            try:
-                read_blob(tree, required)
-            except (ValueError, UnicodeError) as error:
-                failures.append(f"{path}: invalid owning test: {error}")
+            failures.extend(test_violations(required, tree))
         try:
             failures.extend(source_violations(path, read_blob(tree, path)))
         except (ValueError, UnicodeError) as error:

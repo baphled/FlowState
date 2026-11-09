@@ -15,9 +15,10 @@ when subsequently modified.
   Boolean operands and match cases).
 - Each changed implementation `scripts/name.py` must have one owning test
   `scripts/tests/test_name.py`, present as a regular committed blob.
+  The test must contain at least one `test_*` function or method.
   The same rule applies to nested modules and their sibling `tests/`.
-- Newly changed `scripts/tests/test_name.py` requires its corresponding
-  `scripts/name.py`. Package `__init__.py` files need no owning test.
+- Each newly changed root or nested test module requires its corresponding
+  implementation. Package `__init__.py` files need no owning test.
 - Inline suppressions, generated comments, working-tree edits and renames
   do not waive the check. The verifier reviews semantic cohesion separately.
 
@@ -34,7 +35,7 @@ From the repository root, with the true full base SHA:
 make check-python-contract BASE_SHA=<actual-40-character-base-sha>
 ```
 
-The target runs its 13 regression cases, then checks the committed source.
+The target runs its 15 regression cases, then checks the committed source.
 Negative fixtures cover overlong and branching functions/modules, missing,
 orphaned or symlinked test files, inline waivers, syntax errors, and a dirty
 working copy masking a committed violation.
