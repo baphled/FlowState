@@ -35,6 +35,12 @@ def metadata_reference(message):
         raise AdmissionError("one valid Project-Metadata reference required per commit")
     return refs[0]
 
+def agent_review_reference(body):
+    refs = re.findall(r"^Agent-Review: (.+)$", body if isinstance(body, str) else "", flags=re.M)
+    if len(refs) != 1 or not REFERENCE.fullmatch(refs[0]):
+        raise AdmissionError("one external agent-review record required in PR description")
+    return refs[0]
+
 def validate_record(record, reference, parent_sha):
     """Validate externally downloaded record against the exact commit parent."""
     if not isinstance(record, dict):
@@ -72,31 +78,32 @@ def validate_record(record, reference, parent_sha):
         raise AdmissionError("missing candidate source manifest")
     return manifest
 
-def independent_approval(reviews, head_sha, author, contributors=()):
-    """Only the latest submitted decision per independent actor can approve."""
-    decisions = {}
-    excluded = {author.casefold(), *(name.casefold() for name in contributors)}
-    if not isinstance(reviews, list):
-        raise AdmissionError("GitHub review response was not a list")
-    for review in reviews:
-        login = (review.get("user") or {}).get("login", "")
-        state = review.get("state", "")
-        if not login or state not in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
-            continue
-        decisions[login.casefold()] = review
-    if any(r["state"] == "CHANGES_REQUESTED" for r in decisions.values()):
-        raise AdmissionError("unresolved GitHub changes requested")
-    for login, review in decisions.items():
-        if (
-            login not in excluded
-            and review["state"] == "APPROVED"
-            and review.get("commit_id") == head_sha
-            and review.get("author_association") in ("OWNER", "MEMBER", "COLLABORATOR")
-        ):
-            return
-    raise AdmissionError("no independent authorised approval of exact PR head")
+def validate_agent_review(review, reference, head_sha, number):
+    """Verify substantive, separate-run agent review of the exact candidate."""
+    if not isinstance(review, dict) or review.get("record_type") != "flowstate-agent-review-v1":
+        raise AdmissionError("missing or invalid independent agent review")
+    if review.get("metadata_ref") != reference or review.get("head_sha") != head_sha:
+        raise AdmissionError("agent review does not bind the exact candidate")
+    if review.get("pr_number") != number or review.get("verdict") != "PASS":
+        raise AdmissionError("agent review is not an accepted verdict for this PR")
+    reviewer, implementer = review.get("reviewer"), review.get("implementer")
+    if not isinstance(reviewer, dict) or not isinstance(implementer, dict):
+        raise AdmissionError("missing agent run identities")
+    reviewer_run, implementer_run = reviewer.get("run_id"), implementer.get("run_id")
+    if (reviewer.get("role") != "verifier" or
+        not isinstance(reviewer_run, str) or not reviewer_run.strip() or
+        not isinstance(implementer_run, str) or not implementer_run.strip() or
+        reviewer_run == implementer_run or
+        not reviewer.get("identity_evidence") or not implementer.get("identity_evidence")):
+        raise AdmissionError("agent review does not establish separate observed runs")
+    oracle = review.get("negative_oracle")
+    if (not isinstance(oracle, dict) or oracle.get("result") != "PASS" or
+        not isinstance(oracle.get("evidence"), str) or not oracle["evidence"].strip()):
+        raise AdmissionError("independent negative-oracle evidence required")
+    if not isinstance(review.get("findings"), list) or not str(review.get("summary") or "").strip():
+        raise AdmissionError("substantive agent findings and summary required")
 
-def verify_candidate(pr, reviews, commits, fetch_record, expected_sha, github):
+def verify_candidate(pr, review, commits, fetch_record, expected_sha, github):
     """Validate a single live candidate and each of its commit evidence records."""
     head_sha = ((pr.get("head") or {}).get("sha"))
     author = ((pr.get("user") or {}).get("login"))
@@ -106,13 +113,7 @@ def verify_candidate(pr, reviews, commits, fetch_record, expected_sha, github):
         raise AdmissionError("candidate SHA or author cannot be verified")
     if not commits or len(commits) > 1000 or commits[-1].get("sha") != head_sha:
         raise AdmissionError("incomplete or changed PR commit list")
-    contributors = set()
     for commit in commits:
-        for actor in ("author", "committer"):
-            login = (commit.get(actor) or {}).get("login")
-            if not login:
-                raise AdmissionError("unverified commit contributor")
-            contributors.add(login)
         sha = commit.get("sha")
         parents = commit.get("parents") or []
         if not SHA.fullmatch(str(sha)) or not parents or not SHA.fullmatch(str(parents[0].get("sha"))):
@@ -120,7 +121,7 @@ def verify_candidate(pr, reviews, commits, fetch_record, expected_sha, github):
         reference = metadata_reference((commit.get("commit") or {}).get("message", ""))
         manifest = validate_record(fetch_record(reference), reference, parents[0]["sha"])
         verify_files(github, sha, manifest)
-    independent_approval(reviews, head_sha, author, contributors)
+    validate_agent_review(review, agent_review_reference(pr.get("body") or ""), head_sha, pr.get("number"))
     return head_sha
 
 def verify_files(github, sha, manifest):
@@ -260,14 +261,14 @@ def execute(event, github, dropbox_token):
     try:
         dropbox = Dropbox(dropbox_token) if isinstance(dropbox_token, str) else dropbox_token
         commits = github.pages(f"/pulls/{number}/commits")
-        reviews = github.pages(f"/pulls/{number}/reviews")
-        verify_candidate(pr, reviews, commits, dropbox.record, head, github)
+        review = dropbox.record(agent_review_reference(pr.get("body") or ""))
+        verify_candidate(pr, review, commits, dropbox.record, head, github)
         if (github.pr(number).get("head") or {}).get("sha") != head:
             raise AdmissionError("PR head changed during admission")
     except AdmissionError as error:
         github.status(head, "failure", str(error))
         raise
-    github.status(head, "success", "Verified evidence and independent exact-head review")
+    github.status(head, "success", "Verified evidence and independent exact-head agent review")
 
 def main():
     try:

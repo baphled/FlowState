@@ -8,13 +8,14 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from scripts.merge_admission import (  # noqa: E402
-    AdmissionError, Dropbox, GitHub, execute, independent_approval,
+    AdmissionError, Dropbox, GitHub, execute, validate_agent_review,
     metadata_reference, validate_record, verify_candidate,
 )
 HEAD = "2" * 40
 PARENT = "1" * 40
 AUTHOR = "author"
 REF = "dropbox:/FlowState/Metadata/attempts/example-01/commit.json"
+REVIEW_REF = "dropbox:/FlowState/Metadata/attempts/example-01/agent-review.json"
 READS = [
     "/FlowState/Dev/00-AGENT-READ-FIRST.md",
     "/FlowState/Dev/AGENTS.md",
@@ -46,6 +47,7 @@ def record(**updates):
 
 def pr(**updates):
     result = {
+        "number": 225, "body": "Agent-Review: " + REVIEW_REF,
         "state": "open", "draft": False,
         "base": {"ref": "next"}, "head": {"sha": HEAD},
         "user": {"login": AUTHOR},
@@ -59,10 +61,14 @@ def commit(message="chore: candidate\n\nProject-Metadata: " + REF, **updates):
     result.update(updates)
     return result
 
-def approval(**updates):
+def agent_review(**updates):
     result = {
-        "user": {"login": "reviewer"}, "state": "APPROVED",
-        "commit_id": HEAD, "author_association": "COLLABORATOR",
+        "record_type": "flowstate-agent-review-v1", "metadata_ref": REVIEW_REF,
+        "pr_number": 225, "head_sha": HEAD, "verdict": "PASS",
+        "implementer": {"run_id": "implement-1", "identity_evidence": "run log"},
+        "reviewer": {"role": "verifier", "run_id": "review-2", "identity_evidence": "separate run log"},
+        "negative_oracle": {"result": "PASS", "evidence": "reproduced failing fixture"},
+        "findings": [], "summary": "Reviewed exact source and failure behaviour",
     }
     result.update(updates)
     return result
@@ -73,7 +79,7 @@ class OfflineAdmission(unittest.TestCase):
             operation()
     def test_good_exact_head_with_actual_record(self):
         self.assertEqual(
-            verify_candidate(pr(), [approval()], [commit()], lambda _: record(), HEAD, FakeGitHub()), HEAD,
+            verify_candidate(pr(), agent_review(), [commit()], lambda _: record(), HEAD, FakeGitHub()), HEAD,
         )
     def test_bad_or_duplicate_trailer_fails(self):
         for message in (
@@ -86,7 +92,7 @@ class OfflineAdmission(unittest.TestCase):
     def test_missing_external_record_fails(self):
         def missing(_):
             raise AdmissionError("Dropbox record missing")
-        self.assertRejected("missing", lambda: verify_candidate(pr(), [approval()], [commit()], missing, HEAD, FakeGitHub()))
+        self.assertRejected("missing", lambda: verify_candidate(pr(), agent_review(), [commit()], missing, HEAD, FakeGitHub()))
     def test_wrong_external_ref_fails(self):
         wrong = record(metadata_ref=REF.replace("commit.json", "other.json"))
         self.assertRejected("reference mismatch", lambda: validate_record(wrong, REF, PARENT))
@@ -102,29 +108,28 @@ class OfflineAdmission(unittest.TestCase):
         bad = record(attribution={**record()["attribution"], "source": ""})
         self.assertRejected("attribution", lambda: validate_record(bad, REF, PARENT))
     def test_wrong_candidate_or_empty_commit_set_fails(self):
-        self.assertRejected("candidate SHA", lambda: verify_candidate(pr(), [approval()], [commit()], lambda _: record(), "3" * 40, FakeGitHub()))
-        self.assertRejected("incomplete", lambda: verify_candidate(pr(), [approval()], [], lambda _: record(), HEAD, FakeGitHub()))
-    def test_approval_of_old_head_fails(self):
-        self.assertRejected("no independent", lambda: independent_approval([approval(commit_id=PARENT)], HEAD, AUTHOR))
-    def test_self_review_fails(self):
-        self.assertRejected("no independent", lambda: independent_approval([approval(user={"login": AUTHOR})], HEAD, AUTHOR))
-    def test_quota_comment_not_approval(self):
-        review = approval(state="COMMENTED", body="Copilot quota exceeded")
-        self.assertRejected("no independent", lambda: independent_approval([review], HEAD, AUTHOR))
-    def test_unprivileged_reviewer_not_counted(self):
-        self.assertRejected("no independent", lambda: independent_approval([approval(author_association="NONE")], HEAD, AUTHOR))
-    def test_dismissal_overrides_old_approval(self):
-        self.assertRejected("no independent", lambda: independent_approval([
-            approval(), approval(state="DISMISSED")], HEAD, AUTHOR))
-    def test_changes_requested_blocks_other_approval(self):
-        self.assertRejected("changes requested", lambda: independent_approval([
-            approval(), approval(user={"login": "other"}, state="CHANGES_REQUESTED")
-        ], HEAD, AUTHOR))
-    def test_later_approval_resolves_same_reviewer_change_request(self):
-        independent_approval([approval(state="CHANGES_REQUESTED"), approval()], HEAD, AUTHOR)
+        self.assertRejected("candidate SHA", lambda: verify_candidate(pr(), agent_review(), [commit()], lambda _: record(), "3" * 40, FakeGitHub()))
+        self.assertRejected("incomplete", lambda: verify_candidate(pr(), agent_review(), [], lambda _: record(), HEAD, FakeGitHub()))
+    def test_old_head_and_wrong_pr_review_fail(self):
+        self.assertRejected("exact candidate", lambda: validate_agent_review(agent_review(head_sha=PARENT), REVIEW_REF, HEAD, 225))
+        self.assertRejected("this PR", lambda: validate_agent_review(agent_review(pr_number=226), REVIEW_REF, HEAD, 225))
+    def test_same_run_and_missing_provenance_fail(self):
+        self.assertRejected("separate observed", lambda: validate_agent_review(agent_review(reviewer={
+            "role": "verifier", "run_id": "implement-1", "identity_evidence": "run log"}), REVIEW_REF, HEAD, 225))
+        self.assertRejected("separate observed", lambda: validate_agent_review(agent_review(reviewer={
+            "role": "verifier", "run_id": "review-2"}), REVIEW_REF, HEAD, 225))
+    def test_quota_comment_or_rejected_review_fails(self):
+        self.assertRejected("accepted verdict", lambda: validate_agent_review(agent_review(verdict="COMMENTED"), REVIEW_REF, HEAD, 225))
+        self.assertRejected("accepted verdict", lambda: validate_agent_review(agent_review(verdict="REQUEST_CHANGES"), REVIEW_REF, HEAD, 225))
+    def test_missing_oracle_or_fabricated_reference_fails(self):
+        self.assertRejected("negative-oracle", lambda: validate_agent_review(agent_review(negative_oracle={
+            "result": "SKIPPED", "evidence": "quota"}), REVIEW_REF, HEAD, 225))
+        self.assertRejected("exact candidate", lambda: validate_agent_review(agent_review(metadata_ref=REF), REVIEW_REF, HEAD, 225))
+    def test_missing_review_trailer_fails(self):
+        self.assertRejected("agent-review record", lambda: verify_candidate(pr(body=""), agent_review(), [commit()], lambda _: record(), HEAD, FakeGitHub()))
     def test_draft_or_wrong_base_fails(self):
-        self.assertRejected("not an open", lambda: verify_candidate(pr(draft=True), [approval()], [commit()], lambda _: record(), HEAD, FakeGitHub()))
-        self.assertRejected("not an open", lambda: verify_candidate(pr(base={"ref": "main"}), [approval()], [commit()], lambda _: record(), HEAD, FakeGitHub()))
+        self.assertRejected("not an open", lambda: verify_candidate(pr(draft=True), agent_review(), [commit()], lambda _: record(), HEAD, FakeGitHub()))
+        self.assertRejected("not an open", lambda: verify_candidate(pr(base={"ref": "main"}), agent_review(), [commit()], lambda _: record(), HEAD, FakeGitHub()))
     def test_external_read_token_is_required(self):
         self.assertRejected("token", lambda: Dropbox(""))
     def test_github_token_is_required(self):
@@ -137,20 +142,16 @@ class OfflineAdmission(unittest.TestCase):
         gh = FakeGitHub()
         gh.blob = lambda _: b"other"
         self.assertRejected("blob does not match", lambda: verify_candidate(
-            pr(), [approval()], [commit()], lambda _: record(), HEAD, gh))
+            pr(), agent_review(), [commit()], lambda _: record(), HEAD, gh))
     def test_extra_or_removed_paths_rejected(self):
         gh = FakeGitHub()
         gh.commit_files = lambda _: gh.__class__.commit_files(gh, HEAD) + [
             {"filename": "extra.py", "status": "added", "sha": "a" * 40}]
         self.assertRejected("changed-path", lambda: verify_candidate(
-            pr(), [approval()], [commit()], lambda _: record(), HEAD, gh))
+            pr(), agent_review(), [commit()], lambda _: record(), HEAD, gh))
         gh.commit_files = lambda _: [{"filename": "scripts/demo.py", "status": "removed"}]
         self.assertRejected("deletion", lambda: verify_candidate(
-            pr(), [approval()], [commit()], lambda _: record(), HEAD, gh))
-    def test_contributor_cannot_approve_own_code(self):
-        self.assertRejected("no independent", lambda: verify_candidate(
-            pr(), [approval()], [commit(author={"login": "reviewer"})],
-            lambda _: record(), HEAD, FakeGitHub()))
+            pr(), agent_review(), [commit()], lambda _: record(), HEAD, gh))
     def test_trusted_workflow_has_no_candidate_checkout(self):
         source = (ROOT / ".github/workflows/merge-admission.yml").read_text()
         self.assertIn("ref: main", source)
@@ -173,8 +174,6 @@ class FakeGitHub:
     def pages(self, path):
         if path.endswith("/commits"):
             return [commit()]
-        if path.endswith("/reviews"):
-            return [approval()]
         raise AssertionError(path)
     def commit_files(self, sha):
         return [{"filename": "scripts/demo.py", "status": "modified", "sha": "c" * 40}]
@@ -189,7 +188,7 @@ class FakeDropbox:
     def record(self, reference):
         if self.missing:
             raise AdmissionError("Dropbox record missing")
-        return record()
+        return agent_review() if reference == REVIEW_REF else record()
 
 class PublishedStatus(unittest.TestCase):
     def test_passes_only_after_actual_admission(self):
