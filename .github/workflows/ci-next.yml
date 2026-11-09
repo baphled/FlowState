@@ -181,6 +181,13 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: make check-code-contract BASE_SHA="$BASE_SHA"
 
+      - name: Enforce Python function complexity and test ownership
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          BASE_SHA="${PR_BASE_SHA:-$(git rev-parse HEAD^)}"
+          make check-python-contract BASE_SHA="$BASE_SHA"
+
       - name: Set up documentation tools
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
