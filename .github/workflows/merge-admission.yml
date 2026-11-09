@@ -17,7 +17,7 @@ on:
 permissions:
   contents: read
   pull-requests: read
-  statuses: write
+  statuses: read
 concurrency:
   group: merge-admission-${{ github.event.pull_request.number || github.event.issue.number || inputs.pull_request }}
   cancel-in-progress: true
@@ -33,9 +33,11 @@ jobs:
         with:
           ref: main
           persist-credentials: false
-      - name: Verify external metadata and exact-head independent approval
+      - name: Verify external metadata and attested agent review
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          FLOWSTATE_TRUSTED_STATUS_TOKEN: ${{ secrets.FLOWSTATE_TRUSTED_STATUS_TOKEN }}
+          FLOWSTATE_AGENT_REVIEW_ATTESTATION_KEY: ${{ secrets.FLOWSTATE_AGENT_REVIEW_ATTESTATION_KEY }}
           GITHUB_EVENT_PATH: ${{ github.event_path }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           FLOWSTATE_DROPBOX_METADATA_READ_TOKEN: ${{ secrets.FLOWSTATE_DROPBOX_METADATA_READ_TOKEN }}

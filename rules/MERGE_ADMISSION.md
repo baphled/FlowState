@@ -39,3 +39,28 @@ plus a passing `negative_oracle` with its own evidence. Missing, stale,
 quota-only and same-run reviews fail closed without a human GitHub approver.
 Dropbox content alone is not cryptographic agent identity proof: qualify the
 trusted writer, attribution and credential boundaries before live enforcement.
+
+## Attestation and status authority
+
+The sole-maintainer workflow requires an independently controlled reviewer
+attestor. Its record includes `attestation.issuer` set to
+`flowstate-independent-review-attestor-v1` and `attestation.hmac_sha256`.
+The HMAC authenticates canonical sorted JSON of all other record fields,
+prefixed with the `flowstate-agent-review-v1` domain separator and NUL byte.
+The key in `FLOWSTATE_AGENT_REVIEW_ATTESTATION_KEY` must be controlled by a
+separate verifier service and hidden from implementation runs. A signature
+authenticates its issuer, **not** the underlying agent run without attestor
+controls and retained run/oracle receipts. Missing or forged signatures fail.
+
+GitHub PR reads use the normal read-only `GITHUB_TOKEN`; only an isolated,
+dedicated GitHub App status credential may populate
+`FLOWSTATE_TRUSTED_STATUS_TOKEN`. The workflow has no default token write
+permission; require and pin the App as the status source in branch rules.
+Missing, identical or exposed credentials fail closed.
+
+**Deployment blocker:** GitHub statuses persist after evidence revocation.
+Do not enable merges from old commit statuses: require a trusted merge-time
+revalidation gateway or enforced queue, immutable/retained evidence and an
+after-success-without-event negative control. Source-read hashes/IDs also need
+independent attestation or actual read-back before operational acceptance.
+Neither this PR nor successful unit tests assert those controls are deployed.

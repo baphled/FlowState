@@ -7,6 +7,7 @@ branch protection must require that status and the ordinary CI Build context.
 import base64
 import binascii
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -14,6 +15,7 @@ import sys
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 STATUS_CONTEXT = "flowstate/merge-admission"
+ATTESTATION_ISSUER = "flowstate-independent-review-attestor-v1"
 REFERENCE = re.compile(
     r"dropbox:/FlowState/Metadata/attempts/"
     r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*\.json"
@@ -78,7 +80,7 @@ def validate_record(record, reference, parent_sha):
         raise AdmissionError("missing candidate source manifest")
     return manifest
 
-def validate_agent_review(review, reference, head_sha, number):
+def validate_agent_review(review, reference, head_sha, number, attestor_key):
     """Verify substantive, separate-run agent review of the exact candidate."""
     if not isinstance(review, dict) or review.get("record_type") != "flowstate-agent-review-v1":
         raise AdmissionError("missing or invalid independent agent review")
@@ -102,8 +104,29 @@ def validate_agent_review(review, reference, head_sha, number):
         raise AdmissionError("independent negative-oracle evidence required")
     if not isinstance(review.get("findings"), list) or not str(review.get("summary") or "").strip():
         raise AdmissionError("substantive agent findings and summary required")
+    # Authenticate the whole verdict. The signer is a separately controlled
+    # reviewer orchestrator; run IDs in a Dropbox record alone prove nothing.
+    if not isinstance(attestor_key, str) or len(attestor_key) < 32:
+        raise AdmissionError("trusted review attestation key not configured")
+    signature = review.get("attestation")
+    if (not isinstance(signature, dict) or signature.get("issuer") != ATTESTATION_ISSUER
+        or not DIGEST.fullmatch(str(signature.get("hmac_sha256", "")))):
+        raise AdmissionError("missing independently signed agent review")
+    try:
+        signed = json.dumps(
+            {key: value for key, value in review.items() if key != "attestation"},
+            sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as error:
+        raise AdmissionError("invalid agent review attestation payload") from error
+    expected = hmac.new(
+        attestor_key.encode("utf-8"), b"flowstate-agent-review-v1\0" + signed,
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(expected, signature["hmac_sha256"]):
+        raise AdmissionError("agent review attestation failed authentication")
 
-def verify_candidate(pr, review, commits, fetch_record, expected_sha, github):
+def verify_candidate(pr, review, commits, fetch_record, expected_sha, github, attestor_key):
     """Validate a single live candidate and each of its commit evidence records."""
     head_sha = ((pr.get("head") or {}).get("sha"))
     author = ((pr.get("user") or {}).get("login"))
@@ -121,7 +144,7 @@ def verify_candidate(pr, review, commits, fetch_record, expected_sha, github):
         reference = metadata_reference((commit.get("commit") or {}).get("message", ""))
         manifest = validate_record(fetch_record(reference), reference, parents[0]["sha"])
         verify_files(github, sha, manifest)
-    validate_agent_review(review, agent_review_reference(pr.get("body") or ""), head_sha, pr.get("number"))
+    validate_agent_review(review, agent_review_reference(pr.get("body") or ""), head_sha, pr.get("number"), attestor_key)
     return head_sha
 
 def verify_files(github, sha, manifest):
@@ -141,11 +164,14 @@ def verify_files(github, sha, manifest):
             raise AdmissionError('candidate blob does not match Dropbox manifest')
 
 class GitHub:
-    def __init__(self, repository, token):
+    def __init__(self, repository, token, status_token):
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
             raise AdmissionError("invalid repository")
         if not token:
             raise AdmissionError("missing GitHub token")
+        if not status_token or status_token == token:
+            raise AdmissionError("isolated GitHub status credential required")
+        self.status_token = status_token
         self.base = "https://api.github.com/repos/" + repository
         self.token = token
     def request(self, method, path, body=None):
@@ -153,7 +179,7 @@ class GitHub:
             self.base + path,
             data=json.dumps(body).encode() if body is not None else None,
             method=method,
-            headers={"Authorization": "Bearer " + self.token,
+            headers={"Authorization": "Bearer " + (self.status_token if method == "POST" and path.startswith("/statuses/") else self.token),
                      "Accept": "application/vnd.github+json",
                      "X-GitHub-Api-Version": "2022-11-28",
                      "Content-Type": "application/json"},
@@ -250,7 +276,7 @@ def event_pr_number(event):
         raise AdmissionError("event has no valid PR number")
     return number
 
-def execute(event, github, dropbox_token):
+def execute(event, github, dropbox_token, attestor_key):
     """Publish a commit status only for the observed exact GitHub PR head."""
     number = event_pr_number(event)
     pr = github.pr(number)
@@ -262,9 +288,14 @@ def execute(event, github, dropbox_token):
         dropbox = Dropbox(dropbox_token) if isinstance(dropbox_token, str) else dropbox_token
         commits = github.pages(f"/pulls/{number}/commits")
         review = dropbox.record(agent_review_reference(pr.get("body") or ""))
-        verify_candidate(pr, review, commits, dropbox.record, head, github)
-        if (github.pr(number).get("head") or {}).get("sha") != head:
-            raise AdmissionError("PR head changed during admission")
+        verify_candidate(pr, review, commits, dropbox.record, head, github, attestor_key)
+        latest = github.pr(number)
+        state_keys = ("state", "draft", "body")
+        if (any(latest.get(key) != pr.get(key) for key in state_keys)
+            or (latest.get("head") or {}).get("sha") != head
+            or (latest.get("base") or {}).get("ref") != (pr.get("base") or {}).get("ref")
+            or (latest.get("base") or {}).get("sha") != (pr.get("base") or {}).get("sha")):
+            raise AdmissionError("PR head, base, draft or review reference changed during admission")
     except AdmissionError as error:
         github.status(head, "failure", str(error))
         raise
@@ -277,8 +308,14 @@ def main():
             raise AdmissionError("GITHUB_EVENT_PATH not provided")
         with open(path, encoding="utf-8") as event_file:
             event = json.load(event_file)
-        github = GitHub(os.environ.get("GITHUB_REPOSITORY", ""), os.environ.get("GITHUB_TOKEN", ""))
-        execute(event, github, os.environ.get("FLOWSTATE_DROPBOX_METADATA_READ_TOKEN", ""))
+        github = GitHub(
+            os.environ.get("GITHUB_REPOSITORY", ""), os.environ.get("GITHUB_TOKEN", ""),
+            os.environ.get("FLOWSTATE_TRUSTED_STATUS_TOKEN", ""),
+        )
+        execute(
+            event, github, os.environ.get("FLOWSTATE_DROPBOX_METADATA_READ_TOKEN", ""),
+            os.environ.get("FLOWSTATE_AGENT_REVIEW_ATTESTATION_KEY", ""),
+        )
     except (AdmissionError, ValueError, OSError) as error:
         print("FAIL:", str(error), file=sys.stderr)
         return 1
