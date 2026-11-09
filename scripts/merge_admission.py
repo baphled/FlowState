@@ -13,6 +13,7 @@ import re
 import sys
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from scripts.review_attestation import ReviewAttestationError, verify_attestation
 STATUS_CONTEXT = "flowstate/merge-admission"
 REFERENCE = re.compile(
     r"dropbox:/FlowState/Metadata/attempts/"
@@ -250,7 +251,7 @@ def event_pr_number(event):
         raise AdmissionError("event has no valid PR number")
     return number
 
-def execute(event, github, dropbox_token):
+def execute(event, github, dropbox_token, attestor_key):
     """Publish a commit status only for the observed exact GitHub PR head."""
     number = event_pr_number(event)
     pr = github.pr(number)
@@ -263,9 +264,10 @@ def execute(event, github, dropbox_token):
         commits = github.pages(f"/pulls/{number}/commits")
         review = dropbox.record(agent_review_reference(pr.get("body") or ""))
         verify_candidate(pr, review, commits, dropbox.record, head, github)
+        verify_attestation(review, attestor_key)
         if (github.pr(number).get("head") or {}).get("sha") != head:
             raise AdmissionError("PR head changed during admission")
-    except AdmissionError as error:
+    except (AdmissionError, ReviewAttestationError) as error:
         github.status(head, "failure", str(error))
         raise
     github.status(head, "success", "Verified evidence and independent exact-head agent review")
@@ -278,8 +280,9 @@ def main():
         with open(path, encoding="utf-8") as event_file:
             event = json.load(event_file)
         github = GitHub(os.environ.get("GITHUB_REPOSITORY", ""), os.environ.get("GITHUB_TOKEN", ""))
-        execute(event, github, os.environ.get("FLOWSTATE_DROPBOX_METADATA_READ_TOKEN", ""))
-    except (AdmissionError, ValueError, OSError) as error:
+        execute(event, github, os.environ.get("FLOWSTATE_DROPBOX_METADATA_READ_TOKEN", ""),
+                os.environ.get("FLOWSTATE_AGENT_REVIEW_ATTESTATION_KEY", ""))
+    except (AdmissionError, ReviewAttestationError, ValueError, OSError) as error:
         print("FAIL:", str(error), file=sys.stderr)
         return 1
     print("PASS: exact candidate has independently reviewed Dropbox evidence")

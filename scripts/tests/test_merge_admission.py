@@ -1,5 +1,9 @@
 """Offline fail-closed contract for the trusted merge admission verifier."""
 import sys
+import hashlib
+import hmac
+import json
+from scripts.review_attestation import DOMAIN, ISSUER, ReviewAttestationError
 import unittest
 from io import BytesIO
 from urllib.error import HTTPError
@@ -11,6 +15,7 @@ from scripts.merge_admission import (  # noqa: E402
     AdmissionError, Dropbox, GitHub, execute, validate_agent_review,
     metadata_reference, validate_record, verify_candidate,
 )
+TEST_KEY = "synthetic-review-attestor-secret" * 2
 HEAD = "2" * 40
 PARENT = "1" * 40
 AUTHOR = "author"
@@ -71,6 +76,11 @@ def agent_review(**updates):
         "findings": [], "summary": "Reviewed exact source and failure behaviour",
     }
     result.update(updates)
+    canonical = json.dumps(result, sort_keys=True, separators=(",", ":")).encode()
+    result["attestation"] = {
+        "issuer": ISSUER,
+        "hmac_sha256": hmac.new(TEST_KEY.encode(), DOMAIN + canonical, hashlib.sha256).hexdigest(),
+    }
     return result
 
 class OfflineAdmission(unittest.TestCase):
@@ -193,31 +203,45 @@ class FakeDropbox:
 class PublishedStatus(unittest.TestCase):
     def test_passes_only_after_actual_admission(self):
         gh = FakeGitHub()
-        execute({"pull_request": {"number": 225}}, gh, FakeDropbox())
+        execute({"pull_request": {"number": 225}}, gh, FakeDropbox(), TEST_KEY)
         self.assertEqual([(sha, state) for sha, state, _ in gh.statuses], [
             (HEAD, "pending"), (HEAD, "success"),
         ])
     def test_missing_record_fails_status(self):
         gh = FakeGitHub()
         with self.assertRaises(AdmissionError):
-            execute({"pull_request": {"number": 225}}, gh, FakeDropbox(missing=True))
+            execute({"pull_request": {"number": 225}}, gh, FakeDropbox(missing=True), TEST_KEY)
         self.assertEqual([state for _, state, _ in gh.statuses], ["pending", "failure"])
+    def test_unsigned_review_never_gets_success(self):
+        gh = FakeGitHub()
+        db = FakeDropbox()
+        original = db.record
+        def unsigned(ref):
+            record = original(ref)
+            if ref == REVIEW_REF:
+                record.pop("attestation")
+            return record
+        db.record = unsigned
+        with self.assertRaisesRegex(ReviewAttestationError, "independently signed"):
+            execute({"pull_request": {"number": 225}}, gh, db, TEST_KEY)
+        self.assertEqual([state for _, state, _ in gh.statuses], ["pending", "failure"])
+
     def test_source_drift_never_gets_success(self):
         gh = FakeGitHub(change_head=True)
         with self.assertRaisesRegex(AdmissionError, "head changed"):
-            execute({"pull_request": {"number": 225}}, gh, FakeDropbox())
+            execute({"pull_request": {"number": 225}}, gh, FakeDropbox(), TEST_KEY)
         self.assertEqual([state for _, state, _ in gh.statuses], ["pending", "failure"])
     def test_missing_credential_after_previous_success_fails_status(self):
         gh = FakeGitHub()
-        execute({"pull_request": {"number": 225}}, gh, FakeDropbox())
+        execute({"pull_request": {"number": 225}}, gh, FakeDropbox(), TEST_KEY)
         with self.assertRaisesRegex(AdmissionError, "token"):
-            execute({"pull_request": {"number": 225}}, gh, "")
+            execute({"pull_request": {"number": 225}}, gh, "", TEST_KEY)
         self.assertEqual([state for _, state, _ in gh.statuses],
                          ["pending", "success", "pending", "failure"])
     def test_bad_event_does_not_post_status(self):
         gh = FakeGitHub()
         with self.assertRaises(AdmissionError):
-            execute({"pull_request": {"number": True}}, gh, FakeDropbox())
+            execute({"pull_request": {"number": True}}, gh, FakeDropbox(), TEST_KEY)
         self.assertEqual(gh.statuses, [])
 
 if __name__ == "__main__":

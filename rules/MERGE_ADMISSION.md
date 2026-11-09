@@ -39,3 +39,13 @@ plus a passing `negative_oracle` with its own evidence. Missing, stale,
 quota-only and same-run reviews fail closed without a human GitHub approver.
 Dropbox content alone is not cryptographic agent identity proof: qualify the
 trusted writer, attribution and credential boundaries before live enforcement.
+
+## Independent review authentication
+
+The separate reviewer must publish a signed `flowstate-agent-review-v1` record.
+The trusted verifier reads `FLOWSTATE_AGENT_REVIEW_ATTESTATION_KEY` and
+requires `attestation.issuer` = `flowstate-independent-review-attestor-v1`.
+The HMAC-SHA256 covers sorted canonical JSON excluding the attestation field,
+with domain separator `flowstate-agent-review-v1` and a NUL byte.
+The key belongs to an isolated reviewer attestor, never an implementer.
+A MAC authenticates the signer, not an otherwise unverified agent identity.
