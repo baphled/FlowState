@@ -31,8 +31,8 @@ func RunSessionToolFromPath(ctx context.Context, dbPath string, req ToolRequest)
 }
 
 // RunSessionTool validates the request against the session state,
-// builds the registry (echo plus fs.read/fs.write confined to the
-// session workdir), gates through the allowlist and records events.
+// builds the session builtin registry, gates through the allowlist and records
+// events. Filesystem tools remain confined to the session workdir.
 // Usage/terminal/denied failures wrap session sentinel errors.
 func RunSessionTool(ctx context.Context, st *store.Store, dbPath string, req ToolRequest) (*ToolOutcome, error) {
 	if req.SessionID == "" {
@@ -68,13 +68,9 @@ func RunSessionTool(ctx context.Context, st *store.Store, dbPath string, req Too
 	return &ToolOutcome{SessionID: req.SessionID, Tool: req.Tool, Result: result}, nil
 }
 
-// newSessionToolLoop builds the registry (echo plus fs.read/fs.write
-// confined to the session workdir) and the allowlist-gated loop.
+// newSessionToolLoop selects the session workdir and composes the shared builtin
+// registry with the allowlist-gated loop.
 func newSessionToolLoop(w tool.EventSink, dbPath string, req ToolRequest, allowlist []string) (*tool.Loop, error) {
-	registry := tool.NewRegistry()
-	if err := registry.Register(tool.NewEcho()); err != nil {
-		return nil, err
-	}
 	// --workdir defaults to the store's session directory (decision
 	// per principal verdict: acceptable for M2 while tools run only
 	// within the CLI process lifetime; a persisted schema field
@@ -83,18 +79,9 @@ func newSessionToolLoop(w tool.EventSink, dbPath string, req ToolRequest, allowl
 	if workdir == "" {
 		workdir = filepath.Join(SessionWorkdirRoot(dbPath), req.SessionID)
 	}
-	for _, t := range []tool.Tool{tool.NewFSRead(workdir), tool.NewFSWrite(workdir), tool.NewFSEdit(workdir)} {
-		if err := registry.Register(t); err != nil {
-			return nil, err
-		}
-	}
-	// exec.run double gate, arm 1: the env opt-in must be set when
-	// the session loop is constructed; the tool re-checks at every
-	// Invoke (arm 2) and the session allowlist still applies.
-	if tool.ExecEnabled() {
-		if err := registry.Register(tool.NewExecRun(workdir)); err != nil {
-			return nil, err
-		}
+	registry, err := NewSessionToolRegistry(workdir)
+	if err != nil {
+		return nil, err
 	}
 	return tool.NewLoop(registry, w, allowlist)
 }

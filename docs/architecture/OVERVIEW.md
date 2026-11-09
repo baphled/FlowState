@@ -63,6 +63,35 @@ With the Go toolchain and module dependencies installed, run from repository roo
 go run github.com/onsi/ginkgo/v2/ginkgo --procs=2 --randomize-all --randomize-suites --race --fail-on-pending --fail-on-empty --timeout=3m ./internal/provider ./internal/provider/zai
 ```
 
+## Session tool catalog
+
+`internal/app.NewSessionToolRegistry(workdir)` composes a fresh registry of `echo`,
+`fs.read`, `fs.write` and `fs.edit`. It adds `exec.run` only when the existing
+`FLOWSTATE_EXEC_ENABLED` opt-in is enabled. Registration grants no permission.
+The explicit session-tool use case reuses this constructor and keeps its default
+workdir at `SessionWorkdirRoot(dbPath)/sessionID`; an explicit workdir overrides it.
+
+`SessionToolDefinitions(registry, allow)` returns independently owned
+`provider.ToolDefinition` values in explicit allowlist order. An empty allowlist
+advertises nothing, including exec. Unknown names, duplicate entries and custom
+implementations without a qualified builtin schema fail without a partial list.
+The function never registers an absent tool to satisfy an allow entry. Compose
+the registry before use and avoid concurrent registry mutation.
+
+The object schemas describe actual builtin decoder fields: `path` for reads;
+`path` and optional `content` for writes; `path`, `old_text`, optional `new_text`
+and `all` for edits; `cmd` and optional string-array `args` for exec. Omitted
+content writes an empty file; omitted replacement text deletes the match.
+Schemas advertise capabilities; the tool loop and implementations still enforce
+permissions, confinement, byte caps and exec policy, including its invocation-time
+environment gate. These APIs prepare metadata and do not execute an agent turn.
+
+With the Go toolchain and module dependencies installed, run from repository root:
+
+```sh
+go run github.com/onsi/ginkgo/v2/ginkgo --procs=2 --randomize-all --randomize-suites --race --fail-on-pending --fail-on-empty --timeout=3m ./internal/app
+```
+
 ## Changes and proof
 
 A bounded refactor preserves the public contract, failure behaviour and tests.
