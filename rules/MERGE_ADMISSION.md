@@ -39,3 +39,13 @@ plus a passing `negative_oracle` with its own evidence. Missing, stale,
 quota-only and same-run reviews fail closed without a human GitHub approver.
 Dropbox content alone is not cryptographic agent identity proof: qualify the
 trusted writer, attribution and credential boundaries before live enforcement.
+
+## Neutral metadata validation boundary
+
+The commit trailer and external source-read record validation live in
+`scripts/admission_metadata.py`, with its matching
+`scripts/tests/test_admission_metadata.py`. They enforce the exact commit
+parent, required current Dev read observations and committed source manifest.
+The admission coordinator consumes the validated manifest; it does not own
+metadata schema checks. The read observations are shape-checked, **not**
+cryptographically authenticated; that remains an operational review gate.
