@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 """Fail-closed, trusted PR admission check against GitHub and Dropbox.
-
 This program must run from the default/protected branch in a privileged runner,
 NEVER from the pull request checkout. A status is posted on the exact PR HEAD;
 branch protection must require that status and the ordinary CI Build context.
 """
-
+import base64
+import binascii
+import hashlib
 import json
 import os
 import re
 import sys
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote
 from urllib.request import Request, urlopen
-
 STATUS_CONTEXT = "flowstate/merge-admission"
 REFERENCE = re.compile(
     r"dropbox:/FlowState/Metadata/attempts/"
@@ -28,10 +27,7 @@ REQUIRED_READS = {
     "/FlowState/Metadata/ACTIVE.json",
 }
 
-
 class AdmissionError(Exception):
-    """A required fact could not be verified; fail closed."""
-
 
 def metadata_reference(message):
     """Extract the single neutral trailer, refusing duplicates or malformed paths."""
@@ -39,7 +35,6 @@ def metadata_reference(message):
     if len(refs) != 1 or not REFERENCE.fullmatch(refs[0]):
         raise AdmissionError("one valid Project-Metadata reference required per commit")
     return refs[0]
-
 
 def validate_record(record, reference, parent_sha):
     """Validate externally downloaded record against the exact commit parent."""
@@ -73,11 +68,15 @@ def validate_record(record, reference, parent_sha):
         observed.add(path)
     if not REQUIRED_READS <= observed:
         raise AdmissionError("missing required current Dropbox source observations")
+    manifest = (record.get("local_candidate") or {}).get("paths")
+    if not isinstance(manifest, dict) or not manifest:
+        raise AdmissionError("missing candidate source manifest")
+    return manifest
 
-
-def independent_approval(reviews, head_sha, author):
+def independent_approval(reviews, head_sha, author, contributors=()):
     """Only the latest submitted decision per independent actor can approve."""
     decisions = {}
+    excluded = {author.casefold(), *(name.casefold() for name in contributors)}
     if not isinstance(reviews, list):
         raise AdmissionError("GitHub review response was not a list")
     for review in reviews:
@@ -85,13 +84,12 @@ def independent_approval(reviews, head_sha, author):
         state = review.get("state", "")
         if not login or state not in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
             continue
-        # GitHub returns reviews oldest-first. Last substantive decision wins.
-        decisions[login.casefold()] = review
+            decisions[login.casefold()] = review
     if any(r["state"] == "CHANGES_REQUESTED" for r in decisions.values()):
         raise AdmissionError("unresolved GitHub changes requested")
     for login, review in decisions.items():
         if (
-            login != author.casefold()
+            login not in excluded
             and review["state"] == "APPROVED"
             and review.get("commit_id") == head_sha
             and review.get("author_association") in ("OWNER", "MEMBER", "COLLABORATOR")
@@ -99,8 +97,7 @@ def independent_approval(reviews, head_sha, author):
             return
     raise AdmissionError("no independent authorised approval of exact PR head")
 
-
-def verify_candidate(pr, reviews, commits, fetch_record, expected_sha):
+def verify_candidate(pr, reviews, commits, fetch_record, expected_sha, github):
     """Validate a single live candidate and each of its commit evidence records."""
     head_sha = ((pr.get("head") or {}).get("sha"))
     author = ((pr.get("user") or {}).get("login"))
@@ -110,20 +107,40 @@ def verify_candidate(pr, reviews, commits, fetch_record, expected_sha):
         raise AdmissionError("candidate SHA or author cannot be verified")
     if not commits or len(commits) > 1000 or commits[-1].get("sha") != head_sha:
         raise AdmissionError("incomplete or changed PR commit list")
+    contributors = set()
     for commit in commits:
+        for actor in ("author", "committer"):
+            login = (commit.get(actor) or {}).get("login")
+            if not login:
+                raise AdmissionError("unverified commit contributor")
+            contributors.add(login)
         sha = commit.get("sha")
         parents = commit.get("parents") or []
         if not SHA.fullmatch(str(sha)) or not parents or not SHA.fullmatch(str(parents[0].get("sha"))):
             raise AdmissionError("commit SHA/parent unavailable")
         reference = metadata_reference((commit.get("commit") or {}).get("message", ""))
-        validate_record(fetch_record(reference), reference, parents[0]["sha"])
-    independent_approval(reviews, head_sha, author)
+        manifest = validate_record(fetch_record(reference), reference, parents[0]["sha"])
+        verify_files(github, sha, manifest)
+    independent_approval(reviews, head_sha, author, contributors)
     return head_sha
 
+def verify_files(github, sha, manifest):
+    """Bind Dropbox manifest to the actual complete GitHub commit diff."""
+    files = github.commit_files(sha)
+    if len(files) != len(manifest) or {item.get('filename') for item in files} != set(manifest):
+        raise AdmissionError('candidate changed-path set differs from Dropbox evidence')
+    for item in files:
+        if item.get('status') not in ('added', 'modified') or item.get('previous_filename'):
+            raise AdmissionError('unattested deletion or rename in candidate')
+        props = manifest[item['filename']]
+        blob_sha = item.get('sha')
+        if not isinstance(props, dict) or not SHA.fullmatch(str(blob_sha)):
+            raise AdmissionError('invalid candidate blob evidence')
+        actual = github.blob(blob_sha)
+        if hashlib.sha256(actual).hexdigest() != props.get('sha256') or len(actual) != props.get('bytes'):
+            raise AdmissionError('candidate blob does not match Dropbox manifest')
 
 class GitHub:
-    """Minimal GitHub API reader/status writer, not a PR-code executor."""
-
     def __init__(self, repository, token):
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
             raise AdmissionError("invalid repository")
@@ -131,7 +148,6 @@ class GitHub:
             raise AdmissionError("missing GitHub token")
         self.base = "https://api.github.com/repos/" + repository
         self.token = token
-
     def request(self, method, path, body=None):
         request = Request(
             self.base + path,
@@ -147,7 +163,6 @@ class GitHub:
                 return json.load(response)
         except (HTTPError, URLError, ValueError, TimeoutError) as error:
             raise AdmissionError("GitHub API unavailable or rejected request") from error
-
     def pages(self, path):
         items = []
         for page in range(1, 11):
@@ -159,10 +174,28 @@ class GitHub:
             if len(chunk) < 100:
                 return items
         raise AdmissionError("GitHub pagination exceeds safety bound")
-
+    def commit_files(self, sha):
+        files = []
+        for page in range(1, 11):
+            record = self.request("GET", f"/commits/{sha}?per_page=100&page={page}")
+            chunk = record.get("files")
+            if record.get("sha") != sha or not isinstance(chunk, list):
+                raise AdmissionError("incomplete GitHub commit file evidence")
+            files.extend(chunk)
+            if len(chunk) < 100:
+                return files
+        raise AdmissionError("GitHub commit files exceed page bound")
+    def blob(self, sha):
+        record = self.request("GET", "/git/blobs/" + sha)
+        if record.get("encoding") != "base64":
+            raise AdmissionError("GitHub blob encoding unavailable")
+        try:
+            encoded = record["content"].replace("\n", "").replace("\r", "")
+            return base64.b64decode(encoded, validate=True)
+        except (KeyError, AttributeError, TypeError, ValueError, binascii.Error) as error:
+            raise AdmissionError("invalid GitHub blob") from error
     def pr(self, number):
         return self.request("GET", f"/pulls/{number}")
-
     def status(self, sha, state, description):
         if not SHA.fullmatch(str(sha)) or state not in ("pending", "success", "failure"):
             raise AdmissionError("unsafe status target")
@@ -172,15 +205,12 @@ class GitHub:
             "description": description[:140],
         })
 
-
 class Dropbox:
     """Read-only Dropbox evidence download; no PR-controlled commands or URLs."""
-
     def __init__(self, token):
         if not token:
             raise AdmissionError("Dropbox read token not configured")
         self.token = token
-
     def record(self, reference):
         if not REFERENCE.fullmatch(reference):
             raise AdmissionError("invalid Dropbox record path")
@@ -207,16 +237,20 @@ class Dropbox:
         except (HTTPError, URLError, ValueError, KeyError, UnicodeError, TimeoutError) as error:
             raise AdmissionError("Dropbox record missing, invalid or inaccessible") from error
 
-
 def event_pr_number(event):
     """Use the PR number from trusted GitHub event payload, never an arbitrary URL."""
     number = (event.get("pull_request") or {}).get("number")
+    if number is None and (event.get("issue") or {}).get("pull_request"):
+        number = event["issue"].get("number")
+    if number is None:
+        number = (event.get("inputs") or {}).get("pull_request")
+        if isinstance(number, str) and number.isascii() and number.isdecimal():
+            number = int(number)
     if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
         raise AdmissionError("event has no valid PR number")
     return number
 
-
-def execute(event, github, dropbox):
+def execute(event, github, dropbox_token):
     """Publish a commit status only for the observed exact GitHub PR head."""
     number = event_pr_number(event)
     pr = github.pr(number)
@@ -225,16 +259,16 @@ def execute(event, github, dropbox):
         raise AdmissionError("invalid initial PR head")
     github.status(head, "pending", "Checking external evidence and independent review")
     try:
+        dropbox = Dropbox(dropbox_token) if isinstance(dropbox_token, str) else dropbox_token
         commits = github.pages(f"/pulls/{number}/commits")
         reviews = github.pages(f"/pulls/{number}/reviews")
-        verify_candidate(pr, reviews, commits, dropbox.record, head)
+        verify_candidate(pr, reviews, commits, dropbox.record, head, github)
         if (github.pr(number).get("head") or {}).get("sha") != head:
             raise AdmissionError("PR head changed during admission")
     except AdmissionError as error:
         github.status(head, "failure", str(error))
         raise
     github.status(head, "success", "Verified evidence and independent exact-head review")
-
 
 def main():
     try:
@@ -244,14 +278,12 @@ def main():
         with open(path, encoding="utf-8") as event_file:
             event = json.load(event_file)
         github = GitHub(os.environ.get("GITHUB_REPOSITORY", ""), os.environ.get("GITHUB_TOKEN", ""))
-        dropbox = Dropbox(os.environ.get("FLOWSTATE_DROPBOX_METADATA_READ_TOKEN", ""))
-        execute(event, github, dropbox)
+        execute(event, github, os.environ.get("FLOWSTATE_DROPBOX_METADATA_READ_TOKEN", ""))
     except (AdmissionError, ValueError, OSError) as error:
         print("FAIL:", str(error), file=sys.stderr)
         return 1
     print("PASS: exact candidate has independently reviewed Dropbox evidence")
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())

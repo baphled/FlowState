@@ -2,27 +2,29 @@
 # sourced from the repository DEFAULT branch (main), not the PR target (next).
 # Do not check out or execute candidate PR code in this workflow.
 name: FlowState Merge Admission
-
 on:
   pull_request_target:
     branches: [next]
     types: [opened, reopened, synchronize, edited, ready_for_review]
-  pull_request_review:
-    types: [submitted, dismissed]
-
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pull_request:
+        description: PR number to revalidate after approval
+        required: true
+        type: number
 permissions:
   contents: read
   pull-requests: read
   statuses: write
-
 concurrency:
   group: merge-admission-${{ github.event.pull_request.number }}
   cancel-in-progress: true
-
 jobs:
   verify:
     name: Trusted admission
-    if: github.event.pull_request.base.ref == 'next'
+    if: (github.event_name == 'pull_request_target' && github.event.pull_request.base.ref == 'next') || (github.event_name == 'issue_comment' && github.event.issue.pull_request) || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
