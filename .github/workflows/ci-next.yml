@@ -10,6 +10,9 @@ permissions:
   contents: read
   security-events: write
 
+env:
+  GOVULNCHECK_VERSION: "v1.9.0"
+
 jobs:
   scope:
     name: PR Review Budget
@@ -276,6 +279,9 @@ jobs:
 
       - name: Install gosec (pinned)
         run: go install github.com/securego/gosec/v2/cmd/gosec@v2.30.0
+
+      - name: Run govulncheck (pinned)
+        run: go run golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }} ./...
 
       - name: Test security regression gate
         run: python3 -B -m unittest discover -s scripts/tests -p test_security_gate.py -v
