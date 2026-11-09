@@ -19,7 +19,7 @@ permissions:
   pull-requests: read
   statuses: write
 concurrency:
-  group: merge-admission-${{ github.event.pull_request.number }}
+  group: merge-admission-${{ github.event.pull_request.number || github.event.issue.number || inputs.pull_request }}
   cancel-in-progress: true
 jobs:
   verify:

@@ -158,6 +158,9 @@ class OfflineAdmission(unittest.TestCase):
         self.assertNotIn("ref: ${{ github.event.pull_request.head", source)
         self.assertIn("statuses: write", source)
         self.assertIn("FLOWSTATE_DROPBOX_METADATA_READ_TOKEN", source)
+        group = source.split("concurrency:", 1)[1].split("jobs:", 1)[0]
+        for key in ("github.event.pull_request.number", "github.event.issue.number", "inputs.pull_request"):
+            self.assertIn(key, group)
 
 class FakeGitHub:
     def __init__(self, change_head=False):
