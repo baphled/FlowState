@@ -102,6 +102,8 @@ execution start. Orphan, duplicate, mismatched, incomplete or ambiguous batches
 return `ErrInvalidHistory` and no partial conversation. Bootstrap metadata and
 manual tool rows outside pending batches create no synthetic messages; unfinished
 assistant deltas reject continuation projection. Unknown event types fail closed.
+Assistant messages and deltas require the engine actor or a nonempty `provider:`
+actor.
 
 All limits are positive hard bounds: inspected events, message count, serialized
 message-array bytes and each result's content bytes. Overflow returns

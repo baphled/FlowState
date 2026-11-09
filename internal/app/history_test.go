@@ -99,6 +99,8 @@ var _ = Describe("Bounded session history", func() {
 	}, Entry("orphan result", []store.RecordedEvent{historyResult()}), Entry("orphan start", []store.RecordedEvent{historyStart()}),
 		Entry("missing content", []store.RecordedEvent{historyRow("user.message", `{}`)}), Entry("null message", []store.RecordedEvent{historyRow("assistant.message", `null`)}),
 		Entry("duplicate announcement IDs", []store.RecordedEvent{historyRow("assistant.message", `{"content":"","tool_calls":[{"id":"c","name":"echo","arguments":{"n":9007199254740993}},{"id":"c","name":"echo","arguments":{"n":9007199254740993}}]}`), historyStart(), historyResult()}),
+		Entry("finalised delta from a tool", []store.RecordedEvent{{Type: "assistant.delta", Actor: "tool:untrusted", PayloadJSON: `{"delta":"partial"}`}, historyRow("assistant.message", `{"content":"final"}`)}),
+		Entry("finalised delta from an empty provider", []store.RecordedEvent{{Type: "assistant.delta", Actor: "provider:", PayloadJSON: `{"delta":"partial"}`}, historyRow("assistant.message", `{"content":"final"}`)}),
 		Entry("unfinished stream", []store.RecordedEvent{historyRow("assistant.delta", `{"delta":"partial"}`)}),
 		Entry("unknown event", []store.RecordedEvent{historyRow("future.message", `{}`)}))
 

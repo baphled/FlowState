@@ -60,7 +60,7 @@ func (h *historyState) accept(event store.RecordedEvent) error {
 		return h.toolEvent(event)
 	case TypeAssistantDelta:
 		var payload historyMessagePayload
-		if historyDecode(event.PayloadJSON, &payload) != nil || payload.Delta == nil || len(h.pending) != 0 {
+		if historyDecode(event.PayloadJSON, &payload) != nil || payload.Delta == nil || len(h.pending) != 0 || !historyAssistantActor(event.Actor) {
 			return ErrInvalidHistory
 		}
 		h.streaming = true
@@ -83,7 +83,7 @@ func (h *historyState) message(event store.RecordedEvent) error {
 		if h.streaming || event.Actor != "user" || len(payload.ToolCalls) != 0 {
 			return ErrInvalidHistory
 		}
-	} else if event.Actor != "engine" && (!strings.HasPrefix(event.Actor, "provider:") || len(event.Actor) == len("provider:")) {
+	} else if !historyAssistantActor(event.Actor) {
 		return ErrInvalidHistory
 	}
 	for _, call := range payload.ToolCalls {
@@ -95,6 +95,10 @@ func (h *historyState) message(event store.RecordedEvent) error {
 	}
 	h.streaming = false
 	return h.add(provider.Message{Role: role, Content: *payload.Content, ToolCalls: payload.ToolCalls})
+}
+
+func historyAssistantActor(actor string) bool {
+	return actor == "engine" || (strings.HasPrefix(actor, "provider:") && len(actor) > len("provider:"))
 }
 
 func (h *historyState) toolEvent(event store.RecordedEvent) error {
