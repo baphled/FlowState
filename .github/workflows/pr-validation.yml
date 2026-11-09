@@ -13,11 +13,11 @@ jobs:
     name: Validate PR Title
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
 
@@ -36,7 +36,7 @@ jobs:
     name: Check AI Attribution
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
@@ -51,11 +51,11 @@ jobs:
     name: Conventional Commits
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
 
@@ -89,7 +89,7 @@ jobs:
     name: Breaking Changes Detection
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
@@ -119,7 +119,7 @@ jobs:
 
       - name: Comment on breaking changes
         if: steps.breaking.outputs.has_breaking == 'true'
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
           BREAKING_COMMITS: ${{ steps.breaking.outputs.commits }}
         with:
@@ -148,7 +148,7 @@ jobs:
     name: PR Size Label
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
       - name: Read review budget from target branch
@@ -166,7 +166,7 @@ jobs:
             exit 1
           fi
           echo "limit=$budget" >> "$GITHUB_OUTPUT"
-      - uses: codelytv/pr-size-labeler@v1
+      - uses: codelytv/pr-size-labeler@19c335e7695ba922de938806dd129f0a9b992644 # v1
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           xs_label: "size/XS"
