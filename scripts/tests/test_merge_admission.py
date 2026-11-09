@@ -164,13 +164,22 @@ class OfflineAdmission(unittest.TestCase):
             self.assertIn(key, group)
 
 class FakeGitHub:
-    def __init__(self, change_head=False):
+    def __init__(self, change_head=False, change_body=False, change_base=False):
         self.statuses = []
         self.change_head = change_head
+        self.change_body = change_body
+        self.change_base = change_base
         self.calls = 0
     def pr(self, number):
         self.calls += 1
-        return pr(head={"sha": "9" * 40}) if self.change_head and self.calls > 1 else pr()
+        if self.calls > 1:
+            if self.change_head:
+                return pr(head={"sha": "9" * 40})
+            if self.change_body:
+                return pr(body="Agent-Review: " + REF)
+            if self.change_base:
+                return pr(base={"ref": "next", "sha": "3" * 40})
+        return pr()
     def pages(self, path):
         if path.endswith("/commits"):
             return [commit()]
@@ -204,9 +213,18 @@ class PublishedStatus(unittest.TestCase):
         self.assertEqual([state for _, state, _ in gh.statuses], ["pending", "failure"])
     def test_source_drift_never_gets_success(self):
         gh = FakeGitHub(change_head=True)
-        with self.assertRaisesRegex(AdmissionError, "head changed"):
+        with self.assertRaisesRegex(AdmissionError, "candidate changed"):
             execute({"pull_request": {"number": 225}}, gh, FakeDropbox())
         self.assertEqual([state for _, state, _ in gh.statuses], ["pending", "failure"])
+    def test_same_head_body_and_base_changes_fail_status(self):
+        for mutation in ({"change_body": True}, {"change_base": True}):
+            gh = FakeGitHub(**mutation)
+            with self.subTest(mutation=mutation):
+                with self.assertRaisesRegex(AdmissionError, "candidate changed"):
+                    execute({"pull_request": {"number": 225}}, gh, FakeDropbox())
+                self.assertEqual([state for _, state, _ in gh.statuses],
+                                 ["pending", "failure"])
+
     def test_missing_credential_after_previous_success_fails_status(self):
         gh = FakeGitHub()
         execute({"pull_request": {"number": 225}}, gh, FakeDropbox())

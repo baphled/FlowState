@@ -250,6 +250,15 @@ def event_pr_number(event):
         raise AdmissionError("event has no valid PR number")
     return number
 
+def admission_pr_state(pr):
+    """Capture every mutable PR field used to grant admission."""
+    head, base = pr.get("head") or {}, pr.get("base") or {}
+    return (
+        head.get("sha"), base.get("ref"), base.get("sha"),
+        pr.get("state"), pr.get("draft"), pr.get("body"),
+    )
+
+
 def execute(event, github, dropbox_token):
     """Publish a commit status only for the observed exact GitHub PR head."""
     number = event_pr_number(event)
@@ -263,8 +272,8 @@ def execute(event, github, dropbox_token):
         commits = github.pages(f"/pulls/{number}/commits")
         review = dropbox.record(agent_review_reference(pr.get("body") or ""))
         verify_candidate(pr, review, commits, dropbox.record, head, github)
-        if (github.pr(number).get("head") or {}).get("sha") != head:
-            raise AdmissionError("PR head changed during admission")
+        if admission_pr_state(github.pr(number)) != admission_pr_state(pr):
+            raise AdmissionError("PR candidate changed during admission")
     except AdmissionError as error:
         github.status(head, "failure", str(error))
         raise

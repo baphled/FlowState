@@ -39,3 +39,10 @@ plus a passing `negative_oracle` with its own evidence. Missing, stale,
 quota-only and same-run reviews fail closed without a human GitHub approver.
 Dropbox content alone is not cryptographic agent identity proof: qualify the
 trusted writer, attribution and credential boundaries before live enforcement.
+
+## Last-moment PR state check
+
+Immediately before publishing a passing status, the verifier refetches and
+compares the full PR head, base SHA and target, draft/open state and description.
+Same-SHA changes to `Agent-Review:` or the base fail closed. This catches
+observed changes only; merge-time status freshness requires a separate gate.
