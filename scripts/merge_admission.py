@@ -27,8 +27,7 @@ REQUIRED_READS = {
     "/FlowState/Metadata/ACTIVE.json",
 }
 
-class AdmissionError(Exception):
-
+class AdmissionError(Exception): pass
 def metadata_reference(message):
     """Extract the single neutral trailer, refusing duplicates or malformed paths."""
     refs = re.findall(r"^Project-Metadata: (.+)$", message, flags=re.M)
@@ -84,7 +83,7 @@ def independent_approval(reviews, head_sha, author, contributors=()):
         state = review.get("state", "")
         if not login or state not in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
             continue
-            decisions[login.casefold()] = review
+        decisions[login.casefold()] = review
     if any(r["state"] == "CHANGES_REQUESTED" for r in decisions.values()):
         raise AdmissionError("unresolved GitHub changes requested")
     for login, review in decisions.items():
