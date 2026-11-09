@@ -1,8 +1,7 @@
 # Trusted merge-admission gate
 
 **Source:** [Issue #225](https://github.com/baphled/FlowState/issues/225).
-The trusted default-branch verifier checks GitHub commit blobs and external
-Dropbox evidence. It supplements the required PR-head `Build` check.
+The trusted default-branch verifier checks GitHub blobs and Dropbox evidence.
 
 ## Install only after qualification
 
