@@ -179,9 +179,6 @@ class FakeGitHub:
         return [{"filename": "scripts/demo.py", "status": "modified", "sha": "c" * 40}]
     def blob(self, sha):
         return b"demo"
-    def status(self, sha, state, description):
-        self.statuses.append((sha, state, description))
-
 class FakeDropbox:
     def __init__(self, missing=False):
         self.missing = missing
@@ -190,35 +187,46 @@ class FakeDropbox:
             raise AdmissionError("Dropbox record missing")
         return agent_review() if reference == REVIEW_REF else record()
 
+class FakePublisher:
+    def __init__(self):
+        self.statuses = []
+    def status(self, sha, state, description):
+        self.statuses.append((sha, state, description))
+
+
 class PublishedStatus(unittest.TestCase):
-    def test_passes_only_after_actual_admission(self):
-        gh = FakeGitHub()
-        execute({"pull_request": {"number": 225}}, gh, FakeDropbox())
-        self.assertEqual([(sha, state) for sha, state, _ in gh.statuses], [
+    def test_exact_head_gets_pending_and_success(self):
+        gh, publisher = FakeGitHub(), FakePublisher()
+        execute({"pull_request": {"number": 225}}, gh, FakeDropbox(), publisher)
+        self.assertEqual([(sha, state) for sha, state, _ in publisher.statuses], [
             (HEAD, "pending"), (HEAD, "success"),
         ])
-    def test_missing_record_fails_status(self):
-        gh = FakeGitHub()
+    def test_missing_evidence_posts_failure(self):
+        publisher = FakePublisher()
         with self.assertRaises(AdmissionError):
-            execute({"pull_request": {"number": 225}}, gh, FakeDropbox(missing=True))
-        self.assertEqual([state for _, state, _ in gh.statuses], ["pending", "failure"])
-    def test_source_drift_never_gets_success(self):
-        gh = FakeGitHub(change_head=True)
+            execute({"pull_request": {"number": 225}}, FakeGitHub(),
+                    FakeDropbox(missing=True), publisher)
+        self.assertEqual([s for _, s, _ in publisher.statuses], ["pending", "failure"])
+    def test_source_drift_posts_failure(self):
+        publisher = FakePublisher()
         with self.assertRaisesRegex(AdmissionError, "head changed"):
-            execute({"pull_request": {"number": 225}}, gh, FakeDropbox())
-        self.assertEqual([state for _, state, _ in gh.statuses], ["pending", "failure"])
-    def test_missing_credential_after_previous_success_fails_status(self):
-        gh = FakeGitHub()
-        execute({"pull_request": {"number": 225}}, gh, FakeDropbox())
+            execute({"pull_request": {"number": 225}}, FakeGitHub(change_head=True),
+                    FakeDropbox(), publisher)
+        self.assertEqual([s for _, s, _ in publisher.statuses], ["pending", "failure"])
+    def test_missing_dropbox_token_after_success_posts_failure(self):
+        gh, publisher = FakeGitHub(), FakePublisher()
+        execute({"pull_request": {"number": 225}}, gh, FakeDropbox(), publisher)
         with self.assertRaisesRegex(AdmissionError, "token"):
-            execute({"pull_request": {"number": 225}}, gh, "")
-        self.assertEqual([state for _, state, _ in gh.statuses],
+            execute({"pull_request": {"number": 225}}, gh, "", publisher)
+        self.assertEqual([s for _, s, _ in publisher.statuses],
                          ["pending", "success", "pending", "failure"])
     def test_bad_event_does_not_post_status(self):
-        gh = FakeGitHub()
+        publisher = FakePublisher()
         with self.assertRaises(AdmissionError):
-            execute({"pull_request": {"number": True}}, gh, FakeDropbox())
-        self.assertEqual(gh.statuses, [])
+            execute({"pull_request": {"number": True}}, FakeGitHub(),
+                    FakeDropbox(), publisher)
+        self.assertEqual(publisher.statuses, [])
+
 
 if __name__ == "__main__":
     unittest.main()

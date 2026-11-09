@@ -13,6 +13,7 @@ import re
 import sys
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from scripts.merge_admission_status import GitHubStatusPublisher, StatusPublisherError
 STATUS_CONTEXT = "flowstate/merge-admission"
 REFERENCE = re.compile(
     r"dropbox:/FlowState/Metadata/attempts/"
@@ -196,15 +197,6 @@ class GitHub:
             raise AdmissionError("invalid GitHub blob") from error
     def pr(self, number):
         return self.request("GET", f"/pulls/{number}")
-    def status(self, sha, state, description):
-        if not SHA.fullmatch(str(sha)) or state not in ("pending", "success", "failure"):
-            raise AdmissionError("unsafe status target")
-        self.request("POST", "/statuses/" + sha, {
-            "state": state,
-            "context": STATUS_CONTEXT,
-            "description": description[:140],
-        })
-
 class Dropbox:
     """Read-only Dropbox evidence download; no PR-controlled commands or URLs."""
     def __init__(self, token):
@@ -250,14 +242,14 @@ def event_pr_number(event):
         raise AdmissionError("event has no valid PR number")
     return number
 
-def execute(event, github, dropbox_token):
+def execute(event, github, dropbox_token, publisher):
     """Publish a commit status only for the observed exact GitHub PR head."""
     number = event_pr_number(event)
     pr = github.pr(number)
     head = (pr.get("head") or {}).get("sha")
     if not SHA.fullmatch(str(head)):
         raise AdmissionError("invalid initial PR head")
-    github.status(head, "pending", "Checking external evidence and independent review")
+    publisher.status(head, "pending", "Checking external evidence and independent review")
     try:
         dropbox = Dropbox(dropbox_token) if isinstance(dropbox_token, str) else dropbox_token
         commits = github.pages(f"/pulls/{number}/commits")
@@ -266,9 +258,9 @@ def execute(event, github, dropbox_token):
         if (github.pr(number).get("head") or {}).get("sha") != head:
             raise AdmissionError("PR head changed during admission")
     except AdmissionError as error:
-        github.status(head, "failure", str(error))
+        publisher.status(head, "failure", str(error))
         raise
-    github.status(head, "success", "Verified evidence and independent exact-head agent review")
+    publisher.status(head, "success", "Verified evidence and independent exact-head agent review")
 
 def main():
     try:
@@ -278,8 +270,12 @@ def main():
         with open(path, encoding="utf-8") as event_file:
             event = json.load(event_file)
         github = GitHub(os.environ.get("GITHUB_REPOSITORY", ""), os.environ.get("GITHUB_TOKEN", ""))
-        execute(event, github, os.environ.get("FLOWSTATE_DROPBOX_METADATA_READ_TOKEN", ""))
-    except (AdmissionError, ValueError, OSError) as error:
+        publisher = GitHubStatusPublisher(
+            os.environ.get("GITHUB_REPOSITORY", ""),
+            os.environ.get("FLOWSTATE_TRUSTED_STATUS_TOKEN", ""),
+        )
+        execute(event, github, os.environ.get("FLOWSTATE_DROPBOX_METADATA_READ_TOKEN", ""), publisher)
+    except (AdmissionError, StatusPublisherError, ValueError, OSError) as error:
         print("FAIL:", str(error), file=sys.stderr)
         return 1
     print("PASS: exact candidate has independently reviewed Dropbox evidence")

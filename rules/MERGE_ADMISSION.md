@@ -39,3 +39,11 @@ plus a passing `negative_oracle` with its own evidence. Missing, stale,
 quota-only and same-run reviews fail closed without a human GitHub approver.
 Dropbox content alone is not cryptographic agent identity proof: qualify the
 trusted writer, attribution and credential boundaries before live enforcement.
+
+## Isolated status authority
+
+The trusted admission verifier reads GitHub using its standard read-only token.
+Only `scripts/merge_admission_status.py` publishes the decision through a
+separately scoped `FLOWSTATE_TRUSTED_STATUS_TOKEN` GitHub App credential.
+Missing/invalid credentials fail closed. Before deployment, bind the expected
+App as the protected context creator; a green CI test is not this read-back.
