@@ -92,6 +92,26 @@ With the Go toolchain and module dependencies installed, run from repository roo
 go run github.com/onsi/ginkgo/v2/ginkgo --procs=2 --randomize-all --randomize-suites --race --fail-on-pending --fail-on-empty --timeout=3m ./internal/app
 ```
 
+## Verified conversation history
+
+`LoadSessionHistory(ctx, store, sessionID, HistoryLimits)` calls the existing
+store's verified `Replay` before strict conversation projection. It preserves
+user messages, grouped assistant calls with original IDs/arguments, and correlated
+tool outcomes in journal order. Only explicit `tool_denied` outcomes may omit an
+execution start. Orphan, duplicate, mismatched, incomplete or ambiguous batches
+return `ErrInvalidHistory` and no partial conversation. Bootstrap metadata and
+manual tool rows outside pending batches create no synthetic messages; unfinished
+assistant deltas reject continuation projection. Unknown event types fail closed.
+
+All limits are positive hard bounds: inspected events, message count, serialized
+message-array bytes and each result's content bytes. Overflow returns
+`ErrHistoryLimit`; history is never silently pruned. Fitting result JSON stays
+byte-exact. Oversized results use a valid JSON envelope with `truncated`,
+`original_bytes` and a UTF8 `preview`; persisted payloads and hashes are unchanged.
+Replay still materializes the full journal. This read-only API grants no lifecycle
+admission, retry or execution permission and supplies no call-event producer.
+Use the app Ginkgo command above for local verification.
+
 ## Changes and proof
 
 A bounded refactor preserves the public contract, failure behaviour and tests.
