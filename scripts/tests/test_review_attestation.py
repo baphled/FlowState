@@ -52,6 +52,12 @@ class ReviewSignature(unittest.TestCase):
         with self.assertRaisesRegex(ReviewAttestationError, "requires a JSON object"):
             verify_attestation([], KEY)
 
+    def test_non_ascii_signature_fails_with_controlled_error(self):
+        record = signed_review()
+        record["attestation"]["hmac_sha256"] = "é" * 64
+        with self.assertRaisesRegex(ReviewAttestationError, "invalid review signature"):
+            verify_attestation(record, KEY)
+
     def test_wrong_issuer_and_malformed_signature_fail(self):
         record = signed_review()
         record["attestation"]["issuer"] = "owner-claims-review"

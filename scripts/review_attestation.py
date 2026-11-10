@@ -2,6 +2,7 @@
 import hashlib
 import hmac
 import json
+import re
 
 ISSUER = "flowstate-independent-review-attestor-v1"
 DOMAIN = b"flowstate-agent-review-v1\0"
@@ -21,7 +22,7 @@ def verify_attestation(review, key):
     if not isinstance(proof, dict) or proof.get("issuer") != ISSUER:
         raise ReviewAttestationError("missing independently signed agent review")
     signature = proof.get("hmac_sha256")
-    if not isinstance(signature, str) or len(signature) != 64:
+    if not isinstance(signature, str) or not re.fullmatch(r"[0-9a-f]{64}", signature):
         raise ReviewAttestationError("invalid review signature")
     try:
         canonical = json.dumps(
