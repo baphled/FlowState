@@ -10,15 +10,18 @@ when subsequently modified.
 
 - Production Python modules: at most 250 lines and 35 conditional branch
   points per module.
-- Each sync/async function: at most 60 source lines, 40 lexical AST statements,
-  and a cyclomatic score of 15 (starting at 1, counting control-flow branches,
-  Boolean operands and match cases). Nested sync/async function bodies are
-  checked as their own function scopes rather than charged twice. Nested class
-  bodies and lambda expressions remain part of the enclosing lexical metric;
-  methods are checked as their own function scopes.
+- Each sync/async function: at most 60 lexical source lines, 40 lexical AST
+  statements, and a cyclomatic score of 15 (starting at 1, counting control-flow
+  branches, Boolean operands and match cases). Nested sync/async function bodies
+  are checked as their own function scopes and excluded from the enclosing
+  function's line/statement/complexity totals; their definition/signature stays
+  in the enclosing lexical span. Nested class bodies and lambda expressions
+  remain part of the enclosing lexical metric; methods are checked separately.
 - Each changed implementation `scripts/name.py` must have one owning test
   `scripts/tests/test_name.py`, present as a regular committed blob.
-  The test must contain at least one `test_*` function or method.
+  The test must contain a discoverable module-level `test_*` function or a
+  `test_*` method on a module-level `Test*`/TestCase-style class; a nested
+  function named `test_*` does not satisfy ownership.
   The same rule applies to nested modules and their sibling `tests/`.
   A `test_*.py` module nested deeper below a `tests/` directory is rejected
   rather than silently excluded from ownership validation.
@@ -50,9 +53,10 @@ make check-python-contract BASE_SHA=<actual-40-character-base-sha>
 The local target runs its regression cases, then checks the committed source.
 CI also executes the candidate regression suite, but enforcement uses the
 protected-base checker. Negative fixtures cover overlong and branching
-functions/modules, nested scopes, missing/deleted/renamed owners, nested
-pairing, orphaned or symlinked files, inline waivers, syntax errors, and a dirty
-working copy masking a committed violation.
+functions/modules, nested scope complexity and line accounting,
+missing/deleted/renamed owners, discoverable test entry points, nested pairing,
+orphaned or symlinked files, inline waivers, syntax errors, and a dirty working
+copy masking a committed violation.
 
 A green guard demonstrates structural checks only, not good design or
 authenticated independent review. Source change, tests, documentation,

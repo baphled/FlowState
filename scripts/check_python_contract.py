@@ -14,9 +14,6 @@ MAX_FUNCTION_COMPLEXITY = 15
 BRANCH_NODES = (ast.If, ast.IfExp, ast.For, ast.AsyncFor, ast.While,
                 ast.ExceptHandler, ast.Assert, ast.comprehension)
 FUNCTION_NODES = (ast.FunctionDef, ast.AsyncFunctionDef)
-NESTED_SCOPE_NODES = FUNCTION_NODES + (ast.Lambda, ast.ClassDef)
-
-
 def branch_points(node):
     """Count conditional paths, including Boolean operands and match cases."""
     if isinstance(node, ast.BoolOp):
@@ -27,16 +24,37 @@ def branch_points(node):
 
 
 def lexical_function_nodes(node):
-    """Walk one function body without charging nested function bodies twice."""
+    """Walk lexical work while excluding only nested function bodies."""
     nodes = []
     pending = list(reversed(node.body))
     while pending:
         current = pending.pop()
         nodes.append(current)
-        if isinstance(current, NESTED_SCOPE_NODES):
+        if isinstance(current, FUNCTION_NODES):
+            children = []
+            for field, value in ast.iter_fields(current):
+                if field == 'body':
+                    continue
+                if isinstance(value, ast.AST):
+                    children.append(value)
+                elif isinstance(value, list):
+                    children.extend(item for item in value if isinstance(item, ast.AST))
+            pending.extend(reversed(children))
             continue
         pending.extend(reversed(list(ast.iter_child_nodes(current))))
     return nodes
+
+
+def lexical_function_lines(node):
+    """Count source lines while excluding nested function bodies."""
+    lines = set(range(node.lineno, node.end_lineno + 1))
+    for nested in ast.walk(node):
+        if nested is node or not isinstance(nested, FUNCTION_NODES) or not nested.body:
+            continue
+        first_body = min(item.lineno for item in nested.body)
+        first_excluded = max(nested.lineno + 1, first_body)
+        lines.difference_update(range(first_excluded, nested.end_lineno + 1))
+    return len(lines)
 
 
 def source_violations(path, source):
@@ -56,7 +74,7 @@ def source_violations(path, source):
         if not isinstance(node, FUNCTION_NODES):
             continue
         nodes = lexical_function_nodes(node)
-        lines = node.end_lineno - node.lineno + 1
+        lines = lexical_function_lines(node)
         statements = sum(isinstance(item, ast.stmt) for item in nodes)
         complexity = 1 + sum(map(branch_points, nodes))
         metrics = (("lines", lines, MAX_FUNCTION_LINES),
@@ -86,16 +104,37 @@ def changed_python_paths(base):
     return [name.decode() for name in filter(None, changed)]
 
 
+def discoverable_test(module):
+    """Recognise module-level pytest-style functions or conventional test classes."""
+    for item in module.body:
+        if isinstance(item, FUNCTION_NODES) and item.name.startswith('test_'):
+            return True
+        if not isinstance(item, ast.ClassDef):
+            continue
+        pytest_class = item.name.startswith('Test')
+        unittest_class = any(
+            (isinstance(base, ast.Name) and base.id == 'TestCase')
+            or (isinstance(base, ast.Attribute) and base.attr == 'TestCase')
+            for base in item.bases
+        )
+        if not (pytest_class or unittest_class):
+            continue
+        if any(isinstance(member, FUNCTION_NODES) and member.name.startswith('test_')
+               for member in item.body):
+            return True
+    return False
+
+
 def test_violations(path, tree):
-    """Require a regular Python test file with at least one test entry point."""
+    """Require a regular Python test file with a discoverable test entry point."""
     try:
         source = read_blob(tree, path)
         module = ast.parse(source, filename=path)
     except (KeyError, ValueError, UnicodeError, SyntaxError) as error:
         return [f"{path}: invalid owning test: {error}"]
-    tested = any(isinstance(item, FUNCTION_NODES) and item.name.startswith('test_')
-                 for item in ast.walk(module))
-    return [] if tested else [f"{path}: no test_* function or method present"]
+    return [] if discoverable_test(module) else [
+        f"{path}: no discoverable test_* function or method present"
+    ]
 
 
 def candidate_errors(base):

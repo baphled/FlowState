@@ -33,6 +33,12 @@ class SourceContract(unittest.TestCase):
         outer += ['    def inner():'] + ['        if True: pass'] * 8
         self.assertEqual(source_violations('scripts/task.py', '\n'.join(outer) + '\n'), [])
 
+    def test_nested_function_lines_are_not_charged_to_outer(self):
+        source = ['def task():', '    def inner():', '        value = (']
+        source += ["            'x'"] * 55
+        source += ['        )', '        return value', '    return 1']
+        self.assertEqual(source_violations('scripts/task.py', '\n'.join(source) + '\n'), [])
+
     def test_lambda_complexity_is_charged_to_outer(self):
         expr = 'value'
         for _ in range(15):
@@ -151,11 +157,26 @@ class CommittedCandidate(unittest.TestCase):
         self.commit()
         self.assertIn('unsupported owning test layout', self.guard().stderr)
 
+    def test_nested_test_function_is_not_discoverable(self):
+        (self.directory / 'scripts/new.py').write_text(GOOD)
+        hidden = 'def helper():\n    def test_fake():\n        assert True\n'
+        (self.directory / 'scripts/tests/test_new.py').write_text(hidden)
+        self.commit()
+        self.assertIn('no discoverable test_*', self.guard().stderr)
+
+    def test_unittest_case_method_is_discoverable(self):
+        (self.directory / 'scripts/new.py').write_text(GOOD)
+        test = ('import unittest\n\nclass NewTests(unittest.TestCase):\n'
+                '    def test_task(self):\n        self.assertTrue(True)\n')
+        (self.directory / 'scripts/tests/test_new.py').write_text(test)
+        self.commit()
+        self.assertEqual(self.guard().returncode, 0)
+
     def test_empty_test_file_is_rejected(self):
         (self.directory / 'scripts/new.py').write_text(GOOD)
         (self.directory / 'scripts/tests/test_new.py').write_text('# no tests\n')
         self.commit()
-        self.assertIn('no test_* function', self.guard().stderr)
+        self.assertIn('no discoverable test_*', self.guard().stderr)
 
     def test_symlink_implementation_cannot_pass(self):
         (self.directory / 'scripts/new.py').symlink_to('legacy.py')
