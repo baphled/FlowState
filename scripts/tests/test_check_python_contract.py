@@ -33,6 +33,17 @@ class SourceContract(unittest.TestCase):
         outer += ['    def inner():'] + ['        if True: pass'] * 8
         self.assertEqual(source_violations('scripts/task.py', '\n'.join(outer) + '\n'), [])
 
+    def test_lambda_complexity_is_charged_to_outer(self):
+        expr = 'value'
+        for _ in range(15):
+            expr = f'value if value else ({expr})'
+        source = f'def task(value):\n    return lambda value: {expr}\n'
+        self.assertTrue(any('complexity' in x for x in source_violations('scripts/task.py', source)))
+
+    def test_nested_class_body_complexity_is_charged_to_outer(self):
+        source = 'def task():\n    class Local:\n' + '        if True: pass\n' * 15
+        self.assertTrue(any('complexity' in x for x in source_violations('scripts/task.py', source)))
+
     def test_large_or_branchy_module_is_rejected(self):
         module = GOOD + '# blank\n' * 250
         self.assertTrue(any('module' in x for x in source_violations('scripts/task.py', module)))
@@ -132,6 +143,13 @@ class CommittedCandidate(unittest.TestCase):
         (nested / 'test_orphan.py').write_text(TEST)
         self.commit()
         self.assertIn('no matching implementation', self.guard().stderr)
+
+    def test_deeply_nested_test_module_is_rejected(self):
+        nested = self.directory / 'scripts/tests/helpers'
+        nested.mkdir(parents=True)
+        (nested / 'test_orphan.py').write_text(TEST)
+        self.commit()
+        self.assertIn('unsupported owning test layout', self.guard().stderr)
 
     def test_empty_test_file_is_rejected(self):
         (self.directory / 'scripts/new.py').write_text(GOOD)

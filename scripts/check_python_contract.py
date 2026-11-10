@@ -27,7 +27,7 @@ def branch_points(node):
 
 
 def lexical_function_nodes(node):
-    """Walk one function body without charging nested scopes to its metrics."""
+    """Walk one function body without charging nested function bodies twice."""
     nodes = []
     pending = list(reversed(node.body))
     while pending:
@@ -108,6 +108,8 @@ def candidate_errors(base):
         if '/tests/' in path:
             owner = owning_implementation(path)
             if not owner:
+                if path.rsplit('/', 1)[-1].startswith('test_'):
+                    failures.append(f"{path}: unsupported owning test layout")
                 continue
             if path not in tree:
                 if owner in tree:

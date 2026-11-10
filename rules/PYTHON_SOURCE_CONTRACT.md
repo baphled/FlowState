@@ -12,12 +12,16 @@ when subsequently modified.
   points per module.
 - Each sync/async function: at most 60 source lines, 40 lexical AST statements,
   and a cyclomatic score of 15 (starting at 1, counting control-flow branches,
-  Boolean operands and match cases). Nested function/class/lambda bodies are
-  checked as their own scopes rather than charged to the enclosing function.
+  Boolean operands and match cases). Nested sync/async function bodies are
+  checked as their own function scopes rather than charged twice. Nested class
+  bodies and lambda expressions remain part of the enclosing lexical metric;
+  methods are checked as their own function scopes.
 - Each changed implementation `scripts/name.py` must have one owning test
   `scripts/tests/test_name.py`, present as a regular committed blob.
   The test must contain at least one `test_*` function or method.
   The same rule applies to nested modules and their sibling `tests/`.
+  A `test_*.py` module nested deeper below a `tests/` directory is rejected
+  rather than silently excluded from ownership validation.
 - Each changed, deleted or renamed root/nested test module is reconciled with
   its corresponding implementation in the final candidate tree. Deleting or
   renaming an owner test while its implementation survives is fatal. Package
