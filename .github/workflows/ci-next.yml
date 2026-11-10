@@ -24,8 +24,13 @@ jobs:
       - name: Test review budget boundaries and bypass controls
         run: python3 -B -m unittest discover -s scripts/tests -p test_pr_size.py -v
 
+      - name: Install pinned admission cryptography dependency
+        run: python3 -m pip install -r scripts/requirements-admission.txt
+
       - name: Test merge admission and negative controls
-        run: python3 -B -m unittest discover -s scripts/tests -p test_admission_io.py -v
+        run: |
+          python3 -B -m unittest discover -s scripts/tests -p 'test_admission_*.py' -v
+          python3 -B -m unittest discover -s scripts/tests -p 'test_review_*.py' -v
 
       - name: Enforce base policy on the entire committed diff
         env:
