@@ -1,5 +1,6 @@
 """Offline fail-closed contract for the trusted merge admission verifier."""
 import sys
+import hashlib
 import unittest
 from io import BytesIO
 from urllib.error import HTTPError
@@ -8,7 +9,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from scripts.admission_io import (  # noqa: E402
-    AdmissionError, Dropbox, GitHub, execute, validate_agent_review,
+    AdmissionError, Dropbox, GitHub, execute as admission_execute, validate_agent_review,
     metadata_reference, validate_record, verify_candidate,
 )
 HEAD = "2" * 40
@@ -16,6 +17,26 @@ PARENT = "1" * 40
 AUTHOR = "author"
 REF = "dropbox:/FlowState/Metadata/attempts/example-01/commit.json"
 REVIEW_REF = "dropbox:/FlowState/Metadata/attempts/example-01/agent-review.json"
+EXECUTION_REF = "dropbox:/FlowState/Metadata/attempts/example-01/execution.json"
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives import serialization
+from scripts.review_signature import canonical_payload
+REVIEW_PRIVATE = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
+EXECUTION_PRIVATE = Ed25519PrivateKey.from_private_bytes(bytes(range(1,33)))
+def public(private):
+    return private.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex()
+def sign(record, private):
+    record["attestation"] = {"algorithm":"Ed25519", "key_id":hashlib.sha256(bytes.fromhex(public(private))).hexdigest(),
+                             "signature":private.sign(canonical_payload(record)).hex()}
+    return record
+class FakePublisher:
+    def __init__(self, github):
+        self.statuses = github.statuses
+    def status(self, sha, state, description):
+        self.statuses.append((sha,state,description))
+def execute(event, github, dropbox):
+    return admission_execute(event, github, dropbox, FakePublisher(github),
+                             public(REVIEW_PRIVATE),public(EXECUTION_PRIVATE),lambda:150)
 READS = [
     "/FlowState/Dev/00-AGENT-READ-FIRST.md",
     "/FlowState/Dev/AGENTS.md",
@@ -64,14 +85,16 @@ def commit(message="chore: candidate\n\nProject-Metadata: " + REF, **updates):
 def agent_review(**updates):
     result = {
         "record_type": "flowstate-agent-review-v1", "metadata_ref": REVIEW_REF,
+        "repository":"baphled/FlowState", "base_sha":PARENT, "issued_at":100,"expires_at":200,
+        "execution_ref":EXECUTION_REF,
         "pr_number": 225, "head_sha": HEAD, "verdict": "PASS",
-        "implementer": {"run_id": "implement-1", "identity_evidence": "run log"},
-        "reviewer": {"role": "verifier", "run_id": "review-2", "identity_evidence": "separate run log"},
+        "implementer": {"run_id": "implement-1", "identity_evidence": "run log", "actor_id":"i","session_id":"is"},
+        "reviewer": {"role": "verifier", "run_id": "review-2", "identity_evidence": "separate run log", "actor_id":"r","session_id":"rs"},
         "negative_oracle": {"result": "PASS", "evidence": "reproduced failing fixture"},
         "findings": [], "summary": "Reviewed exact source and failure behaviour",
     }
     result.update(updates)
-    return result
+    return sign(result,REVIEW_PRIVATE)
 
 class OfflineAdmission(unittest.TestCase):
     def assertRejected(self, pattern, operation):
@@ -147,6 +170,7 @@ class FakeGitHub:
         self.statuses = []
         self.change_head = change_head
         self.calls = 0
+        self.repository = "baphled/FlowState"
     def pr(self, number):
         self.calls += 1
         return pr(head={"sha": "9" * 40}) if self.change_head and self.calls > 1 else pr()
@@ -158,8 +182,6 @@ class FakeGitHub:
         return [{"filename": "scripts/demo.py", "status": "modified", "sha": "c" * 40}]
     def blob(self, sha):
         return b"demo"
-    def status(self, sha, state, description):
-        self.statuses.append((sha, state, description))
 
 class FakeDropbox:
     def __init__(self, missing=False):
@@ -167,9 +189,62 @@ class FakeDropbox:
     def record(self, reference):
         if self.missing:
             raise AdmissionError("Dropbox record missing")
+        if reference == EXECUTION_REF:
+            review = agent_review()
+            return sign({"record_type":"flowstate-review-execution-v1", "metadata_ref":EXECUTION_REF,
+                "state":"completed","verdict":"PASS", "reviewer":review["reviewer"],"implementer":review["implementer"],
+                "review_payload_sha256":hashlib.sha256(canonical_payload(review)).hexdigest()},EXECUTION_PRIVATE)
         return agent_review() if reference == REVIEW_REF else record()
 
 class PublishedStatus(unittest.TestCase):
+    def test_unsigned_review_or_execution_cannot_publish_success(self):
+        for reference in (REVIEW_REF,EXECUTION_REF):
+            db=FakeDropbox();original=db.record
+            def unsigned(ref):
+                value=original(ref)
+                if ref==reference: value.pop("attestation")
+                return value
+            db.record=unsigned;gh=FakeGitHub()
+            with self.subTest(reference=reference):
+                with self.assertRaises(AdmissionError): execute({"pull_request":{"number":225}},gh,db)
+                self.assertEqual([state for _,state,_ in gh.statuses],["pending","failure"])
+
+    def test_missing_keys_publisher_or_clock_fail_closed(self):
+        for publisher,review_key,execution_key,clock in [
+                (None,public(REVIEW_PRIVATE),public(EXECUTION_PRIVATE),lambda:150),
+                (FakePublisher(FakeGitHub()),"",public(EXECUTION_PRIVATE),lambda:150),
+                (FakePublisher(FakeGitHub()),public(REVIEW_PRIVATE),"",lambda:150),
+                (FakePublisher(FakeGitHub()),public(REVIEW_PRIVATE),public(EXECUTION_PRIVATE),None)]:
+            with self.assertRaises(AdmissionError):
+                admission_execute({"pull_request":{"number":225}},FakeGitHub(),FakeDropbox(),
+                                  publisher,review_key,execution_key,clock)
+
+    def test_review_expiring_during_final_recheck_fails(self):
+        gh=FakeGitHub();times=iter([150,200])
+        with self.assertRaisesRegex(AdmissionError,"stale"):
+            admission_execute({"pull_request":{"number":225}},gh,FakeDropbox(),FakePublisher(gh),
+                              public(REVIEW_PRIVATE),public(EXECUTION_PRIVATE),lambda:next(times))
+        self.assertEqual(gh.statuses[-1][1],"failure")
+
+    def test_execution_record_is_in_final_readset(self):
+        db=FakeDropbox();original=db.record;reads=[]
+        def changing(ref):
+            if ref==EXECUTION_REF and ref in reads: raise AdmissionError("execution removed")
+            reads.append(ref);return original(ref)
+        db.record=changing;gh=FakeGitHub()
+        with self.assertRaisesRegex(AdmissionError,"execution removed"):
+            execute({"pull_request":{"number":225}},gh,db)
+        self.assertEqual(gh.statuses[-1][1],"failure")
+
+    def test_publisher_failure_never_becomes_success(self):
+        gh=FakeGitHub();publisher=FakePublisher(gh)
+        def failure(sha,state,description): raise AdmissionError("publication failed")
+        publisher.status=failure
+        with self.assertRaisesRegex(AdmissionError,"publication failed"):
+            admission_execute({"pull_request":{"number":225}},gh,FakeDropbox(),publisher,
+                              public(REVIEW_PRIVATE),public(EXECUTION_PRIVATE),lambda:150)
+        self.assertEqual(gh.statuses,[])
+
     def test_same_head_body_or_base_drift_is_rejected(self):
         for changes in [{"body": "altered"}, {"base": {"ref": "next", "sha": "7" * 40}},
                         {"draft": True}, {"state": "closed"}]:
@@ -229,6 +304,16 @@ class PublishedStatus(unittest.TestCase):
 
 
 class AdapterContract(unittest.TestCase):
+    def test_reader_cannot_publish_status_or_send_writes(self):
+        reader=GitHub("baphled/FlowState","synthetic")
+        self.assertFalse(hasattr(reader,"status"))
+        with self.assertRaisesRegex(AdmissionError,"GET"):
+            reader.request("POST","/statuses/"+HEAD,{"state":"success"})
+
+    def test_standalone_cli_stays_closed(self):
+        from scripts.admission_io import main
+        self.assertEqual(main(),1)
+
     def test_missing_tokens_are_rejected(self):
         with self.assertRaises(AdmissionError):
             Dropbox("")
@@ -236,7 +321,7 @@ class AdapterContract(unittest.TestCase):
             GitHub("baphled/FlowState", "")
     def test_bad_external_download_fails(self):
         bad = HTTPError("https://content.dropboxapi.com", 409, "not_found", None, BytesIO())
-        with patch("scripts.admission_io.urlopen", side_effect=bad):
+        with patch("scripts.admission_io.open_no_redirect", side_effect=bad):
             with self.assertRaises(AdmissionError):
                 Dropbox("synthetic-token").record(REF)
 
