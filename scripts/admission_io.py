@@ -2,16 +2,16 @@
 import base64
 import binascii
 import json
-import os
 import sys
 import re
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import Request
 from scripts.admission_metadata import AdmissionError, REFERENCE, SHA, metadata_reference, validate_record, event_pr_number
 from scripts.admission_review import agent_review_reference, validate_agent_review
 from scripts.admission_candidate import verify_candidate, verify_files, candidate_snapshot
-
-STATUS_CONTEXT = "flowstate/merge-admission"
+from scripts.admission_authentication import authenticate_review
+from scripts.admission_transport import open_no_redirect, strict_json, response_json
+from scripts.review_execution import validate_review_scope
 
 class GitHub:
     def __init__(self, repository, token):
@@ -20,11 +20,13 @@ class GitHub:
         if not token:
             raise AdmissionError("missing GitHub token")
         self.base = "https://api.github.com/repos/" + repository
+        self.repository = repository
         self.token = token
     def request(self, method, path, body=None):
+        if method != "GET" or body is not None:
+            raise AdmissionError("GitHub reader permits GET requests only")
         request = Request(
             self.base + path,
-            data=json.dumps(body).encode() if body is not None else None,
             method=method,
             headers={"Authorization": "Bearer " + self.token,
                      "Accept": "application/vnd.github+json",
@@ -32,8 +34,8 @@ class GitHub:
                      "Content-Type": "application/json"},
         )
         try:
-            with urlopen(request, timeout=15) as response:
-                return json.load(response)
+            with open_no_redirect(request) as response:
+                return response_json(response)
         except (HTTPError, URLError, ValueError, TimeoutError) as error:
             raise AdmissionError("GitHub API unavailable or rejected request") from error
     def pages(self, path):
@@ -69,14 +71,6 @@ class GitHub:
             raise AdmissionError("invalid GitHub blob") from error
     def pr(self, number):
         return self.request("GET", f"/pulls/{number}")
-    def status(self, sha, state, description):
-        if not SHA.fullmatch(str(sha)) or state not in ("pending", "success", "failure"):
-            raise AdmissionError("unsafe status target")
-        self.request("POST", "/statuses/" + sha, {
-            "state": state,
-            "context": STATUS_CONTEXT,
-            "description": description[:140],
-        })
 
 class Dropbox:
     """Read-only Dropbox evidence download; no PR-controlled commands or URLs."""
@@ -95,8 +89,8 @@ class Dropbox:
                      "Content-Type": "application/octet-stream"},
         )
         try:
-            with urlopen(request, timeout=15) as response:
-                metadata = json.loads(response.headers["Dropbox-API-Result"])
+            with open_no_redirect(request) as response:
+                metadata = strict_json(response.headers["Dropbox-API-Result"])
                 if metadata.get("path_display", "").casefold() != path.casefold():
                     raise AdmissionError("Dropbox read-back path differs from reference")
                 if metadata.get(".tag") != "file" or not metadata.get("id"):
@@ -104,7 +98,7 @@ class Dropbox:
                 content = response.read(131073)
                 if len(content) > 131072:
                     raise AdmissionError("Dropbox record exceeds 128KiB bound")
-                return json.loads(content.decode("utf-8"))
+                return strict_json(content)
         except AdmissionError:
             raise
         except (HTTPError, URLError, ValueError, KeyError, UnicodeError, TimeoutError) as error:
@@ -127,43 +121,46 @@ def record_readset(fetch):
             read(reference)
     return read, recheck
 
-def execute(event, github, dropbox_token):
-    """Publish a commit status only for the observed exact GitHub PR head."""
+def execute(event, github, dropbox_token, publisher, review_key, execution_key, clock):
+    """Authenticate evidence before asking a separate trusted issuer for success.
+
+    Caller supplies qualified public authorities and an isolated status publisher.
+    This validation has no merge-time reservation or exclusive merge capability.
+    """
+    if not all((callable(getattr(publisher, "status", None)), publisher is not github, callable(clock))):
+        raise AdmissionError("separate qualified publisher and clock required")
     number = event_pr_number(event)
     pr = github.pr(number)
     initial = candidate_snapshot(pr)
     head = (pr.get("head") or {}).get("sha")
     if not SHA.fullmatch(str(head)):
         raise AdmissionError("invalid initial PR head")
-    github.status(head, "pending", "Checking external evidence and independent review")
+    publisher.status(head, "pending", "Checking external evidence and independent review")
     try:
+        if pr.get("number") != number:
+            raise AdmissionError("GitHub PR response number differs from requested candidate")
         dropbox = Dropbox(dropbox_token) if isinstance(dropbox_token, str) else dropbox_token
         commits = github.pages(f"/pulls/{number}/commits")
         read, recheck = record_readset(dropbox.record)
-        review = read(agent_review_reference(pr.get("body") or ""))
+        reference = agent_review_reference(pr.get("body") or "")
+        review = read(reference)
         verify_candidate(pr, review, commits, read, head, github)
+        candidate = {"repository": github.repository, "pr_number": number,
+                     "head_sha": head, "base_sha": pr["base"]["sha"]}
+        authenticate_review(review, reference, candidate, review_key, execution_key, read, int(clock()))
         recheck()
         if candidate_snapshot(github.pr(number)) != initial:
             raise AdmissionError("PR state changed during admission (head changed or other drift)")
+        validate_review_scope(review, candidate, int(clock()))
     except AdmissionError as error:
-        github.status(head, "failure", str(error))
+        publisher.status(head, "failure", str(error))
         raise
-    github.status(head, "success", "Verified evidence and independent exact-head agent review")
+    publisher.status(head, "success", "Verified evidence and independent exact-head agent review")
 
 def main():
-    try:
-        path = os.environ.get("GITHUB_EVENT_PATH")
-        if not path:
-            raise AdmissionError("GITHUB_EVENT_PATH not provided")
-        with open(path, encoding="utf-8") as event_file:
-            event = json.load(event_file)
-        github = GitHub(os.environ.get("GITHUB_REPOSITORY", ""), os.environ.get("GITHUB_TOKEN", ""))
-        execute(event, github, os.environ.get("FLOWSTATE_DROPBOX_METADATA_READ_TOKEN", ""))
-    except (AdmissionError, ValueError, OSError) as error:
-        print("FAIL:", str(error), file=sys.stderr)
-        return 1
-    print("PASS: exact candidate has independently reviewed Dropbox evidence")
-    return 0
+    print("FAIL: privileged admission requires an explicitly configured trusted runner; "
+          "standalone CLI is disabled", file=sys.stderr)
+    return 1
 
 if __name__ == "__main__":
     sys.exit(main())
