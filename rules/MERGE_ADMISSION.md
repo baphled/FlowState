@@ -56,3 +56,40 @@ Run the source tests:
 ```bash
 python3 -B -m unittest discover -s scripts/tests -p 'test_admission_*.py' -v
 ```
+
+## Deployed enforcement
+
+The trusted runner is deployed as a local service outside this checkout
+(`~/Projects/flowstate-admission`). It imports the admission modules only from
+a checkout pinned to the reviewed `origin/next` admission source SHA; a moved
+`next` head fails the pin check and blocks admission until the owner
+re-qualifies the pin after a reviewed source update.
+
+Enforcement is branch protection: `next` must require
+`flowstate/merge-admission` pinned to the dedicated issuer GitHub App (commit
+statuses write plus metadata read only) alongside the existing required
+checks. Only that App can satisfy the check: the issuer refuses success
+unless the live protection pins it to the same App with administrator
+enforcement, linear history and a strict Build requirement intact, and the
+protection update is itself recorded as separate closeout evidence before the
+first admission run.
+
+The runner performs admission and merge in one process: it publishes
+`pending`, revalidates the exact candidate evidence (signed review from a
+separate reviewer session, separately signed execution receipt corroborated
+against the local harness session store, candidate commit chain and blob
+digests, final Dropbox recheck), waits for the other required checks, then
+squash-merges. A success status is consumed at the end of the flight: after a
+completed or failed merge attempt the runner publishes a terminal failure, and
+a lease-aware watchdog revokes any lingering success on an unmerged open
+candidate, so a stale success cannot authorise a later merge after evidence,
+review or candidate state changed.
+
+The two Ed25519 signing authorities (review attestor and execution observer)
+live in the runner service, never in this repository. Before signing, the
+execution authority verifies that the claimed reviewer and implementer
+sessions exist in the local harness session store and that their transcripts
+reference the exact candidate head SHA and PR number; supplied identity
+strings alone are rejected. Merges into `next` are made only through this
+runner; direct merges stay blocked by the same protection, which the runner
+re-verifies live before any success publication.
