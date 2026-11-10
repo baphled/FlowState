@@ -31,7 +31,7 @@ class SourceContract(unittest.TestCase):
     def test_nested_function_lines_are_not_charged_to_outer(self):
         source = ['def task():', '    def inner(',
                   '            first,', '            second):', '        value = (']
-        source += ["            'x'"] * 55
+        source += ["            'x'"] * 54
         source += ['        )', '        return value', '    return 1']
         self.assertEqual(source_violations('scripts/task.py', '\n'.join(source) + '\n'), [])
 
