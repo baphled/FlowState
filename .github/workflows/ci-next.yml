@@ -24,6 +24,9 @@ jobs:
       - name: Test review budget boundaries and bypass controls
         run: python3 -B -m unittest discover -s scripts/tests -p test_pr_size.py -v
 
+      - name: Test merge admission and negative controls
+        run: python3 -B -m unittest discover -s scripts/tests -p test_admission_io.py -v
+
       - name: Enforce base policy on the entire committed diff
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
