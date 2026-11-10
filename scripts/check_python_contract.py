@@ -4,7 +4,7 @@ import argparse
 import ast
 import sys
 
-from scripts.contract_sources import read_blob, snapshot
+from scripts.contract_sources import git, read_blob, snapshot
 
 MAX_MODULE_LINES = 250
 MAX_MODULE_BRANCHES = 35
@@ -14,6 +14,7 @@ MAX_FUNCTION_COMPLEXITY = 15
 BRANCH_NODES = (ast.If, ast.IfExp, ast.For, ast.AsyncFor, ast.While,
                 ast.ExceptHandler, ast.Assert, ast.comprehension)
 FUNCTION_NODES = (ast.FunctionDef, ast.AsyncFunctionDef)
+NESTED_SCOPE_NODES = FUNCTION_NODES + (ast.Lambda, ast.ClassDef)
 
 
 def branch_points(node):
@@ -23,6 +24,19 @@ def branch_points(node):
     if isinstance(node, ast.Match):
         return len(node.cases)
     return int(isinstance(node, BRANCH_NODES))
+
+
+def lexical_function_nodes(node):
+    """Walk one function body without charging nested scopes to its metrics."""
+    nodes = []
+    pending = list(reversed(node.body))
+    while pending:
+        current = pending.pop()
+        nodes.append(current)
+        if isinstance(current, NESTED_SCOPE_NODES):
+            continue
+        pending.extend(reversed(list(ast.iter_child_nodes(current))))
+    return nodes
 
 
 def source_violations(path, source):
@@ -41,7 +55,7 @@ def source_violations(path, source):
     for node in ast.walk(module):
         if not isinstance(node, FUNCTION_NODES):
             continue
-        nodes = list(ast.walk(node))
+        nodes = lexical_function_nodes(node)
         lines = node.end_lineno - node.lineno + 1
         statements = sum(isinstance(item, ast.stmt) for item in nodes)
         complexity = 1 + sum(map(branch_points, nodes))
@@ -65,12 +79,19 @@ def owning_implementation(test_path):
     return f"{parent}/{name}" if separator and name else None
 
 
+def changed_python_paths(base):
+    """Include additions, changes, type changes and deletions; split renames."""
+    changed = git('diff', '--name-only', '-z', '--no-renames', '--diff-filter=ACMRTD',
+                  base, 'HEAD', '--', '*.py').split(b'\\0')
+    return [name.decode() for name in filter(None, changed)]
+
+
 def test_violations(path, tree):
     """Require a regular Python test file with at least one test entry point."""
     try:
         source = read_blob(tree, path)
         module = ast.parse(source, filename=path)
-    except (ValueError, UnicodeError, SyntaxError) as error:
+    except (KeyError, ValueError, UnicodeError, SyntaxError) as error:
         return [f"{path}: invalid owning test: {error}"]
     tested = any(isinstance(item, FUNCTION_NODES) and item.name.startswith('test_')
                  for item in ast.walk(module))
@@ -79,27 +100,37 @@ def test_violations(path, tree):
 
 def candidate_errors(base):
     """Use the committed candidate tree and an exact SHA base, never local edits."""
-    tree, changed = snapshot(base, '*.py')
-    scripts = sorted(path for path in changed if path.startswith('scripts/'))
+    tree, _ = snapshot(base, '*.py')
+    scripts = sorted(path for path in changed_python_paths(base)
+                     if path.startswith('scripts/'))
     failures = []
     for path in scripts:
         if '/tests/' in path:
             owner = owning_implementation(path)
-            if owner:
-                if owner not in tree:
-                    failures.append(f"{path}: no matching implementation {owner}")
-                failures.extend(test_violations(path, tree))
+            if not owner:
+                continue
+            if path not in tree:
+                if owner in tree:
+                    failures.append(f"{owner}: missing owning test {path}")
+                continue
+            if owner not in tree:
+                failures.append(f"{path}: no matching implementation {owner}")
+            failures.extend(test_violations(path, tree))
             continue
         if path.endswith('/__init__.py'):
             continue
         required = owning_test(path)
+        if path not in tree:
+            if required in tree:
+                failures.append(f"{required}: no matching implementation {path}")
+            continue
         if required not in tree:
             failures.append(f"{path}: missing owning test {required}")
         else:
             failures.extend(test_violations(required, tree))
         try:
             failures.extend(source_violations(path, read_blob(tree, path)))
-        except (ValueError, UnicodeError) as error:
+        except (KeyError, ValueError, UnicodeError) as error:
             failures.append(f"{path}: invalid committed source: {error}")
     return failures
 
