@@ -9,6 +9,7 @@ from scripts.check_python_contract import candidate_errors, source_violations
 
 ROOT = Path(__file__).resolve().parents[2]
 GOOD = 'def task():\n    return 1\n'
+TEST = 'def test_task():\n    assert True\n'
 
 
 class SourceContract(unittest.TestCase):
@@ -26,6 +27,11 @@ class SourceContract(unittest.TestCase):
     def test_conditional_complexity_is_rejected(self):
         source = 'def task():\n' + '    if True: pass\n' * 16
         self.assertTrue(any('complexity' in x for x in source_violations('scripts/task.py', source)))
+
+    def test_nested_function_complexity_is_not_charged_to_outer(self):
+        outer = ['def task():'] + ['    if True: pass'] * 8
+        outer += ['    def inner():'] + ['        if True: pass'] * 8
+        self.assertEqual(source_violations('scripts/task.py', '\n'.join(outer) + '\n'), [])
 
     def test_large_or_branchy_module_is_rejected(self):
         module = GOOD + '# blank\n' * 250
@@ -51,6 +57,8 @@ class CommittedCandidate(unittest.TestCase):
             shutil.copy(ROOT / 'scripts' / file, self.directory / 'scripts' / file)
         (self.directory / 'scripts/tests/test_check_python_contract.py').write_text('# fixture\n')
         (self.directory / 'scripts/legacy.py').write_text('def old():\n' + '    pass\n' * 80)
+        (self.directory / 'scripts/existing.py').write_text(GOOD)
+        (self.directory / 'scripts/tests/test_existing.py').write_text(TEST)
         self.git('init', '-q')
         self.git('config', 'user.name', 'Synthetic checker')
         self.git('config', 'user.email', 'checker@example.invalid')
@@ -63,7 +71,7 @@ class CommittedCandidate(unittest.TestCase):
                                        stderr=subprocess.STDOUT).decode()
 
     def commit(self):
-        self.git('add', '.')
+        self.git('add', '-A')
         self.git('commit', '-qm', 'synthetic contract fixture')
 
     def guard(self):
@@ -79,28 +87,49 @@ class CommittedCandidate(unittest.TestCase):
         self.commit()
         self.assertIn('missing owning test', self.guard().stderr)
 
+    def test_deleted_owner_test_is_rejected(self):
+        (self.directory / 'scripts/tests/test_existing.py').unlink()
+        self.commit()
+        self.assertIn('missing owning test', self.guard().stderr)
+
+    def test_renamed_owner_test_is_rejected(self):
+        source = self.directory / 'scripts/tests/test_existing.py'
+        source.rename(self.directory / 'scripts/tests/test_renamed.py')
+        self.commit()
+        result = self.guard()
+        self.assertIn('missing owning test', result.stderr)
+        self.assertIn('no matching implementation', result.stderr)
+
     def test_changed_but_unsaved_worktree_cannot_hide_failure(self):
         (self.directory / 'scripts/new.py').write_text('def task():\n' + '    pass\n' * 61)
-        (self.directory / 'scripts/tests/test_new.py').write_text('def test_new():\n    assert True\n')
+        (self.directory / 'scripts/tests/test_new.py').write_text(TEST)
         self.commit()
         (self.directory / 'scripts/new.py').write_text(GOOD)
         self.assertIn('exceeds', self.guard().stderr)
 
     def test_matching_test_allows_source(self):
         (self.directory / 'scripts/new.py').write_text(GOOD)
-        (self.directory / 'scripts/tests/test_new.py').write_text('def test_new():\n    assert True\n')
+        (self.directory / 'scripts/tests/test_new.py').write_text(TEST)
+        self.commit()
+        self.assertEqual(self.guard().returncode, 0)
+
+    def test_nested_matching_test_allows_source(self):
+        nested = self.directory / 'scripts/package'
+        (nested / 'tests').mkdir(parents=True)
+        (nested / 'worker.py').write_text(GOOD)
+        (nested / 'tests/test_worker.py').write_text(TEST)
         self.commit()
         self.assertEqual(self.guard().returncode, 0)
 
     def test_additional_orphan_test_file_is_rejected(self):
-        (self.directory / 'scripts/tests/test_new_extra.py').write_text('# orphan\n')
+        (self.directory / 'scripts/tests/test_new_extra.py').write_text(TEST)
         self.commit()
         self.assertIn('no matching implementation', self.guard().stderr)
 
     def test_nested_orphan_test_file_is_rejected(self):
         nested = self.directory / 'scripts/package/tests'
         nested.mkdir(parents=True)
-        (nested / 'test_orphan.py').write_text('def test_orphan():\n    assert True\n')
+        (nested / 'test_orphan.py').write_text(TEST)
         self.commit()
         self.assertIn('no matching implementation', self.guard().stderr)
 
@@ -109,6 +138,12 @@ class CommittedCandidate(unittest.TestCase):
         (self.directory / 'scripts/tests/test_new.py').write_text('# no tests\n')
         self.commit()
         self.assertIn('no test_* function', self.guard().stderr)
+
+    def test_symlink_implementation_cannot_pass(self):
+        (self.directory / 'scripts/new.py').symlink_to('legacy.py')
+        (self.directory / 'scripts/tests/test_new.py').write_text(TEST)
+        self.commit()
+        self.assertIn('invalid committed source', self.guard().stderr)
 
     def test_symlink_test_file_cannot_pass(self):
         (self.directory / 'scripts/new.py').write_text(GOOD)
