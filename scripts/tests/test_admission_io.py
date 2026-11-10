@@ -49,7 +49,7 @@ def pr(**updates):
     result = {
         "number": 225, "body": "Agent-Review: " + REVIEW_REF,
         "state": "open", "draft": False,
-        "base": {"ref": "next"}, "head": {"sha": HEAD},
+        "base": {"ref": "next", "sha": PARENT}, "head": {"sha": HEAD},
         "user": {"login": AUTHOR},
     }
     result.update(updates)
@@ -102,6 +102,12 @@ class OfflineAdmission(unittest.TestCase):
     def test_wrong_candidate_or_empty_commit_set_fails(self):
         self.assertRejected("candidate SHA", lambda: verify_candidate(pr(), agent_review(), [commit()], lambda _: record(), "3" * 40, FakeGitHub()))
         self.assertRejected("incomplete", lambda: verify_candidate(pr(), agent_review(), [], lambda _: record(), HEAD, FakeGitHub()))
+    def test_missing_base_or_non_linear_parent_fails(self):
+        self.assertRejected("base SHA", lambda: verify_candidate(pr(base={"ref": "next"}), agent_review(),
+                            [commit()], lambda _: record(), HEAD, FakeGitHub()))
+        for parents in [[{"sha": "f" * 40}], [{"sha": PARENT}, {"sha": "f" * 40}]]:
+            self.assertRejected("linear chain", lambda: verify_candidate(pr(), agent_review(),
+                                [commit(parents=parents)], lambda _: record(), HEAD, FakeGitHub()))
     def test_old_head_and_wrong_pr_review_fail(self):
         self.assertRejected("exact candidate", lambda: validate_agent_review(agent_review(head_sha=PARENT), REVIEW_REF, HEAD, 225))
         self.assertRejected("this PR", lambda: validate_agent_review(agent_review(pr_number=226), REVIEW_REF, HEAD, 225))
@@ -164,6 +170,34 @@ class FakeDropbox:
         return agent_review() if reference == REVIEW_REF else record()
 
 class PublishedStatus(unittest.TestCase):
+    def test_same_head_body_or_base_drift_is_rejected(self):
+        for changes in [{"body": "altered"}, {"base": {"ref": "next", "sha": "7" * 40}},
+                        {"draft": True}, {"state": "closed"}]:
+            with self.subTest(changes=changes):
+                gh = FakeGitHub()
+                gh.pr = lambda number: pr(**changes) if gh.statuses else pr()
+                with self.assertRaisesRegex(AdmissionError, "PR state changed"):
+                    execute({"pull_request": {"number": 225}}, gh, FakeDropbox())
+
+    def test_disappearing_or_changed_record_never_gets_success(self):
+        for missing in [True, False]:
+            with self.subTest(missing=missing):
+                db = FakeDropbox()
+                original = db.record
+                seen = set()
+                def changing(reference):
+                    if reference in seen:
+                        if missing:
+                            raise AdmissionError("Dropbox record missing")
+                        return {"changed": True}
+                    seen.add(reference)
+                    return original(reference)
+                db.record = changing
+                gh = FakeGitHub()
+                with self.assertRaises(AdmissionError):
+                    execute({"pull_request": {"number": 225}}, gh, db)
+                self.assertEqual(gh.statuses[-1][1], "failure")
+
     def test_passes_only_after_actual_admission(self):
         gh = FakeGitHub()
         execute({"pull_request": {"number": 225}}, gh, FakeDropbox())
