@@ -1,10 +1,16 @@
 # Merge admission source boundary
 
-This change installs **source-only** validation; it does not install a privileged workflow, attest an independent reviewer, configure branch protection or grant merge admission.
+This change installs **source-only** validation, not a privileged workflow,
+independent reviewer attestation, branch protection, or merge admission.
 
-- `admission_metadata` validates external record shape, expected parent and source readset.
-- `admission_review` checks reviewer-claim shape only; a trusted attestor is still required.
-- `admission_candidate` binds PR and GitHub changed blobs to the external manifest.
-- `admission_io` owns external GitHub/Dropbox operations and orchestration; do not run it as a trusted status issuer until a separate approved and qualified deployment.
+- `admission_metadata` validates records, parent SHA and source readset.
+- `admission_review` checks claims; real attestation remains separate.
+- `admission_candidate` binds PR and GitHub blobs to the source manifest.
+- `admission_io` owns GitHub/Dropbox requests and orchestration. Do not use it
+  as a trusted issuer until independently reviewed and qualified.
 
-Run: `python3 -B -m unittest discover -s scripts/tests -p 'test_admission_*.py' -v`.
+Run the source tests:
+
+```bash
+python3 -B -m unittest discover -s scripts/tests -p 'test_admission_*.py' -v
+```
