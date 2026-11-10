@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: read
-  security-events: write
 
 env:
   GOVULNCHECK_VERSION: "v1.9.0"
@@ -181,6 +180,40 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: make check-code-contract BASE_SHA="$BASE_SHA"
 
+      - name: Test Python source contract regressions
+        run: python3 -B -m unittest discover -s scripts/tests -p test_check_python_contract.py -v
+
+      - name: Enforce protected-base Python source contract
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          BASE_SHA="${PR_BASE_SHA:-$(git rev-parse HEAD^)}"
+          guard_root="$RUNNER_TEMP/python-contract-guard"
+          mkdir -p "$guard_root/scripts"
+          : > "$guard_root/scripts/__init__.py"
+
+          trusted=true
+          for source in scripts/check_python_contract.py scripts/contract_sources.py; do
+            if ! git cat-file -e "$BASE_SHA:$source" 2>/dev/null; then
+              trusted=false
+              break
+            fi
+          done
+
+          for source in scripts/check_python_contract.py scripts/contract_sources.py; do
+            if [ "$trusted" = true ]; then
+              git show "$BASE_SHA:$source" > "$guard_root/$source"
+            else
+              cp "$source" "$guard_root/$source"
+            fi
+          done
+
+          if [ "$trusted" != true ]; then
+            echo "::notice::Bootstrapping Python contract; protected base has no checker yet"
+          fi
+
+          PYTHONPATH="$guard_root" python3 -B "$guard_root/scripts/check_python_contract.py" --base "$BASE_SHA"
+
       - name: Set up documentation tools
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -268,6 +301,9 @@ jobs:
     name: Security Scan
     needs: [scope]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
