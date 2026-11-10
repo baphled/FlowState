@@ -82,7 +82,7 @@ def owning_implementation(test_path):
 def changed_python_paths(base):
     """Include additions, changes, type changes and deletions; split renames."""
     changed = git('diff', '--name-only', '-z', '--no-renames', '--diff-filter=ACMRTD',
-                  base, 'HEAD', '--', '*.py').split(b'\\0')
+                  base, 'HEAD', '--', '*.py').split(bytes([0]))
     return [name.decode() for name in filter(None, changed)]
 
 
