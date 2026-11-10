@@ -1,6 +1,8 @@
 """Validate claimed agent review; signed attestation is a separate qualification."""
 import re
 from scripts.admission_metadata import AdmissionError, REFERENCE
+from scripts.review_signature import verify_signature
+from scripts.review_execution import validate_review_scope, validate_execution
 
 def agent_review_reference(body):
     refs = re.findall(r"^Agent-Review: (.+)$", body if isinstance(body, str) else "", flags=re.M)
@@ -39,3 +41,20 @@ def validate_agent_review(review, reference, head_sha, number):
     if not isinstance(review.get("findings"), list) or not str(review.get("summary") or "").strip():
         raise AdmissionError("substantive agent findings and summary required")
 
+
+def authenticate_agent_review(review, reference, candidate, public_key, authenticated_execution, now):
+    """Require signature and an independently authenticated harness execution read.
+
+    authenticated_execution must be a trusted adapter authenticating the harness
+    authority, not Dropbox document claims. Absence fails closed. Caller owns
+    durable one-use merge reservation and must recheck evidence at that boundary.
+    """
+    validate_agent_review(review, reference, candidate.get("head_sha"), candidate.get("pr_number"))
+    verify_signature(review, public_key)
+    validate_review_scope(review, candidate, now)
+    execution_ref = review.get("execution_ref")
+    if not isinstance(execution_ref, str) or not REFERENCE.fullmatch(execution_ref):
+        raise AdmissionError("missing trusted review execution reference")
+    if not callable(authenticated_execution):
+        raise AdmissionError("authenticated review execution authority unavailable")
+    validate_execution(review, authenticated_execution(execution_ref))
