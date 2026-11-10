@@ -14,12 +14,16 @@ class EvidenceTransport(unittest.TestCase):
     def test_duplicate_nested_keys_and_non_finite_numbers_fail(self):
         for content in [b'{"x":1,"x":2}',b'{"nested":{"x":1,"x":2}}',
                         b'{"x":NaN}',b'[Infinity]',b'[-Infinity]',b'"\xff"',
+                        b'{"claimed":1e9999}',b'{"claimed":-1e9999}',
                         '{"label":"é"}'.encode('utf-16')]:
             with self.subTest(content=content):
                 with self.assertRaises(AdmissionError): strict_json(content)
 
     def test_unambiguous_unicode_json_succeeds(self):
         self.assertEqual(strict_json('{"label":"é","flag":true}'),{"label":"é","flag":True})
+
+    def test_finite_json_float_succeeds(self):
+        self.assertEqual(strict_json(b'{"value":1.25}'), {"value":1.25})
 
     def test_oversized_response_fails(self):
         with self.assertRaisesRegex(AdmissionError,"8MiB"):

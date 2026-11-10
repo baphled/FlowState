@@ -1,5 +1,6 @@
 """Decode unambiguous JSON and prevent bearer credentials following redirects."""
 import json
+import math
 from urllib.request import HTTPRedirectHandler, build_opener
 
 from scripts.admission_metadata import AdmissionError
@@ -28,13 +29,20 @@ def unique_object(pairs):
 def reject_constant(value):
     raise AdmissionError("non-finite JSON number is forbidden")
 
+def finite_float(value):
+    number = float(value)
+    if not math.isfinite(number):
+        raise AdmissionError("non-finite JSON number is forbidden")
+    return number
+
 
 def strict_json(content):
     """Decode evidence without duplicate keys, non-finite numbers or invalid UTF-8."""
     try:
         if isinstance(content, (bytes, bytearray)):
             content = content.decode("utf-8")
-        return json.loads(content, object_pairs_hook=unique_object, parse_constant=reject_constant)
+        return json.loads(content, object_pairs_hook=unique_object, parse_constant=reject_constant,
+                          parse_float=finite_float)
     except (ValueError, UnicodeError, RecursionError) as error:
         raise AdmissionError("invalid JSON response") from error
 
