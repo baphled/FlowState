@@ -1,67 +1,15 @@
-"""Negative controls for changed committed Python source and test ownership."""
+"""Integration tests for committed Python source and test ownership."""
 import shutil
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.check_python_contract import candidate_errors, source_violations
+from scripts.check_python_contract import candidate_errors
 
 ROOT = Path(__file__).resolve().parents[2]
 GOOD = 'def task():\n    return 1\n'
 TEST = 'def test_task():\n    assert True\n'
-
-
-class SourceContract(unittest.TestCase):
-    def test_focused_function_is_accepted(self):
-        self.assertEqual(source_violations('scripts/task.py', GOOD), [])
-
-    def test_large_function_is_rejected(self):
-        source = 'def task():\n' + '    pass\n' * 60
-        self.assertTrue(any('lines' in x for x in source_violations('scripts/task.py', source)))
-
-    def test_excessive_statements_are_rejected(self):
-        source = 'def task():\n' + '    pass\n' * 41
-        self.assertTrue(any('statements' in x for x in source_violations('scripts/task.py', source)))
-
-    def test_conditional_complexity_is_rejected(self):
-        source = 'def task():\n' + '    if True: pass\n' * 16
-        self.assertTrue(any('complexity' in x for x in source_violations('scripts/task.py', source)))
-
-    def test_nested_function_complexity_is_not_charged_to_outer(self):
-        outer = ['def task():'] + ['    if True: pass'] * 8
-        outer += ['    def inner():'] + ['        if True: pass'] * 8
-        self.assertEqual(source_violations('scripts/task.py', '\n'.join(outer) + '\n'), [])
-
-    def test_nested_function_lines_are_not_charged_to_outer(self):
-        source = ['def task():', '    def inner():', '        value = (']
-        source += ["            'x'"] * 55
-        source += ['        )', '        return value', '    return 1']
-        self.assertEqual(source_violations('scripts/task.py', '\n'.join(source) + '\n'), [])
-
-    def test_lambda_complexity_is_charged_to_outer(self):
-        expr = 'value'
-        for _ in range(15):
-            expr = f'value if value else ({expr})'
-        source = f'def task(value):\n    return lambda value: {expr}\n'
-        self.assertTrue(any('complexity' in x for x in source_violations('scripts/task.py', source)))
-
-    def test_nested_class_body_complexity_is_charged_to_outer(self):
-        source = 'def task():\n    class Local:\n' + '        if True: pass\n' * 15
-        self.assertTrue(any('complexity' in x for x in source_violations('scripts/task.py', source)))
-
-    def test_large_or_branchy_module_is_rejected(self):
-        module = GOOD + '# blank\n' * 250
-        self.assertTrue(any('module' in x for x in source_violations('scripts/task.py', module)))
-        branchy = 'if True: pass\n' * 36
-        self.assertTrue(any('module branches' in x for x in source_violations('scripts/task.py', branchy)))
-
-    def test_inline_waiver_does_not_exempt_complexity(self):
-        source = 'def task(): # noqa: complexity\n' + '    if True: pass\n' * 16
-        self.assertTrue(source_violations('scripts/task.py', source))
-
-    def test_invalid_syntax_fails(self):
-        self.assertTrue(any('invalid Python syntax' in x for x in source_violations('scripts/task.py', 'def :')))
 
 
 class CommittedCandidate(unittest.TestCase):
@@ -70,9 +18,10 @@ class CommittedCandidate(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.directory = Path(temporary.name)
         (self.directory / 'scripts/tests').mkdir(parents=True)
-        for file in ('check_python_contract.py', 'contract_sources.py'):
+        for file in ('check_python_contract.py', 'contract_sources.py', 'python_contract_ast.py'):
             shutil.copy(ROOT / 'scripts' / file, self.directory / 'scripts' / file)
         (self.directory / 'scripts/tests/test_check_python_contract.py').write_text('# fixture\n')
+        (self.directory / 'scripts/tests/test_python_contract_ast.py').write_text('# fixture\n')
         (self.directory / 'scripts/legacy.py').write_text('def old():\n' + '    pass\n' * 80)
         (self.directory / 'scripts/existing.py').write_text(GOOD)
         (self.directory / 'scripts/tests/test_existing.py').write_text(TEST)

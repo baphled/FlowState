@@ -32,8 +32,10 @@ when subsequently modified.
 - Inline suppressions, generated comments, working-tree edits and renames
   do not waive the check. The verifier reviews semantic cohesion separately.
 
-The guard reads the entire changed blob from the candidate Git tree and
-compares against the **exact protected base**, with no diff-hunk exemptions.
+The guard separates AST policy/metrics from candidate-tree orchestration, with
+one owning test file for each implementation. It reads the entire changed blob
+from the candidate Git tree and compares against the **exact protected base**,
+with no diff-hunk exemptions.
 Deletion and rename effects are included. In CI the checker and its Git-source
 helper are loaded from the protected base, so a candidate cannot weaken the
 policy implementation it is being checked by. The initial bootstrap is the

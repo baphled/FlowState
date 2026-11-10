@@ -181,7 +181,7 @@ jobs:
         run: make check-code-contract BASE_SHA="$BASE_SHA"
 
       - name: Test Python source contract regressions
-        run: python3 -B -m unittest discover -s scripts/tests -p test_check_python_contract.py -v
+        run: python3 -B -m unittest discover -s scripts/tests -p 'test_*python_contract*.py' -v
 
       - name: Enforce protected-base Python source contract
         env:
@@ -193,14 +193,14 @@ jobs:
           : > "$guard_root/scripts/__init__.py"
 
           trusted=true
-          for source in scripts/check_python_contract.py scripts/contract_sources.py; do
+          for source in scripts/check_python_contract.py scripts/python_contract_ast.py scripts/contract_sources.py; do
             if ! git cat-file -e "$BASE_SHA:$source" 2>/dev/null; then
               trusted=false
               break
             fi
           done
 
-          for source in scripts/check_python_contract.py scripts/contract_sources.py; do
+          for source in scripts/check_python_contract.py scripts/python_contract_ast.py scripts/contract_sources.py; do
             if [ "$trusted" = true ]; then
               git show "$BASE_SHA:$source" > "$guard_root/$source"
             else

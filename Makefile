@@ -90,7 +90,7 @@ check-code-contract: ## Check committed changed Go structure (BASE_SHA=PR base)
 	python3 -B scripts/check_code_contract.py --base "$(BASE_SHA)"
 
 check-python-contract: ## Check committed Python complexity and test ownership (BASE_SHA=PR base)
-	python3 -B -m unittest discover -s scripts/tests -p test_check_python_contract.py -v
+	python3 -B -m unittest discover -s scripts/tests -p 'test_*python_contract*.py' -v
 	python3 -B -m scripts.check_python_contract --base "$(BASE_SHA)"
 
 check-code-quality: check-code-contract ## Run pinned contract linter after installation
