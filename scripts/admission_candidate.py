@@ -1,7 +1,13 @@
 """Bind PR state and commit manifests to exact candidate data."""
 import hashlib
+import json
 from scripts.admission_metadata import AdmissionError, SHA, metadata_reference, validate_record
 from scripts.admission_review import agent_review_reference, validate_agent_review
+
+def candidate_snapshot(pr):
+    """Capture admission-sensitive PR fields as immutable values."""
+    return tuple(json.dumps(pr.get(key), sort_keys=True, allow_nan=False)
+                 for key in ("number", "head", "base", "state", "draft", "body", "user"))
 
 def validate_candidate_state(pr, commits, expected_sha):
     head_sha = ((pr.get("head") or {}).get("sha"))
@@ -10,6 +16,8 @@ def validate_candidate_state(pr, commits, expected_sha):
         raise AdmissionError("not an open, ready PR targeting next")
     if not author or not SHA.fullmatch(str(head_sha)) or head_sha != expected_sha:
         raise AdmissionError("candidate SHA or author cannot be verified")
+    if not SHA.fullmatch(str((pr.get("base") or {}).get("sha"))):
+        raise AdmissionError("candidate base SHA cannot be verified")
     if not commits or len(commits) > 1000 or commits[-1].get("sha") != head_sha:
         raise AdmissionError("incomplete or changed PR commit list")
     return head_sha
@@ -17,11 +25,15 @@ def validate_candidate_state(pr, commits, expected_sha):
 def verify_candidate(pr, review, commits, fetch_record, expected_sha, github):
     """Recheck every commit and reject mismatched external evidence."""
     head_sha = validate_candidate_state(pr, commits, expected_sha)
+    previous = pr["base"]["sha"]
     for commit in commits:
         sha = commit.get("sha")
         parents = commit.get("parents") or []
         if not SHA.fullmatch(str(sha)) or not parents or not SHA.fullmatch(str(parents[0].get("sha"))):
             raise AdmissionError("commit SHA/parent unavailable")
+        if len(parents) != 1 or parents[0]["sha"] != previous:
+            raise AdmissionError("candidate commits do not form a linear chain from current base")
+        previous = sha
         reference = metadata_reference((commit.get("commit") or {}).get("message", ""))
         manifest = validate_record(fetch_record(reference), reference, parents[0]["sha"])
         verify_files(github, sha, manifest)

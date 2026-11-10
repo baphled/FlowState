@@ -9,7 +9,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from scripts.admission_metadata import AdmissionError, REFERENCE, SHA, metadata_reference, validate_record, event_pr_number
 from scripts.admission_review import agent_review_reference, validate_agent_review
-from scripts.admission_candidate import verify_candidate, verify_files
+from scripts.admission_candidate import verify_candidate, verify_files, candidate_snapshot
 
 STATUS_CONTEXT = "flowstate/merge-admission"
 
@@ -111,10 +111,27 @@ class Dropbox:
             raise AdmissionError("Dropbox record missing, invalid or inaccessible") from error
 
 
+def record_readset(fetch):
+    """Track exact JSON values and re-read them before the decision."""
+    observed = {}
+    def read(reference):
+        value = fetch(reference)
+        encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        previous = observed.setdefault(reference, encoded)
+        if previous != encoded:
+            raise AdmissionError("Dropbox evidence changed during admission")
+        observed[reference] = encoded
+        return value
+    def recheck():
+        for reference in tuple(observed):
+            read(reference)
+    return read, recheck
+
 def execute(event, github, dropbox_token):
     """Publish a commit status only for the observed exact GitHub PR head."""
     number = event_pr_number(event)
     pr = github.pr(number)
+    initial = candidate_snapshot(pr)
     head = (pr.get("head") or {}).get("sha")
     if not SHA.fullmatch(str(head)):
         raise AdmissionError("invalid initial PR head")
@@ -122,10 +139,12 @@ def execute(event, github, dropbox_token):
     try:
         dropbox = Dropbox(dropbox_token) if isinstance(dropbox_token, str) else dropbox_token
         commits = github.pages(f"/pulls/{number}/commits")
-        review = dropbox.record(agent_review_reference(pr.get("body") or ""))
-        verify_candidate(pr, review, commits, dropbox.record, head, github)
-        if (github.pr(number).get("head") or {}).get("sha") != head:
-            raise AdmissionError("PR head changed during admission")
+        read, recheck = record_readset(dropbox.record)
+        review = read(agent_review_reference(pr.get("body") or ""))
+        verify_candidate(pr, review, commits, read, head, github)
+        recheck()
+        if candidate_snapshot(github.pr(number)) != initial:
+            raise AdmissionError("PR state changed during admission (head changed or other drift)")
     except AdmissionError as error:
         github.status(head, "failure", str(error))
         raise
