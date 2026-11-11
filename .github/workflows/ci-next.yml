@@ -368,6 +368,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
 
       # Fail closed on any checkout/HEAD mismatch: never validate untrusted refs.
       - name: Verify exact head
@@ -391,7 +392,7 @@ jobs:
           set -euo pipefail
           for module in scripts/admission_*.py; do
             name="$(basename "$module" .py)"
-            python3 -c "import importlib; importlib.import_module('$name')"
+            python3 -c "import importlib; importlib.import_module('scripts.$name')"
           done
 
       - name: Run admission source tests
