@@ -3,6 +3,7 @@ import hashlib
 import json
 from scripts.admission_metadata import AdmissionError, SHA, metadata_reference, validate_record
 from scripts.admission_review import agent_review_reference, validate_agent_review
+from scripts.admission_checks import check_runs_page, verify_required_checks
 
 def candidate_snapshot(pr):
     """Capture admission-sensitive PR fields as immutable values."""

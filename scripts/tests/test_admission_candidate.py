@@ -1,6 +1,8 @@
 """Exact-base failure control for PR candidates."""
 import unittest
-from scripts.admission_candidate import AdmissionError, validate_candidate_state, candidate_snapshot
+from scripts.admission_candidate import (
+    AdmissionError, validate_candidate_state, candidate_snapshot, verify_required_checks,
+)
 
 class CandidateSnapshot(unittest.TestCase):
     def test_same_head_description_change_changes_snapshot(self):
@@ -25,3 +27,6 @@ class CandidateState(unittest.TestCase):
             validate_candidate_state({"state": "open", "draft": True,
                                       "base": {"ref": "next"}, "head": {"sha": "1"*40}},
                                      [{"sha": "1"*40}], "1"*40)
+
+
+
