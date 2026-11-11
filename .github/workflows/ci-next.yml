@@ -353,3 +353,54 @@ jobs:
         if: always()
         with:
           sarif_file: ${{ runner.temp }}/security-results/candidate.sarif
+
+  # Interim in-repo producer for the "flowstate/merge-admission" required
+  # status context. The long-term design (#241) is an external trusted status
+  # publisher (status issuer App + pinned runner); this job only provides a
+  # fail-closed placeholder verdict until that is provisioned.
+  merge-admission:
+    name: flowstate/merge-admission
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      # Fail closed on any checkout/HEAD mismatch: never validate untrusted refs.
+      - name: Verify exact head
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          expected="${PR_HEAD_SHA:-$EXPECTED_SHA}"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::Checked-out HEAD $actual does not match expected $expected"
+            exit 1
+          fi
+
+      - name: Install pinned admission cryptography dependency
+        run: python3 -m pip install -r scripts/requirements-admission.txt
+
+      - name: Verify admission modules import cleanly
+        run: |
+          set -euo pipefail
+          for module in scripts/admission_*.py; do
+            name="$(basename "$module" .py)"
+            python3 -c "import importlib; importlib.import_module('$name')"
+          done
+
+      - name: Run admission source tests
+        run: python3 -B -m unittest discover -s scripts/tests -p 'test_admission_*.py' -v
+
+      - name: Interim admission verdict (privileged loop intentionally not run)
+        run: |
+          set -euo pipefail
+          echo "Interim producer: admission source modules and tests pass on the exact head."
+          echo "The privileged admission loop (scripts/admission_io.py main) fails closed by design"
+          echo "and is not executed here. Authoritative admission remains with the external trusted"
+          echo "publisher per #241 / issue #225."
