@@ -3,6 +3,7 @@ import hashlib
 import json
 from scripts.admission_metadata import AdmissionError, SHA, metadata_reference, validate_record
 from scripts.admission_review import agent_review_reference, validate_agent_review
+from scripts.admission_checks import check_runs_page, verify_required_checks
 
 def candidate_snapshot(pr):
     """Capture admission-sensitive PR fields as immutable values."""
@@ -39,45 +40,6 @@ def verify_candidate(pr, review, commits, fetch_record, expected_sha, github):
         verify_files(github, sha, manifest)
     validate_agent_review(review, agent_review_reference(pr.get("body") or ""), head_sha, pr.get("number"))
     return head_sha
-
-def verify_required_checks(pr_head, github, required):
-    """Require every configured check to be green on this exact head SHA.
-
-    `required` is a trusted caller-supplied configuration sequence; PR data is
-    never a source for which checks matter. Fail closed when it is missing or
-    malformed, and treat legacy status-API conclusions as ineligible.
-    """
-    if not required or not isinstance(required, (tuple, list)) or \
-            not all(isinstance(name, str) and name.strip() == name and name for name in required):
-        raise AdmissionError("required checks configuration missing or invalid")
-    observed = {}
-    page = 1
-    while True:
-        runs = github.check_runs(pr_head, page)
-        if not isinstance(runs, list):
-            raise AdmissionError("invalid GitHub check-runs response")
-        for run in runs:
-            name = run.get("name")
-            if name not in required or name in observed:
-                continue
-            if run.get("status") != "completed":
-                observed[name] = "incomplete"
-                continue
-            conclusion = run.get("conclusion")
-            if conclusion == "success" and run.get("head_sha") != pr_head:
-                observed[name] = "different head"
-                continue
-            observed[name] = conclusion
-        if len(runs) < 100:
-            break
-        page += 1
-        if page > 10:
-            raise AdmissionError("GitHub check-runs exceed page bound")
-    for name in required:
-        conclusion = observed.get(name, "missing")
-        if conclusion != "success":
-            raise AdmissionError(f"required check {name} did not succeed on the candidate head: {conclusion}")
-    return True
 
 def verify_files(github, sha, manifest):
     """Bind Dropbox manifest to the actual complete GitHub commit diff."""
