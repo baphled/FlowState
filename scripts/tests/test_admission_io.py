@@ -34,9 +34,10 @@ class FakePublisher:
         self.statuses = github.statuses
     def status(self, sha, state, description):
         self.statuses.append((sha,state,description))
-def execute(event, github, dropbox):
+def execute(event, github, dropbox, required_checks=("Build", "Test (ubuntu-latest)")):
     return admission_execute(event, github, dropbox, FakePublisher(github),
-                             public(REVIEW_PRIVATE),public(EXECUTION_PRIVATE),lambda:150)
+                             public(REVIEW_PRIVATE),public(EXECUTION_PRIVATE),lambda:150,
+                             required_checks)
 READS = [
     "/FlowState/Dev/00-AGENT-READ-FIRST.md",
     "/FlowState/Dev/AGENTS.md",
@@ -171,6 +172,7 @@ class FakeGitHub:
         self.change_head = change_head
         self.calls = 0
         self.repository = "baphled/FlowState"
+        self.checks = [check_run("Build", sha=HEAD), check_run("Test (ubuntu-latest)", sha=HEAD)]
     def pr(self, number):
         self.calls += 1
         return pr(head={"sha": "9" * 40}) if self.change_head and self.calls > 1 else pr()
@@ -182,6 +184,15 @@ class FakeGitHub:
         return [{"filename": "scripts/demo.py", "status": "modified", "sha": "c" * 40}]
     def blob(self, sha):
         return b"demo"
+    def check_runs(self, sha, page):
+        return self.checks if page == 1 else []
+
+def check_run(name, status="completed", conclusion="success", sha=None):
+    run = {"name": name, "status": status, "conclusion": conclusion}
+    if sha is not None:
+        run["head_sha"] = sha
+    return run
+
 
 class FakeDropbox:
     def __init__(self, missing=False):
@@ -217,13 +228,13 @@ class PublishedStatus(unittest.TestCase):
                 (FakePublisher(FakeGitHub()),public(REVIEW_PRIVATE),public(EXECUTION_PRIVATE),None)]:
             with self.assertRaises(AdmissionError):
                 admission_execute({"pull_request":{"number":225}},FakeGitHub(),FakeDropbox(),
-                                  publisher,review_key,execution_key,clock)
+                                  publisher,review_key,execution_key,clock,("Build",))
 
     def test_review_expiring_during_final_recheck_fails(self):
         gh=FakeGitHub();times=iter([150,200])
         with self.assertRaisesRegex(AdmissionError,"stale"):
             admission_execute({"pull_request":{"number":225}},gh,FakeDropbox(),FakePublisher(gh),
-                              public(REVIEW_PRIVATE),public(EXECUTION_PRIVATE),lambda:next(times))
+                              public(REVIEW_PRIVATE),public(EXECUTION_PRIVATE),lambda:next(times),("Build",))
         self.assertEqual(gh.statuses[-1][1],"failure")
 
     def test_execution_record_is_in_final_readset(self):
@@ -242,7 +253,7 @@ class PublishedStatus(unittest.TestCase):
         publisher.status=failure
         with self.assertRaisesRegex(AdmissionError,"publication failed"):
             admission_execute({"pull_request":{"number":225}},gh,FakeDropbox(),publisher,
-                              public(REVIEW_PRIVATE),public(EXECUTION_PRIVATE),lambda:150)
+                              public(REVIEW_PRIVATE),public(EXECUTION_PRIVATE),lambda:150,("Build",))
         self.assertEqual(gh.statuses,[])
 
     def test_same_head_body_or_base_drift_is_rejected(self):
@@ -301,6 +312,29 @@ class PublishedStatus(unittest.TestCase):
         with self.assertRaises(AdmissionError):
             execute({"pull_request": {"number": True}}, gh, FakeDropbox())
         self.assertEqual(gh.statuses, [])
+
+    def test_skipped_or_failed_required_check_cannot_publish_success(self):
+        for run in (check_run("Build", conclusion="skipped", sha=HEAD),
+                    check_run("Build", conclusion="failure", sha=HEAD),
+                    check_run("Build", status="queued", conclusion=None, sha=HEAD),
+                    check_run("Build", sha="3" * 40)):
+            with self.subTest(run=run):
+                gh = FakeGitHub()
+                gh.checks = [run, check_run("Test (ubuntu-latest)", sha=HEAD)]
+                with self.assertRaises(AdmissionError):
+                    execute({"pull_request": {"number": 225}}, gh, FakeDropbox())
+                self.assertEqual(gh.statuses[-1][1], "failure")
+
+    def test_missing_required_checks_configuration_fails_closed(self):
+        gh = FakeGitHub()
+        with self.assertRaisesRegex(AdmissionError, "required checks"):
+            execute({"pull_request": {"number": 225}}, gh, FakeDropbox(), required_checks=None)
+        self.assertEqual(gh.statuses[-1][1], "failure")
+
+    def test_all_green_required_checks_publish_success(self):
+        gh = FakeGitHub()
+        execute({"pull_request": {"number": 225}}, gh, FakeDropbox())
+        self.assertEqual([state for _, state, _ in gh.statuses], ["pending", "success"])
 
 
 class AdapterContract(unittest.TestCase):

@@ -6,7 +6,15 @@ exclusive merge authority.
 
 - `admission_metadata` validates records, parent SHA and source readset.
 - `admission_review` checks claims; real attestation remains separate.
-- `admission_candidate` binds PR and GitHub blobs to the source manifest.
+- `admission_candidate` binds PR and GitHub blobs to the source manifest and
+  verifies required CI checks: every configured check must report conclusion
+  `success` on the exact candidate head SHA before admission can publish
+  success. Skipped, failed, incomplete or absent checks fail the decision, as
+  do checks bound to a different head. `required_checks` is trusted
+  caller-supplied configuration (branch-protection contexts such as
+  `Lint & Format`, `Test (ubuntu-latest)`, `Build`); it is never read from
+  PR-controlled data. Legacy commit statuses are not consulted: only the
+  check-runs API carries the per-run `head_sha` binding this gate needs.
 - Candidate commits must form a linear chain from the exact current base SHA.
   Admission snapshots the head, base ref/SHA, PR number, author, open/draft state
   and full description. A relevant change before the final decision fails.
@@ -30,10 +38,13 @@ exclusive merge authority.
 The standalone `python3 -B -m scripts.admission_io` command intentionally fails.
 No workflow or privileged default configuration is installed. A qualified external
 runner must supply `execute(event, github, dropbox_token, publisher, review_key,
-execution_key, clock)`, where `github` is the read-only repository client,
-`publisher` is an isolated trusted issuer and `clock` returns UTC Unix seconds.
-Missing keys, missing execution evidence, expired review or failed publication
-prevents success. Review expiry is checked again after the final state recheck.
+execution_key, clock, required_checks)`, where `github` is the read-only repository
+client, `publisher` is an isolated trusted issuer, `clock` returns UTC Unix seconds
+and `required_checks` names the CI checks that must have succeeded on the exact
+candidate head. Missing `required_checks` configuration fails closed.
+Missing keys, missing execution evidence, expired review, a non-green required
+check or failed publication prevents success. Review expiry is checked again
+after the final state recheck.
 
 The execution authority must observe actual independent harness actor/session/run
 identities, then sign `flowstate-review-execution-v1` with its own Ed25519 key.

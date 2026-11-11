@@ -8,7 +8,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request
 from scripts.admission_metadata import AdmissionError, REFERENCE, SHA, metadata_reference, validate_record, event_pr_number
 from scripts.admission_review import agent_review_reference, validate_agent_review
-from scripts.admission_candidate import verify_candidate, verify_files, candidate_snapshot
+from scripts.admission_candidate import verify_candidate, verify_files, candidate_snapshot, verify_required_checks
 from scripts.admission_authentication import authenticate_review
 from scripts.admission_transport import open_no_redirect, strict_json, response_json
 from scripts.review_execution import validate_review_scope
@@ -71,6 +71,14 @@ class GitHub:
             raise AdmissionError("invalid GitHub blob") from error
     def pr(self, number):
         return self.request("GET", f"/pulls/{number}")
+    def check_runs(self, sha, page=1):
+        if not SHA.fullmatch(str(sha)) or not isinstance(page, int) or page < 1:
+            raise AdmissionError("invalid check-runs request")
+        record = self.request("GET", f"/commits/{sha}/check-runs?per_page=100&page={page}")
+        runs = record.get("check_runs")
+        if not isinstance(runs, list):
+            raise AdmissionError("invalid GitHub check-runs response")
+        return runs
 
 class Dropbox:
     """Read-only Dropbox evidence download; no PR-controlled commands or URLs."""
@@ -121,10 +129,13 @@ def record_readset(fetch):
             read(reference)
     return read, recheck
 
-def execute(event, github, dropbox_token, publisher, review_key, execution_key, clock):
+def execute(event, github, dropbox_token, publisher, review_key, execution_key, clock,
+            required_checks):
     """Authenticate evidence before asking a separate trusted issuer for success.
 
     Caller supplies qualified public authorities and an isolated status publisher.
+    `required_checks` is trusted configuration naming the CI checks that must
+    have succeeded on the exact candidate head; it is never read from PR data.
     This validation has no merge-time reservation or exclusive merge capability.
     """
     if not all((callable(getattr(publisher, "status", None)), publisher is not github, callable(clock))):
@@ -151,6 +162,7 @@ def execute(event, github, dropbox_token, publisher, review_key, execution_key, 
         recheck()
         if candidate_snapshot(github.pr(number)) != initial:
             raise AdmissionError("PR state changed during admission (head changed or other drift)")
+        verify_required_checks(head, github, required_checks)
         validate_review_scope(review, candidate, int(clock()))
     except AdmissionError as error:
         publisher.status(head, "failure", str(error))
