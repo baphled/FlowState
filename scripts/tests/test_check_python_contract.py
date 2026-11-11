@@ -140,5 +140,111 @@ class CommittedCandidate(unittest.TestCase):
         self.assertIn('invalid owning test', self.guard().stderr)
 
 
+class ExecutedOwningTests(unittest.TestCase):
+    """Owning tests of changed scripts must actually run and pass."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name)
+        (self.directory / 'scripts/tests').mkdir(parents=True)
+        for file in ('check_python_contract.py', 'contract_sources.py', 'python_contract_ast.py'):
+            shutil.copy(ROOT / 'scripts' / file, self.directory / 'scripts' / file)
+        (self.directory / 'scripts/tests/test_check_python_contract.py').write_text('# fixture\n')
+        (self.directory / 'scripts/tests/test_python_contract_ast.py').write_text('# fixture\n')
+        (self.directory / 'scripts/existing.py').write_text(GOOD)
+        (self.directory / 'scripts/tests/test_existing.py').write_text(TEST)
+        self.git('init', '-q')
+        self.git('config', 'user.name', 'Synthetic checker')
+        self.git('config', 'user.email', 'checker@example.invalid')
+        self.git('config', 'commit.gpgsign', 'false')
+        self.commit()
+        self.base = self.git('rev-parse', 'HEAD').strip()
+
+    def git(self, *args):
+        return subprocess.check_output(['git', *args], cwd=self.directory,
+                                       stderr=subprocess.STDOUT).decode()
+
+    def commit(self):
+        self.git('add', '-A')
+        self.git('commit', '-qm', 'synthetic contract fixture')
+
+    def guard(self):
+        return subprocess.run(['python3', '-B', '-m', 'scripts.check_python_contract',
+                               '--base', self.base], cwd=self.directory,
+                              capture_output=True, text=True)
+
+    def test_zero_test_test_file_fails(self):
+        (self.directory / 'scripts/new.py').write_text(GOOD)
+        (self.directory / 'scripts/tests/test_new.py').write_text(
+            'import unittest\n'
+            'class New(unittest.TestCase):\n'
+            '    def helper(self):\n'
+            '        pass\n')
+        self.commit()
+        result = self.guard()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('ran 0 tests', result.stderr)
+
+    def test_skipped_test_file_fails(self):
+        (self.directory / 'scripts/new.py').write_text(GOOD)
+        (self.directory / 'scripts/tests/test_new.py').write_text(
+            'import unittest\n'
+            '@unittest.skip("quota")\n'
+            'class New(unittest.TestCase):\n'
+            '    def test_task(self):\n'
+            '        self.assertTrue(True)\n')
+        self.commit()
+        result = self.guard()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('skipped', result.stderr)
+
+    def test_failing_test_file_fails(self):
+        (self.directory / 'scripts/new.py').write_text(GOOD)
+        (self.directory / 'scripts/tests/test_new.py').write_text(
+            'import unittest\n'
+            'class New(unittest.TestCase):\n'
+            '    def test_task(self):\n'
+            '        self.assertTrue(False)\n')
+        self.commit()
+        result = self.guard()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('FAILED', result.stderr)
+
+    def test_passing_test_file_passes(self):
+        (self.directory / 'scripts/new.py').write_text(GOOD)
+        (self.directory / 'scripts/tests/test_new.py').write_text(
+            'import unittest\n'
+            'class New(unittest.TestCase):\n'
+            '    def test_task(self):\n'
+            '        self.assertTrue(True)\n')
+        self.commit()
+        result = self.guard()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_unchanged_scripts_do_not_execute_tests(self):
+        result = self.guard()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('ran 0 tests', result.stderr)
+
+    def test_changed_checker_module_does_not_recurse_infinitely(self):
+        (self.directory / 'scripts/new.py').write_text(GOOD)
+        (self.directory / 'scripts/tests/test_new.py').write_text(
+            'import unittest\n'
+            'class New(unittest.TestCase):\n'
+            '    def test_task(self):\n'
+            '        self.assertTrue(True)\n')
+        self.git('add', '-A')
+        # Touch the checker's own module to force the changed-checker path
+        # while its owning test stays a '# fixture' placeholder: execution of
+        # the checker's own test module is suppressed by the recursion guard,
+        # so the checker must still terminate with rc 0.
+        self.directory.joinpath('scripts/check_python_contract.py').write_text(
+            (ROOT / 'scripts/check_python_contract.py').read_text() + '\n# touched\n')
+        self.commit()
+        result = self.guard()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
 if __name__ == '__main__':
     unittest.main()
