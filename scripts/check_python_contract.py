@@ -34,7 +34,8 @@ def test_violations(path, tree):
     except (KeyError, ValueError, UnicodeError, SyntaxError) as error:
         return [f"{path}: invalid owning test: {error}"]
     return [] if discoverable_test(module) else [
-        f"{path}: no discoverable test_* function or method present"
+        f"{path}: no effective test_* function or method present "
+        "(skipped or expected-failure-only tests do not own coverage)"
     ]
 
 

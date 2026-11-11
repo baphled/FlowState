@@ -74,5 +74,57 @@ class TestDiscovery(unittest.TestCase):
         self.assertTrue(discoverable_test(module))
 
 
+class SkipOnlyTests(unittest.TestCase):
+    def test_module_level_skip_only_test_is_not_effective(self):
+        source = ('import unittest\n'
+                  '@unittest.skip("none")\n'
+                  'def test_task():\n'
+                  '    assert True\n')
+        self.assertFalse(discoverable_test(ast.parse(source)))
+
+    def test_skipif_guarded_test_is_not_effective(self):
+        source = ('import unittest\n'
+                  '@unittest.skipIf(True, "none")\n'
+                  'def test_task():\n'
+                  '    assert True\n')
+        self.assertFalse(discoverable_test(ast.parse(source)))
+
+    def test_testcase_skip_class_is_not_effective(self):
+        source = ('import unittest\n'
+                  '@unittest.skip("none")\n'
+                  'class Checks(unittest.TestCase):\n'
+                  '    def test_task(self):\n'
+                  '        self.assertTrue(True)\n')
+        self.assertFalse(discoverable_test(ast.parse(source)))
+
+    def test_expected_failure_test_is_not_effective(self):
+        source = ('import unittest\n'
+                  '@unittest.expectedFailure\n'
+                  'def test_task():\n'
+                  '    assert True\n')
+        self.assertFalse(discoverable_test(ast.parse(source)))
+
+    def test_skip_by_name_alias_is_not_effective(self):
+        source = ('from unittest import skip as s\n'
+                  '@s("none")\n'
+                  'def test_task():\n'
+                  '    assert True\n')
+        self.assertFalse(discoverable_test(ast.parse(source)))
+
+    def test_unrelated_decorator_does_not_disable_test(self):
+        source = ('import functools\n'
+                  '@functools.cache\n'
+                  'def test_task():\n'
+                  '    assert True\n')
+        self.assertTrue(discoverable_test(ast.parse(source)))
+
+    def test_plain_test_in_skip_class_still_effective(self):
+        source = ('import unittest\n'
+                  'class Checks(unittest.TestCase):\n'
+                  '    def test_task(self):\n'
+                  '        self.assertTrue(True)\n')
+        self.assertTrue(discoverable_test(ast.parse(source)))
+
+
 if __name__ == '__main__':
     unittest.main()

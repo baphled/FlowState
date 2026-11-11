@@ -111,7 +111,7 @@ class CommittedCandidate(unittest.TestCase):
         hidden = 'def helper():\n    def test_fake():\n        assert True\n'
         (self.directory / 'scripts/tests/test_new.py').write_text(hidden)
         self.commit()
-        self.assertIn('no discoverable test_*', self.guard().stderr)
+        self.assertIn('no effective test_*', self.guard().stderr)
 
     def test_unittest_case_method_is_discoverable(self):
         (self.directory / 'scripts/new.py').write_text(GOOD)
@@ -125,7 +125,7 @@ class CommittedCandidate(unittest.TestCase):
         (self.directory / 'scripts/new.py').write_text(GOOD)
         (self.directory / 'scripts/tests/test_new.py').write_text('# no tests\n')
         self.commit()
-        self.assertIn('no discoverable test_*', self.guard().stderr)
+        self.assertIn('no effective test_*', self.guard().stderr)
 
     def test_symlink_implementation_cannot_pass(self):
         (self.directory / 'scripts/new.py').symlink_to('legacy.py')
@@ -138,6 +138,24 @@ class CommittedCandidate(unittest.TestCase):
         (self.directory / 'scripts/tests/test_new.py').symlink_to('test_check_python_contract.py')
         self.commit()
         self.assertIn('invalid owning test', self.guard().stderr)
+
+    def test_skip_only_owner_test_is_rejected(self):
+        (self.directory / 'scripts/new.py').write_text(GOOD)
+        skipped = ('import unittest\n\n'
+                   '@unittest.skip("not ready")\n'
+                   'def test_task():\n'
+                   '    assert True\n')
+        (self.directory / 'scripts/tests/test_new.py').write_text(skipped)
+        self.commit()
+        result = self.guard()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('no effective test', result.stderr)
+
+    def test_passing_owner_test_is_accepted(self):
+        (self.directory / 'scripts/new.py').write_text(GOOD)
+        (self.directory / 'scripts/tests/test_new.py').write_text(TEST)
+        self.commit()
+        self.assertEqual(self.guard().returncode, 0)
 
 
 if __name__ == '__main__':
