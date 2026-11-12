@@ -21,7 +21,12 @@ when subsequently modified.
   `scripts/tests/test_name.py`, present as a regular committed blob.
   The test must contain a discoverable module-level `test_*` function or a
   `test_*` method on a module-level `Test*`/TestCase-style class; a nested
-  function named `test_*` does not satisfy ownership.
+  function named `test_*` does not satisfy ownership. A test entry point
+  disabled by a `unittest.skip`/`skipIf`/`skipUnless`/`expectedFailure`
+  decorator — including bare-name aliases imported from `unittest` — on the
+  test itself or on its whole TestCase class is not effective and does not
+  satisfy ownership: zero-test, skip-only and expected-failure-only owning
+  test files are rejected as negative controls.
   The same rule applies to nested modules and their sibling `tests/`.
   A `test_*.py` module nested deeper below a `tests/` directory is rejected
   rather than silently excluded from ownership validation.
@@ -57,8 +62,9 @@ CI also executes the candidate regression suite, but enforcement uses the
 protected-base checker. Negative fixtures cover overlong and branching
 functions/modules, nested scope complexity and line accounting,
 missing/deleted/renamed owners, discoverable test entry points, nested pairing,
-orphaned or symlinked files, inline waivers, syntax errors, and a dirty working
-copy masking a committed violation.
+orphaned or symlinked files, inline waivers, syntax errors, skip-only and
+expected-failure-only owning tests (zero-effective-test negative control), and
+a dirty working copy masking a committed violation.
 
 A green guard demonstrates structural checks only, not good design or
 authenticated independent review. Source change, tests, documentation,
