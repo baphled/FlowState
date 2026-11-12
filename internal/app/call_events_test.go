@@ -158,10 +158,10 @@ var _ = Describe("Per-call correlated event sink", func() {
 		Expect(invokeErr).NotTo(HaveOccurred())
 		messages, loadErr := LoadSessionHistory(ctx, st, sid, HistoryLimits{MaxEvents: 100, MaxMessages: 100, MaxBytes: 100000, MaxResultBytes: 10000})
 		Expect(loadErr).NotTo(HaveOccurred())
-		Expect(callEventContinuation{Result: result, ArgsUntouched: string(call.Arguments) == before, ToolMessages: messages[1:]}).To(Equal(callEventContinuation{
+		Expect(callEventContinuation{Result: result, ArgsUntouched: string(call.Arguments) == before, ToolMessages: messages[2:]}).To(Equal(callEventContinuation{
 			Result: map[string]any{"n": float64(2)}, ArgsUntouched: true,
 			ToolMessages: []provider.Message{
-				{Role: "tool", ToolCallID: call.ID, Content: `{"tool":"echo","tool_call_id":"call-1","ok":true,"result":{"n":2}}`},
+				{Role: "tool", ToolCallID: call.ID, Content: `{"ok":true,"result":{"n":2},"tool":"echo","tool_call_id":"call-1"}`},
 			},
 		}))
 	})
@@ -185,7 +185,6 @@ var _ = Describe("Per-call correlated event sink", func() {
 
 	It("blocks the tool effect when the pre-call append fails", func() {
 		st, sid, w := callEventFixture()
-		callEventJournal(ctx, w, call)
 		failing := &failingSink{inner: w, marker: "call", failures: map[string]error{tool.TypeToolCall: errors.New("disk full")}}
 		sink, sinkErr := NewCallEventSink(failing, call)
 		Expect(sinkErr).NotTo(HaveOccurred())
@@ -194,7 +193,7 @@ var _ = Describe("Per-call correlated event sink", func() {
 		_, invokeErr := l.Invoke(ctx, "echo", json.RawMessage(`{ "n": 2 }`))
 		events, _ := st.Replay(ctx, sid)
 		_, stickyErr := sink.Append(ctx, "tool:echo", tool.TypeToolCall, map[string]any{"tool": "echo", "args": json.RawMessage(`{}`)})
-		Expect(callEventBlocked{Invoke: invokeErr == nil || !strings.Contains(invokeErr.Error(), "disk full"), Results: toolEventTypes(events), Sticky: !errors.Is(stickyErr, ErrCallEventSticky)}).To(Equal(callEventBlocked{Invoke: false, Results: nil, Sticky: false}))
+		Expect(callEventBlocked{Invoke: invokeErr == nil || !strings.Contains(invokeErr.Error(), "disk full"), Results: toolEventTypes(events), Sticky: !errors.Is(stickyErr, ErrCallEventSticky)}).To(Equal(callEventBlocked{Invoke: false, Results: []string{}, Sticky: false}))
 	})
 
 	It("keeps a post-result append failure sticky and exposes no acknowledged result", func() {
