@@ -67,3 +67,27 @@ Run the source tests:
 ```bash
 python3 -B -m unittest discover -s scripts/tests -p 'test_admission_*.py' -v
 ```
+
+## Squash merge trailer policy
+
+The Project Metadata Guard requires EXACTLY ONE `Project-Metadata` trailer on
+the `next` tip. Squash-merging a multi-commit PR concatenates every branch
+commit body into the squash message, producing N trailers and failing push CI
+(incident: run 43116444053, patched tip 4bf4ddf).
+
+Repo-level defaults (`squash_merge_commit_title=PR_TITLE`,
+`squash_merge_commit_message=BLANK`) make GitHub produce an empty squash body
+by default, which eliminates concatenation for web and API merges. The guard
+then fails the tip for the missing trailer, so every squash merge must supply
+exactly one trailer explicitly:
+
+```bash
+gh pr merge --squash \
+  --subject '<type>: <summary>' \
+  --body 'Project-Metadata: dropbox:/FlowState/Metadata/attempts/<attempt>/<record>.json'
+```
+
+`gh pr merge` without `--subject`/`--body` uses the repo defaults; explicit
+flags override them. Never squash with `--body` containing multiple commit
+bodies or multiple trailers. The guard is the enforcement point: a bad tip
+fails push CI red.
