@@ -7,8 +7,9 @@ receipts and the CLI in __main__.
 """
 
 import json
+import os
 import re
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 REFERENCE = re.compile(
     r'dropbox:/FlowState/Metadata/attempts/'
@@ -30,6 +31,28 @@ CODE_SUFFIXES = {'.go', '.py', '.sh', '.js', '.ts', '.tsx', '.vue'}
 TEXT_SUFFIXES = {'.md', '.txt', '.log'}
 
 
+def referenced_record_errors(reference):
+    """When a Dropbox mount is configured, the trailer target must resolve.
+
+    Offline structural validation stays authoritative when no mount is
+    configured: this readability check only adds a signal where the local
+    ``/FlowState`` (or FLOWSTATE_DROPBOX_ROOT) tree exists.
+    """
+    root = os.environ.get('FLOWSTATE_DROPBOX_ROOT', '/FlowState')
+    target = PurePosixPath(reference).relative_to('dropbox:/') \
+        if reference.startswith('dropbox:/') else None
+    if target is None or not os.path.isdir(root):
+        return []
+    path = Path(root) / target
+    if not path.is_file():
+        return ['trailer reference is missing on the Dropbox mount: ' + reference]
+    try:
+        json.loads(path.read_text())
+    except (ValueError, UnicodeError, OSError):
+        return ['trailer reference is not readable JSON: ' + reference]
+    return []
+
+
 def message_errors(message):
     """Validate one neutral, valid Project-Metadata trailer per message."""
     errors = []
@@ -44,6 +67,8 @@ def message_errors(message):
         errors.append('one valid Project-Metadata: '
                       'dropbox:/FlowState/Metadata/attempts/'
                       '<attempt>/<record>.json is required')
+    elif references:
+        errors.extend(referenced_record_errors(references[0]))
     return errors
 
 
