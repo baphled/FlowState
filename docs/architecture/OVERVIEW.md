@@ -114,6 +114,30 @@ Replay still materializes the full journal. This read-only API grants no lifecyc
 admission, retry or execution permission and supplies no call-event producer.
 Use the app Ginkgo command above for local verification.
 
+## Per-call correlated event sink
+
+`NewCallEventSink(writer, provider.ToolCall)` builds an app-owned `tool.EventSink`
+adapter bound to one immutable provider call identity (ID, name, actor and a
+compacted copy of the arguments). Handed to a real `tool.Loop`, it annotates every
+emitted `tool.call`/`tool.result` event with the provider `tool_call_id` so the
+bounded-history projection can correlate durable outcomes with assistant calls.
+The caller's argument payload is never mutated; stored arguments are compared
+byte-for-byte after canonical compaction.
+
+Validation fails closed before persistence: an invalid call identity, a mismatched
+tool name or actor, arguments that differ from the bound call, a result before its
+call start, or a repeated start are all rejected with typed errors and no event
+reaches the store. Once an append fails the adapter is sticky: every later append
+returns `ErrCallEventSticky` joined with the original failure, so an
+unacknowledged outcome can never be exposed as acknowledged. A pre-call append
+failure therefore blocks the tool effect through the loop, and a post-result
+append failure exposes no acknowledged result.
+
+This adapter is a producer for the verified history consumer above; it grants no
+execution-loop admission, automatic provider execution, retry or lifecycle claim.
+Denied result-only feedback still comes from the loop's own deny path without a
+synthesised call start.
+
 ## Changes and proof
 
 A bounded refactor preserves the public contract, failure behaviour and tests.
