@@ -1,8 +1,30 @@
 #!/bin/sh
-# Enforce exact committed source boundaries before pushing to next.
+# Fast local qualification; remote exact-head CI and reviews remain mandatory.
 set -eu
-BASE=$(git rev-parse origin/next)
-HEAD=$(git rev-parse HEAD)
+branch=$(git symbolic-ref --quiet --short HEAD) || exit 1
+case "$branch" in main|next) echo 'pre-push: protected branch' >&2; exit 1 ;; esac
+git fetch --quiet origin next || { echo 'pre-push: cannot refresh next' >&2; exit 1; }
+BASE=$(git rev-parse --verify refs/remotes/origin/next^{commit})
+HEAD=$(git rev-parse --verify HEAD^{commit})
+git merge-base --is-ancestor "$BASE" "$HEAD" || {
+  echo 'pre-push: rebase on current next and requalify' >&2; exit 1;
+}
+policy=$(mktemp)
+selector=$(mktemp)
+trap 'rm -f "$policy" "$selector"' EXIT HUP INT TERM
+git show "$BASE:.env.ci" > "$policy"
+if git cat-file -e "$BASE:scripts/pr_review_budget.py" 2>/dev/null; then
+  git show "$BASE:scripts/pr_review_budget.py" > "$selector"
+else
+  cp scripts/pr_review_budget.py "$selector"
+fi
+title=$(git log -1 --format=%s "$HEAD")
+export FLOWSTATE_PR_MAX_LINES=$(python3 -B "$selector" --policy "$policy" --title "$title" --branch "$branch")
 python3 -B scripts/pr_size.py --base "$BASE" --head "$HEAD"
-python3 -B -m unittest discover -s scripts/tests -p test_code_contract.py
 python3 -B scripts/check_code_contract.py --base "$BASE"
+python3 -B scripts/check_test_contract.py --base "$BASE"
+python3 -B -m scripts.check_python_contract --base "$BASE"
+node scripts/check_docs.mjs --base "$BASE"
+python3 -B -m unittest discover -s scripts/tests -p 'test_review_handoff.py'
+python3 -B -m unittest discover -s scripts/tests -p 'test_pr_review_budget.py'
+printf 'pre-push: qualified %s against %s (%s lines)\n' "$HEAD" "$BASE" "$FLOWSTATE_PR_MAX_LINES"

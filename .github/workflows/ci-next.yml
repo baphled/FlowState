@@ -37,6 +37,8 @@ jobs:
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
         run: |
           # Pull requests diff against the PR base. Push events diff against the
           # first parent so force-pushes (github.event.before may no longer
@@ -52,16 +54,19 @@ jobs:
           else
             cp scripts/pr_size.py "$checker"
           fi
-          # Read the budget only from the trusted target, never the candidate PR.
-          # Bootstrap before .env.ci exists on next with the original 500-line cap.
-          if git cat-file -e "$BASE_SHA:.env.ci" 2>/dev/null; then
-            budget="$(git show "$BASE_SHA:.env.ci" | sed -n 's/^FLOWSTATE_PR_MAX_LINES=//p')"
+          policy="$RUNNER_TEMP/pr-review-policy.env"
+          git show "$BASE_SHA:.env.ci" > "$policy"
+          selector="$RUNNER_TEMP/pr_review_budget.py"
+          if git cat-file -e "$BASE_SHA:scripts/pr_review_budget.py" 2>/dev/null; then
+            git show "$BASE_SHA:scripts/pr_review_budget.py" > "$selector"
           else
-            budget=500
+            cp scripts/pr_review_budget.py "$selector"
           fi
-          if ! [[ "$budget" =~ ^[1-9][0-9]{0,5}$ ]]; then
-            echo "::error::Invalid FLOWSTATE_PR_MAX_LINES in target .env.ci"
-            exit 1
+          title="${PR_TITLE:-$(git log -1 --format=%s "$HEAD_SHA")}"
+          if [ -n "${PR_BRANCH:-}" ]; then
+            budget="$(python3 -B "$selector" --policy "$policy" --title "$title" --branch "$PR_BRANCH")"
+          else
+            budget="$(python3 -B "$selector" --policy "$policy" --title "$title")"
           fi
           export FLOWSTATE_PR_MAX_LINES="$budget"
           python3 -B "$checker" --base "$BASE_SHA" --head "$HEAD_SHA"
