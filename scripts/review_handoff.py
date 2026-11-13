@@ -11,9 +11,10 @@ import re
 import sys
 
 from scripts.review_handoff_io import (
-    HandoffError, blocking_findings, collect_actionable, github_get,
+    HandoffError, blocking_findings, collect_actionable,
     parse_ledger, unstructured_changes,
 )
+from scripts.review_handoff_net import github_get
 
 SHA_RE = re.compile(r'^[0-9a-f]{40}$')
 REPO_RE = re.compile(r'^[\w.-]+/[\w.-]+$')
