@@ -77,7 +77,7 @@ func runExecTurns(ctx context.Context, cfg *ExecLoopConfig, token int64) (*ExecL
 		if err := cfg.Store.FenceLease(ctx, cfg.LeaseItem, cfg.LeaseAgent, token); err != nil {
 			return res, fmt.Errorf("%w: %v", ErrExecLoopFenced, err)
 		}
-		out, calls, terr := runExecTurn(ctx, *cfg, definitions, history)
+		out, calls, terr := runExecTurn(ctx, *cfg, token, definitions, history)
 		res.Turns++
 		res.FinalContent = out
 		if terr != nil {
@@ -87,7 +87,7 @@ func runExecTurns(ctx context.Context, cfg *ExecLoopConfig, token int64) (*ExecL
 		if len(calls) == 0 {
 			return res, nil
 		}
-		results, rerr := executeCalls(ctx, *cfg, calls)
+		results, rerr := executeCalls(ctx, *cfg, token, calls)
 		res.ToolCalls += int64(len(calls))
 		if rerr != nil {
 			return res, rerr
@@ -104,12 +104,18 @@ func reserveExecBudget(ctx context.Context, cfg *ExecLoopConfig) (bool, error) {
 	return true, stopBudgetExhausted(ctx, cfg.Store, cfg.Session.ID)
 }
 
-// runExecTurn streams one provider turn through a fresh single-use writer;
-// provider errors mark the session failed and wrap ErrProvider.
-func runExecTurn(ctx context.Context, cfg ExecLoopConfig, definitions []provider.ToolDefinition, history []provider.Message) (string, []provider.ToolCall, error) {
+// runExecTurn streams one provider turn through a fresh single-use
+// writer bound to the fencing lease (stale writers are fenced, and a
+// cancelled context aborts so partial output is never persisted);
+// provider errors wrap ErrProvider and fail the session.
+func runExecTurn(ctx context.Context, cfg ExecLoopConfig, token int64, definitions []provider.ToolDefinition, history []provider.Message) (string, []provider.ToolCall, error) {
 	w, werr := cfg.Store.NewEventWriter(ctx, cfg.Session.ID)
 	if werr != nil {
 		return "", nil, werr
+	}
+	if err := cfg.Store.FenceLease(ctx, cfg.LeaseItem, cfg.LeaseAgent, token); err != nil {
+		_ = w.Close()
+		return "", nil, fmt.Errorf("%w: %v", ErrExecLoopFenced, err)
 	}
 	defer func() { _ = w.Close() }()
 	var content string
@@ -130,18 +136,25 @@ func runExecTurn(ctx context.Context, cfg ExecLoopConfig, definitions []provider
 			content += ev.Content
 		}
 	}
+	if cerr := ctx.Err(); cerr != nil {
+		return "", nil, cerr
+	}
 	if _, aerr := w.Append(ctx, session.ActorEngine, "assistant.message", map[string]any{"content": content}); aerr != nil {
 		return "", nil, aerr
 	}
 	return content, calls, nil
 }
 
-func executeCalls(ctx context.Context, cfg ExecLoopConfig, calls []provider.ToolCall) ([]provider.Message, error) {
+func executeCalls(ctx context.Context, cfg ExecLoopConfig, token int64, calls []provider.ToolCall) ([]provider.Message, error) {
 	results := make([]provider.Message, 0, len(calls))
 	for _, call := range calls {
 		w, werr := cfg.Store.NewEventWriter(ctx, cfg.Session.ID)
 		if werr != nil {
 			return nil, werr
+		}
+		if err := cfg.Store.FenceLease(ctx, cfg.LeaseItem, cfg.LeaseAgent, token); err != nil {
+			_ = w.Close()
+			return nil, fmt.Errorf("%w: %v", ErrExecLoopFenced, err)
 		}
 		sink, serr := execCallSink(w, call)
 		if serr != nil {
@@ -153,7 +166,12 @@ func executeCalls(ctx context.Context, cfg ExecLoopConfig, calls []provider.Tool
 			_ = w.Close()
 			return nil, lerr
 		}
-		results = appendResult(ctx, loop, call, results)
+		var fatal error
+		results, fatal = appendResult(ctx, loop, call, results)
+		if fatal != nil {
+			_ = w.Close()
+			return nil, fatal
+		}
 		if err := w.Close(); err != nil {
 			return nil, err
 		}
@@ -161,19 +179,32 @@ func executeCalls(ctx context.Context, cfg ExecLoopConfig, calls []provider.Tool
 	return results, nil
 }
 
-func appendResult(ctx context.Context, loop *tool.Loop, call provider.ToolCall, results []provider.Message) []provider.Message {
+// appendResult appends one correlated tool-role message: genuine
+// tool-execution failures become feedback text, loop-level terminal
+// failures are returned as fatal turn-terminal errors.
+func appendResult(ctx context.Context, loop *tool.Loop, call provider.ToolCall, results []provider.Message) ([]provider.Message, error) {
 	failed := func(content string) []provider.Message {
 		return append(results, provider.Message{Role: "tool", ToolCallID: call.ID, Content: content})
 	}
 	outcome, ierr := loop.Invoke(ctx, call.Name, call.Arguments)
-	if ierr != nil {
-		return failed(fmt.Sprintf("error: %s", ierr))
+	switch {
+	case ierr == nil:
+	case errors.Is(ierr, tool.ErrUnknownTool), errors.Is(ierr, tool.ErrEmptyName):
+		// Loop-level misconfiguration: terminal, not tool feedback.
+		return results, fmt.Errorf("%w: %s: %v", ErrExecLoopConfig, call.Name, ierr)
+	default:
+		if !errors.Is(ierr, tool.ErrDenied) && !errors.Is(ierr, tool.ErrToolExecuted) {
+			return results, ierr
+		}
+	}
+	if outcome == nil && ierr != nil {
+		return failed(fmt.Sprintf("error: %s", ierr)), nil
 	}
 	encoded, merr := json.Marshal(outcome)
 	if merr != nil {
-		return failed("error: unserialisable result")
+		return failed("error: unserialisable result"), nil
 	}
-	return failed(string(encoded))
+	return failed(string(encoded)), nil
 }
 
 // replayInto rebuilds provider history from persisted events; uncorrelated
@@ -185,17 +216,26 @@ func replayInto(ctx context.Context, st *store.Store, sessionID string, history 
 		return rerr
 	}
 	correlated := map[string]bool{}
+	// pending carries the last replayed assistant.message so the
+	// next assistant tool-call message reuses its content.
+	pending := ""
+	flush := func(calls []provider.ToolCall) {
+		*history = append(*history, provider.Message{Role: "assistant", Content: pending, ToolCalls: calls})
+		pending = ""
+	}
 	for _, e := range events {
 		switch e.Type {
 		case session.TypeTurnStart:
 			*history = append(*history, provider.Message{Role: "user", Content: payloadFieldText(e.PayloadJSON, "task")})
+		case "assistant.message":
+			pending = payloadFieldText(e.PayloadJSON, "content")
 		case tool.TypeToolCall:
 			correlated[payloadFieldText(e.PayloadJSON, "tool_call_id")] = true
-			*history = append(*history, provider.Message{Role: "assistant", ToolCalls: []provider.ToolCall{{
+			flush([]provider.ToolCall{{
 				ID:        payloadFieldText(e.PayloadJSON, "tool_call_id"),
 				Name:      payloadFieldText(e.PayloadJSON, "tool"),
 				Arguments: json.RawMessage(payloadFieldRaw(e.PayloadJSON, "args")),
-			}}})
+			}})
 		case tool.TypeToolResult:
 			if payloadFieldText(e.PayloadJSON, "tool_call_id") == "" {
 				continue
@@ -212,6 +252,9 @@ func replayInto(ctx context.Context, st *store.Store, sessionID string, history 
 			}
 			*history = append(*history, provider.Message{Role: "tool", ToolCallID: payloadFieldText(e.PayloadJSON, "tool_call_id"), Content: content})
 		}
+	}
+	if pending != "" {
+		*history = append(*history, provider.Message{Role: "assistant", Content: pending})
 	}
 	return nil
 }
