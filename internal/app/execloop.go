@@ -138,9 +138,6 @@ func runExecTurn(ctx context.Context, cfg ExecLoopConfig, definitions []provider
 	return content, calls, nil
 }
 
-// executeCalls runs each provider tool call through the real tool.Loop and
-// returns the tool-role results for the next turn; denied or failed calls
-// produce explicit error feedback.
 func executeCalls(ctx context.Context, cfg ExecLoopConfig, calls []provider.ToolCall) ([]provider.Message, error) {
 	results := make([]provider.Message, 0, len(calls))
 	for _, call := range calls {
@@ -148,9 +145,7 @@ func executeCalls(ctx context.Context, cfg ExecLoopConfig, calls []provider.Tool
 		if err != nil {
 			return nil, err
 		}
-		// Every call — allowlisted or denied — is annotated with its provider
-		// call id so the history projection can correlate the outcome later.
-		sink, serr := execCallSink(w, call)
+		sink, serr := execCallSink(w, call) // annotate every call, denied too
 		if serr != nil {
 			_ = w.Close()
 			return nil, serr
@@ -168,7 +163,6 @@ func executeCalls(ctx context.Context, cfg ExecLoopConfig, calls []provider.Tool
 	return results, nil
 }
 
-// appendResult invokes one call and appends its outcome as a tool-role message.
 func appendResult(ctx context.Context, loop *tool.Loop, call provider.ToolCall, results []provider.Message) []provider.Message {
 	failed := func(content string) []provider.Message {
 		return append(results, provider.Message{Role: "tool", ToolCallID: call.ID, Content: content})
@@ -184,10 +178,6 @@ func appendResult(ctx context.Context, loop *tool.Loop, call provider.ToolCall, 
 	return failed(string(encoded))
 }
 
-// replayInto loads the verified session log into provider history, reconstructing
-// correlated tool turns from persisted events. A denied call persists only a
-// tool.result error event, so its assistant tool-call message is synthesised
-// from the result payload to keep the provider history correlated.
 func replayInto(ctx context.Context, st *store.Store, sessionID string, history *[]provider.Message) error {
 	events, err := st.Replay(ctx, sessionID)
 	if err != nil {
@@ -209,15 +199,11 @@ func replayInto(ctx context.Context, st *store.Store, sessionID string, history 
 			if id := payloadFieldText(e.PayloadJSON, "tool_call_id"); id != "" && !correlated[id] {
 				correlated[id] = true
 				*history = append(*history, provider.Message{Role: "assistant", ToolCalls: []provider.ToolCall{{
-					ID:        id,
-					Name:      payloadFieldText(e.PayloadJSON, "tool"),
-					Arguments: json.RawMessage("null"),
+					ID: id, Name: payloadFieldText(e.PayloadJSON, "tool"), Arguments: json.RawMessage("null"),
 				}}})
 			}
-			// Denied feedback carries the error object, not a result field;
-			// its serialised payload is the explicit denial feedback text.
 			content := payloadFieldRaw(e.PayloadJSON, "result")
-			if content == "null" {
+			if content == "null" { // denial feedback is an error object
 				content = payloadFieldRaw(e.PayloadJSON, "error")
 			}
 			*history = append(*history, provider.Message{Role: "tool", ToolCallID: payloadFieldText(e.PayloadJSON, "tool_call_id"), Content: content})
@@ -252,7 +238,6 @@ func validateExecLoopConfig(cfg *ExecLoopConfig) error {
 	return nil
 }
 
-// payloadMap decodes a recorded event payload or returns nil.
 func payloadMap(payloadJSON string) map[string]any {
 	var p map[string]any
 	if err := json.Unmarshal([]byte(payloadJSON), &p); err != nil {
@@ -274,9 +259,6 @@ func payloadFieldRaw(payloadJSON, field string) string {
 	return string(encoded)
 }
 
-// execCallSink wraps the writer in the per-call correlated adapter. Every
-// call is correlated, including denials: the loop's denial feedback is a
-// result-only outcome that the adapter accepts without a preceding start.
 func execCallSink(w tool.EventSink, call provider.ToolCall) (tool.EventSink, error) {
 	return NewCallEventSink(w, call)
 }

@@ -134,6 +134,8 @@ func replayLoopFixture(ctx context.Context) ExecLoopConfig {
 	return cfg
 }
 
+const denialMark = "not on the session allowlist"
+
 func deniedCallLoopFixture() ExecLoopConfig { // non-allowlisted fs.write call + recovery turn
 	rogue := provider.ToolCall{ID: "call-5", Name: "fs.write", Arguments: json.RawMessage(`{"path":"x","content":"y"}`)}
 	streamer := &execLoopStreamer{turns: [][]provider.StreamEvent{{provCall(rogue), provFinish()}, {provText("recovered from denial")}}}
@@ -239,7 +241,11 @@ var _ = Describe("Provider-driven execution loop", func() {
 		resume := &execLoopStreamer{turns: [][]provider.StreamEvent{{provText("resumed after denial")}}}
 		cfg.Streamer, cfg.MaxTurns = resume, 4
 		resumed := runExec(ctx, cfg)
-		Expect(execLoopFeedback{Result: resumed.Result, NoErr: resumed.NoErr, HistoryLen: len(resume.lastRequest().Messages), Denied: strings.Contains(resume.lastRequest().Messages[2].Content, "not on the session allowlist"), Shape: requestSummary(resume.lastRequest())}).To(Equal(execLoopFeedback{Result: &ExecLoopResult{Turns: 1, FinalContent: "resumed after denial"}, NoErr: true, HistoryLen: 3, Denied: true, Shape: requestShape{AssistantCalls: []string{"call-5"}, ToolResults: []string{"call-5"}}}))
+		last := resume.lastRequest()
+		Expect(execLoopFeedback{Result: resumed.Result, NoErr: resumed.NoErr,
+			HistoryLen: len(last.Messages),
+			Denied:     strings.Contains(last.Messages[2].Content, denialMark),
+			Shape:      requestSummary(last)}).To(Equal(execLoopFeedback{Result: &ExecLoopResult{Turns: 1, FinalContent: "resumed after denial"}, NoErr: true, HistoryLen: 3, Denied: true, Shape: requestShape{AssistantCalls: []string{"call-5"}, ToolResults: []string{"call-5"}}}))
 	})
 	It("fails closed with ErrExecLoopConfig on a misconfigured loop", func() {
 		streamer := &execLoopStreamer{}

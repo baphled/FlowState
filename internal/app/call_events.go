@@ -89,8 +89,6 @@ func (s *callEventSink) appendValidated(ctx context.Context, actor, typ string, 
 		}
 		s.started = true
 	case tool.TypeToolResult:
-		// A denial is the loop's only result-first outcome; any other
-		// result must follow its call start, and no result repeats.
 		if s.done || isDeniedCallResult(fields) == s.started {
 			return -1, fmt.Errorf("%w: result for %q", ErrCallEventOrder, s.call.ID)
 		}
@@ -101,9 +99,8 @@ func (s *callEventSink) appendValidated(ctx context.Context, actor, typ string, 
 	return s.writer.Append(ctx, actor, typ, fields)
 }
 
-// callEventPayload extracts the loop's tool name and a mutable copy of
-// its payload map; ok is false when payload is not the loop's
-// map[string]any shape.
+// callEventPayload extracts the loop's tool name and a mutable payload copy;
+// ok is false when payload is not the loop's map[string]any shape.
 func callEventPayload(payload any) (string, map[string]any, bool) {
 	fields, ok := payload.(map[string]any)
 	if !ok {
@@ -135,18 +132,11 @@ func normaliseCallArgs(value any) (string, error) {
 	return buf.String(), nil
 }
 
-// isDeniedCallResult reports whether a result event is the tool loop's
-// typed denial outcome (error.code=tool_denied). The loop records a
-// denial without a preceding tool.call start, so it is the only
-// result-first outcome the correlated adapter accepts.
 func isDeniedCallResult(fields map[string]any) bool {
-	if ok, exists := fields["ok"].(bool); exists && ok {
+	if ok, _ := fields["ok"].(bool); ok {
 		return false
 	}
-	failure, ok := fields["error"].(map[string]any)
-	if !ok {
-		return false
-	}
+	failure, _ := fields["error"].(map[string]any)
 	code, _ := failure["code"].(string)
 	return code == "tool_denied"
 }
