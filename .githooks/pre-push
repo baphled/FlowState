@@ -19,7 +19,8 @@ else
   cp scripts/pr_review_budget.py "$selector"
 fi
 title=$(git log -1 --format=%s "$HEAD")
-export FLOWSTATE_PR_MAX_LINES=$(python3 -B "$selector" --policy "$policy" --title "$title" --branch "$branch")
+budget=$(python3 -B "$selector" --policy "$policy" --title "$title" --branch "$branch") || exit 1
+export FLOWSTATE_PR_MAX_LINES="$budget"
 python3 -B scripts/pr_size.py --base "$BASE" --head "$HEAD"
 python3 -B scripts/check_code_contract.py --base "$BASE"
 python3 -B scripts/check_test_contract.py --base "$BASE"
