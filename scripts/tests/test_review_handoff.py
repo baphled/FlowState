@@ -33,6 +33,12 @@ class HandoffTests(unittest.TestCase):
         with self.assertRaisesRegex(review.HandoffError, "missing from Dropbox"):
             review.evaluate(self.pr, [{"body": "F260-99: fix race"}], [], [], self.ledger, HEAD)
 
+    def test_blocking_conversation_without_ids_is_not_ignored(self):
+        comment = {'body': '**CHANGES REQUIRED**\nFix lease fencing',
+                   'html_url': 'https://github.com/test/pr/1'}
+        with self.assertRaisesRegex(review.HandoffError, 'Fix lease fencing'):
+            review.evaluate(self.pr, [comment], [], [], {}, HEAD)
+
     def test_unstructured_change_request_fails_closed(self):
         with self.assertRaisesRegex(review.HandoffError, "Unstructured"):
             review.evaluate(self.pr, [], [{"state": "CHANGES_REQUESTED", "body": "Fix bug"}], [], {}, HEAD)
