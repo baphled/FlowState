@@ -99,8 +99,9 @@ func (s *callEventSink) appendValidated(ctx context.Context, actor, typ string, 
 	return s.writer.Append(ctx, actor, typ, fields)
 }
 
-// callEventPayload extracts the loop's tool name and a mutable payload copy;
-// ok is false when payload is not the loop's map[string]any shape.
+// callEventPayload extracts the loop's tool name and a mutable copy of
+// its payload map; ok is false when payload is not the loop's
+// map[string]any shape.
 func callEventPayload(payload any) (string, map[string]any, bool) {
 	fields, ok := payload.(map[string]any)
 	if !ok {
