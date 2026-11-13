@@ -117,9 +117,7 @@ func runExec(ctx context.Context, cfg ExecLoopConfig) execLoopOutcome {
 func provErrorLoopFixture() ExecLoopConfig { // first stream terminates in an error
 	return execLoopFixture(&execLoopStreamer{turns: [][]provider.StreamEvent{{provError("boom")}}})
 }
-
 func replayLoopFixture(ctx context.Context) ExecLoopConfig { // stops after MaxTurns for a later resume
-
 	call := []provider.StreamEvent{provText("need a tool"), provCall(echoCall("call-6")), provFinish()}
 	first := &execLoopStreamer{turns: [][]provider.StreamEvent{call, {provText("need another"), provCall(echoCall("call-7")), provFinish()}}}
 	cfg := execLoopFixture(first)
