@@ -23,6 +23,16 @@ See [the enforced code structure contract](../../rules/ARCHITECTURE.md) for exac
 ownership and import rules. Existing concrete-store coupling is refactoring debt;
 its presence is not permission to add another dependency or a new global.
 
+## Provider-driven execution loop
+
+`internal/app` owns the M2 execution loop (`RunExecLoop`): a leased, fenced run replays verified
+history, advertises only allowlisted tools and drives bounded provider turns through the streaming
+port. Complete validated tool calls run through the real `tool.Loop` with per-call correlated
+`tool_call_id` annotation (denied calls get result-only feedback) and their outcomes feed the next
+turn. The `BudgetPool` stops spent runs (`ErrExecLoopBudget`, `turn.end` budget_exhausted event);
+fenced leases stop with `ErrExecLoopFenced`; provider errors mark the session failed. No
+`budget_exhausted` session status exists yet (store-schema debt, logged in the packet admission).
+
 ## Structured provider tools
 
 `internal/provider` owns `ToolDefinition`, complete `ToolCall` values and message

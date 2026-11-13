@@ -12,33 +12,24 @@ import (
 	"github.com/baphled/flowstate/internal/tool"
 )
 
-// Typed errors for the M2 provider-driven execution loop. The loop
-// fails closed: configuration, lease and budget failures stop the
-// run before unbounded work.
-var (
-	// ErrExecLoopConfig rejects a loop built with missing
-	// collaborators or non-positive limits.
-	ErrExecLoopConfig = errors.New("app: execution loop misconfigured")
+// ErrExecLoopConfig rejects a loop built with missing collaborators or non-positive limits.
+var ErrExecLoopConfig = errors.New("app: execution loop misconfigured")
 
-	// ErrExecLoopBudget reports that the budget pool was exhausted
-	// before the next provider turn could be reserved.
-	ErrExecLoopBudget = errors.New("app: execution loop budget exhausted")
+// ErrExecLoopBudget reports that the budget pool was exhausted before the next turn.
+var ErrExecLoopBudget = errors.New("app: execution loop budget exhausted")
 
-	// ErrExecLoopFenced reports that the loop's lease was fenced or
-	// held by another writer; the loop stops without further appends.
-	ErrExecLoopFenced = errors.New("app: execution loop lease fenced")
-)
+// ErrExecLoopFenced reports that the loop's lease was fenced or held by another writer.
+var ErrExecLoopFenced = errors.New("app: execution loop lease fenced")
 
 // execTurnBudgetFloor is the minimum sane reservation unit for one turn.
 const execTurnBudgetFloor int64 = 1
 
-// RunExecLoop executes the bounded provider-driven loop: it acquires
-// the fencing lease, advertises the allowlisted definitions and runs
-// at most MaxTurns provider turns. A turn ending with tool
-// calls executes each through the real loop and continues with the
-// correlated results; a turn without calls ends the run. Budget
-// exhaustion stops with ErrExecLoopBudget; a fenced or held lease
-// stops with ErrExecLoopFenced.
+// RunExecLoop executes the bounded provider-driven loop: it acquires the
+// fencing lease, advertises allowlisted definitions and runs at most MaxTurns
+// provider turns. A turn ending with tool calls executes each through the
+// real loop and continues with correlated results; a turn without calls ends
+// the run. Budget exhaustion stops with ErrExecLoopBudget; a fenced or held
+// lease stops with ErrExecLoopFenced.
 func RunExecLoop(ctx context.Context, cfg ExecLoopConfig) (*ExecLoopResult, error) {
 	if err := validateExecLoopConfig(&cfg); err != nil {
 		return nil, err
@@ -72,8 +63,7 @@ func runExecTurns(ctx context.Context, cfg *ExecLoopConfig, token int64) (*ExecL
 	if err != nil {
 		return nil, err
 	}
-	res := &ExecLoopResult{}
-	var history []provider.Message
+	res, history := &ExecLoopResult{}, []provider.Message{}
 	if err := replayInto(ctx, cfg.Store, cfg.Session.ID, &history); err != nil {
 		return nil, err
 	}
@@ -81,10 +71,11 @@ func runExecTurns(ctx context.Context, cfg *ExecLoopConfig, token int64) (*ExecL
 		if ctx.Err() != nil {
 			return res, ctx.Err()
 		}
-		if stop, serr := reserveExecBudget(ctx, cfg); stop || serr != nil {
-			if serr != nil {
-				return res, serr
-			}
+		stop, serr := reserveExecBudget(ctx, cfg)
+		if serr != nil {
+			return res, serr
+		}
+		if stop {
 			res.BudgetExhausted = true
 			return res, ErrExecLoopBudget
 		}
@@ -113,21 +104,14 @@ func runExecTurns(ctx context.Context, cfg *ExecLoopConfig, token int64) (*ExecL
 
 // reserveExecBudget reserves one turn; stop reports exhaustion.
 func reserveExecBudget(ctx context.Context, cfg *ExecLoopConfig) (stop bool, err error) {
-	if cfg.Pool == nil || cfg.TurnBudget <= 0 {
+	if cfg.Pool == nil || cfg.TurnBudget <= 0 || cfg.Pool.Reserve(cfg.TurnBudget) == cfg.TurnBudget {
 		return false, nil
 	}
-	if cfg.Pool.Reserve(cfg.TurnBudget) == cfg.TurnBudget {
-		return false, nil
-	}
-	if serr := stopBudgetExhausted(ctx, cfg.Store, cfg.Session.ID); serr != nil {
-		return true, serr
-	}
-	return true, nil
+	return true, stopBudgetExhausted(ctx, cfg.Store, cfg.Session.ID)
 }
 
-// runExecTurn streams one provider turn through a fresh single-use
-// writer; provider errors mark the session failed and wrap
-// ErrProvider.
+// runExecTurn streams one provider turn through a fresh single-use writer;
+// provider errors mark the session failed and wrap ErrProvider.
 func runExecTurn(ctx context.Context, cfg ExecLoopConfig, definitions []provider.ToolDefinition, history []provider.Message) (string, []provider.ToolCall, error) {
 	w, err := cfg.Store.NewEventWriter(ctx, cfg.Session.ID)
 	if err != nil {
@@ -136,11 +120,8 @@ func runExecTurn(ctx context.Context, cfg ExecLoopConfig, definitions []provider
 	defer func() { _ = w.Close() }()
 	var content string
 	var calls []provider.ToolCall
-	for ev := range cfg.Streamer.Stream(ctx, &provider.ChatRequest{
-		Tools:    definitions,
-		Messages: history,
-		Model:    cfg.Session.ModelID,
-	}) {
+	req := &provider.ChatRequest{Tools: definitions, Messages: history, Model: cfg.Session.ModelID}
+	for ev := range cfg.Streamer.Stream(ctx, req) {
 		switch {
 		case ev.Err != nil:
 			_, _ = w.Append(ctx, session.ActorEngine, "provider.error", map[string]any{"error": ev.Err.Error(), "terminal": true})
@@ -169,9 +150,9 @@ func allowSet(names []string) map[string]bool {
 	return set
 }
 
-// executeCalls runs each provider tool call through the real
-// tool.Loop and returns the tool-role results for the next turn;
-// denied or failed calls produce explicit error feedback.
+// executeCalls runs each provider tool call through the real tool.Loop and
+// returns the tool-role results for the next turn; denied or failed calls
+// produce explicit error feedback.
 func executeCalls(ctx context.Context, cfg ExecLoopConfig, calls []provider.ToolCall) ([]provider.Message, error) {
 	results := make([]provider.Message, 0, len(calls))
 	allowed := allowSet(cfg.Allowlist)
@@ -180,17 +161,12 @@ func executeCalls(ctx context.Context, cfg ExecLoopConfig, calls []provider.Tool
 		if err != nil {
 			return nil, err
 		}
-		// A denied call never emits tool.call, so its result-only
-		// feedback goes through the plain writer; an allowlisted call
-		// is correlated through the per-call adapter.
-		var sink tool.EventSink = w
-		if allowed[call.Name] {
-			correlated, serr := NewCallEventSink(w, call)
-			if serr != nil {
-				_ = w.Close()
-				return nil, serr
-			}
-			sink = correlated
+		// Denied calls never emit tool.call, so their result-only feedback uses
+		// the plain writer; allowlisted calls are correlated via the adapter.
+		sink, serr := execCallSink(w, call, allowed)
+		if serr != nil {
+			_ = w.Close()
+			return nil, serr
 		}
 		loop, lerr := tool.NewLoop(cfg.Registry, sink, cfg.Allowlist)
 		if lerr != nil {
@@ -205,27 +181,24 @@ func executeCalls(ctx context.Context, cfg ExecLoopConfig, calls []provider.Tool
 	return results, nil
 }
 
-// appendResult invokes one call and appends its outcome as a
-// tool-role message.
+// appendResult invokes one call and appends its outcome as a tool-role message.
 func appendResult(ctx context.Context, loop *tool.Loop, call provider.ToolCall, results []provider.Message) []provider.Message {
+	failed := func(content string) []provider.Message {
+		return append(results, provider.Message{Role: "tool", ToolCallID: call.ID, Content: content})
+	}
 	outcome, ierr := loop.Invoke(ctx, call.Name, call.Arguments)
 	if ierr != nil {
-		return append(results, provider.Message{
-			Role: "tool", ToolCallID: call.ID,
-			Content: fmt.Sprintf("error: %s", ierr),
-		})
+		return failed(fmt.Sprintf("error: %s", ierr))
 	}
 	encoded, merr := json.Marshal(outcome)
 	if merr != nil {
-		return append(results, provider.Message{
-			Role: "tool", ToolCallID: call.ID, Content: "error: unserialisable result",
-		})
+		return failed("error: unserialisable result")
 	}
-	return append(results, provider.Message{Role: "tool", ToolCallID: call.ID, Content: string(encoded)})
+	return failed(string(encoded))
 }
 
-// replayInto loads the verified session log into provider history,
-// reconstructing correlated tool turns from persisted events.
+// replayInto loads the verified session log into provider history, reconstructing
+// correlated tool turns from persisted events.
 func replayInto(ctx context.Context, st *store.Store, sessionID string, history *[]provider.Message) error {
 	events, err := st.Replay(ctx, sessionID)
 	if err != nil {
@@ -248,9 +221,8 @@ func replayInto(ctx context.Context, st *store.Store, sessionID string, history 
 	return nil
 }
 
-// stopBudgetExhausted appends a turn.end budget-stopped event. The
-// sessions table has no budget_exhausted status yet; adding one is
-// store-schema debt logged in the packet admission.
+// stopBudgetExhausted appends a turn.end budget-stopped event. The sessions
+// table has no budget_exhausted status yet; adding one is store-schema debt.
 func stopBudgetExhausted(ctx context.Context, st *store.Store, sessionID string) error {
 	w, err := st.NewEventWriter(ctx, sessionID)
 	if err != nil {
@@ -282,23 +254,32 @@ func payloadTaskText(payloadJSON string) string {
 	return payloadFieldText(payloadJSON, "task")
 }
 
-func payloadFieldText(payloadJSON, field string) string {
+// payloadMap decodes a recorded event payload or returns nil.
+func payloadMap(payloadJSON string) map[string]any {
 	var p map[string]any
 	if err := json.Unmarshal([]byte(payloadJSON), &p); err != nil {
-		return ""
+		return nil
 	}
-	text, _ := p[field].(string)
+	return p
+}
+
+func payloadFieldText(payloadJSON, field string) string {
+	text, _ := payloadMap(payloadJSON)[field].(string)
 	return text
 }
 
 func payloadFieldRaw(payloadJSON, field string) string {
-	var p map[string]any
-	if err := json.Unmarshal([]byte(payloadJSON), &p); err != nil {
-		return ""
-	}
-	encoded, err := json.Marshal(p[field])
+	encoded, err := json.Marshal(payloadMap(payloadJSON)[field])
 	if err != nil {
 		return ""
 	}
 	return string(encoded)
+}
+
+// execCallSink wraps the writer in the per-call correlated adapter for allowlisted calls.
+func execCallSink(w tool.EventSink, call provider.ToolCall, allowed map[string]bool) (tool.EventSink, error) {
+	if !allowed[call.Name] {
+		return w, nil
+	}
+	return NewCallEventSink(w, call)
 }

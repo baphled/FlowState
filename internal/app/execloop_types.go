@@ -6,8 +6,7 @@ import (
 	"github.com/baphled/flowstate/internal/tool"
 )
 
-// ExecLoopConfig carries the collaborators and limits for one
-// provider-driven execution run.
+// ExecLoopConfig carries the collaborators and limits for one provider-driven run.
 type ExecLoopConfig struct {
 	Store      *store.Store
 	Session    *store.Session
