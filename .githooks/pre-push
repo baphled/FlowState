@@ -18,7 +18,7 @@ if git cat-file -e "$BASE:scripts/pr_review_budget.py" 2>/dev/null; then
 else
   cp scripts/pr_review_budget.py "$selector"
 fi
-title=$(git log -1 --format=%s "$HEAD")
+title=$(git log --reverse --format=%s "$BASE..$HEAD" | sed -n '1p')
 budget=$(python3 -B "$selector" --policy "$policy" --title "$title" --branch "$branch") || exit 1
 export FLOWSTATE_PR_MAX_LINES="$budget"
 python3 -B scripts/pr_size.py --base "$BASE" --head "$HEAD"
