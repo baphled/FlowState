@@ -21,7 +21,6 @@ var ErrExecLoopBudget = errors.New("app: execution loop budget exhausted")
 // ErrExecLoopFenced reports that the loop's lease was fenced or held by another writer.
 var ErrExecLoopFenced = errors.New("app: execution loop lease fenced")
 
-// execTurnBudgetFloor is the minimum sane reservation unit for one turn.
 const execTurnBudgetFloor int64 = 1
 
 // RunExecLoop executes the bounded provider-driven loop: it acquires the
@@ -42,7 +41,6 @@ func RunExecLoop(ctx context.Context, cfg ExecLoopConfig) (*ExecLoopResult, erro
 	return runExecTurns(ctx, &cfg, token)
 }
 
-// acquireExecLease acquires and fences the run lease.
 func acquireExecLease(ctx context.Context, cfg *ExecLoopConfig) (int64, error) {
 	token, err := cfg.Store.AcquireLease(ctx, cfg.LeaseItem, cfg.LeaseAgent)
 	if err != nil {
@@ -57,7 +55,6 @@ func acquireExecLease(ctx context.Context, cfg *ExecLoopConfig) (int64, error) {
 	return token, nil
 }
 
-// runExecTurns drives the bounded turn loop to a safe stop.
 func runExecTurns(ctx context.Context, cfg *ExecLoopConfig, token int64) (*ExecLoopResult, error) {
 	definitions, err := SessionToolDefinitions(cfg.Registry, cfg.Allowlist)
 	if err != nil {
@@ -102,7 +99,6 @@ func runExecTurns(ctx context.Context, cfg *ExecLoopConfig, token int64) (*ExecL
 	return res, nil
 }
 
-// reserveExecBudget reserves one turn; stop reports exhaustion.
 func reserveExecBudget(ctx context.Context, cfg *ExecLoopConfig) (stop bool, err error) {
 	if cfg.Pool == nil || cfg.TurnBudget <= 0 || cfg.Pool.Reserve(cfg.TurnBudget) == cfg.TurnBudget {
 		return false, nil
@@ -142,28 +138,19 @@ func runExecTurn(ctx context.Context, cfg ExecLoopConfig, definitions []provider
 	return content, calls, nil
 }
 
-func allowSet(names []string) map[string]bool {
-	set := make(map[string]bool, len(names))
-	for _, name := range names {
-		set[name] = true
-	}
-	return set
-}
-
 // executeCalls runs each provider tool call through the real tool.Loop and
 // returns the tool-role results for the next turn; denied or failed calls
 // produce explicit error feedback.
 func executeCalls(ctx context.Context, cfg ExecLoopConfig, calls []provider.ToolCall) ([]provider.Message, error) {
 	results := make([]provider.Message, 0, len(calls))
-	allowed := allowSet(cfg.Allowlist)
 	for _, call := range calls {
 		w, err := cfg.Store.NewEventWriter(ctx, cfg.Session.ID)
 		if err != nil {
 			return nil, err
 		}
-		// Denied calls never emit tool.call, so their result-only feedback uses
-		// the plain writer; allowlisted calls are correlated via the adapter.
-		sink, serr := execCallSink(w, call, allowed)
+		// Every call — allowlisted or denied — is annotated with its provider
+		// call id so the history projection can correlate the outcome later.
+		sink, serr := execCallSink(w, call)
 		if serr != nil {
 			_ = w.Close()
 			return nil, serr
@@ -198,31 +185,47 @@ func appendResult(ctx context.Context, loop *tool.Loop, call provider.ToolCall, 
 }
 
 // replayInto loads the verified session log into provider history, reconstructing
-// correlated tool turns from persisted events.
+// correlated tool turns from persisted events. A denied call persists only a
+// tool.result error event, so its assistant tool-call message is synthesised
+// from the result payload to keep the provider history correlated.
 func replayInto(ctx context.Context, st *store.Store, sessionID string, history *[]provider.Message) error {
 	events, err := st.Replay(ctx, sessionID)
 	if err != nil {
 		return err
 	}
+	correlated := map[string]bool{}
 	for _, e := range events {
 		switch e.Type {
 		case session.TypeTurnStart:
-			*history = append(*history, provider.Message{Role: "user", Content: payloadTaskText(e.PayloadJSON)})
+			*history = append(*history, provider.Message{Role: "user", Content: payloadFieldText(e.PayloadJSON, "task")})
 		case tool.TypeToolCall:
+			correlated[payloadFieldText(e.PayloadJSON, "tool_call_id")] = true
 			*history = append(*history, provider.Message{Role: "assistant", ToolCalls: []provider.ToolCall{{
 				ID:        payloadFieldText(e.PayloadJSON, "tool_call_id"),
 				Name:      payloadFieldText(e.PayloadJSON, "tool"),
 				Arguments: json.RawMessage(payloadFieldRaw(e.PayloadJSON, "args")),
 			}}})
 		case tool.TypeToolResult:
-			*history = append(*history, provider.Message{Role: "tool", ToolCallID: payloadFieldText(e.PayloadJSON, "tool_call_id"), Content: payloadFieldRaw(e.PayloadJSON, "result")})
+			if id := payloadFieldText(e.PayloadJSON, "tool_call_id"); id != "" && !correlated[id] {
+				correlated[id] = true
+				*history = append(*history, provider.Message{Role: "assistant", ToolCalls: []provider.ToolCall{{
+					ID:        id,
+					Name:      payloadFieldText(e.PayloadJSON, "tool"),
+					Arguments: json.RawMessage("null"),
+				}}})
+			}
+			// Denied feedback carries the error object, not a result field;
+			// its serialised payload is the explicit denial feedback text.
+			content := payloadFieldRaw(e.PayloadJSON, "result")
+			if content == "null" {
+				content = payloadFieldRaw(e.PayloadJSON, "error")
+			}
+			*history = append(*history, provider.Message{Role: "tool", ToolCallID: payloadFieldText(e.PayloadJSON, "tool_call_id"), Content: content})
 		}
 	}
 	return nil
 }
 
-// stopBudgetExhausted appends a turn.end budget-stopped event. The sessions
-// table has no budget_exhausted status yet; adding one is store-schema debt.
 func stopBudgetExhausted(ctx context.Context, st *store.Store, sessionID string) error {
 	w, err := st.NewEventWriter(ctx, sessionID)
 	if err != nil {
@@ -235,7 +238,6 @@ func stopBudgetExhausted(ctx context.Context, st *store.Store, sessionID string)
 	return nil
 }
 
-// validateExecLoopConfig fails closed on invalid configuration.
 func validateExecLoopConfig(cfg *ExecLoopConfig) error {
 	switch {
 	case cfg.Store == nil, cfg.Session == nil, cfg.Streamer == nil, cfg.Registry == nil:
@@ -248,10 +250,6 @@ func validateExecLoopConfig(cfg *ExecLoopConfig) error {
 		return fmt.Errorf("%w: turn budget must be at least %d with a pool", ErrExecLoopConfig, execTurnBudgetFloor)
 	}
 	return nil
-}
-
-func payloadTaskText(payloadJSON string) string {
-	return payloadFieldText(payloadJSON, "task")
 }
 
 // payloadMap decodes a recorded event payload or returns nil.
@@ -276,10 +274,9 @@ func payloadFieldRaw(payloadJSON, field string) string {
 	return string(encoded)
 }
 
-// execCallSink wraps the writer in the per-call correlated adapter for allowlisted calls.
-func execCallSink(w tool.EventSink, call provider.ToolCall, allowed map[string]bool) (tool.EventSink, error) {
-	if !allowed[call.Name] {
-		return w, nil
-	}
+// execCallSink wraps the writer in the per-call correlated adapter. Every
+// call is correlated, including denials: the loop's denial feedback is a
+// result-only outcome that the adapter accepts without a preceding start.
+func execCallSink(w tool.EventSink, call provider.ToolCall) (tool.EventSink, error) {
 	return NewCallEventSink(w, call)
 }

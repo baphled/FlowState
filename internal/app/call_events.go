@@ -89,7 +89,9 @@ func (s *callEventSink) appendValidated(ctx context.Context, actor, typ string, 
 		}
 		s.started = true
 	case tool.TypeToolResult:
-		if !s.started || s.done {
+		// A denial is the loop's only result-first outcome; any other
+		// result must follow its call start, and no result repeats.
+		if s.done || isDeniedCallResult(fields) == s.started {
 			return -1, fmt.Errorf("%w: result for %q", ErrCallEventOrder, s.call.ID)
 		}
 		s.done = true
@@ -131,4 +133,20 @@ func normaliseCallArgs(value any) (string, error) {
 		return "", err
 	}
 	return buf.String(), nil
+}
+
+// isDeniedCallResult reports whether a result event is the tool loop's
+// typed denial outcome (error.code=tool_denied). The loop records a
+// denial without a preceding tool.call start, so it is the only
+// result-first outcome the correlated adapter accepts.
+func isDeniedCallResult(fields map[string]any) bool {
+	if ok, exists := fields["ok"].(bool); exists && ok {
+		return false
+	}
+	failure, ok := fields["error"].(map[string]any)
+	if !ok {
+		return false
+	}
+	code, _ := failure["code"].(string)
+	return code == "tool_denied"
 }

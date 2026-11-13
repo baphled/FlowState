@@ -233,6 +233,14 @@ var _ = Describe("Provider-driven execution loop", func() {
 		second := cfg.Streamer.(*execLoopStreamer).lastRequest()
 		Expect(execLoopFeedback{Result: out.Result, NoErr: out.NoErr, HistoryLen: len(second.Messages), Denied: strings.Contains(second.Messages[2].Content, "not on session allowlist"), Shape: requestSummary(second)}).To(Equal(execLoopFeedback{Result: &ExecLoopResult{Turns: 2, FinalContent: "recovered from denial", ToolCalls: 1}, NoErr: true, HistoryLen: 3, Denied: true, Shape: requestShape{AssistantCalls: []string{"call-5"}, ToolResults: []string{"call-5"}}}))
 	})
+	It("resumes after a denial by replaying the correlated denial feedback into the next provider request", func() {
+		cfg := deniedCallLoopFixture()
+		Expect(runExec(ctx, cfg).NoErr).To(BeTrue())
+		resume := &execLoopStreamer{turns: [][]provider.StreamEvent{{provText("resumed after denial")}}}
+		cfg.Streamer, cfg.MaxTurns = resume, 4
+		resumed := runExec(ctx, cfg)
+		Expect(execLoopFeedback{Result: resumed.Result, NoErr: resumed.NoErr, HistoryLen: len(resume.lastRequest().Messages), Denied: strings.Contains(resume.lastRequest().Messages[2].Content, "not on the session allowlist"), Shape: requestSummary(resume.lastRequest())}).To(Equal(execLoopFeedback{Result: &ExecLoopResult{Turns: 1, FinalContent: "resumed after denial"}, NoErr: true, HistoryLen: 3, Denied: true, Shape: requestShape{AssistantCalls: []string{"call-5"}, ToolResults: []string{"call-5"}}}))
+	})
 	It("fails closed with ErrExecLoopConfig on a misconfigured loop", func() {
 		streamer := &execLoopStreamer{}
 		cfg := execLoopFixture(streamer)
