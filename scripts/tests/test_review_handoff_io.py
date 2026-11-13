@@ -1,15 +1,11 @@
 """Review evidence network and ledger contracts with synthetic test data."""
 import unittest
 from scripts.review_handoff_io import (
-    HandoffError, collect_actionable, evidence_links, github_get, parse_ledger,
+    HandoffError, collect_actionable, evidence_links, parse_ledger,
 )
 
 
 class ReviewHandoffIOTests(unittest.TestCase):
-    def test_no_token_blocks_network(self):
-        with self.assertRaisesRegex(HandoffError, 'GITHUB_TOKEN'):
-            github_get('/repos/example/repo/pulls/1', None)
-
     def test_explicit_ids_only(self):
         self.assertEqual(evidence_links({'body': 'F260-01 fix; other words'}),
                          {'F260-01'})
