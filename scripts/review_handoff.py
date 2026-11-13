@@ -40,6 +40,17 @@ def evaluate(pr_data, comments, reviews, inline, ledger, head):
          'links': actionable.get(fid, [])}
         for fid, item in sorted(ledger.items()) if item['status'] in BLOCKING
     ]
+    # Do not silently ignore old-style blocking conversation comments.
+    conversation_blockers = [
+        c for c in comments if isinstance(c, dict)
+        and re.search(r'(?i)\bchanges required\b', c.get('body') or '')
+        and not evidence_links(c)
+    ]
+    if conversation_blockers:
+        details = '; '.join((c.get('html_url') or 'unknown') + ': '
+                            + (c.get('body') or '')[:300]
+                            for c in conversation_blockers)
+        raise HandoffError('Unstructured blocking conversation findings: ' + details)
     unstructured = [r.get('html_url') or 'unknown' for r in reviews
                     if r.get('state', '').upper() == 'CHANGES_REQUESTED'
                     and not evidence_links(r)]
