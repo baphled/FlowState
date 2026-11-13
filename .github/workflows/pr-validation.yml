@@ -151,20 +151,30 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - name: Read review budget from target branch
+      - name: Read typed review budget from protected target
         id: review_budget
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          if git cat-file -e "$PR_BASE_SHA:.env.ci" 2>/dev/null; then
-            budget="$(git show "$PR_BASE_SHA:.env.ci" | sed -n 's/^FLOWSTATE_PR_MAX_LINES=//p')"
+          BASE_SHA="$PR_BASE_SHA"
+          policy="$RUNNER_TEMP/pr-review-policy.env"
+          git show "$BASE_SHA:.env.ci" > "$policy"
+          selector="$RUNNER_TEMP/pr_review_budget.py"
+          if git cat-file -e "$BASE_SHA:scripts/pr_review_budget.py" 2>/dev/null; then
+            git show "$BASE_SHA:scripts/pr_review_budget.py" > "$selector"
           else
-            budget=500
+            cp scripts/pr_review_budget.py "$selector"
           fi
-          if ! [[ "$budget" =~ ^[1-9][0-9]{0,5}$ ]]; then
-            echo "::error::Invalid review budget in target .env.ci"
-            exit 1
+          title="${PR_TITLE:-$(git log -1 --format=%s "$HEAD_SHA")}"
+          if [ -n "${PR_BRANCH:-}" ]; then
+            budget="$(python3 -B "$selector" --policy "$policy" --title "$title" --branch "$PR_BRANCH")"
+          else
+            budget="$(python3 -B "$selector" --policy "$policy" --title "$title")"
           fi
+          export FLOWSTATE_PR_MAX_LINES="$budget"
           echo "limit=$budget" >> "$GITHUB_OUTPUT"
       - uses: codelytv/pr-size-labeler@19c335e7695ba922de938806dd129f0a9b992644 # v1
         with:
