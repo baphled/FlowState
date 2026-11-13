@@ -86,8 +86,7 @@ func execLoopSeed() (*store.Store, *store.Session) {
 	return st, sess
 }
 
-// execLoopOutcome bundles a run's outcome for structural assertion.
-type execLoopOutcome struct {
+type execLoopOutcome struct { // one run's outcome
 	Result                              *ExecLoopResult
 	ErrConfig, ErrBudget, ErrFenced     bool
 	ErrProvider, NoErr                  bool
@@ -119,8 +118,8 @@ func provErrorLoopFixture() ExecLoopConfig { // first stream terminates in an er
 	return execLoopFixture(&execLoopStreamer{turns: [][]provider.StreamEvent{{provError("boom")}}})
 }
 
-// replayLoopFixture stops a two-tool-call run after MaxTurns for a later resume.
-func replayLoopFixture(ctx context.Context) ExecLoopConfig {
+func replayLoopFixture(ctx context.Context) ExecLoopConfig { // stops after MaxTurns for a later resume
+
 	call := []provider.StreamEvent{provText("need a tool"), provCall(echoCall("call-6")), provFinish()}
 	first := &execLoopStreamer{turns: [][]provider.StreamEvent{call, {provText("need another"), provCall(echoCall("call-7")), provFinish()}}}
 	cfg := execLoopFixture(first)
