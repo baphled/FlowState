@@ -86,3 +86,30 @@ def collect_actionable(comments, reviews, inline):
                     'line': item.get('line'),
                 })
     return actionable
+
+def blocking_findings(ledger, actionable):
+    """Project outstanding ledger findings with their GitHub source references."""
+    return [
+        {'id': fid, 'status': item['status'],
+         'description': item.get('description', ''),
+         'requested_change': item.get('requested_change', ''),
+         'test_oracle': item.get('test_oracle', ''),
+         'links': actionable.get(fid, [])}
+        for fid, item in sorted(ledger.items()) if item['status'] in BLOCKING
+    ]
+
+
+def unstructured_changes(comments, reviews):
+    """Surface old-style blocking conversation and review comments for triage."""
+    found = []
+    for comment in comments:
+        if isinstance(comment, dict) and re.search(
+                r'(?i)\bchanges required\b', comment.get('body') or '') \
+                and not evidence_links(comment):
+            found.append((comment.get('html_url') or 'unknown') + ': '
+                         + (comment.get('body') or '')[:300])
+    for item in reviews:
+        if item.get('state', '').upper() == 'CHANGES_REQUESTED' \
+                and not evidence_links(item):
+            found.append(item.get('html_url') or 'unknown')
+    return found

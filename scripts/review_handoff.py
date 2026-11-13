@@ -11,8 +11,8 @@ import re
 import sys
 
 from scripts.review_handoff_io import (
-    BLOCKING, HandoffError, collect_actionable, evidence_links,
-    github_get, parse_ledger,
+    HandoffError, blocking_findings, collect_actionable, github_get,
+    parse_ledger, unstructured_changes,
 )
 
 SHA_RE = re.compile(r'^[0-9a-f]{40}$')
@@ -32,31 +32,11 @@ def evaluate(pr_data, comments, reviews, inline, ledger, head):
     if missing:
         raise HandoffError('GitHub findings missing from Dropbox ledger: '
                            + ', '.join(missing))
-    findings = [
-        {'id': fid, 'status': item['status'],
-         'description': item.get('description', ''),
-         'requested_change': item.get('requested_change', ''),
-         'test_oracle': item.get('test_oracle', ''),
-         'links': actionable.get(fid, [])}
-        for fid, item in sorted(ledger.items()) if item['status'] in BLOCKING
-    ]
-    # Do not silently ignore old-style blocking conversation comments.
-    conversation_blockers = [
-        c for c in comments if isinstance(c, dict)
-        and re.search(r'(?i)\bchanges required\b', c.get('body') or '')
-        and not evidence_links(c)
-    ]
-    if conversation_blockers:
-        details = '; '.join((c.get('html_url') or 'unknown') + ': '
-                            + (c.get('body') or '')[:300]
-                            for c in conversation_blockers)
-        raise HandoffError('Unstructured blocking conversation findings: ' + details)
-    unstructured = [r.get('html_url') or 'unknown' for r in reviews
-                    if r.get('state', '').upper() == 'CHANGES_REQUESTED'
-                    and not evidence_links(r)]
+    findings = blocking_findings(ledger, actionable)
+    unstructured = unstructured_changes(comments, reviews)
     if unstructured:
-        raise HandoffError('Unstructured change requests require triage: '
-                           + ', '.join(unstructured))
+        raise HandoffError('Unstructured blocking change requests: '
+                           + '; '.join(unstructured))
     return {'pr': pr_data['number'], 'head_sha': head,
             'status': 'changes_required' if findings else 'review_pending',
             'findings': findings, 'review_accepted': False}
