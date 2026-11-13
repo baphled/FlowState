@@ -59,8 +59,7 @@ func echoCall(id string) provider.ToolCall { // allowlisted echo invocation
 	return provider.ToolCall{ID: id, Name: "echo", Arguments: json.RawMessage(`{"message":"hi"}`)}
 }
 
-// execLoopFeedback bundles a run result with the next provider request.
-type execLoopFeedback struct {
+type execLoopFeedback struct { // run result plus next-request shape
 	Result     *ExecLoopResult
 	NoErr      bool
 	HistoryLen int
@@ -173,8 +172,7 @@ func fencedLoopFixture(ctx context.Context) ExecLoopConfig { // lease already he
 	return cfg
 }
 
-// annotatedCallIDs returns persisted call ids.
-func annotatedCallIDs(ctx context.Context, cfg ExecLoopConfig) []string {
+func annotatedCallIDs(ctx context.Context, cfg ExecLoopConfig) []string { // persisted tool-call ids
 	events, rerr := cfg.Store.Replay(ctx, cfg.Session.ID)
 	execMust(rerr)
 	ids := []string{}
@@ -186,8 +184,7 @@ func annotatedCallIDs(ctx context.Context, cfg ExecLoopConfig) []string {
 	return ids
 }
 
-// requestShape summarises a provider request's messages.
-type requestShape struct{ AssistantCalls, ToolResults []string }
+type requestShape struct{ AssistantCalls, ToolResults []string } // provider-request summary
 
 func requestSummary(req *provider.ChatRequest) requestShape {
 	shape := requestShape{AssistantCalls: []string{}, ToolResults: []string{}}
