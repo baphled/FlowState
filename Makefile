@@ -4,6 +4,16 @@
 export FLOWSTATE_PR_MAX_LINES
 
 .PHONY: all build run test fmt lint check clean help ai-commit check-ai-attribution list-ai-commits install-tools check-pr-size check-size-live install-hooks check-python-contract
+.PHONY: package-admission-runner install-admission-runner admission-runner-start admission-runner-stop admission-runner-status
+
+package-admission-runner: ## Package committed admission runner and its pinned dependency manifest
+	python3 -B -m scripts.admission_service package
+
+install-admission-runner: package-admission-runner ## Validate private config and install the packaged user service
+	python3 -B -m scripts.admission_service install
+
+admission-runner-start admission-runner-stop admission-runner-status: ## Manage the configured admission runner
+	python3 -B -m scripts.admission_service $(patsubst admission-runner-%,%,$@)
 
 check-pr-size: ## Bound the complete committed PR diff (BASE_SHA=actual target)
 	python3 -B scripts/pr_size.py --base "$(BASE_SHA)" --head "$$(git rev-parse HEAD)"
@@ -139,7 +149,7 @@ worktree-remove: ## Remove feature worktree (NAME=feature-name)
 # Development
 #
 
-session-start: ## Start development session
+session-start: admission-runner-start ## Start development session; fail when admission runner cannot start
 	@echo "FlowState Development Session"
 	@echo "============================="
 	@echo ""

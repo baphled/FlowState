@@ -50,7 +50,11 @@ make check-pr-size BASE_SHA=<actual-pr-base-sha>
 make check-code-quality BASE_SHA=<actual-pr-base-sha>
 make check-documentation BASE_SHA=<actual-pr-base-sha>
 make install-hooks          # once per clone: repo-managed pre-commit/pre-push hooks
+make session-start          # requires installed/configured admission runner; fails on startup errors
 ```
+
+Install the [packaged admission runner](rules/STATUS_ISSUER.md#packaged-development-runner)
+before development. Never replace a missing publisher with a green source-test status.
 
 Keep packets, outputs, qualifications, AI attribution and review receipts only in
 Dropbox Metadata. Never guess a model/provider/harness or synthesize human review.
