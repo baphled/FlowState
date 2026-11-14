@@ -23,16 +23,11 @@ See [the enforced code structure contract](../../rules/ARCHITECTURE.md) for exac
 ownership and import rules. Existing concrete-store coupling is refactoring debt;
 its presence is not permission to add another dependency or a new global.
 
-## Provider-driven execution loop
-
-`internal/app` owns the M2 execution loop (`RunExecLoop`): a leased, fenced run replays verified
-history and drives bounded provider turns; allowlisted calls run through the real `tool.Loop`
-with per-call correlated `tool_call_id` annotation, and replay skips uncorrelated denial results
-so no orphan tool-role message reaches the provider. `ErrExecLoopBudget` stops spent runs,
-`ErrExecLoopFenced` fenced ones; provider errors mark the session failed.
-
 ## Structured provider tools
 
+`internal/app` owns the M2 execution loop (`RunExecLoop`): a leased, fenced run replays
+verified history and drives bounded provider turns; replay skips uncorrelated denial
+results.
 `internal/provider` owns `ToolDefinition`, complete `ToolCall` values and message
 result correlation through `ToolCallID`. `ChatRequest.Validate` rejects malformed
 identifiers, non-object JSON arguments/parameters, duplicate call IDs and unmatched

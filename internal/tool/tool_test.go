@@ -284,7 +284,7 @@ var _ = Describe("Loop", func() {
 			panic(err)
 		}
 		_, err = l.Invoke(context.Background(), Echo, nil)
-		Expect(errors.Is(err, store.ErrClosed)).To(BeTrue())
+		Expect(errors.Is(err, ErrEventAppend)).To(BeTrue())
 	})
 
 	It("records no events when the writer is closed for an allowlisted tool", func() {
@@ -312,7 +312,7 @@ var _ = Describe("Loop", func() {
 			panic(err)
 		}
 		_, err = l.Invoke(context.Background(), "echo", nil)
-		Expect(errors.Is(err, store.ErrClosed)).To(BeTrue())
+		Expect(errors.Is(err, ErrEventAppend)).To(BeTrue())
 	})
 
 	It("allowlists the configured tool under deny-by-default", func() {

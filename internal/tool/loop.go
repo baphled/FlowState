@@ -128,7 +128,7 @@ func (l *Loop) recordDeny(ctx context.Context, actor, name string) error {
 		},
 	})
 	if aerr != nil {
-		return fmt.Errorf("tool: append deny event: %w", aerr)
+		return fmt.Errorf("%w: deny event: %w", ErrEventAppend, aerr)
 	}
 	return fmt.Errorf("%w: %s", ErrDenied, name)
 }
