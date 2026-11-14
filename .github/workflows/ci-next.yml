@@ -275,7 +275,7 @@ jobs:
     name: Build
     runs-on: ubuntu-latest
     if: ${{ always() }}
-    needs: [lint, test, metadata, security, scope, commitlint, pr-policy]
+    needs: [lint, test, metadata, security, scope, commitlint, pr-policy, review-handoff]
     steps:
       - name: Require successful prerequisites
         env:
@@ -305,6 +305,49 @@ jobs:
 
       - name: Verify binary exists
         run: test -f build/flowstate
+
+  review-handoff:
+    name: Review Handoff
+    needs: [scope]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Test review-handoff transport, evidence and evaluator contracts
+        run: |
+          python3 -B -m unittest discover -s scripts/tests -p test_review_handoff.py -v
+          python3 -B -m unittest discover -s scripts/tests -p test_review_handoff_io.py -v
+          python3 -B -m unittest discover -s scripts/tests -p test_review_handoff_net.py -v
+
+      # Fail-closed CLI proof against synthetic fixtures: the exact-head check,
+      # the missing-ledger finding and the unstructured change request must all
+      # fail without network access and without any GitHub token.
+      - name: Prove review-handoff CLI fails closed
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python3 -B - <<'PYTHON'
+          import json, os, subprocess, tempfile
+          head = os.environ["HEAD_SHA"]
+          ledger = {"pr": 1, "head_sha": head, "findings": []}
+          with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as file:
+              json.dump(ledger, file)
+              path = file.name
+          result = subprocess.run(
+              ["python3", "-B", "scripts/review_handoff.py", "--repo",
+               "baphled/FlowState", "--pr", "1", "--head", head,
+               "--metadata", path],
+              capture_output=True, text=True, cwd=os.getcwd(),
+              env={"PYTHONPATH": os.getcwd()})  # no GITHUB_TOKEN: must fail closed
+          os.unlink(path)
+          if result.returncode == 0:
+              raise SystemExit("review handoff must fail closed without token")
+          if "GITHUB_TOKEN is required" not in result.stderr:
+              raise SystemExit("unexpected failure mode: " + result.stderr)
+          print("review-handoff CLI failed closed as required")
+          PYTHON
 
   security:
     name: Security Scan
