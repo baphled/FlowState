@@ -4,7 +4,7 @@ on:
   push:
     branches: [next]
   pull_request:
-    branches: [next, chore/ginkgo-test-contract-20261028, chore/ginkgo-test-enforcement-20261028, chore/code-modularity-20261028, chore/documentation-tools-20261028, fix/metadata-contract-20261029]
+    branches: [next, chore/ginkgo-test-contract-20261028, chore/ginkgo-test-enforcement-20261028, chore/code-modularity-20261028, chore/documentation-tools-20261028, fix/metadata-contract-20261029, feature/review-handoff-ci-wiring-20261114]
 
 permissions:
   contents: read
