@@ -79,7 +79,7 @@ func (l *Loop) Invoke(ctx context.Context, name string, args json.RawMessage) (a
 		"tool": name,
 		"args": args,
 	}); err != nil {
-		return nil, fmt.Errorf("tool: append tool.call: %w", err)
+		return nil, fmt.Errorf("%w: tool.call: %w", ErrEventAppend, err)
 	}
 	result, invokeErr := t.Invoke(ctx, args)
 	if invokeErr != nil {
@@ -94,7 +94,7 @@ func (l *Loop) Invoke(ctx context.Context, name string, args json.RawMessage) (a
 				"message": invokeErr.Error(),
 			},
 		}); aerr != nil {
-			return nil, errors.Join(fmt.Errorf("tool: append tool.result: %w", aerr), invokeErr)
+			return nil, errors.Join(fmt.Errorf("%w: tool.result: %w", ErrEventAppend, aerr), invokeErr)
 		}
 		return nil, fmt.Errorf("%w: %s: %w", ErrToolExecuted, name, invokeErr)
 	}
@@ -103,7 +103,7 @@ func (l *Loop) Invoke(ctx context.Context, name string, args json.RawMessage) (a
 		"ok":     true,
 		"result": result,
 	}); aerr != nil {
-		return nil, fmt.Errorf("tool: append tool.result: %w", aerr)
+		return nil, fmt.Errorf("%w: tool.result: %w", ErrEventAppend, aerr)
 	}
 	return result, nil
 }
@@ -111,6 +111,9 @@ func (l *Loop) Invoke(ctx context.Context, name string, args json.RawMessage) (a
 // ErrToolExecuted wraps errors returned by an allowlisted tool's own
 // implementation, distinguishing them from gate failures.
 var ErrToolExecuted = errors.New("tool: tool invocation failed")
+
+// ErrEventAppend wraps event-persistence failures, distinguishing infrastructure errors from tool feedback.
+var ErrEventAppend = errors.New("tool: event append failed")
 
 // recordDeny persists the typed denial event for a non-allowlisted
 // call (M1-TOOLS: denied calls produce typed error events) and
@@ -125,7 +128,7 @@ func (l *Loop) recordDeny(ctx context.Context, actor, name string) error {
 		},
 	})
 	if aerr != nil {
-		return fmt.Errorf("tool: append deny event: %w", aerr)
+		return fmt.Errorf("%w: deny event: %w", ErrEventAppend, aerr)
 	}
 	return fmt.Errorf("%w: %s", ErrDenied, name)
 }
