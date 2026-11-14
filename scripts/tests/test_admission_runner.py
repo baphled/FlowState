@@ -1,4 +1,5 @@
 """Terminal publication, polling and timeout controls with no signing authority."""
+import sys
 import unittest
 import signal
 import subprocess
@@ -107,7 +108,7 @@ def evaluate(event, reader, token, publisher, *args):
 with patch('scripts.admission_runner.AppCredentials', return_value=credentials), patch('scripts.admission_runner.StatusIssuer', return_value=issuer), patch('scripts.admission_runner.execute', side_effect=evaluate):
     process(225, FakeGitHub(), CONFIG)
 '''
-        child = subprocess.Popen(['python3', '-B', '-c', script], stdout=subprocess.PIPE,
+        child = subprocess.Popen([sys.executable, '-B', '-c', script], stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE, text=True)
         self.addCleanup(lambda: child.kill() if child.poll() is None else None)
         self.assertEqual(child.stdout.readline().strip(), 'pending')
