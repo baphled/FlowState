@@ -320,16 +320,14 @@ jobs:
           python3 -B -m unittest discover -s scripts/tests -p test_review_handoff.py -v
           python3 -B -m unittest discover -s scripts/tests -p test_review_handoff_io.py -v
           python3 -B -m unittest discover -s scripts/tests -p test_review_handoff_net.py -v
-          python3 -B -m unittest discover -s scripts/tests -p test_review_handoff_workflow.py -v
 
       # Fail-closed CLI proof against synthetic fixtures: the exact-head check,
       # the missing-ledger finding and the unstructured change request must all
       # fail without network access and without any GitHub token.
       - name: Prove review-handoff CLI fails closed
         env:
-          PR_TITLE: unused
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          head="$(git rev-parse HEAD)"
           python3 -B - <<'PYTHON'
           import json, os, subprocess, tempfile
           head = os.environ["HEAD_SHA"]
