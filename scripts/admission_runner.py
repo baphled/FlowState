@@ -107,7 +107,7 @@ def qualified_status(reader, head):
     if response.get('sha') != head or not isinstance(response.get('statuses'), list):
         raise AdmissionError('publisher status response does not bind the candidate')
     matches = [s for s in response['statuses'] if s.get('context') == STATUS_CONTEXT]
-    status = matches[0] if matches else {}
+    status = next(iter(matches), {})
     if status and status.get('creator', {}).get('login') != 'flowstate-merge-admission[bot]':
         raise AdmissionError('admission status came from the wrong publisher')
     return status
@@ -129,6 +129,13 @@ def watch(reader, head, timeout=120, clock=time.monotonic, sleep=time.sleep):
         sleep(5)
 
 
+def dropbox_reader(config):
+    """Select the Dropbox read adapter: local sync tree when configured, else API token."""
+    if 'dropbox_local_path' in config:
+        return LocalDropbox(config['dropbox_local_path'])
+    return config['dropbox_read_token']
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', default=os.path.expanduser('~/.config/flowstate/admission.json'))
@@ -142,8 +149,7 @@ def main(argv=None):
             watch(GitHub('baphled/FlowState', os.environ.get('GITHUB_TOKEN', '')), args.watch)
             return 0
         config = configuration(args.config)
-        if 'dropbox_local_path' in config:
-            config['dropbox_read_token'] = LocalDropbox(config['dropbox_local_path'])
+        config['dropbox_read_token'] = dropbox_reader(config)
         startup(config)
         if args.check_config:
             return 0
