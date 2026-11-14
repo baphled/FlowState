@@ -31,6 +31,30 @@ def private_directory(path):
     return file
 
 
+def present(value):
+    """True when the configuration value is a non-blank string."""
+    return isinstance(value, str) and bool(value.strip())
+
+
+def dropbox_source(value):
+    """Select exactly one of the Dropbox API token or local sync tree."""
+    token, local = value.get('dropbox_read_token'), value.get('dropbox_local_path')
+    if present(token) == present(local):
+        raise AdmissionError(
+            'exactly one of dropbox_read_token or dropbox_local_path is required')
+    if present(local):
+        value['dropbox_local_path'] = str(private_directory(local))
+
+
+def identifier_errors(value):
+    """Require positive qualified runner identifiers, repository and App."""
+    for name in ('app_id', 'installation_id', 'repository_id'):
+        if type(value.get(name)) is not int or value[name] <= 0:
+            raise AdmissionError('positive runner identifier required: ' + name)
+    if value.get('repository') != 'baphled/FlowState' or value['app_id'] != 5728089:
+        raise AdmissionError('runner must use the qualified FlowState repository and App')
+
+
 def configuration(path):
     """Validate required credentials/authorities before starting the polling service."""
     from scripts.app_credentials import app_jwt
@@ -39,24 +63,14 @@ def configuration(path):
     if not isinstance(value, dict):
         raise AdmissionError('runner configuration must be an object')
     for name in ('github_read_token', 'private_key_file'):
-        if not isinstance(value.get(name), str) or not value[name].strip():
+        if not present(value.get(name)):
             raise AdmissionError('missing runner configuration: ' + name)
-    token = value.get('dropbox_read_token')
-    local = value.get('dropbox_local_path')
-    if bool(isinstance(token, str) and token.strip()) == bool(isinstance(local, str) and local.strip()):
-        raise AdmissionError(
-            'exactly one of dropbox_read_token or dropbox_local_path is required')
-    if local is not None:
-        value['dropbox_local_path'] = str(private_directory(local))
-    for name in ('app_id', 'installation_id', 'repository_id'):
-        if type(value.get(name)) is not int or value[name] <= 0:
-            raise AdmissionError('positive runner identifier required: ' + name)
+    dropbox_source(value)
+    identifier_errors(value)
     for name in ('review_public_key', 'execution_public_key'):
         decode_hex(value.get(name), 32, name)
     if value['review_public_key'] == value['execution_public_key']:
         raise AdmissionError('distinct review and execution authorities required')
-    if value.get('repository') != 'baphled/FlowState' or value['app_id'] != 5728089:
-        raise AdmissionError('runner must use the qualified FlowState repository and App')
     value['private_key'] = private_file(value['private_key_file'])
     app_jwt(value['app_id'], value['private_key'], 0)  # validate RSA material, no network
     return value

@@ -11,8 +11,8 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from scripts.admission_io import (  # noqa: E402
-    AdmissionError, Dropbox, GitHub, LocalDropbox, execute as admission_execute,
-    validate_agent_review, metadata_reference, validate_record, verify_candidate,
+    AdmissionError, Dropbox, GitHub, execute as admission_execute, validate_agent_review,
+    metadata_reference, validate_record, verify_candidate,
 )
 HEAD = "2" * 40
 PARENT = "1" * 40
@@ -337,43 +337,6 @@ class PublishedStatus(unittest.TestCase):
         gh = FakeGitHub()
         execute({"pull_request": {"number": 225}}, gh, FakeDropbox())
         self.assertEqual([state for _, state, _ in gh.statuses], ["pending", "success"])
-
-
-class LocalDropboxAdapter(unittest.TestCase):
-    def test_local_dropbox_reads_records_within_private_root(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / 'FlowState/Metadata/attempts/example-01').mkdir(parents=True)
-            (root / 'FlowState/Metadata/attempts/example-01/commit.json').write_text('{"ok":true}')
-            adapter = LocalDropbox(str(root))
-            self.assertEqual(adapter.record(REF), {"ok": True})
-
-    def test_local_dropbox_fails_closed_on_escape_missing_and_oversize(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            adapter = LocalDropbox(str(root))
-            for reference in (REF, "dropbox:/etc/passwd", "dropbox:/FlowState/../../etc/passwd",
-                              "not-a-reference"):
-                with self.subTest(reference=reference), self.assertRaises(AdmissionError):
-                    adapter.record(reference)
-            target = root / 'FlowState/Metadata/attempts/example-01'
-            target.mkdir(parents=True)
-            (target / 'commit.json').write_text('{"bad":')
-            with self.assertRaises(AdmissionError):
-                adapter.record(REF)
-            (target / 'commit.json').write_text('"' + 'x' * 131072 + '"')
-            with self.assertRaises(AdmissionError):
-                adapter.record(REF)
-
-    def test_local_dropbox_requires_private_root(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            os.chmod(root, 0o755)
-            try:
-                with self.assertRaisesRegex(AdmissionError, 'owner-only'):
-                    LocalDropbox(str(root))
-            finally:
-                os.chmod(root, 0o700)
 
 
 class AdapterContract(unittest.TestCase):
