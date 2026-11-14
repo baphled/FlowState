@@ -3,6 +3,8 @@
 set -eu
 git fetch origin next:refs/remotes/origin/next
 BASE=$(git rev-parse origin/next)
+FLOWSTATE_PR_MAX_LINES=$(git show "$BASE:.env.ci" | sed -n 's/^FLOWSTATE_PR_MAX_LINES=//p')
+export FLOWSTATE_PR_MAX_LINES
 while read -r local_ref local_sha remote_ref remote_sha; do
     case "$local_ref" in refs/heads/*) ;; *) continue ;; esac
     case "$local_sha" in 0000000000000000000000000000000000000000) continue ;; esac
