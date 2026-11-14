@@ -2,6 +2,8 @@
 import base64
 import binascii
 import json
+import os
+import stat
 import sys
 import re
 from urllib.error import HTTPError, URLError
@@ -105,6 +107,34 @@ class Dropbox:
         except AdmissionError:
             raise
         except (HTTPError, URLError, ValueError, KeyError, UnicodeError, TimeoutError) as error:
+            raise AdmissionError("Dropbox record missing, invalid or inaccessible") from error
+
+
+class LocalDropbox:
+    """Read-only adapter against the owner-private local Dropbox sync tree."""
+    def __init__(self, root):
+        if not root:
+            raise AdmissionError("local Dropbox sync root not configured")
+        self.root = os.path.abspath(root)
+        mode = os.stat(self.root)
+        if not stat.S_ISDIR(mode.st_mode) or mode.st_mode & 0o077 or mode.st_uid != os.getuid():
+            raise AdmissionError("local Dropbox sync root must be an owner-only directory")
+    def record(self, reference):
+        if not REFERENCE.fullmatch(reference):
+            raise AdmissionError("invalid Dropbox record path")
+        path = os.path.abspath(os.path.join(
+            self.root, reference.removeprefix("dropbox:").lstrip("/")))
+        if not path.startswith(os.path.join(self.root, "FlowState") + os.sep):
+            raise AdmissionError("Dropbox reference escapes the metadata root")
+        try:
+            with open(path, "rb") as handle:
+                content = handle.read(131073)
+            if len(content) > 131072:
+                raise AdmissionError("Dropbox record exceeds 128KiB bound")
+            return strict_json(content)
+        except AdmissionError:
+            raise
+        except (OSError, ValueError) as error:
             raise AdmissionError("Dropbox record missing, invalid or inaccessible") from error
 
 

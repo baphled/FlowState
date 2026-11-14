@@ -19,6 +19,18 @@ def private_file(path):
     return file.read_bytes()
 
 
+def private_directory(path):
+    """Require an owner-only directory for the local Dropbox sync tree root."""
+    file = Path(path)
+    try:
+        mode = file.stat()
+    except FileNotFoundError as error:
+        raise AdmissionError('runner dropbox_local_path directory missing: ' + str(file)) from error
+    if not stat.S_ISDIR(mode.st_mode) or mode.st_mode & 0o077 or mode.st_uid != os.getuid():
+        raise AdmissionError('runner dropbox_local_path must be an owner-only directory')
+    return file
+
+
 def configuration(path):
     """Validate required credentials/authorities before starting the polling service."""
     from scripts.app_credentials import app_jwt
@@ -26,9 +38,16 @@ def configuration(path):
     value = strict_json(private_file(path))
     if not isinstance(value, dict):
         raise AdmissionError('runner configuration must be an object')
-    for name in ('github_read_token', 'dropbox_read_token', 'private_key_file'):
+    for name in ('github_read_token', 'private_key_file'):
         if not isinstance(value.get(name), str) or not value[name].strip():
             raise AdmissionError('missing runner configuration: ' + name)
+    token = value.get('dropbox_read_token')
+    local = value.get('dropbox_local_path')
+    if bool(isinstance(token, str) and token.strip()) == bool(isinstance(local, str) and local.strip()):
+        raise AdmissionError(
+            'exactly one of dropbox_read_token or dropbox_local_path is required')
+    if local is not None:
+        value['dropbox_local_path'] = str(private_directory(local))
     for name in ('app_id', 'installation_id', 'repository_id'):
         if type(value.get(name)) is not int or value[name] <= 0:
             raise AdmissionError('positive runner identifier required: ' + name)
