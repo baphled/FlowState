@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from scripts.admission_config import configuration
-from scripts.admission_io import GitHub, execute
+from scripts.admission_io import GitHub, LocalDropbox, execute
 from scripts.admission_metadata import AdmissionError, SHA
 from scripts.admission_service import ready
 from scripts.app_credentials import AppCredentials
@@ -136,6 +136,8 @@ def main(argv=None):
             watch(GitHub('baphled/FlowState', os.environ.get('GITHUB_TOKEN', '')), args.watch)
             return 0
         config = configuration(args.config)
+        if 'dropbox_local_path' in config:
+            config['dropbox_read_token'] = LocalDropbox(config['dropbox_local_path'])
         startup(config)
         if args.check_config:
             return 0

@@ -53,6 +53,12 @@ public authorities; do not create replacement signing identities to pass a check
 }
 ```
 
+Where no Dropbox API token exists, the runner may instead read the owner-private
+local Dropbox sync tree: set `dropbox_local_path` to the directory that contains
+`FlowState/` (owner-only mode, e.g. `~/Dropbox`) and omit `dropbox_read_token`;
+exactly one of the two must be configured. The local adapter is read-only and
+rejects references that escape the tree's `FlowState/` metadata root.
+
 On Linux with a running systemd user manager and Python venv support:
 
 ```sh
