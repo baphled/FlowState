@@ -36,7 +36,7 @@ func (f *execLoopStreamer) Chat(ctx context.Context, req *provider.ChatRequest) 
 }
 func (f *execLoopStreamer) Stream(ctx context.Context, req *provider.ChatRequest) <-chan provider.StreamEvent {
 	f.reqs = append(f.reqs, req)
-	var events []provider.StreamEvent
+	events := []provider.StreamEvent{}
 	if len(f.reqs) <= len(f.turns) {
 		events = f.turns[len(f.reqs)-1]
 	}
@@ -60,8 +60,7 @@ func echoCall(id string) provider.ToolCall { // allowlisted echo invocation
 	return provider.ToolCall{ID: id, Name: "echo", Arguments: json.RawMessage(`{"message":"hi"}`)}
 }
 
-// streamerStub cancels its context as the wrapped stream closes,
-// simulating a provider stream cut mid-turn.
+// streamerStub cancels its context as the wrapped stream closes (provider cut mid-turn).
 type streamerStub struct {
 	inner  func(context.Context, *provider.ChatRequest) <-chan provider.StreamEvent
 	cancel context.CancelFunc
@@ -97,9 +96,9 @@ func execMust(err error) {
 	}
 } // panics on arrange failures
 func execLoopSeed() (*store.Store, *store.Session) {
+	ctx := context.Background()
 	st, err := store.Open(filepath.Join(GinkgoT().TempDir(), "ws.db"))
 	execMust(err)
-	ctx := context.Background()
 	sess, cerr := st.CreateSession(ctx, "exec-loop-1", "scripted", "scripted-model", "harness", "sha")
 	execMust(cerr)
 	w, werr := st.NewEventWriter(ctx, sess.ID)
@@ -274,9 +273,7 @@ var _ = Describe("Provider-driven execution loop", func() {
 	})
 	It("fencing rejects a stale writer's appends after the lease is taken over", func() {
 		cfg := execLoopFixture(&execLoopStreamer{turns: [][]provider.StreamEvent{{provText("turn one")}}})
-		if out := runExec(ctx, cfg); !out.NoErr {
-			panic("fixture first run must finish cleanly")
-		}
+		mustFinish(ctx, cfg)
 		w, werr := cfg.Store.NewEventWriter(ctx, cfg.Session.ID)
 		execMust(werr)
 		tok, terr := cfg.Store.AcquireLease(ctx, cfg.LeaseItem, cfg.LeaseAgent)
@@ -290,39 +287,29 @@ var _ = Describe("Provider-driven execution loop", func() {
 	})
 	It("replay preserves persisted assistant message content on resume", func() {
 		cfg := execLoopFixture(&execLoopStreamer{turns: [][]provider.StreamEvent{{provText("remember this line")}}})
-		if out := runExec(ctx, cfg); !out.NoErr {
-			panic("fixture first run must finish cleanly")
-		}
+		mustFinish(ctx, cfg)
 		resume := &execLoopStreamer{turns: [][]provider.StreamEvent{{provText("resumed")}}}
 		cfg.Streamer = resume
-		Expect(runExec(ctx, cfg).NoErr).To(BeTrue())
-		second := resume.lastRequest()
-		Expect(second.Messages).To(HaveLen(2))
-		Expect(second.Messages[1].Content).To(Equal("remember this line"))
+		content := replayResumeContent(ctx, cfg, resume)
+		Expect(content).To(Equal("remember this line"))
 	})
-	It("a cancelled stream returns ctx.Err() without persisting a partial assistant message", func() {
-		streamer := &execLoopStreamer{turns: [][]provider.StreamEvent{{provText("half a thought")}}}
-		cfg := execLoopFixture(streamer)
-		// The stub cancels as its stream channel closes: the stream
-		// loop exits with the context cancelled mid-turn.
-		cctx, cancel := context.WithCancel(ctx)
-		cfg.Streamer = streamerStub{inner: streamer.Stream, cancel: cancel}
-		res, rerr := RunExecLoop(cctx, cfg)
-		Expect(errors.Is(rerr, context.Canceled)).To(BeTrue())
-		Expect(res.Turns).To(Equal(int64(1)))
+	It("a cancelled stream returns ctx.Err()", func() {
+		cctx, cfg, cancel := cancelledLoopFixture(ctx)
+		_, rerr := RunExecLoop(cctx, cfg)
 		cancel()
-		events, rerr := cfg.Store.Replay(context.Background(), cfg.Session.ID)
-		execMust(rerr)
-		for _, e := range events {
-			Expect(e.Type).NotTo(Equal("assistant.message"))
-		}
+		Expect(errors.Is(rerr, context.Canceled)).To(BeTrue())
+	})
+	It("a cancelled stream persists no partial assistant message", func() {
+		cctx, cfg, cancel := cancelledLoopFixture(ctx)
+		RunExecLoop(cctx, cfg)
+		cancel()
+		Expect(replayHasAssistantMessage(cfg)).To(BeFalse())
 	})
 	It("a fatal unknown-tool invocation terminates the turn instead of becoming tool feedback", func() {
 		ghost := provider.ToolCall{ID: "call-8", Name: "no.such.tool", Arguments: json.RawMessage(`{}`)}
 		cfg := execLoopFixture(&execLoopStreamer{turns: [][]provider.StreamEvent{{provCall(ghost), provFinish()}, {provText("never")}}})
 		out := runExec(ctx, cfg)
-		Expect(out.ErrConfig).To(BeTrue())
-		Expect(out.Result.Turns).To(Equal(int64(1)))
+		Expect(out.ErrConfig && out.Result.Turns == 1).To(BeTrue())
 	})
 	DescribeTable("stops under a foreign lease", func(step func(cfg ExecLoopConfig) any, want any) {
 		cfg := fencedLoopFixture(ctx)
@@ -344,6 +331,41 @@ var _ = Describe("Provider-driven execution loop", func() {
 		Expect(execLoopFeedback{Result: resumed.Result, NoErr: resumed.NoErr, Shape: requestSummary(resume.lastRequest())}).To(Equal(execLoopFeedback{Result: &ExecLoopResult{Turns: 1, FinalContent: "resumed"}, NoErr: true, Shape: requestShape{AssistantCalls: []string{"call-6", "call-7"}, ToolResults: []string{"call-6", "call-7"}}}))
 	})
 })
+
+func mustFinish(ctx context.Context, cfg ExecLoopConfig) { // panics unless the fixture run completes
+	if out := runExec(ctx, cfg); !out.NoErr {
+		panic("fixture first run must finish cleanly")
+	}
+}
+
+// cancelledLoopFixture wires a stream cut mid-turn via streamerStub.
+func cancelledLoopFixture(ctx context.Context) (context.Context, ExecLoopConfig, context.CancelFunc) {
+	streamer := &execLoopStreamer{turns: [][]provider.StreamEvent{{provText("half a thought")}}}
+	cfg := execLoopFixture(streamer)
+	cctx, cancel := context.WithCancel(ctx)
+	cfg.Streamer = streamerStub{inner: streamer.Stream, cancel: cancel}
+	return cctx, cfg, cancel
+}
+
+// replayResumeContent runs the resume turn and returns the replayed content.
+func replayResumeContent(ctx context.Context, cfg ExecLoopConfig, resume *execLoopStreamer) string {
+	if out := runExec(ctx, cfg); !out.NoErr {
+		panic("resume run must finish cleanly")
+	}
+	return resume.lastRequest().Messages[1].Content
+}
+
+// replayHasAssistantMessage reports whether an assistant.message survived the run.
+func replayHasAssistantMessage(cfg ExecLoopConfig) bool {
+	events, rerr := cfg.Store.Replay(context.Background(), cfg.Session.ID)
+	execMust(rerr)
+	for _, e := range events {
+		if e.Type == "assistant.message" {
+			return true
+		}
+	}
+	return false
+}
 
 // provText, provCall, provFinish and provError yield scripted stream events.
 func provText(s string) provider.StreamEvent {

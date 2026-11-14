@@ -23,10 +23,8 @@ var (
 
 const execTurnBudgetFloor int64 = 1
 
-// RunExecLoop executes the bounded provider-driven loop: a fencing lease,
-// allowlisted definitions and at most MaxTurns streaming turns; tool calls run
-// through the real loop with correlated results. Budget exhaustion stops with
-// ErrExecLoopBudget; a fenced or held lease stops with ErrExecLoopFenced.
+// RunExecLoop executes the bounded provider-driven loop: a fencing lease, allowlisted
+// definitions and at most MaxTurns streaming turns through the real tool loop.
 func RunExecLoop(ctx context.Context, cfg ExecLoopConfig) (*ExecLoopResult, error) {
 	if verr := validateExecLoopConfig(&cfg); verr != nil {
 		return nil, verr
@@ -104,10 +102,8 @@ func reserveExecBudget(ctx context.Context, cfg *ExecLoopConfig) (bool, error) {
 	return true, stopBudgetExhausted(ctx, cfg.Store, cfg.Session.ID)
 }
 
-// runExecTurn streams one provider turn through a fresh single-use
-// writer bound to the fencing lease (stale writers are fenced, and a
-// cancelled context aborts so partial output is never persisted);
-// provider errors wrap ErrProvider and fail the session.
+// runExecTurn streams one provider turn through a fresh single-use writer bound to the
+// fencing lease (cancelled contexts abort so partial output is never persisted).
 func runExecTurn(ctx context.Context, cfg ExecLoopConfig, token int64, definitions []provider.ToolDefinition, history []provider.Message) (string, []provider.ToolCall, error) {
 	w, werr := cfg.Store.NewEventWriter(ctx, cfg.Session.ID)
 	if werr != nil {
@@ -179,9 +175,8 @@ func executeCalls(ctx context.Context, cfg ExecLoopConfig, token int64, calls []
 	return results, nil
 }
 
-// appendResult appends one correlated tool-role message: genuine
-// tool-execution failures become feedback text, loop-level terminal
-// failures are returned as fatal turn-terminal errors.
+// appendResult appends one correlated tool-role message: tool-execution failures become
+// feedback text, loop-level terminal failures are returned as fatal turn-terminal errors.
 func appendResult(ctx context.Context, loop *tool.Loop, call provider.ToolCall, results []provider.Message) ([]provider.Message, error) {
 	failed := func(content string) []provider.Message {
 		return append(results, provider.Message{Role: "tool", ToolCallID: call.ID, Content: content})
@@ -207,17 +202,15 @@ func appendResult(ctx context.Context, loop *tool.Loop, call provider.ToolCall, 
 	return failed(string(encoded)), nil
 }
 
-// replayInto rebuilds provider history from persisted events; uncorrelated
-// tool.results (legacy denials) are skipped so no orphan tool-role message
-// is ever emitted to the provider.
+// replayInto rebuilds provider history from persisted events; uncorrelated tool.results
+// (legacy denials) are skipped so no orphan tool-role message reaches the provider.
 func replayInto(ctx context.Context, st *store.Store, sessionID string, history *[]provider.Message) error {
 	events, rerr := st.Replay(ctx, sessionID)
 	if rerr != nil {
 		return rerr
 	}
 	correlated := map[string]bool{}
-	// pending carries the last replayed assistant.message so the
-	// next assistant tool-call message reuses its content.
+	// pending carries the last replayed assistant.message for the next tool-call message.
 	pending := ""
 	flush := func(calls []provider.ToolCall) {
 		*history = append(*history, provider.Message{Role: "assistant", Content: pending, ToolCalls: calls})
