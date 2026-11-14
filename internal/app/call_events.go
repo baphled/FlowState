@@ -89,7 +89,7 @@ func (s *callEventSink) appendValidated(ctx context.Context, actor, typ string, 
 		}
 		s.started = true
 	case tool.TypeToolResult:
-		if s.done || isDeniedCallResult(fields) == s.started {
+		if !s.started || s.done {
 			return -1, fmt.Errorf("%w: result for %q", ErrCallEventOrder, s.call.ID)
 		}
 		s.done = true
@@ -131,13 +131,4 @@ func normaliseCallArgs(value any) (string, error) {
 		return "", err
 	}
 	return buf.String(), nil
-}
-
-func isDeniedCallResult(fields map[string]any) bool {
-	if ok, _ := fields["ok"].(bool); ok {
-		return false
-	}
-	failure, _ := fields["error"].(map[string]any)
-	code, _ := failure["code"].(string)
-	return code == "tool_denied"
 }

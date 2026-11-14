@@ -27,9 +27,9 @@ its presence is not permission to add another dependency or a new global.
 
 `internal/app` owns the M2 execution loop (`RunExecLoop`): a leased, fenced run replays verified
 history and drives bounded provider turns; allowlisted calls run through the real `tool.Loop`
-with per-call `tool_call_id` annotation, and replay skips uncorrelated results rather than
-emitting orphan tool-role messages. `ErrExecLoopBudget` stops spent runs, `ErrExecLoopFenced`
-fenced ones, and provider errors mark the session failed.
+with per-call correlated `tool_call_id` annotation, and replay skips uncorrelated denial results
+so no orphan tool-role message reaches the provider. `ErrExecLoopBudget` stops spent runs,
+`ErrExecLoopFenced` fenced ones; provider errors mark the session failed.
 
 ## Structured provider tools
 

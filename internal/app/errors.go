@@ -58,14 +58,8 @@ func ErrorCode(err error) string {
 		return CodeUsage
 	case errors.Is(err, ErrConfigInvalid):
 		return CodeConfigInvalid
-	case errors.Is(err, ErrBudgetExceeded), errors.Is(err, ErrExecLoopBudget):
+	case errors.Is(err, ErrBudgetExceeded):
 		return CodeBudgetExceeded
-	case errors.Is(err, ErrExecLoopFenced):
-		// A fenced lease is a concurrency conflict on the run's
-		// session, not internal corruption: report it as terminal.
-		return CodeSessionTerminal
-	case errors.Is(err, ErrExecLoopConfig):
-		return CodeConfigInvalid
 	case errors.Is(err, ErrSessionCancelled):
 		return CodeSessionCancelled
 	case errors.Is(err, session.ErrTerminal):
