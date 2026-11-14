@@ -1,8 +1,13 @@
 #!/bin/sh
 # Enforce exact committed source boundaries before pushing to next.
 set -eu
+git fetch origin next:refs/remotes/origin/next
 BASE=$(git rev-parse origin/next)
-HEAD=$(git rev-parse HEAD)
-python3 -B scripts/pr_size.py --base "$BASE" --head "$HEAD"
+while read -r local_ref local_sha remote_ref remote_sha; do
+    case "$local_ref" in refs/heads/*) ;; *) continue ;; esac
+    case "$local_sha" in 0000000000000000000000000000000000000000) continue ;; esac
+    python3 -B scripts/pr_size.py --base "$BASE" --head "$local_sha"
+    make check-admission-commits BASE_SHA="$BASE" HEAD_SHA="$local_sha"
+done
 python3 -B -m unittest discover -s scripts/tests -p test_code_contract.py
 python3 -B scripts/check_code_contract.py --base "$BASE"

@@ -2,7 +2,9 @@
 import unittest
 from scripts.admission_candidate import (
     AdmissionError, validate_candidate_state, candidate_snapshot, verify_required_checks,
+    verify_commit_chain,
 )
+from scripts.tests.test_admission_io import HEAD, PARENT, FakeGitHub, commit, record
 
 class CandidateSnapshot(unittest.TestCase):
     def test_same_head_description_change_changes_snapshot(self):
@@ -22,6 +24,10 @@ class CandidateSnapshot(unittest.TestCase):
                 self.assertNotEqual(candidate_snapshot(initial), candidate_snapshot(dict(initial, **{field:value})))
 
 class CandidateState(unittest.TestCase):
+    def test_shared_commit_validation_rejects_wrong_parent_record(self):
+        with self.assertRaisesRegex(AdmissionError, 'base SHA'):
+            verify_commit_chain(PARENT, [commit()], lambda _: record(base_sha=HEAD), FakeGitHub())
+
     def test_draft_is_rejected(self):
         with self.assertRaisesRegex(AdmissionError, "not an open"):
             validate_candidate_state({"state": "open", "draft": True,

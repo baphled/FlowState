@@ -26,7 +26,14 @@ def validate_candidate_state(pr, commits, expected_sha):
 def verify_candidate(pr, review, commits, fetch_record, expected_sha, github):
     """Recheck every commit and reject mismatched external evidence."""
     head_sha = validate_candidate_state(pr, commits, expected_sha)
-    previous = pr["base"]["sha"]
+    verify_commit_chain(pr["base"]["sha"], commits, fetch_record, github)
+    validate_agent_review(review, agent_review_reference(pr.get("body") or ""), head_sha, pr.get("number"))
+    return head_sha
+
+
+def verify_commit_chain(base_sha, commits, fetch_record, github):
+    """Share parent/manifest validation between live admission and local preflight."""
+    previous = base_sha
     for commit in commits:
         sha = commit.get("sha")
         parents = commit.get("parents") or []
@@ -38,8 +45,6 @@ def verify_candidate(pr, review, commits, fetch_record, expected_sha, github):
         reference = metadata_reference((commit.get("commit") or {}).get("message", ""))
         manifest = validate_record(fetch_record(reference), reference, parents[0]["sha"])
         verify_files(github, sha, manifest)
-    validate_agent_review(review, agent_review_reference(pr.get("body") or ""), head_sha, pr.get("number"))
-    return head_sha
 
 def verify_files(github, sha, manifest):
     """Bind Dropbox manifest to the actual complete GitHub commit diff."""

@@ -50,7 +50,16 @@ make check-pr-size BASE_SHA=<actual-pr-base-sha>
 make check-code-quality BASE_SHA=<actual-pr-base-sha>
 make check-documentation BASE_SHA=<actual-pr-base-sha>
 make install-hooks          # once per clone: repo-managed pre-commit/pre-push hooks
+make check-admission-commits BASE_SHA=<actual-pr-base-sha>
+make check-admission PR=<number> BASE_SHA=<actual-pr-base-sha> # after review and CI
 ```
+
+Read [admission preflight setup](rules/CI_QUALITY.md#local-admission-preflight).
+Before every push, validate actual parent-bound metadata and manifests, not only
+the admission unit tests. After a rebase/amend, refresh affected external records
+and obtain exact-head re-review. Before merge, attach the real `Agent-Review:`
+reference to the PR description and run the live read-only preflight. A local
+pass never substitutes for the trusted `flowstate/merge-admission` status.
 
 Keep packets, outputs, qualifications, AI attribution and review receipts only in
 Dropbox Metadata. Never guess a model/provider/harness or synthesize human review.
