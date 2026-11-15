@@ -52,6 +52,7 @@ make check-documentation BASE_SHA=<actual-pr-base-sha>
 make install-hooks          # once per clone: repo-managed pre-commit/pre-push hooks
 make check-admission-commits BASE_SHA=<actual-pr-base-sha>
 make check-admission PR=<number> BASE_SHA=<actual-pr-base-sha> # after review and CI
+make session-start          # requires installed/configured admission runner; fails on startup errors
 ```
 
 Read [admission preflight setup](rules/CI_QUALITY.md#local-admission-preflight).
@@ -60,6 +61,8 @@ the admission unit tests. After a rebase/amend, refresh affected external record
 and obtain exact-head re-review. Before merge, attach the real `Agent-Review:`
 reference to the PR description and run the live read-only preflight. A local
 pass never substitutes for the trusted `flowstate/merge-admission` status.
+Install the [packaged admission runner](rules/STATUS_ISSUER.md#packaged-development-runner)
+before development. Never replace a missing publisher with a green source-test status.
 
 Keep packets, outputs, qualifications, AI attribution and review receipts only in
 Dropbox Metadata. Never guess a model/provider/harness or synthesize human review.
