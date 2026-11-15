@@ -8,6 +8,7 @@ from pathlib import Path
 
 from scripts.admission_config import configuration
 from scripts.admission_io import GitHub, execute
+from scripts.admission_local_dropbox import LocalDropbox
 from scripts.admission_metadata import AdmissionError, SHA
 from scripts.admission_service import ready
 from scripts.app_credentials import AppCredentials
@@ -100,20 +101,25 @@ def scan(config, number=None):
     return passed
 
 
+def qualified_status(reader, head):
+    """The one admission status for the head, from the qualified publisher only."""
+    response = reader.request('GET', f'/commits/{head}/status')
+    if response.get('sha') != head or not isinstance(response.get('statuses'), list):
+        raise AdmissionError('publisher status response does not bind the candidate')
+    matches = [s for s in response['statuses'] if s.get('context') == STATUS_CONTEXT]
+    status = next(iter(matches), {})
+    if status and status.get('creator', {}).get('login') != 'flowstate-merge-admission[bot]':
+        raise AdmissionError('admission status came from the wrong publisher')
+    return status
+
+
 def watch(reader, head, timeout=120, clock=time.monotonic, sleep=time.sleep):
     """Fail CI explicitly when the qualified publisher is missing, pending or red."""
     if not SHA.fullmatch(str(head)):
         raise AdmissionError('monitor requires the exact candidate SHA')
     deadline = clock() + timeout
     while True:
-        response = reader.request('GET', f'/commits/{head}/status')
-        if response.get('sha') != head or not isinstance(response.get('statuses'), list):
-            raise AdmissionError('publisher status response does not bind the candidate')
-        statuses = response['statuses']
-        matches = [s for s in statuses if s.get('context') == STATUS_CONTEXT]
-        status = matches[0] if matches else {}
-        if status and status.get('creator', {}).get('login') != 'flowstate-merge-admission[bot]':
-            raise AdmissionError('admission status came from the wrong publisher')
+        status = qualified_status(reader, head)
         if status.get('state') in ('failure', 'error') and clock() >= deadline:
             raise AdmissionError('admission rejected: ' + str(status.get('description')))
         if status.get('state') == 'success':
@@ -121,6 +127,13 @@ def watch(reader, head, timeout=120, clock=time.monotonic, sleep=time.sleep):
         if clock() >= deadline:
             raise AdmissionError('admission publisher missing or stuck pending for candidate ' + head)
         sleep(5)
+
+
+def dropbox_reader(config):
+    """Select the Dropbox read adapter: local sync tree when configured, else API token."""
+    if 'dropbox_local_path' in config:
+        return LocalDropbox(config['dropbox_local_path'])
+    return config['dropbox_read_token']
 
 
 def main(argv=None):
@@ -136,6 +149,7 @@ def main(argv=None):
             watch(GitHub('baphled/FlowState', os.environ.get('GITHUB_TOKEN', '')), args.watch)
             return 0
         config = configuration(args.config)
+        config['dropbox_read_token'] = dropbox_reader(config)
         startup(config)
         if args.check_config:
             return 0
