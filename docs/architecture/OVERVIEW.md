@@ -25,6 +25,9 @@ its presence is not permission to add another dependency or a new global.
 
 ## Structured provider tools
 
+`internal/app` owns the M2 execution loop (`RunExecLoop`): a leased, fenced run replays
+verified history and drives bounded provider turns; replay skips uncorrelated denial
+results.
 `internal/provider` owns `ToolDefinition`, complete `ToolCall` values and message
 result correlation through `ToolCallID`. `ChatRequest.Validate` rejects malformed
 identifiers, non-object JSON arguments/parameters, duplicate call IDs and unmatched
