@@ -1,5 +1,0 @@
-blank_issues_enabled: false
-contact_links:
-  - name: Development rules
-    url: https://github.com/baphled/FlowState/blob/next/AGENTS.md
-    about: Worktree, branch, commit and BDD policy before opening PRs
