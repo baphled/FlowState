@@ -28,6 +28,56 @@ Returned status, context and bot identity must match the expected publisher.
 A trusted merge boundary must revalidate and retain exact evidence and prevent
 stale-success reuse; these modules alone cannot enforce that boundary.
 
+## Packaged development runner
+
+From a reviewed source commit, `make package-admission-runner` produces
+`build/admission-runner.pyz` containing committed admission modules, their source
+SHA and pinned dependency manifest. It contains no credentials or candidate code.
+The installed service runs this package, independently of feature worktrees.
+
+Create `~/.config/flowstate/admission.json` and the referenced RSA key with mode
+0600, owned by your user. Supply the existing qualified credentials and separate
+public authorities; do not create replacement signing identities to pass a check:
+
+```json
+{
+  "repository": "baphled/FlowState",
+  "repository_id": 1191083392,
+  "app_id": 5728089,
+  "installation_id": 181235940,
+  "github_read_token": "existing-read-token-with-protection-read-access",
+  "dropbox_read_token": "existing-dropbox-read-token",
+  "private_key_file": "/absolute/path/to/existing-app-key.pem",
+  "review_public_key": "existing-64-character-lowercase-hex-public-key",
+  "execution_public_key": "different-existing-64-character-lowercase-hex-public-key"
+}
+```
+
+On Linux with a running systemd user manager and Python venv support:
+
+```sh
+make install-admission-runner
+make session-start
+make admission-runner-status
+journalctl --user -u flowstate-admission.service
+make admission-runner-stop
+```
+
+Installation validates config, installs pinned dependencies in a venv and registers
+the user unit. Startup authenticates the App/protected source before notifying
+systemd readiness; failure/timeout returns nonzero. Crashes have bounded restarts.
+Every 15 seconds all ready next PRs are evaluated, including missing-review failures.
+Unexpected exceptions and SIGTERM attempt exact-head failure publication and token
+cleanup. Per-PR errors are logged/retried while other PRs continue; single-shot
+`--once`/`--pr` errors and startup/list failures exit nonzero. Inspect journald.
+
+The separate CI `Merge Admission Result` check waits at most 120 seconds after
+Build for a terminal App-issued result. Missing, stuck, failed or wrong-publisher
+results fail CI visibly. It is diagnostic: it cannot satisfy or replace the
+App-pinned required status. It follows Build to avoid an admission/Build cycle.
+This polling service does not provide exclusive atomic merge authority. Stop an
+older admission daemon before adopting it; do not run competing publishers.
+
 ## Verification
 
 From repository root, install `scripts/requirements-admission.txt` in an isolated
