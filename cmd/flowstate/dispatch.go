@@ -223,21 +223,24 @@ func (f *flags) setString(name string, take func() (string, error)) error {
 
 // setToolFlag assigns one tool-related flag (--tool, --tool-arg,
 // --allow, --allow-file, --workdir), resolving `--flag value` or
-// `--flag=value`.
+// `--flag=value`. Prefix order matters: --tool-arg and --allow-file
+// must be matched before --tool and --allow.
 func (f *flags) setToolFlag(name string, take func() (string, error)) error {
 	v, err := flagValue(name, take)
 	if err != nil {
 		return err
 	}
 	switch {
-	case name == "--tool":
-		f.tool = v
 	case strings.HasPrefix(name, "--tool-arg"):
 		f.toolArg = v
-	case name == "--allow":
+	case strings.HasPrefix(name, "--tool"):
+		f.tool = v
+	case strings.HasPrefix(name, "--allow-file"):
+		f.allowFile = v
+	case strings.HasPrefix(name, "--allow"):
 		f.allow = append(f.allow, v)
 	default:
-		f.allowFile = v
+		f.workdir = v
 	}
 	return nil
 }
@@ -277,7 +280,7 @@ func usage(w *os.File) {
 
 session new    --provider <p> --model <m> --task <text|@file> [--db path]
 session list   [--status <s>] [--db path]
-session run    <id> [--budget <n>] [--max-tokens <n>] [--db path]
+session run    <id> [--budget <n>] [--max-tokens <n>] [--allow <name>]... [--allow-file <manifest>] [--workdir <path>] [--db path]
 session events <id> [--db path]
 session close  <id> [--db path]
 session cancel <id> [--db path]
