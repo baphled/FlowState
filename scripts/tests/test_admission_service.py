@@ -43,3 +43,12 @@ class Service(unittest.TestCase):
                              ('systemctl', '--user', 'is-active', '--quiet'))
         self.assertIn('Restart=on-failure', unit(Path('/safe'), Path('/config')))
         self.assertIn('Type=notify', unit(Path('/safe'), Path('/config')))
+
+    def test_monitor_follows_build_without_creating_a_dependency_cycle(self):
+        root = Path(__file__).resolve().parents[2]
+        workflow = (root / '.github/workflows/ci-next.yml').read_text()
+        monitor = workflow.split('  admission-result:', 1)[1].split('  scope:', 1)[0]
+        self.assertIn('needs: [build]', monitor)
+        self.assertIn('timeout-minutes: 4', monitor)
+        self.assertIn('scripts.admission_runner --watch', monitor)
+        self.assertIn('session-start: admission-runner-start', (root / 'Makefile').read_text())
