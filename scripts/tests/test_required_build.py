@@ -1,30 +1,10 @@
 """Execute the deployed Build prerequisite script against failure-state controls."""
 import json
 import os
-from pathlib import Path
-import re
 import subprocess
-import textwrap
 import unittest
 
-ROOT = Path(__file__).resolve().parents[2]
-
-
-def gates():
-    for name in ('ci-next.yml', 'ci.yml'):
-        source = (ROOT / '.github/workflows' / name).read_text()
-        build = source.split('  build:\n', 1)[1].split('\n  security:', 1)[0]
-        if 'name: Require successful prerequisites' not in build:
-            if name == 'ci-next.yml':
-                raise AssertionError('required next Build has no failure gate')
-            continue
-        if 'if: ${{ always() }}' not in build:
-            raise AssertionError('required Build can skip after prerequisite failure')
-        block = build.split('name: Require successful prerequisites', 1)[1]
-        script = block.split('run: |\n', 1)[1].split('\n      - ', 1)[0]
-        jobs = re.search(r'needs: \[([^]]+)\]', build)[1].replace(' ', '').split(',')
-        yield name, jobs, textwrap.dedent(script)
-
+from scripts.required_build import ROOT, gates
 
 class RequiredBuild(unittest.TestCase):
     def execute(self, script, results):
@@ -56,7 +36,11 @@ class RequiredBuild(unittest.TestCase):
         source = (ROOT / '.github/workflows/ci-next.yml').read_text()
         job = source.split('  pr-policy:' + chr(10), 1)[1].split(chr(10) + '  lint:', 1)[0]
         self.assertNotIn('    if: github.event_name', job.split('    steps:', 1)[0])
-        self.assertIn('PR_TITLE: ${{ github.event.pull_request.title }}', job)
+        # The title must come from the live API (reruns see renames), never
+        # the frozen event payload, and must not be interpolated into bash.
+        self.assertIn('PR_NUMBER: ${{ github.event.pull_request.number }}', job)
+        self.assertNotIn('PR_TITLE: ${{ github.event.pull_request.title }}', job)
+        self.assertNotIn('github.event.pull_request.title', job.split('    steps:', 1)[1].split('env:', 1)[1].split('run:', 1)[0])
         self.assertIn('BRANCH: ${{ github.event.pull_request.head.ref }}', job)
         self.assertNotIn('run: echo "${{ github.event.pull_request.title }}"', job)
 
