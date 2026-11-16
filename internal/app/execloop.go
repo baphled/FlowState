@@ -106,7 +106,7 @@ func runExecTurn(ctx context.Context, cfg ExecLoopConfig, definitions []provider
 	defer func() { _ = w.Close() }()
 	var content string
 	var calls []provider.ToolCall
-	req := &provider.ChatRequest{Tools: definitions, Messages: history, Model: cfg.Session.ModelID}
+	req := &provider.ChatRequest{Tools: definitions, Messages: history, Model: cfg.Session.ModelID, MaxTokens: cfg.MaxTokens}
 	for ev := range cfg.Streamer.Stream(ctx, req) {
 		switch {
 		case ev.Err != nil:

@@ -18,10 +18,6 @@ var selfTestRun bool
 // for an httptest-backed adapter, production uses the registry.
 var providerResolver app.ProviderResolver = app.ResolveProvider
 
-// errProvider marks provider failures (code provider_error, exit 3
-// per CLI-AND-API-CONTRACT §1).
-var errProvider = fmt.Errorf("provider_error")
-
 // exitProviderError is the stable provider-failure exit code.
 const exitProviderError = 3
 
@@ -206,19 +202,15 @@ func runSessionTurn(ctx context.Context, st *app.Store, sess *app.Session, fl *f
 			writeError(stderr, fmt.Errorf("%w: interrupted; session cancelled", app.ErrSessionCancelled))
 			return exitSigint
 		}
-		writeError(stderr, fmt.Errorf("%w: %v", errProvider, perr))
+		writeError(stderr, fmt.Errorf("%w: %v", app.ErrProvider, perr))
 		return exitProviderError
 	}
 	s, ok := p.(app.Streamer)
 	if !ok {
-		writeError(stderr, fmt.Errorf("%w: provider %s does not support streaming turns", errProvider, sess.Provider))
+		writeError(stderr, fmt.Errorf("%w: provider %s does not support streaming turns", app.ErrProvider, sess.Provider))
 		return exitProviderError
 	}
-	res, terr := app.TurnWithOptions(ctx, st, sess, s, app.TurnOptions{
-		Budget:    fl.budget,
-		MaxTokens: fl.maxTokens,
-		ModelID:   fl.model,
-	})
+	res, terr := runTurnOrLoop(ctx, st, sess, s, fl)
 	// Receipt hook: live self-test runs emit their attempt record as
 	// a post-turn side-effect of the same run path.
 	if selfTestRun {
@@ -252,14 +244,20 @@ func runSessionTurn(ctx context.Context, st *app.Store, sess *app.Session, fl *f
 }
 
 // finishRun maps the turn outcome onto its exit code: SIGINT
-// cancellation exits 130, provider failures 3, budget stops 5.
+// cancellation exits 130, budget stops 5, provider failures 3. The
+// loop path surfaces budget stops as an ErrBudgetExceeded error (and
+// drops the result's budget flag), so the error arm carries it.
 func finishRun(err error, res *app.TurnResult, fl *flags, stderr *os.File) int {
 	if err != nil {
 		if errors.Is(err, app.ErrSessionCancelled) {
 			writeError(stderr, fmt.Errorf("%w: interrupted; session cancelled", app.ErrSessionCancelled))
 			return exitSigint
 		}
-		writeError(stderr, fmt.Errorf("%w: %v", errProvider, err))
+		if errors.Is(err, app.ErrBudgetExceeded) {
+			writeError(stderr, err)
+			return exitBudget
+		}
+		writeError(stderr, fmt.Errorf("%w: %v", app.ErrProvider, err))
 		return exitProviderError
 	}
 	if res != nil && res.BudgetExceeded {
@@ -267,4 +265,42 @@ func finishRun(err error, res *app.TurnResult, fl *flags, stderr *os.File) int {
 		return exitBudget
 	}
 	return exitOK
+}
+
+// runTurnOrLoop selects the execution surface for one run: a
+// tool-surface invocation (explicit --allow/--allow-file/--workdir)
+// drives the bounded provider execution loop; a plain invocation
+// keeps the single-turn path.
+func runTurnOrLoop(ctx context.Context, st *app.Store, sess *app.Session, s app.Streamer, fl *flags) (*app.TurnResult, error) {
+	if !hasToolSurface(fl) {
+		return app.TurnWithOptions(ctx, st, sess, s, app.TurnOptions{
+			Budget:    fl.budget,
+			MaxTokens: fl.maxTokens,
+			ModelID:   fl.model,
+		})
+	}
+	loopRes, err := app.RunSessionExecLoop(ctx, st, fl.db, sess, s, app.SessionExecLoopRequest{
+		Allow:     fl.allow,
+		AllowFile: fl.allowFile,
+		Workdir:   fl.workdir,
+		Budget:    fl.budget,
+		MaxTokens: fl.maxTokens,
+	})
+	return toTurnResult(sess, loopRes), err
+}
+
+// hasToolSurface reports whether the invocation asked for the tool
+// execution loop via --allow, --allow-file or --workdir.
+func hasToolSurface(fl *flags) bool {
+	return len(fl.allow) > 0 || fl.allowFile != "" || fl.workdir != ""
+}
+
+// toTurnResult projects a loop result onto the shared turn result
+// shape used by the CLI projection and receipt hook; the session id
+// keeps the receipt hook bound to the run's session.
+func toTurnResult(sess *app.Session, res *app.ExecLoopResult) *app.TurnResult {
+	if res == nil {
+		return nil
+	}
+	return &app.TurnResult{SessionID: sess.ID, FinalContent: res.FinalContent}
 }

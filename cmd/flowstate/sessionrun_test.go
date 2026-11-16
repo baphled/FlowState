@@ -35,7 +35,7 @@ func fakeZaiServer(chunks ...string) *httptest.Server {
 func withFakeZai(srv *httptest.Server) {
 	old := providerResolver
 	providerResolver = func(name string) (provider.Provider, error) {
-		return zai.New("test-key", zai.WithBaseURL(srv.URL)), nil
+		return zai.New("test-key", zai.WithBaseURL(srv.URL), zai.WithCoding()), nil
 	}
 	DeferCleanup(func() { providerResolver = old })
 }
@@ -44,6 +44,67 @@ func withFakeZai(srv *httptest.Server) {
 // per-spec temp DB.
 func runCLIRun(ids ...string) result {
 	return runArgv(append([]string{"session", "run", "--db", dbFor()}, ids...))
+}
+
+// runCLILoop runs `session run <id>` carrying tool-surface loop flags.
+func runCLILoop(id string, loopFlags ...string) result {
+	argv := []string{"session", "run", "--db", dbFor()}
+	argv = append(argv, loopFlags...)
+	return runArgv(append(argv, id))
+}
+
+// newLoopSession creates a session for loop specs via the CLI.
+func newLoopSession() string {
+	created := runCLINew("--provider", "z.ai", "--model", "glm-5.3", "--task", "greet")
+	if created.exit != 0 {
+		panic("session new failed")
+	}
+	return decodeNew(created.stdout).ID
+}
+
+// stderrCode decodes the first stderr line's contract error code.
+func stderrCode(out string) string {
+	var ec struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal([]byte(firstLine(out)), &ec); err != nil {
+		panic(err)
+	}
+	return ec.Code
+}
+
+// stdoutEventTypes decodes the projected stdout event types in order.
+func stdoutEventTypes(out string) []string {
+	types := []string{}
+	for _, l := range lines(out) {
+		var e struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal([]byte(l), &e); err != nil {
+			panic(err)
+		}
+		types = append(types, e.Type)
+	}
+	return types
+}
+
+// sessionStatusViaList reads one session's status via `session list`.
+func sessionStatusViaList(id string) string {
+	list := runArgv([]string{"session", "list", "--db", dbFor(), "--json"})
+	status := ""
+	for _, l := range lines(list.stdout) {
+		var s struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		}
+		if err := json.Unmarshal([]byte(l), &s); err != nil {
+			panic(err)
+		}
+		if s.ID == id {
+			status = s.Status
+		}
+	}
+	return status
 }
 
 // nonEmpty drops empty split fragments.
@@ -305,12 +366,14 @@ var _ = Describe("Session run", func() {
 				panic("session new failed")
 			}
 			rec := decodeNew(created.stdout)
-			run := runArgv([]string{"session", "run", "--db", dbFor(), "--max-tokens", "42", rec.ID})
+			// 9000 sits above the coding-route ClampMaxTokens floor
+			// (8192) so the configured value reaches the wire intact.
+			run := runArgv([]string{"session", "run", "--db", dbFor(), "--max-tokens", "9000", rec.ID})
 			if run.exit != 0 {
 				panic("session run failed")
 			}
 		})
-		It("sends max_tokens in the request body", func() { Expect(observedMaxTokens).To(Equal(42.0)) })
+		It("sends max_tokens in the request body", func() { Expect(observedMaxTokens).To(Equal(9000.0)) })
 	})
 
 	Context("rejects a negative budget with usage", func() {
@@ -383,5 +446,156 @@ var _ = Describe("Session run", func() {
 		})
 		It("completes the initial run", func() { Expect(observedFirstExit).To(Equal(0)) })
 		It("rejects rerunning the terminal session", func() { Expect(observedSecondExit).To(Equal(6)) })
+	})
+})
+
+var _ = Describe("Session run tool-surface loop", func() {
+	Context("completes a loop run over an allowlisted tool", func() {
+		var observedExit int
+		var observedLastType string
+		var observedCompleted bool
+		var observedStatus string
+		BeforeEach(func() {
+			srv := fakeZaiServer(`{"choices":[{"delta":{"content":"loop done"},"finish_reason":"stop"}]}`)
+			withFakeZai(srv)
+			id := newLoopSession()
+			run := runCLILoop(id, "--allow", "echo")
+			got := lines(run.stdout)
+			var last struct {
+				Type    string          `json:"type"`
+				Payload json.RawMessage `json:"payload"`
+			}
+			if err := json.Unmarshal([]byte(got[len(got)-1]), &last); err != nil {
+				panic(err)
+			}
+			observedExit = run.exit
+			observedLastType = last.Type
+			observedCompleted = strings.Contains(string(last.Payload), `"status":"completed"`)
+			observedStatus = sessionStatusViaList(id)
+		})
+		It("returns the expected exit status", func() { Expect(observedExit).To(Equal(0)) })
+		It("emits turn.end as the final event", func() { Expect(observedLastType).To(Equal("turn.end")) })
+		It("records completed status in the final payload", func() { Expect(observedCompleted).To(BeTrue()) })
+		It("marks the session completed", func() { Expect(observedStatus).To(Equal("completed")) })
+	})
+
+	Context("stops at the loop budget with exit 5 and a paused session", func() {
+		var observedExit int
+		var observedCode string
+		var observedFinalTypes []string
+		var observedStatus string
+		BeforeEach(func() {
+			srv := fakeZaiServer(
+				`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"echo","arguments":"{}"}}]}}]}`,
+				`{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+			)
+			withFakeZai(srv)
+			id := newLoopSession()
+			run := runCLILoop(id, "--allow", "echo", "--budget", "1")
+			types := stdoutEventTypes(run.stdout)
+			observedExit = run.exit
+			observedCode = stderrCode(run.stderr)
+			observedFinalTypes = types[len(types)-2:]
+			observedStatus = sessionStatusViaList(id)
+		})
+		It("returns the budget exit status", func() { Expect(observedExit).To(Equal(5)) })
+		It("emits budget_exceeded on stderr", func() { Expect(observedCode).To(Equal("budget_exceeded")) })
+		It("persists turn.end then session.paused as the final events", func() {
+			Expect(observedFinalTypes).To(Equal([]string{"turn.end", "session.paused"}))
+		})
+		It("leaves the session paused", func() { Expect(observedStatus).To(Equal("paused")) })
+	})
+
+	Context("exits 3 with provider_error on a loop provider failure", func() {
+		var observedExit int
+		var observedCode string
+		var observedStatus string
+		BeforeEach(func() {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write([]byte(`{"error":{"code":"502","message":"down"}}`))
+			}))
+			DeferCleanup(srv.Close)
+			withFakeZai(srv)
+			id := newLoopSession()
+			run := runCLILoop(id, "--allow", "echo")
+			observedExit = run.exit
+			observedCode = stderrCode(run.stderr)
+			observedStatus = sessionStatusViaList(id)
+		})
+		It("returns the provider exit status", func() { Expect(observedExit).To(Equal(3)) })
+		It("emits provider_error on stderr", func() { Expect(observedCode).To(Equal("provider_error")) })
+		It("marks the session failed", func() { Expect(observedStatus).To(Equal("failed")) })
+	})
+
+	Context("routes --workdir onto the loop surface", func() {
+		var observedExit int
+		var observedLastType string
+		var observedHasUserMessage bool
+		BeforeEach(func() {
+			srv := fakeZaiServer(`{"choices":[{"delta":{"content":"wired"}}]}`)
+			withFakeZai(srv)
+			id := newLoopSession()
+			run := runCLILoop(id, "--workdir", GinkgoT().TempDir())
+			types := stdoutEventTypes(run.stdout)
+			observedExit = run.exit
+			observedLastType = types[len(types)-1]
+			for _, t := range types {
+				if t == "user.message" {
+					observedHasUserMessage = true
+				}
+			}
+		})
+		It("returns the expected exit status", func() { Expect(observedExit).To(Equal(0)) })
+		It("emits turn.end as the final event", func() { Expect(observedLastType).To(Equal("turn.end")) })
+		It("drives the loop surface without a user.message projection", func() { Expect(observedHasUserMessage).To(BeFalse()) })
+	})
+
+	Context("passes --max-tokens through on the loop surface", func() {
+		var observedMaxTokens float64
+		BeforeEach(func() {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					panic(err)
+				}
+				var req struct {
+					MaxTokens float64 `json:"max_tokens"`
+				}
+				if err := json.Unmarshal(body, &req); err != nil {
+					panic(err)
+				}
+				observedMaxTokens = req.MaxTokens
+				w.Header().Set("Content-Type", "text/event-stream")
+				fl := w.(http.Flusher)
+				_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n"))
+				_, _ = w.Write([]byte("data: [DONE]\n\n"))
+				fl.Flush()
+			}))
+			DeferCleanup(srv.Close)
+			withFakeZai(srv)
+			id := newLoopSession()
+			// 9000 sits above the coding-route ClampMaxTokens floor
+			// (8192) so the configured value reaches the wire intact.
+			run := runCLILoop(id, "--allow", "echo", "--max-tokens", "9000")
+			if run.exit != 0 {
+				panic("session run failed")
+			}
+		})
+		It("sends max_tokens in the loop request body", func() { Expect(observedMaxTokens).To(Equal(9000.0)) })
+	})
+
+	Context("rejects rerunning a terminal session via loop flags", func() {
+		var observedSecondExit int
+		BeforeEach(func() {
+			srv := fakeZaiServer(`{"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}`)
+			withFakeZai(srv)
+			id := newLoopSession()
+			if first := runCLILoop(id, "--allow", "echo"); first.exit != 0 {
+				panic("initial loop run failed")
+			}
+			observedSecondExit = runCLILoop(id, "--allow", "echo").exit
+		})
+		It("rejects the rerun with the terminal exit status", func() { Expect(observedSecondExit).To(Equal(6)) })
 	})
 })
