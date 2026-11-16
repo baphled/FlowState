@@ -72,8 +72,8 @@ class Runner(unittest.TestCase):
             status = {'context': 'flowstate/merge-admission', 'state': state,
                       'creator': {'login': 'flowstate-merge-admission[bot]'}}
             if state == 'wrong': status['creator']['login'] = 'other'
-            reader = SimpleNamespace(request=lambda *args: {
-                'sha': HEAD, 'statuses': [] if state == 'missing' else [status]})
+            reader = SimpleNamespace(request=lambda *args:
+                [] if state == 'missing' else [status])
             with self.subTest(state=state):
                 if state == 'success':
                     self.assertIsNone(watch(reader, HEAD, timeout=0))
@@ -85,9 +85,9 @@ class Runner(unittest.TestCase):
 
     def test_prior_build_failure_can_be_superseded_by_fresh_success(self):
         statuses = iter(['failure', 'success'])
-        reader = SimpleNamespace(request=lambda *args: {'sha': HEAD, 'statuses': [{
+        reader = SimpleNamespace(request=lambda *args: [{
             'context': 'flowstate/merge-admission', 'state': next(statuses),
-            'creator': {'login': 'flowstate-merge-admission[bot]'}}]})
+            'creator': {'login': 'flowstate-merge-admission[bot]'}}])
         self.assertIsNone(watch(reader, HEAD, timeout=10, clock=lambda: 0, sleep=lambda _: None))
 
     def test_sigterm_publishes_failure_and_closes_credentials(self):

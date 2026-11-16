@@ -103,10 +103,10 @@ def scan(config, number=None):
 
 def qualified_status(reader, head):
     """The one admission status for the head, from the qualified publisher only."""
-    response = reader.request('GET', f'/commits/{head}/status')
-    if response.get('sha') != head or not isinstance(response.get('statuses'), list):
+    response = reader.request('GET', f'/commits/{head}/statuses?per_page=100')
+    if not isinstance(response, list):
         raise AdmissionError('publisher status response does not bind the candidate')
-    matches = [s for s in response['statuses'] if s.get('context') == STATUS_CONTEXT]
+    matches = [s for s in response if s.get('context') == STATUS_CONTEXT]
     status = next(iter(matches), {})
     if status and status.get('creator', {}).get('login') != 'flowstate-merge-admission[bot]':
         raise AdmissionError('admission status came from the wrong publisher')

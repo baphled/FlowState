@@ -164,11 +164,22 @@ jobs:
         if: github.event_name == 'pull_request'
         run: npm ci
 
-      - name: Check PR title
+      # Reruns retain the original event payload. Fetch the current title so
+      # renaming a PR never requires another commit or replacement PR.
+      - name: Check current PR title
         if: github.event_name == 'pull_request'
         env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-        run: printf '%s\n' "$PR_TITLE" | npx commitlint
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -o pipefail
+          title="$(curl --fail-with-body --silent --show-error \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$GH_REPOSITORY/pulls/$PR_NUMBER" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["title"])')"
+          printf '%s\n' "$title" | npx commitlint
 
       - name: Push event has no PR title or source branch
         if: github.event_name == 'push'
