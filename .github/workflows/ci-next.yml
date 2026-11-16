@@ -51,6 +51,7 @@ jobs:
           python3 -B -m unittest discover -s scripts/tests -p 'test_admission_*.py' -v
           python3 -B -m unittest discover -s scripts/tests -p 'test_review_*.py' -v
           python3 -B -m unittest scripts.tests.test_app_credentials scripts.tests.test_status_issuer -v
+          python3 -B -m unittest scripts.tests.test_reviewer_dispatch -v
 
       - name: Enforce base policy on the entire committed diff
         env:
