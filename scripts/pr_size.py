@@ -23,8 +23,8 @@ def configured_max_lines():
 
 
 MAX_LINES = configured_max_lines()
-MAX_FILES = 10
-MAX_CHANGED_BYTES = 128 * 1024
+MAX_FILES = 20
+MAX_CHANGED_BYTES = 256 * 1024
 MAX_BLOB_BYTES = 1024 * 1024
 
 

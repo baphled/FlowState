@@ -52,12 +52,12 @@ class PRSize(unittest.TestCase):
         self.check(1)
 
     def test_exact_file_boundary_passes(self):
-        for number in range(10):
+        for number in range(11):
             self.write(str(number), '')
         self.check(0)
 
     def test_empty_files_still_count(self):
-        for number in range(11):
+        for number in range(21):
             self.write(str(number), '')
         self.check(1)
 
@@ -82,11 +82,11 @@ class PRSize(unittest.TestCase):
         self.check(1)
 
     def test_binary_boundary_passes(self):
-        self.write('fixture.bin', b'\0' * 131072)
+        self.write('fixture.bin', b'\0' * 262144)
         self.check(0)
 
     def test_binary_overflow_fails(self):
-        self.write('fixture.bin', b'\0' * 131073)
+        self.write('fixture.bin', b'\0' * 262145)
         self.check(1)
 
     def test_large_blob_fails_closed(self):
@@ -94,7 +94,7 @@ class PRSize(unittest.TestCase):
         self.check(1)
 
     def test_minified_text_cannot_hide_behind_one_line(self):
-        self.write('minified.js', b'x' * 131073)
+        self.write('minified.js', b'x' * 262145)
         self.check(1)
 
     def test_divergent_target_requires_refresh(self):
