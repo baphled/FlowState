@@ -90,6 +90,18 @@ class Runner(unittest.TestCase):
             'creator': {'login': 'flowstate-merge-admission[bot]'}}])
         self.assertIsNone(watch(reader, HEAD, timeout=10, clock=lambda: 0, sleep=lambda _: None))
 
+    def test_monitor_fetches_individual_status_records_with_verified_creator(self):
+        def api(method, path):
+            self.assertEqual((method, path), ('GET', '/statuses/' + HEAD + '?per_page=100'))
+            return [{'context': 'flowstate/merge-admission', 'state': 'success',
+                     'creator': {'login': 'flowstate-merge-admission[bot]'}}]
+        self.assertIsNone(watch(SimpleNamespace(request=api), HEAD, timeout=0))
+
+    def test_monitor_rejects_creatorless_combined_status_response(self):
+        reader = SimpleNamespace(request=lambda *args: {'sha': HEAD, 'statuses': []})
+        with self.assertRaisesRegex(AdmissionError, 'status records unavailable'):
+            watch(reader, HEAD, timeout=0)
+
     def test_sigterm_publishes_failure_and_closes_credentials(self):
         script = '''
 import signal
