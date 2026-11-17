@@ -140,6 +140,24 @@ func e2eStallProvider() (*httptest.Server, <-chan struct{}) {
 	return srv, arrived
 }
 
+// e2eCountingProvider serves one complete SSE reply and records every
+// received request on a buffered channel so a spec can assert how many
+// provider requests a run actually made; the send precedes the reply, so
+// a completed run's count is already observable when the process exits.
+func e2eCountingProvider() (*httptest.Server, <-chan struct{}) {
+	arrived := make(chan struct{}, 16)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		arrived <- struct{}{}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl := w.(http.Flusher)
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"unused\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		fl.Flush()
+	}))
+	DeferCleanup(srv.Close)
+	return srv, arrived
+}
+
 // e2eNewSession creates a session through the built binary.
 func e2eNewSession(baseURL, db string) string {
 	r := e2eRun(baseURL, "session", "new", "--db", db, "--provider", "z.ai", "--model", "glm-5.3", "--task", "greet")
@@ -558,6 +576,61 @@ var _ = Describe("CLI end-to-end contract matrix", Label("e2e"), func() {
 		})
 		It("keeps seq strictly ascending across the window", func() {
 			Expect(observedAscending).To(BeTrue())
+		})
+	})
+
+	Context("session run rejects an unregistered --allow name as usage", func() {
+		Context("exec.run without FLOWSTATE_EXEC_ENABLED", func() {
+			var observedExit int
+			var observedCode string
+			var observedMessageNamesToolAndGate bool
+			var observedProviderRequests int
+			var observedToolCallEvents int
+			BeforeEach(func() {
+				srv, arrived := e2eCountingProvider()
+				db := filepath.Join(GinkgoT().TempDir(), "e2e.db")
+				id := e2eNewSession(srv.URL, db)
+				// e2eEnv strips every FLOWSTATE_* setting, so the exec
+				// opt-in gate is provably absent in the child process.
+				r := e2eRun(srv.URL, "session", "run", "--db", db, "--allow", "exec.run", id)
+				toolCalls := 0
+				for _, e := range e2eEvents(srv.URL, db, id) {
+					if e.Type == "tool.call" {
+						toolCalls++
+					}
+				}
+				observedExit = r.exit
+				observedCode = stderrCode(r.stderr)
+				observedMessageNamesToolAndGate = strings.Contains(r.stderr, "exec.run") &&
+					strings.Contains(r.stderr, "FLOWSTATE_EXEC_ENABLED")
+				observedProviderRequests = len(arrived)
+				observedToolCallEvents = toolCalls
+			})
+			It("exits 2", func() { Expect(observedExit).To(Equal(2)) })
+			It("reports usage on stderr", func() { Expect(observedCode).To(Equal("usage")) })
+			It("names exec.run and the FLOWSTATE_EXEC_ENABLED gate", func() {
+				Expect(observedMessageNamesToolAndGate).To(BeTrue())
+			})
+			It("makes zero provider requests", func() { Expect(observedProviderRequests).To(Equal(0)) })
+			It("persists no tool.call events", func() { Expect(observedToolCallEvents).To(Equal(0)) })
+		})
+
+		Context("a name that is no builtin at all", func() {
+			var observedExit int
+			var observedCode string
+			var observedMessageNamesTool bool
+			BeforeEach(func() {
+				srv, _ := e2eCountingProvider()
+				db := filepath.Join(GinkgoT().TempDir(), "e2e.db")
+				id := e2eNewSession(srv.URL, db)
+				r := e2eRun(srv.URL, "session", "run", "--db", db, "--allow", "totally.unknown.tool", id)
+				observedExit = r.exit
+				observedCode = stderrCode(r.stderr)
+				observedMessageNamesTool = strings.Contains(r.stderr, "totally.unknown.tool")
+			})
+			It("exits 2", func() { Expect(observedExit).To(Equal(2)) })
+			It("reports usage on stderr", func() { Expect(observedCode).To(Equal("usage")) })
+			It("names the unknown tool", func() { Expect(observedMessageNamesTool).To(BeTrue()) })
 		})
 	})
 })

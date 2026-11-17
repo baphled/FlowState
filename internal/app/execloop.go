@@ -51,7 +51,10 @@ func acquireExecLease(ctx context.Context, cfg *ExecLoopConfig) (int64, error) {
 func runExecTurns(ctx context.Context, cfg *ExecLoopConfig, token int64) (*ExecLoopResult, error) {
 	definitions, err := SessionToolDefinitions(cfg.Registry, cfg.Allowlist)
 	if err != nil {
-		return nil, err
+		// A tool-surface mismatch is argument misuse, not a provider
+		// failure: it must surface as usage before any provider
+		// request or budget spend (CLI-AND-API-CONTRACT §§1–2).
+		return nil, fmt.Errorf("%w: %v", ErrUsage, err)
 	}
 	res, history := &ExecLoopResult{}, []provider.Message{}
 	if err := replayInto(ctx, cfg.Store, cfg.Session.ID, &history); err != nil {

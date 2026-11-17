@@ -34,6 +34,8 @@ func NewSessionToolRegistry(workdir string) (*tool.Registry, error) {
 // without a qualified builtin schema fail with no partial result. This function
 // never registers tools or grants permissions. Schemas describe object arguments;
 // the execution loop and tools retain permission, argument and resource checks.
+// An exec.run allow entry that fails while its environment opt-in is absent
+// fails with the gate named so callers can surface the missing opt-in.
 // Callers own the returned JSON bytes; registry mutation must not race this read.
 func SessionToolDefinitions(registry *tool.Registry, allow []string) ([]provider.ToolDefinition, error) {
 	if registry == nil {
@@ -48,6 +50,9 @@ func SessionToolDefinitions(registry *tool.Registry, allow []string) ([]provider
 		seen[name] = true
 		implementation, err := registry.Get(name)
 		if err != nil {
+			if name == tool.ExecRunName && !tool.ExecEnabled() {
+				return nil, fmt.Errorf("%w: tool %q is not registered: exec requires %s=1", tool.ErrUnknownTool, name, tool.ExecEnabledEnv)
+			}
 			return nil, err
 		}
 		definition, err := sessionBuiltinDefinition(implementation)

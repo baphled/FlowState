@@ -268,7 +268,8 @@ func runSessionTurn(ctx context.Context, st *app.Store, sess *app.Session, fl *f
 }
 
 // finishRun maps the turn outcome onto its exit code: SIGINT
-// cancellation exits 130, budget stops 5, provider failures 3. The
+// cancellation exits 130, budget stops 5, tool-surface usage
+// failures 2, provider failures 3. The
 // loop path surfaces budget stops as an ErrBudgetExceeded error (and
 // drops the result's budget flag), so the error arm carries it.
 func finishRun(err error, res *app.TurnResult, fl *flags, stderr *os.File) int {
@@ -280,6 +281,10 @@ func finishRun(err error, res *app.TurnResult, fl *flags, stderr *os.File) int {
 		if errors.Is(err, app.ErrBudgetExceeded) {
 			writeError(stderr, err)
 			return exitBudget
+		}
+		if errors.Is(err, app.ErrUsage) {
+			writeError(stderr, err)
+			return exitUsage
 		}
 		writeError(stderr, fmt.Errorf("%w: %v", app.ErrProvider, err))
 		return exitProviderError
