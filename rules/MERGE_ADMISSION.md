@@ -68,29 +68,28 @@ Run the source tests:
 python3 -B -m unittest discover -s scripts/tests -p 'test_admission_*.py' -v
 ```
 
-## Squash merge trailer policy
+## Rebase merge trailer policy
 
-The Project Metadata Guard requires EXACTLY ONE `Project-Metadata` trailer on
-the `next` tip. Squash-merging a multi-commit PR concatenates every branch
-commit body into the squash message, producing N trailers and failing push CI
-(incident: run 43116444053, patched tip 4bf4ddf).
+Branch protection on `next` requires linear history, and the Project Metadata
+Guard requires EXACTLY ONE `Project-Metadata` trailer on every landed commit.
+Rebase merge satisfies both while keeping the PR commit history: every branch
+commit lands verbatim with its own message, so the reviewed head SHA is exactly
+the SHA that merges. Owner direction 2026-11-17: stop squash merging, keep the
+PR commit history.
 
-Repo-level defaults (`squash_merge_commit_title=PR_TITLE`,
-`squash_merge_commit_message=BLANK`) make GitHub produce an empty squash body
-by default, which eliminates concatenation for web and API merges. The guard
-then fails the tip for the missing trailer, so every squash merge must supply
-exactly one trailer explicitly:
+Squash merging is retired. The historical incident stays instructive: squash
+concatenating every branch commit body produced N trailers on one tip and
+failed push CI (incident: run 43116444053, patched tip 4bf4ddf), while the repo
+squash defaults (PR_TITLE + BLANK) produced a trailer-less tip instead. Squash
+also discards the reviewed commit identity: the SHA that QA and the signed
+review verified was never the SHA that landed.
 
-```bash
-gh pr merge --squash \
-  --subject '<type>: <summary>' \
-  --body 'Project-Metadata: dropbox:/FlowState/Metadata/attempts/<attempt>/<record>.json'
-```
-
-`gh pr merge` without `--subject`/`--body` uses the repo defaults; explicit
-flags override them. Never squash with `--body` containing multiple commit
-bodies or multiple trailers. The guard is the enforcement point: a bad tip
-fails push CI red.
+The trailer requirement is unchanged, now per commit: every PR commit must
+carry exactly one well-formed trailer. `make ai-commit` enforces this at
+authoring, and the guard fails push CI on any landed commit that does not
+carry exactly one. Rebase preserves each commit's own message, so never
+inject `--subject` or `--body` — that would rewrite the reviewed commit
+identity the rebase is meant to preserve.
 
 Use the guarded target instead of calling `gh` directly; it fails closed
 unless the PR is open/mergeable on `next`, the `flowstate/merge-admission`
@@ -99,5 +98,5 @@ well-formed trailer:
 
 ```bash
 make merge-pr PR=<number> DRY_RUN=1   # print the exact gh command only
-make merge-pr PR=<number>             # squash-merge via scripts/merge_pr.sh
+make merge-pr PR=<number>             # rebase-merge via scripts/merge_pr.sh
 ```

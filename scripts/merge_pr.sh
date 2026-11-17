@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Squash-merge an admitted PR carrying exactly one Project-Metadata trailer.
-# Implements rules/MERGE_ADMISSION.md 'Squash merge trailer policy': repo squash
-# defaults (PR_TITLE + BLANK) produce a trailer-less tip, so every squash merge
-# must pass an explicit --subject/--body built from the admitted PR head commit.
+# Rebase-merge an admitted PR so its exact commits land verbatim on the base.
+# Implements rules/MERGE_ADMISSION.md 'Rebase merge trailer policy': branch
+# protection requires linear history and the per-commit Project-Metadata guard
+# requires exactly one trailer per landed commit, so merge-pr rebases instead
+# of squashing -- each PR commit keeps its own message and trailer, and the
+# reviewed head SHA is exactly the SHA that merges.
 # Usage: scripts/merge_pr.sh --pr <number> [--base <branch>] [--dry-run]
 set -euo pipefail
 
@@ -30,7 +32,7 @@ done
 base=${base:-next}
 
 # Step 1: the PR must exist, be OPEN, non-draft, mergeable, and target the base.
-if ! pr_json=$(gh pr view "$pr" --json state,isDraft,mergeable,baseRefName,headRefOid,title); then
+if ! pr_json=$(gh pr view "$pr" --json state,isDraft,mergeable,baseRefName,headRefOid); then
     die "PR $pr not found"
 fi
 field() { jq -r "$1" <<<"$pr_json"; }
@@ -39,7 +41,6 @@ field() { jq -r "$1" <<<"$pr_json"; }
 [[ $(field .mergeable) == MERGEABLE ]] || die "PR $pr is not mergeable"
 [[ $(field .baseRefName) == "$base" ]] || die "PR $pr base is '$(field .baseRefName)', expected '$base'"
 head=$(field .headRefOid)
-title=$(field .title)
 
 # Resolve the repository for gh api calls: GH_REPO wins, else the origin remote
 # (git@github.com:OWNER/REPO.git or https://github.com/OWNER/REPO.git).
@@ -58,6 +59,9 @@ state=${state^^}
 [[ $state == SUCCESS ]] || die "status $ADMISSION_CONTEXT on $head is '$state', expected SUCCESS"
 
 # Steps 3+4: the head commit must carry exactly one well-formed trailer.
+# ai-commit enforces one trailer per branch commit at authoring and the
+# per-commit guard re-enforces it on every landed commit; this pre-merge
+# check fail-closes on the head commit that admission reviewed.
 if ! commit_json=$(gh api "repos/$repo/commits/$head"); then
     die "cannot read commit $head"
 fi
@@ -67,13 +71,19 @@ count=$(grep -cE '^Project-Metadata:' <<<"$message" || true)
 trailer=$(grep -E '^Project-Metadata:' <<<"$message" || true)
 grep -Eq "$TRAILER_RE" <<<"$trailer" || die "trailer '$trailer' does not match the dropbox attempts pattern"
 
-# Step 5: the subject is the PR title: single line, Conventional-Commit-like.
-[[ $title != *$'\n'* ]] || die 'PR title spans multiple lines'
-grep -Eq "$SUBJECT_RE" <<<"$title" || die "PR title '$title' is not a Conventional Commit subject"
+# Step 5: the head commit subject lands verbatim under --rebase, so it must
+# be a Conventional Commit subject. commitlint checks every branch commit on
+# CI anyway; this retained local check fail-closes on the exact subject that
+# becomes the new base tip.
+subject=$(head -n 1 <<<"$message")
+grep -Eq "$SUBJECT_RE" <<<"$subject" \
+    || die "head commit subject '$subject' is not a Conventional Commit subject"
 
-# Step 6: squash-merge with the explicit subject and the single trailer body.
+# Step 6: rebase-merge. Never squash, never inject --subject/--body: rebase
+# preserves each commit's own message and trailer, so the reviewed SHA is
+# exactly what lands.
 if [[ $dry_run == true ]]; then
-    echo "gh pr merge $pr --squash --subject $(printf '%q' "$title") --body $(printf '%q' "$trailer")"
+    printf 'gh pr merge %q --rebase\n' "$pr"
     exit 0
 fi
-gh pr merge "$pr" --squash --subject "$title" --body "$trailer"
+gh pr merge "$pr" --rebase
