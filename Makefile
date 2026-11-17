@@ -3,7 +3,7 @@
 -include .env
 export FLOWSTATE_PR_MAX_LINES
 
-.PHONY: all build run test fmt lint check clean help ai-commit check-ai-attribution list-ai-commits install-tools check-pr-size check-size-live install-hooks check-python-contract
+.PHONY: all build run test test-e2e fmt lint check clean help ai-commit check-ai-attribution list-ai-commits install-tools check-pr-size check-size-live install-hooks check-python-contract
 .PHONY: check-admission-commits check-admission merge-pr
 .PHONY: package-admission-runner install-admission-runner admission-runner-start admission-runner-stop admission-runner-status
 
@@ -78,6 +78,9 @@ test: ## Run legacy Go tests and parallel Ginkgo suites during migration
 	$(GOTEST) -race -count=1 ./...
 	$(GOCMD) run github.com/onsi/ginkgo/v2/ginkgo -r --procs=$(GINKGO_PROCS) --compilers=$(GINKGO_COMPILERS) --randomize-all --randomize-suites --fail-on-pending --fail-on-empty --keep-going --race --timeout=5m
 
+test-e2e: ## Run the CLI end-to-end matrix suite against the real built binary
+	$(GOCMD) run github.com/onsi/ginkgo/v2/ginkgo --procs=$(GINKGO_PROCS) --compilers=$(GINKGO_COMPILERS) --label-filter=e2e --fail-on-pending --race --timeout=5m ./cmd/flowstate
+
 check-test-contract: ## Check changed tests (BASE_SHA=exact PR base)
 	python3 -B -m unittest discover -s scripts/tests -p test_test_contract.py
 	python3 -B -m unittest discover -s scripts/tests -p test_test_layout.py
@@ -103,7 +106,7 @@ lint: ## Run linters
 	@if command -v golangci-lint >/dev/null 2>&1; then golangci-lint run; fi
 	@if command -v deadcode >/dev/null 2>&1 && go list -f '{{if eq .Name "main"}}{{.ImportPath}}{{end}}' ./... 2>/dev/null | grep -q .; then deadcode ./...; fi
 
-check: fmt lint test ## Run all checks
+check: fmt lint test test-e2e ## Run all checks
 
 check-code-contract: ## Check committed changed Go structure (BASE_SHA=PR base)
 	python3 -B -m unittest discover -s scripts/tests -p test_code_contract.py
