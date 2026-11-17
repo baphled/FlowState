@@ -4,7 +4,7 @@
 export FLOWSTATE_PR_MAX_LINES
 
 .PHONY: all build run test fmt lint check clean help ai-commit check-ai-attribution list-ai-commits install-tools check-pr-size check-size-live install-hooks check-python-contract
-.PHONY: check-admission-commits check-admission
+.PHONY: check-admission-commits check-admission merge-pr
 .PHONY: package-admission-runner install-admission-runner admission-runner-start admission-runner-stop admission-runner-status
 
 package-admission-runner: ## Package committed admission runner and its pinned dependency manifest
@@ -21,6 +21,9 @@ check-admission-commits: ## Validate actual commit evidence before push (externa
 
 check-admission: ## Validate live exact-head PR review/evidence/Build; never publish a status
 	python3 -B -m scripts.admission_preflight --phase ready --repo baphled/FlowState --pr "$(PR)" --base "$(BASE_SHA)" --head "$(or $(HEAD_SHA),$(shell git rev-parse HEAD))"
+
+merge-pr: ## Squash-merge an admitted PR carrying exactly one Project-Metadata trailer (PR=N [BASE=next] [DRY_RUN=1])
+	bash scripts/merge_pr.sh --pr "$(PR)" --base "$(BASE)" $(if $(DRY_RUN),--dry-run)
 
 check-pr-size: ## Bound the complete committed PR diff (BASE_SHA=actual target)
 	python3 -B scripts/pr_size.py --base "$(BASE_SHA)" --head "$$(git rev-parse HEAD)"

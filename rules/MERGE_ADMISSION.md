@@ -91,3 +91,13 @@ gh pr merge --squash \
 flags override them. Never squash with `--body` containing multiple commit
 bodies or multiple trailers. The guard is the enforcement point: a bad tip
 fails push CI red.
+
+Use the guarded target instead of calling `gh` directly; it fails closed
+unless the PR is open/mergeable on `next`, the `flowstate/merge-admission`
+status is SUCCESS on the exact head, and the head commit carries exactly one
+well-formed trailer:
+
+```bash
+make merge-pr PR=<number> DRY_RUN=1   # print the exact gh command only
+make merge-pr PR=<number>             # squash-merge via scripts/merge_pr.sh
+```
