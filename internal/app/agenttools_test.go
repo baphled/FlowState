@@ -17,6 +17,21 @@ type catalogSink struct{}
 
 func (catalogSink) Append(context.Context, string, string, any) (int64, error) { return 0, nil }
 
+// mustExecDescription returns the advertised exec.run definition
+// description, panicking on setup errors so specs keep a single
+// behavioural expectation.
+func mustExecDescription(workdir string) string {
+	registry := tool.NewRegistry()
+	if err := registry.Register(tool.NewExecRun(workdir)); err != nil {
+		panic(err)
+	}
+	defs, err := SessionToolDefinitions(registry, []string{tool.ExecRunName})
+	if err != nil {
+		panic(err)
+	}
+	return defs[0].Description
+}
+
 var _ = Describe("Session tool catalog", func() {
 	var registry *tool.Registry
 	var workdir string
@@ -71,6 +86,17 @@ var _ = Describe("Session tool catalog", func() {
 	It("does not register exec to satisfy an allow entry", func() {
 		_, err := SessionToolDefinitions(tool.NewRegistry(), []string{"exec.run"})
 		Expect(err).To(MatchError(ContainSubstring("unknown tool")))
+	})
+
+	It("advertises the deny-by-default policy in the exec definition description", func() {
+		Expect(mustExecDescription(GinkgoT().TempDir())).To(ContainSubstring("deny-by-default"))
+	})
+	It("names git in the exec definition description", func() {
+		Expect(mustExecDescription(GinkgoT().TempDir())).To(ContainSubstring("git"))
+	})
+	It("renders the exec definition description deterministically", func() {
+		wd := GinkgoT().TempDir()
+		Expect(mustExecDescription(wd)).To(Equal(mustExecDescription(wd)))
 	})
 
 	DescribeTable("rejects implementations without a qualified builtin schema", func(name string) {

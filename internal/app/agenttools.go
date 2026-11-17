@@ -89,7 +89,9 @@ func sessionBuiltinDefinition(implementation tool.Tool) (provider.ToolDefinition
 		schema = `{"type":"object","properties":{"path":{"type":"string","minLength":1},"old_text":{"type":"string","minLength":1},"new_text":{"type":"string","default":""},"all":{"type":"boolean","default":false}},"required":["path","old_text"]}`
 	case tool.ExecRunName:
 		builtin = tool.NewExecRun("")
-		description = "Run an allowed binary and argument vector in the session workdir under execution policy and environment opt-in."
+		description = "Execute one allow-listed command in the session workdir. " +
+			"Owner policy allow-list (deny-by-default): " + tool.AllowlistSummary(tool.DefaultExecAllowlist()) +
+			". Shells and interpreters are not allow-listed."
 		schema = `{"type":"object","properties":{"cmd":{"type":"string","minLength":1},"args":{"type":"array","items":{"type":"string"}}},"required":["cmd"]}`
 	default:
 		return provider.ToolDefinition{}, fmt.Errorf("app: no qualified schema for tool %q", implementation.Name())

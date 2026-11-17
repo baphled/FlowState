@@ -132,6 +132,10 @@ var _ = Describe("exec.run", func() {
 		_, err := invoke(l, ExecRunName, `{"cmd":"sh","args":["-c","id"]}`)
 		Expect(errors.Is(err, ErrExecNotAllowed)).To(BeTrue())
 	})
+	It("names the allowed binaries in the denial", func() {
+		_, err := invoke(l, ExecRunName, `{"cmd":"sh","args":["-c","id"]}`)
+		Expect(err.Error()).To(ContainSubstring("sh (allowed: helper [hi x cwd env block big fail])"))
+	})
 	It("rejects a denied subcommand", func() {
 		_, err := invoke(l, ExecRunName, `{"cmd":"helper","args":["rm","-rf","/"]}`)
 		Expect(errors.Is(err, ErrExecDeniedSubcommand)).To(BeTrue())
@@ -202,6 +206,14 @@ var _ = Describe("exec default allowlist (owner policy)", func() {
 		l, rs := newExecLoop(t, []string{ExecRunName})
 		_, _ = invoke(l, ExecRunName, `{"cmd":"ghost"}`)
 		Expect(lastResultCode(rs)).To(Equal(ErrCodeExecNotAllowed))
+	})
+	It("renders the default allowlist summary in policy order", func() {
+		want := "gh [pr run]; git [worktree switch checkout add status diff log commit push fetch pull]; go [test build vet fmt mod tool]; make"
+		Expect(AllowlistSummary(DefaultExecAllowlist())).To(Equal(want))
+	})
+	It("renders the allowlist summary deterministically", func() {
+		first := AllowlistSummary(DefaultExecAllowlist())
+		Expect(AllowlistSummary(DefaultExecAllowlist())).To(Equal(first))
 	})
 	It("runs git status as a happy path per the owner policy", func() {
 		l, rs := newExecLoop(NewExecRun(GinkgoT().TempDir()), []string{ExecRunName})

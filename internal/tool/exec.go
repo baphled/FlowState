@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -88,6 +89,24 @@ func DefaultExecAllowlist() map[string]ExecBinary {
 		out[name] = b
 	}
 	return out
+}
+
+// AllowlistSummary renders an allow-list deterministically for
+// advertisement and denials: binaries in sorted name order with
+// subcommands in declared order, e.g. "git [status diff]; make".
+// A binary without gated subcommands renders as its bare name so
+// definition text and denial reasons cannot drift apart.
+func AllowlistSummary(list map[string]ExecBinary) string {
+	names := slices.Sorted(maps.Keys(list))
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		if len(list[name].Subcommands) == 0 {
+			parts = append(parts, name)
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s [%s]", name, strings.Join(list[name].Subcommands, " ")))
+	}
+	return strings.Join(parts, "; ")
 }
 
 // NewExecRun returns an exec.run tool rooted at workdir with
@@ -246,7 +265,7 @@ func (t *execTool) Invoke(ctx context.Context, args json.RawMessage) (any, error
 	}
 	b, ok := t.binaries[a.Cmd]
 	if !ok || b.Path == "" {
-		return nil, fmt.Errorf("%w: %s", ErrExecNotAllowed, a.Cmd)
+		return nil, fmt.Errorf("%w: %s (allowed: %s)", ErrExecNotAllowed, a.Cmd, AllowlistSummary(t.binaries))
 	}
 	if !allowed(b, a.Args) {
 		return nil, fmt.Errorf("%w: %s %v", ErrExecDeniedSubcommand, a.Cmd, a.Args)
