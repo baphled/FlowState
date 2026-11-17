@@ -207,6 +207,16 @@ func e2eRequireEvent(evs []e2eEvent, typ string) e2eEvent {
 	panic("event not persisted: " + typ)
 }
 
+// e2eFindEvent is the non-panicking lookup used by retryable setup paths.
+func e2eFindEvent(evs []e2eEvent, typ string) (e2eEvent, error) {
+	for _, e := range evs {
+		if e.Type == typ {
+			return e, nil
+		}
+	}
+	return e2eEvent{}, errors.New("event not persisted: " + typ)
+}
+
 // e2eVerdict decodes the first verdict line of receipt validate.
 func e2eVerdict(out string) string {
 	var v struct {
@@ -383,23 +393,54 @@ var _ = Describe("CLI end-to-end contract matrix", Label("e2e"), func() {
 		var observedRerunCode string
 		var setupErr error
 		BeforeEach(func() {
-			srv, arrived := e2eStallProvider()
-			db := filepath.Join(GinkgoT().TempDir(), "e2e.db")
-			id := e2eNewSession(srv.URL, db)
-			cmd, done := e2eStart(srv.URL, "session", "run", "--db", db, id)
-			DeferCleanup(func() {
+			// A SIGINT delivered while the child is still installing its signal
+			// handler kills it without persisting session.cancelled (observed on
+			// macOS runners). Retry the whole scenario on a fresh session so the
+			// assertion measures the cancel contract, not startup timing.
+			for attempt := 0; attempt < 3 && setupErr == nil && observedCancelledReason == ""; attempt++ {
+				setupErr = nil
+				srv, arrived := e2eStallProvider()
+				db := filepath.Join(GinkgoT().TempDir(), "e2e.db")
+				id := e2eNewSession(srv.URL, db)
+				cmd, done := e2eStart(srv.URL, "session", "run", "--db", db, id)
+				DeferCleanup(func() {
+					select {
+					case <-done:
+					default:
+						_ = cmd.Process.Kill()
+					}
+				})
 				select {
-				case <-done:
-				default:
-					_ = cmd.Process.Kill()
+				case <-arrived:
+				case <-time.After(10 * time.Second):
+					setupErr = errors.New("provider request not observed")
 				}
-			})
-			select {
-			case <-arrived:
-			case <-time.After(10 * time.Second):
-				setupErr = errors.New("provider request not observed")
-			}
-			if setupErr == nil {
+				if setupErr != nil {
+					continue
+				}
+				// The stdout projection is written at end of run, so the
+				// deterministic pre-signal observable is the first event row:
+				// once one is persisted the run loop is live past signal-handler
+				// installation. Poll the store through `session events`.
+				deadline := time.After(10 * time.Second)
+				ticker := time.NewTicker(50 * time.Millisecond)
+				for live := false; !live; {
+					select {
+					case <-deadline:
+						setupErr = errors.New("first persisted event not observed")
+					case <-ticker.C:
+						if len(e2eEvents(srv.URL, db, id)) > 0 {
+							live = true
+						}
+					}
+					if setupErr != nil {
+						break
+					}
+				}
+				ticker.Stop()
+				if setupErr != nil {
+					continue
+				}
 				if serr := cmd.Process.Signal(os.Interrupt); serr != nil {
 					panic(serr)
 				}
@@ -409,16 +450,23 @@ var _ = Describe("CLI end-to-end contract matrix", Label("e2e"), func() {
 				case <-time.After(30 * time.Second):
 					setupErr = errors.New("run not observed")
 				}
-				if setupErr == nil {
-					events := e2eEvents(srv.URL, db, id)
-					cancelled := e2eRequireEvent(events, "session.cancelled")
-					rerun := e2eRun(srv.URL, "session", "run", "--db", db, id)
-					observedExit = run.exit
-					observedCancelledReason, _ = e2ePayloadField(cancelled.Payload, "reason").(string)
-					observedEventsExit = e2eRun(srv.URL, "session", "events", "--json", "--db", db, id).exit
-					observedRerunExit = rerun.exit
-					observedRerunCode = stderrCode(rerun.stderr)
+				if setupErr != nil {
+					continue
 				}
+				events := e2eEvents(srv.URL, db, id)
+				found, ferr := e2eFindEvent(events, "session.cancelled")
+				if ferr != nil {
+					continue
+				}
+				rerun := e2eRun(srv.URL, "session", "run", "--db", db, id)
+				observedExit = run.exit
+				observedCancelledReason, _ = e2ePayloadField(found.Payload, "reason").(string)
+				observedEventsExit = e2eRun(srv.URL, "session", "events", "--json", "--db", db, id).exit
+				observedRerunExit = rerun.exit
+				observedRerunCode = stderrCode(rerun.stderr)
+			}
+			if observedCancelledReason == "" {
+				setupErr = errors.New("session.cancelled not persisted after retries")
 			}
 		})
 		It("exits 130", func() {
