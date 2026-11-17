@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/zai"
+	"github.com/baphled/flowstate/internal/store"
 )
 
 // fakeZaiServer serves an SSE stream of the given chunks.
@@ -446,6 +448,165 @@ var _ = Describe("Session run", func() {
 		})
 		It("completes the initial run", func() { Expect(observedFirstExit).To(Equal(0)) })
 		It("rejects rerunning the terminal session", func() { Expect(observedSecondExit).To(Equal(6)) })
+	})
+})
+
+// firstIndexOf returns the first index of want in list, or -1.
+func firstIndexOf(list []string, want string) int {
+	for i, s := range list {
+		if s == want {
+			return i
+		}
+	}
+	return -1
+}
+
+// lastIndexOf returns the last index of want in list, or -1.
+func lastIndexOf(list []string, want string) int {
+	idx := -1
+	for i, s := range list {
+		if s == want {
+			idx = i
+		}
+	}
+	return idx
+}
+
+// newPausedSession creates a session and pauses it via a budget-5
+// run, failing the spec when the pause setup itself breaks.
+func newPausedSession() string {
+	srv := fakeZaiServer(
+		`{"choices":[{"delta":{"content":"hello world"}}]}`,
+		`{"choices":[{"delta":{"content":" again"}}]}`,
+	)
+	withFakeZai(srv)
+	created := runCLINew("--provider", "z.ai", "--model", "glm-5.3", "--task", "greet")
+	if created.exit != 0 {
+		panic("session new failed")
+	}
+	id := decodeNew(created.stdout).ID
+	if pause := runArgv([]string{"session", "run", "--db", dbFor(), "--budget", "5", id}); pause.exit != 5 {
+		panic("session pause setup failed")
+	}
+	return id
+}
+
+var _ = Describe("Session run explicit resume", func() {
+	Context("rerunning a budget-paused session", func() {
+		var observedExit int
+		var observedResumedBeforeWork bool
+		var observedLastType string
+		var observedStatus string
+		BeforeEach(func() {
+			id := newPausedSession()
+			// 20 exceeds the 17 the resumed stream consumes, so a
+			// fresh limit completes while a carried-over pre-pause
+			// budget would stop the run again.
+			run := runArgv([]string{"session", "run", "--db", dbFor(), "--budget", "20", id})
+			types := stdoutEventTypes(run.stdout)
+			resumed, work := firstIndexOf(types, "session.resumed"), lastIndexOf(types, "user.message")
+			observedExit = run.exit
+			observedResumedBeforeWork = resumed >= 0 && work >= 0 && resumed < work
+			observedLastType = types[len(types)-1]
+			observedStatus = sessionStatusViaList(id)
+		})
+		It("exits 0 on the resumed run", func() { Expect(observedExit).To(Equal(0)) })
+		It("emits session.resumed before the resumed turn work", func() {
+			Expect(observedResumedBeforeWork).To(BeTrue())
+		})
+		It("completes the resumed run under the fresh budget", func() {
+			Expect(observedLastType).To(Equal("turn.end"))
+		})
+		It("marks the resumed session completed", func() {
+			Expect(observedStatus).To(Equal("completed"))
+		})
+	})
+
+	Context("the resumed run gets a fresh bounded limit", func() {
+		var observedExit int
+		var observedCode string
+		var observedStatus string
+		var observedResumedCount int
+		BeforeEach(func() {
+			id := newPausedSession()
+			run := runArgv([]string{"session", "run", "--db", dbFor(), "--budget", "5", id})
+			observedExit = run.exit
+			observedCode = stderrCode(run.stderr)
+			observedStatus = sessionStatusViaList(id)
+			resumed := 0
+			for _, t := range stdoutEventTypes(runCLIEvents(id).stdout) {
+				if t == "session.resumed" {
+					resumed++
+				}
+			}
+			observedResumedCount = resumed
+		})
+		It("stops the resumed run at the fresh budget", func() { Expect(observedExit).To(Equal(5)) })
+		It("reports budget_exceeded again", func() { Expect(observedCode).To(Equal("budget_exceeded")) })
+		It("re-pauses the session", func() { Expect(observedStatus).To(Equal("paused")) })
+		It("resumes exactly once before the second stop", func() { Expect(observedResumedCount).To(Equal(1)) })
+	})
+
+	Context("rerunning a cancelled session", func() {
+		var observedExit int
+		var observedCode string
+		BeforeEach(func() {
+			srv := fakeZaiServer(`{"choices":[{"delta":{"content":"x"}}]}`)
+			withFakeZai(srv)
+			created := runCLINew("--provider", "z.ai", "--model", "glm-5.3", "--task", "greet")
+			if created.exit != 0 {
+				panic("session new failed")
+			}
+			id := decodeNew(created.stdout).ID
+			if cancel := runArgv([]string{"session", "cancel", "--db", dbFor(), id}); cancel.exit != 0 {
+				panic("session cancel setup failed")
+			}
+			run := runCLIRun(id)
+			observedExit = run.exit
+			observedCode = stderrCode(run.stderr)
+		})
+		It("rejects the rerun with the terminal exit status", func() { Expect(observedExit).To(Equal(6)) })
+		It("reports session_terminal", func() { Expect(observedCode).To(Equal("session_terminal")) })
+	})
+
+	Context("a resume append failure blocks the rerun", func() {
+		var observedExit int
+		var observedCode string
+		var observedStdoutLines int
+		var observedStatus string
+		var observedTypes []string
+		BeforeEach(func() {
+			id := newPausedSession()
+			// Hold the session's single event-writer slot in this
+			// process so the CLI's resume append is fenced off.
+			st, err := store.Open(dbFor())
+			if err != nil {
+				panic(err)
+			}
+			DeferCleanup(func() { _ = st.Close() })
+			held, err := st.NewEventWriter(context.Background(), id)
+			if err != nil {
+				panic(err)
+			}
+			DeferCleanup(func() { _ = held.Close() })
+			run := runCLIRun(id)
+			observedExit = run.exit
+			observedCode = stderrCode(run.stderr)
+			observedStdoutLines = len(lines(run.stdout))
+			observedStatus = sessionStatusViaList(id)
+			observedTypes = stdoutEventTypes(runCLIEvents(id).stdout)
+		})
+		It("exits with the internal failure status", func() { Expect(observedExit).To(Equal(1)) })
+		It("surfaces the internal error code", func() { Expect(observedCode).To(Equal("internal")) })
+		It("runs no turn work after the failed resume", func() {
+			Expect(observedStdoutLines).To(Equal(0))
+		})
+		It("leaves the session paused and unresolved", func() {
+			Expect(observedStatus).To(Equal("paused"))
+		})
+		It("persists no session.resumed event", func() {
+			Expect(observedTypes).NotTo(ContainElement("session.resumed"))
+		})
 	})
 })
 

@@ -141,6 +141,22 @@ execution-loop admission, automatic provider execution, retry or lifecycle claim
 Denied result-only feedback still comes from the loop's own deny path without a
 synthesised call start.
 
+## Session run lifecycle
+
+`flowstate session run` drives one bounded run of an active session, or an explicit
+resume of a paused one. A budget stop ends the run non-terminally: the single event
+writer appends `session.paused` (status paused, exit 5), and resumption is never
+implicit. A later run of a paused session routes through
+`app.ResumePausedSession` before any turn work: the writer's atomic `Resume`
+appends the correlated `session.resumed` event (actor `user`, `from_status`
+paused) and restores status active, then the ordinary turn/loop composition
+continues under a fresh budget taken from the rerun's own flags — the pre-pause
+budget is never carried over. Non-paused runnable sessions rerun unchanged with no
+`session.resumed` emission, and terminal sessions (completed, cancelled, failed)
+reject run as `session_terminal` (exit 6). A resume append failure blocks turn
+execution and surfaces the persisted failure; the session stays paused and
+unacknowledged. Use the app Ginkgo command above for local verification.
+
 ## Changes and proof
 
 A bounded refactor preserves the public contract, failure behaviour and tests.

@@ -139,10 +139,11 @@ func selfTestTranscript(ctx context.Context, fl *flags, id string) ([]byte, erro
 }
 
 // cmdRun implements `flowstate session run <id>` (or, with --task,
-// a gated live self-test): runs one bounded provider turn, projects
-// the persisted events as JSONL on stdout and ends with a terminal
-// event envelope. Exit 0 completed; 1 unknown session; 2 usage;
-// 3 provider error; 4 gates closed (task mode); 6 already terminal.
+// a gated live self-test): runs one bounded provider turn, explicitly
+// resuming a paused session first, projects the persisted events as
+// JSONL on stdout and ends with a terminal event envelope. Exit 0
+// completed; 1 unknown session; 2 usage; 3 provider error; 4 gates
+// closed (task mode); 6 already terminal.
 func cmdRun(ctx context.Context, st *app.Store, id string, fl *flags, stdout, stderr *os.File) int {
 	if fl.task != "" {
 		if id != "" {
@@ -161,7 +162,30 @@ func cmdRun(ctx context.Context, st *app.Store, id string, fl *flags, stdout, st
 		writeError(stderr, loadErr)
 		return exitCodeFor(loadErr)
 	}
+	if code, done := resumePausedRun(ctx, st, sess, stderr); done {
+		return code
+	}
 	return runSessionTurn(ctx, st, sess, fl, stdout, stderr)
+}
+
+// resumePausedRun routes a paused session through the explicit
+// app-layer resume before any turn work (CLI-AND-API-CONTRACT §3):
+// the store appends session.resumed (actor user, from_status paused)
+// and restores status active, then the ordinary run continues under
+// a fresh budget derived from this invocation's flags alone — the
+// pre-pause budget is never carried over. Non-paused runnable
+// sessions pass straight through with no session.resumed emission.
+// A resume append failure blocks the turn and surfaces the persisted
+// failure; the session stays paused and unacknowledged.
+func resumePausedRun(ctx context.Context, st *app.Store, sess *app.Session, stderr *os.File) (int, bool) {
+	if sess.Status != "paused" {
+		return exitOK, false
+	}
+	if rerr := app.ResumePausedSession(ctx, st, sess); rerr != nil {
+		writeError(stderr, rerr)
+		return exitCodeFor(rerr), true
+	}
+	return exitOK, false
 }
 
 // runSessionByID validates the plain id invocation's usage and
