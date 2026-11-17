@@ -83,9 +83,13 @@ exactly one trailer explicitly:
 
 ```bash
 gh pr merge --squash \
-  --subject '<type>: <summary>' \
+  --subject '<type>: <summary> (#<PR number>)' \
   --body 'Project-Metadata: dropbox:/FlowState/Metadata/attempts/<attempt>/<record>.json'
 ```
+
+The subject carries the PR number suffix so every final merged commit on
+`next` is traceable to its PR (established convention: `… (#278)`,
+`… (#282)`). `make merge-pr` builds this subject automatically.
 
 `gh pr merge` without `--subject`/`--body` uses the repo defaults; explicit
 flags override them. Never squash with `--body` containing multiple commit

@@ -67,13 +67,16 @@ count=$(grep -cE '^Project-Metadata:' <<<"$message" || true)
 trailer=$(grep -E '^Project-Metadata:' <<<"$message" || true)
 grep -Eq "$TRAILER_RE" <<<"$trailer" || die "trailer '$trailer' does not match the dropbox attempts pattern"
 
-# Step 5: the subject is the PR title: single line, Conventional-Commit-like.
+# Step 5: the subject is the PR title suffixed with the PR number (next
+# convention: every final merged commit is traceable to its PR): single
+# line, Conventional-Commit-like before suffixing.
 [[ $title != *$'\n'* ]] || die 'PR title spans multiple lines'
 grep -Eq "$SUBJECT_RE" <<<"$title" || die "PR title '$title' is not a Conventional Commit subject"
+subject="$title (#$pr)"
 
 # Step 6: squash-merge with the explicit subject and the single trailer body.
 if [[ $dry_run == true ]]; then
-    echo "gh pr merge $pr --squash --subject $(printf '%q' "$title") --body $(printf '%q' "$trailer")"
+    echo "gh pr merge $pr --squash --subject $(printf '%q' "$subject") --body $(printf '%q' "$trailer")"
     exit 0
 fi
-gh pr merge "$pr" --squash --subject "$title" --body "$trailer"
+gh pr merge "$pr" --squash --subject "$subject" --body "$trailer"
