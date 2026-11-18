@@ -178,6 +178,14 @@ explicit path, `default`, or `none`). Identical effective composition yields an
 identical hash; any wiring change changes it, so identical config plus identical
 task produces identical wiring.
 
+## Architecture Decision Records
+
+The Go CLI's architecture decisions are recorded in `docs/adr/` using the
+vault ADR template (frontmatter, Context/Problem/Decision/Consequences/
+Alternatives/Cross-links/Sources). Start at `docs/adr/README.md` for the
+index; `docs/adr/ADR-COMPARISON.md` maps the prototype vault ADR corpus
+(78 files) to Go CLI implementation status.
+
 ## Changes and proof
 
 A bounded refactor preserves the public contract, failure behaviour and tests.
