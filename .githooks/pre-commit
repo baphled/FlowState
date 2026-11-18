@@ -1,5 +1,30 @@
 #!/bin/sh
 # Live PR-budget check at commit time: staged + unstaged + untracked vs budget.
+# The commit subject does not exist yet, so kind comes from the branch prefix;
+# the kind-aware selector (title agreement) runs at push/CI where the title exists.
 BASE=$(git merge-base HEAD origin/next 2>/dev/null || git rev-parse origin/next 2>/dev/null)
 [ -n "$BASE" ] || BASE=${BASE_SHA:-}
+budget=""
+if git cat-file -e "$BASE:.env.ci" 2>/dev/null; then
+  policy="$(git show "$BASE:.env.ci")"
+  branch="$(git rev-parse --abbrev-ref HEAD)"
+  prefix=${branch%%/*}
+  case "$prefix" in
+    feat|feature) kind=FEAT ;;
+    fix) kind=FIX ;;
+    chore) kind=CHORE ;;
+    docs) kind=DOCS ;;
+    refactor) kind=REFACTOR ;;
+    test) kind=TEST ;;
+    perf) kind=PERF ;;
+    revert) kind=REVERT ;;
+    *) kind="" ;;
+  esac
+  if [ -n "$kind" ]; then
+    budget="$(printf '%s\n' "$policy" | sed -n "s/^FLOWSTATE_PR_MAX_LINES_${kind}=//p")"
+  fi
+  [ -n "$budget" ] || budget="$(printf '%s\n' "$policy" | sed -n 's/^FLOWSTATE_PR_MAX_LINES=//p')"
+fi
+[ -n "$budget" ] || budget=500
+export FLOWSTATE_PR_MAX_LINES="$budget"
 python3 -B scripts/pr_size.py --live --base "$BASE"

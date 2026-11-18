@@ -847,4 +847,12 @@ var _ = Describe("CLI end-to-end contract matrix", Label("e2e"), func() {
 			It("names the unknown tool", func() { Expect(observedMessageNamesTool).To(BeTrue()) })
 		})
 	})
+
+	It("accepts the M1-DOGFOOD capability", func() {
+		doc := validReceipt()
+		doc["capability_id"] = "M1-DOGFOOD"
+		p := writeReceipt(doc)
+		res := runArgv([]string{"receipt", "validate", p})
+		Expect(res.exit).To(Equal(0))
+	})
 })
