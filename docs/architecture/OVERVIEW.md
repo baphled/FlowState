@@ -178,6 +178,11 @@ explicit path, `default`, or `none`). Identical effective composition yields an
 identical hash; any wiring change changes it, so identical config plus identical
 task produces identical wiring.
 
+## Architecture Decision Records
+
+Go CLI decisions live in `docs/adr/` (Context, Decision, Consequences);
+the fswt vault mapping is in `docs/adr/ADR-COMPARISON.md`.
+
 ## Changes and proof
 
 A bounded refactor preserves the public contract, failure behaviour and tests.
