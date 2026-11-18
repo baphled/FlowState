@@ -63,6 +63,9 @@ func dispatchContexted(ctx context.Context, args []string, stdout, stderr *os.Fi
 	if len(rest) == 1 {
 		id = rest[0]
 	}
+	if code, done := applySessionConfig(fl, stderr); done {
+		return code
+	}
 	return dispatchSession(ctx, args[1], fl, id, stdout, stderr)
 }
 
@@ -94,6 +97,9 @@ func routeReplay(ctx context.Context, args []string, stdout, stderr *os.File) (i
 	if len(rest) != 1 {
 		writeError(stderr, fmt.Errorf("%w: replay requires exactly one session id", errUsageCmd))
 		return exitUsage, true
+	}
+	if code, done := applySessionConfig(fl, stderr); done {
+		return code, true
 	}
 	return dispatchSession(ctx, "replay", fl, rest[0], stdout, stderr), true
 }
@@ -171,10 +177,12 @@ func parseFlags(args []string) (*flags, []string, error) {
 				return nil, nil, err
 			}
 			fl.db = v
+			fl.dbSet = true
 		case a == "--json":
 			fl.json = true
 		case strings.HasPrefix(a, "--status"), strings.HasPrefix(a, "--provider"),
-			strings.HasPrefix(a, "--model"), strings.HasPrefix(a, "--task"):
+			strings.HasPrefix(a, "--model"), strings.HasPrefix(a, "--task"),
+			strings.HasPrefix(a, "--config"):
 			if serr := fl.setString(a, take); serr != nil {
 				return nil, nil, serr
 			}
@@ -209,6 +217,8 @@ func (f *flags) setString(name string, take func() (string, error)) error {
 	switch {
 	case strings.HasPrefix(name, "--status"):
 		f.status = v
+	case strings.HasPrefix(name, "--config"):
+		f.configPath = v
 	case strings.HasPrefix(name, "--provider"):
 		f.provider = v
 	case strings.HasPrefix(name, "--model"):
@@ -254,6 +264,7 @@ func setLimit(fl *flags, name, v string) error {
 	}
 	if name == "--budget" {
 		fl.budget = n
+		fl.budgetSet = true
 	} else {
 		fl.maxTokens = n
 	}
@@ -288,6 +299,6 @@ session replay <id> [--db path]
 receipt validate <file...>
 session tool   <id> --tool <name> [--tool-arg <json>] [--allow <name>]... [--allow-file <manifest>] [--db path]
 
-common flags: --db <path> (default ./flowstate.db), --json
+common flags: --db <path> (default ./flowstate.db), --config <path> (default ./flowstate.json), --json
 `)
 }

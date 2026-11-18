@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,7 +13,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -59,15 +63,16 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 // e2eEnv builds the subprocess environment: the ambient environment
 // minus ambient z.ai or FlowState live settings, plus the local fake
 // provider selection, so the binary never touches the live network.
-func e2eEnv(baseURL string) []string {
+func e2eEnv(baseURL string, extra ...string) []string {
 	env := []string{}
 	for _, kv := range os.Environ() {
 		if !strings.HasPrefix(kv, "ZAI_") && !strings.HasPrefix(kv, "FLOWSTATE_") {
 			env = append(env, kv)
 		}
 	}
-	return append(env, "ZAI_API_KEY=e2e-test-key", "ZAI_BASE_URL="+baseURL,
+	env = append(env, "ZAI_API_KEY=e2e-test-key", "ZAI_BASE_URL="+baseURL,
 		"ZAI_PLAN=coding", "ZAI_CODING_ROUTE=openai")
+	return append(env, extra...)
 }
 
 // e2eExitCode maps a Wait error onto the process exit status.
@@ -85,8 +90,22 @@ func e2eExitCode(err error) int {
 // e2eRun executes the built binary to completion and captures its
 // exit code and both output streams.
 func e2eRun(baseURL string, argv ...string) result {
+	return e2eRunWith(baseURL, "", nil, argv...)
+}
+
+// e2eRunInDir executes the binary in dir (for ambient ./flowstate.json
+// tests) while preserving the standard fake-provider env wiring.
+func e2eRunInDir(baseURL, dir string, argv ...string) result {
+	return e2eRunWith(baseURL, dir, nil, argv...)
+}
+
+// e2eRunWith executes one subprocess with optional cwd and extra env.
+func e2eRunWith(baseURL, dir string, extraEnv []string, argv ...string) result {
 	cmd := e2eExecCommand(e2eBin, argv...)
-	cmd.Env = e2eEnv(baseURL)
+	cmd.Env = e2eEnv(baseURL, extraEnv...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
 	var out, errs bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errs
 	return result{exit: e2eExitCode(cmd.Run()), stdout: out.String(), stderr: errs.String()}
@@ -246,6 +265,73 @@ func e2eVerdict(out string) string {
 	return v.Verdict
 }
 
+// e2eWriteFlowstateConfig writes a config fixture under dir.
+func e2eWriteFlowstateConfig(dir, body string) string {
+	path := filepath.Join(dir, "flowstate.json")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		panic(err)
+	}
+	return path
+}
+
+// e2eSessionRow decodes one session row by id from session list.
+func e2eSessionRow(baseURL, db, id string) map[string]any {
+	rows := lines(e2eRun(baseURL, "session", "list", "--db", db, "--json").stdout)
+	for _, row := range rows {
+		var doc map[string]any
+		if err := json.Unmarshal([]byte(row), &doc); err != nil {
+			panic(err)
+		}
+		if doc["id"] == id {
+			return doc
+		}
+	}
+	panic("session row not found: " + id)
+}
+
+// e2eCanonicalHash is the independent canonical hash oracle used by
+// config e2e tests.
+func e2eCanonicalHash(provider, model, dbPath, source string, allow []string) string {
+	sorted := append([]string(nil), allow...)
+	if sorted == nil {
+		sorted = []string{}
+	}
+	sort.Strings(sorted)
+	body, err := json.Marshal(map[string]any{
+		"config_source":  source,
+		"db_path":        filepath.Clean(dbPath),
+		"harness":        "flowstate-cli",
+		"model":          model,
+		"provider":       provider,
+		"tool_allowlist": sorted,
+	})
+	if err != nil {
+		panic(err)
+	}
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
+
+// e2eToolLoopProvider serves a two-step loop transcript: first a
+// tool call, then a terminal assistant message on the follow-up turn.
+func e2eToolLoopProvider() *httptest.Server {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl := w.(http.Flusher)
+		if atomic.AddInt32(&calls, 1) == 1 {
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"exec.run\",\"arguments\":\"{\\\"cmd\\\":\\\"echo\\\",\\\"args\\\":[\\\"ok\\\"]}\"}}]}}]}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
+		} else {
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}]}\n\n"))
+		}
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		fl.Flush()
+	}))
+	DeferCleanup(srv.Close)
+	return srv
+}
+
 var _ = Describe("CLI end-to-end contract matrix", Label("e2e"), func() {
 	Context("session new prints its record", func() {
 		var observedExit int
@@ -260,6 +346,73 @@ var _ = Describe("CLI end-to-end contract matrix", Label("e2e"), func() {
 			db := filepath.Join(GinkgoT().TempDir(), "e2e.db")
 			r := e2eRun("", "session", "new", "--db", db,
 				"--provider", "z.ai", "--model", "glm-5.3")
+			Expect(r.exit).To(Equal(2))
+		})
+	})
+
+	Context("config composition on the CLI surface", func() {
+		It("loads ambient defaults from ./flowstate.json when present", func() {
+			work := GinkgoT().TempDir()
+			db := filepath.Join(work, "cfg.db")
+			e2eWriteFlowstateConfig(work, fmt.Sprintf(`{"default_provider":"cfg.provider","default_model":"cfg.model","storage_path":%q}`, db))
+			r := e2eRunInDir("", work, "session", "new", "--task", "greet")
+			row := e2eSessionRow("", db, decodeNew(r.stdout).ID)
+			Expect(row["provider"] == "cfg.provider" && row["model_id"] == "cfg.model").To(BeTrue())
+		})
+
+		It("lets explicit flags override config defaults", func() {
+			work := GinkgoT().TempDir()
+			db := filepath.Join(work, "cfg.db")
+			cfg := e2eWriteFlowstateConfig(work, fmt.Sprintf(`{"default_provider":"cfg.provider","default_model":"cfg.model","storage_path":%q}`, db))
+			r := e2eRun("", "session", "new", "--config", cfg, "--provider", "flag.provider", "--model", "flag.model", "--task", "greet")
+			row := e2eSessionRow("", db, decodeNew(r.stdout).ID)
+			Expect(row["provider"] == "flag.provider" && row["model_id"] == "flag.model").To(BeTrue())
+		})
+
+		It("exits 4 on malformed config JSON", func() {
+			work := GinkgoT().TempDir()
+			cfg := e2eWriteFlowstateConfig(work, `{"default_provider":`)
+			r := e2eRun("", "session", "new", "--config", cfg, "--task", "greet")
+			Expect(r.exit).To(Equal(4))
+		})
+
+		It("exits 4 when a secret-bearing key is present", func() {
+			work := GinkgoT().TempDir()
+			cfg := e2eWriteFlowstateConfig(work, `{"default_provider":"z.ai","api_key":"secret"}`)
+			r := e2eRun("", "session", "new", "--config", cfg, "--task", "greet")
+			Expect(r.exit).To(Equal(4))
+		})
+
+		It("persists config_sha256 as the canonical composition hash", func() {
+			work := GinkgoT().TempDir()
+			db := filepath.Join(work, "cfg.db")
+			cfg := e2eWriteFlowstateConfig(work, fmt.Sprintf(`{"default_provider":"z.ai","default_model":"glm-5.3","storage_path":%q,"tool_allowlist":["fs.read","echo"]}`, db))
+			r := e2eRun("", "session", "new", "--config", cfg, "--task", "greet")
+			row := e2eSessionRow("", db, decodeNew(r.stdout).ID)
+			expected := e2eCanonicalHash("z.ai", "glm-5.3", db, cfg, []string{"fs.read", "echo"})
+			Expect(row["config_sha256"]).To(Equal(expected))
+		})
+
+		It("uses config tool_allowlist as the run loop default", func() {
+			srv := e2eToolLoopProvider()
+			work := GinkgoT().TempDir()
+			db := filepath.Join(work, "cfg.db")
+			cfg := e2eWriteFlowstateConfig(work, fmt.Sprintf(`{"default_provider":"z.ai","default_model":"glm-5.3","storage_path":%q,"tool_allowlist":["exec.run"]}`, db))
+			newRes := e2eRun(srv.URL, "session", "new", "--config", cfg, "--task", "greet")
+			id := decodeNew(newRes.stdout).ID
+			run := e2eRunWith(srv.URL, "", []string{"FLOWSTATE_EXEC_ENABLED=1"}, "session", "run", "--config", cfg, id)
+			calls := 0
+			for _, e := range e2eEvents(srv.URL, db, id) {
+				if e.Type == "tool.call" {
+					calls++
+				}
+			}
+			Expect(run.exit == 0 && calls > 0).To(BeTrue())
+		})
+
+		It("keeps legacy usage behaviour when no config file exists", func() {
+			work := GinkgoT().TempDir()
+			r := e2eRunInDir("", work, "session", "new", "--task", "greet")
 			Expect(r.exit).To(Equal(2))
 		})
 	})
