@@ -1,5 +1,16 @@
 #!/bin/sh
 # Live PR-budget check at commit time: staged + unstaged + untracked vs budget.
+# Kind-aware: docs commits select FLOWSTATE_PR_MAX_LINES_DOCS via the selector.
 BASE=$(git merge-base HEAD origin/next 2>/dev/null || git rev-parse origin/next 2>/dev/null)
 [ -n "$BASE" ] || BASE=${BASE_SHA:-}
+if git cat-file -e "$BASE:scripts/pr_review_budget.py" 2>/dev/null; then
+  tmpdir=$(mktemp -d)
+  trap 'rm -rf "$tmpdir"' EXIT
+  git show "$BASE:scripts/pr_review_budget.py" > "$tmpdir/pr_review_budget.py"
+  git show "$BASE:.env.ci" > "$tmpdir/env_ci" 2>/dev/null || : > "$tmpdir/env_ci"
+  title="$(git log -1 --format=%s 2>/dev/null || echo 'chore: wip')"
+  branch="$(git branch --show-current)"
+  budget="$(python3 -B "$tmpdir/pr_review_budget.py" --policy "$tmpdir/env_ci" --title "$title" --branch "$branch")" || exit 1
+  export FLOWSTATE_PR_MAX_LINES="$budget"
+fi
 python3 -B scripts/pr_size.py --live --base "$BASE"
