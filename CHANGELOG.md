@@ -2,6 +2,13 @@
 
 All notable changes to the FlowState project will be documented in this file.
 
+## [1.2.1](https://github.com/baphled/FlowState/compare/v1.2.0...v1.2.1) (2026-11-18)
+
+### Bug Fixes
+
+* **app:** accept m1-dogfood in receipt capability enum ([#306](https://github.com/baphled/FlowState/issues/306)) ([c41e25b](https://github.com/baphled/FlowState/commit/c41e25ba9b2d0521269e0cacef318b8ca2468d20))
+* **ci:** pre-commit budget hook derives kind from branch prefix ([#305](https://github.com/baphled/FlowState/issues/305)) ([0146b61](https://github.com/baphled/FlowState/commit/0146b61cc3768656300a6469bc76eb06894a8b60))
+
 ## [1.2.0](https://github.com/baphled/FlowState/compare/v1.1.0...v1.2.0) (2026-11-18)
 
 ### Features
