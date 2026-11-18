@@ -178,6 +178,21 @@ explicit path, `default`, or `none`). Identical effective composition yields an
 identical hash; any wiring change changes it, so identical config plus identical
 task produces identical wiring.
 
+## Architecture Decision Records
+
+Architecture decisions for the Go CLI are documented in `docs/adr/` as
+structured ADRs (Context, Decision, Consequences). The fswt prototype
+vault ADRs (`~/vaults/FlowState/Architecture/ADR/`) are mapped to the Go
+CLI implementation status in `docs/adr/ADR-COMPARISON.md`.
+
+Key decisions:
+- ADR-001: Owning-layer boundary (cmd wires app only)
+- ADR-002: Session run lifecycle (turn loop, resume, crash recovery)
+- ADR-003: Schema validation of --json output
+- ADR-004: Merge trailer policy (single Project-Metadata, #N suffix)
+- ADR-005: Config-driven session composition (flowstate.json)
+- ADR-006: Crash-recovery detection and recovery
+
 ## Changes and proof
 
 A bounded refactor preserves the public contract, failure behaviour and tests.
