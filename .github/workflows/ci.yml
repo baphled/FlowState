@@ -59,8 +59,9 @@ jobs:
               budget=500
             fi
             if ! [[ "$budget" =~ ^[1-9][0-9]{0,5}$ ]]; then
-            echo "::error::Invalid FLOWSTATE_PR_MAX_LINES in target .env.ci"
-            exit 1
+              echo "::error::Invalid FLOWSTATE_PR_MAX_LINES in target .env.ci"
+              exit 1
+            fi
           fi
           export FLOWSTATE_PR_MAX_LINES="$budget"
           python3 -B "$checker" --base "$BASE_SHA" --head "$HEAD_SHA"
