@@ -1,16 +1,30 @@
 #!/bin/sh
 # Live PR-budget check at commit time: staged + unstaged + untracked vs budget.
-# Kind-aware: docs commits select FLOWSTATE_PR_MAX_LINES_DOCS via the selector.
+# The commit subject does not exist yet, so kind comes from the branch prefix;
+# the kind-aware selector (title agreement) runs at push/CI where the title exists.
 BASE=$(git merge-base HEAD origin/next 2>/dev/null || git rev-parse origin/next 2>/dev/null)
 [ -n "$BASE" ] || BASE=${BASE_SHA:-}
-if git cat-file -e "$BASE:scripts/pr_review_budget.py" 2>/dev/null; then
-  tmpdir=$(mktemp -d)
-  trap 'rm -rf "$tmpdir"' EXIT
-  git show "$BASE:scripts/pr_review_budget.py" > "$tmpdir/pr_review_budget.py"
-  git show "$BASE:.env.ci" > "$tmpdir/env_ci" 2>/dev/null || : > "$tmpdir/env_ci"
-  title="$(git log -1 --format=%s 2>/dev/null || echo 'chore: wip')"
-  branch="$(git branch --show-current)"
-  budget="$(python3 -B "$tmpdir/pr_review_budget.py" --policy "$tmpdir/env_ci" --title "$title" --branch "$branch")" || exit 1
-  export FLOWSTATE_PR_MAX_LINES="$budget"
+budget=""
+if git cat-file -e "$BASE:.env.ci" 2>/dev/null; then
+  policy="$(git show "$BASE:.env.ci")"
+  branch="$(git rev-parse --abbrev-ref HEAD)"
+  prefix=${branch%%/*}
+  case "$prefix" in
+    feat|feature) kind=FEAT ;;
+    fix) kind=FIX ;;
+    chore) kind=CHORE ;;
+    docs) kind=DOCS ;;
+    refactor) kind=REFACTOR ;;
+    test) kind=TEST ;;
+    perf) kind=PERF ;;
+    revert) kind=REVERT ;;
+    *) kind="" ;;
+  esac
+  if [ -n "$kind" ]; then
+    budget="$(printf '%s\n' "$policy" | sed -n "s/^FLOWSTATE_PR_MAX_LINES_${kind}=//p")"
+  fi
+  [ -n "$budget" ] || budget="$(printf '%s\n' "$policy" | sed -n 's/^FLOWSTATE_PR_MAX_LINES=//p')"
 fi
+[ -n "$budget" ] || budget=500
+export FLOWSTATE_PR_MAX_LINES="$budget"
 python3 -B scripts/pr_size.py --live --base "$BASE"
