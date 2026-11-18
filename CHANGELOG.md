@@ -2,6 +2,13 @@
 
 All notable changes to the FlowState project will be documented in this file.
 
+## [1.2.0](https://github.com/baphled/FlowState/compare/v1.1.0...v1.2.0) (2026-11-18)
+
+### Features
+
+* **app:** crash-recovery detection and recovery for session run ([#296](https://github.com/baphled/FlowState/issues/296)) ([d9d5dee](https://github.com/baphled/FlowState/commit/d9d5dee35c3fcff410d427b853d0f08b0282a898))
+* **app:** schema-validate --json output against schemas ([#295](https://github.com/baphled/FlowState/issues/295)) ([0822225](https://github.com/baphled/FlowState/commit/08222256e3a4b47d7edfa8504c3d916aacee9e77))
+
 ## [1.1.0](https://github.com/baphled/FlowState/compare/v1.0.0...v1.1.0) (2026-11-18)
 
 ### Features
