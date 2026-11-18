@@ -1,0 +1,5 @@
+#!/bin/sh
+# Live PR-budget check at commit time: staged + unstaged + untracked vs budget.
+BASE=$(git merge-base HEAD origin/next 2>/dev/null || git rev-parse origin/next 2>/dev/null)
+[ -n "$BASE" ] || BASE=${BASE_SHA:-}
+python3 -B scripts/pr_size.py --live --base "$BASE"

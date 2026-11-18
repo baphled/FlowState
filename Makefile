@@ -1,4 +1,39 @@
-.PHONY: all build run test bdd bdd-smoke bdd-wip fmt lint check clean help ai-commit check-ai-attribution list-ai-commits install-tools
+# Canonical non-secret CI budget, overridden locally by a private .env.
+-include .env.ci
+-include .env
+export FLOWSTATE_PR_MAX_LINES
+
+.PHONY: all build run test test-e2e fmt lint check clean help ai-commit check-ai-attribution list-ai-commits install-tools check-pr-size check-size-live install-hooks check-python-contract
+.PHONY: check-admission-commits check-admission merge-pr
+.PHONY: package-admission-runner install-admission-runner admission-runner-start admission-runner-stop admission-runner-status
+
+package-admission-runner: ## Package committed admission runner and its pinned dependency manifest
+	python3 -B -m scripts.admission_service package
+
+install-admission-runner: package-admission-runner ## Validate private config and install the packaged user service
+	python3 -B -m scripts.admission_service install
+
+admission-runner-start admission-runner-stop admission-runner-status: ## Manage the configured admission runner
+	python3 -B -m scripts.admission_service $(patsubst admission-runner-%,%,$@)
+
+check-admission-commits: ## Validate actual commit evidence before push (external cache or Dropbox read token)
+	python3 -B -m scripts.admission_preflight --base "$(BASE_SHA)" --head "$(or $(HEAD_SHA),$(shell git rev-parse HEAD))"
+
+check-admission: ## Validate live exact-head PR review/evidence/Build; never publish a status
+	python3 -B -m scripts.admission_preflight --phase ready --repo baphled/FlowState --pr "$(PR)" --base "$(BASE_SHA)" --head "$(or $(HEAD_SHA),$(shell git rev-parse HEAD))"
+
+merge-pr: ## Squash-merge an admitted PR carrying exactly one Project-Metadata trailer (PR=N [BASE=next] [DRY_RUN=1])
+	bash scripts/merge_pr.sh --pr "$(PR)" --base "$(BASE)" $(if $(DRY_RUN),--dry-run)
+
+check-pr-size: ## Bound the complete committed PR diff (BASE_SHA=actual target)
+	python3 -B scripts/pr_size.py --base "$(BASE_SHA)" --head "$$(git rev-parse HEAD)"
+
+check-size-live: ## Live working-tree (staged+unstaged+untracked) budget check, no commit needed
+	@BASE="$${BASE_SHA:-$$(git merge-base HEAD origin/next 2>/dev/null || git rev-parse origin/next)}"; \
+	python3 -B scripts/pr_size.py --live --base "$$BASE"
+
+install-hooks: ## Point git at the repo-managed .githooks directory
+	git config core.hooksPath .githooks
 
 # Binary name
 BINARY_NAME=flowstate
@@ -11,6 +46,8 @@ GOTEST=$(GOCMD) test
 GOFMT=$(GOCMD) fmt
 GOVET=$(GOCMD) vet
 GOMOD=$(GOCMD) mod
+GINKGO_PROCS ?= 2
+GINKGO_COMPILERS ?= 2
 
 # Default target
 all: check build
@@ -37,34 +74,22 @@ clean: ## Clean build artifacts
 # Testing
 #
 
-test: ## Run all Go tests
-	@echo "Running tests..."
-	$(GOTEST) -v ./...
+test: ## Run legacy Go tests and parallel Ginkgo suites during migration
+	$(GOTEST) -race -count=1 ./...
+	$(GOCMD) run github.com/onsi/ginkgo/v2/ginkgo -r --procs=$(GINKGO_PROCS) --compilers=$(GINKGO_COMPILERS) --randomize-all --randomize-suites --fail-on-pending --fail-on-empty --keep-going --race --timeout=5m
+
+test-e2e: ## Run the CLI end-to-end matrix suite against the real built binary
+	$(GOCMD) run github.com/onsi/ginkgo/v2/ginkgo --procs=$(GINKGO_PROCS) --compilers=$(GINKGO_COMPILERS) --label-filter=e2e --fail-on-pending --race --timeout=5m ./cmd/flowstate
+
+check-test-contract: ## Check changed tests (BASE_SHA=exact PR base)
+	python3 -B -m unittest discover -s scripts/tests -p test_test_contract.py
+	python3 -B -m unittest discover -s scripts/tests -p test_test_layout.py
+	python3 -B scripts/check_test_contract.py --base "$(BASE_SHA)"
 
 test-coverage: ## Run tests with coverage
 	@echo "Running tests with coverage..."
 	$(GOTEST) -v -coverprofile=coverage.out ./...
 	$(GOCMD) tool cover -html=coverage.out
-
-#
-# BDD Testing (Godog/Cucumber)
-#
-
-bdd: ## Run all BDD tests
-	@echo "Running BDD tests..."
-	godog run ./features/
-
-bdd-smoke: ## Run smoke BDD tests
-	@echo "Running smoke tests..."
-	godog run --tags=@smoke ./features/
-
-bdd-wip: ## Run WIP BDD tests
-	@echo "Running WIP tests..."
-	godog run --tags=@wip ./features/
-
-bdd-feature: ## Run specific feature (FEATURE=chat/basic_chat)
-	@echo "Running feature: $(FEATURE)"
-	godog run ./features/$(FEATURE).feature
 
 #
 # Code Quality
@@ -77,11 +102,28 @@ fmt: ## Format code
 lint: ## Run linters
 	@echo "Running linters..."
 	$(GOVET) ./...
-	@if command -v staticcheck &> /dev/null; then staticcheck ./...; fi
+	@if command -v staticcheck >/dev/null 2>&1; then staticcheck ./...; fi
 	@if command -v golangci-lint >/dev/null 2>&1; then golangci-lint run; fi
-	@if command -v deadcode &> /dev/null && go list -f '{{if eq .Name "main"}}{{.ImportPath}}{{end}}' ./... 2>/dev/null | grep -q .; then deadcode ./...; fi
+	@if command -v deadcode >/dev/null 2>&1 && go list -f '{{if eq .Name "main"}}{{.ImportPath}}{{end}}' ./... 2>/dev/null | grep -q .; then deadcode ./...; fi
 
-check: fmt lint test ## Run all checks
+check: fmt lint test test-e2e ## Run all checks
+
+check-code-contract: ## Check committed changed Go structure (BASE_SHA=PR base)
+	python3 -B -m unittest discover -s scripts/tests -p test_code_contract.py
+	python3 -B scripts/check_code_contract.py --base "$(BASE_SHA)"
+
+check-python-contract: ## Check committed Python complexity and test ownership (BASE_SHA=PR base)
+	python3 -B -m unittest discover -s scripts/tests -p 'test_*python_contract*.py' -v
+	python3 -B -m scripts.check_python_contract --base "$(BASE_SHA)"
+
+check-code-quality: check-code-contract ## Run pinned contract linter after installation
+	golangci-lint run --config .golangci-contract.yml --new-from-rev="$(BASE_SHA)" --whole-files
+
+
+check-documentation: ## Check committed documentation (BASE_SHA=PR base)
+	node --test scripts/tests/docs_contract.test.mjs
+	node scripts/check_docs.mjs --base "$(BASE_SHA)"
+
 
 #
 # Dependencies
@@ -106,7 +148,7 @@ worktree-list: ## List all worktrees
 
 worktree-new: ## Create new feature worktree (NAME=feature-name)
 	@echo "Creating worktree for feature/$(NAME)..."
-	@cd .. && git worktree add -b feature/$(NAME) $(NAME) main
+	@cd .. && git worktree add -b feature/$(NAME) $(NAME) next
 	@echo "Worktree created at ../$(NAME)"
 	@echo "Run: cd ../$(NAME)"
 
@@ -120,7 +162,7 @@ worktree-remove: ## Remove feature worktree (NAME=feature-name)
 # Development
 #
 
-session-start: ## Start development session
+session-start: admission-runner-start ## Start development session; fail when admission runner cannot start
 	@echo "FlowState Development Session"
 	@echo "============================="
 	@echo ""
@@ -134,67 +176,31 @@ session-start: ## Start development session
 	else \
 		echo "Ollama: not installed"; \
 	fi
-	@if command -v godog &> /dev/null; then \
-		echo "Godog: installed"; \
-	else \
-		echo "Godog: not installed - run: go install github.com/cucumber/godog/cmd/godog@latest"; \
-	fi
 	@echo ""
-	@echo "Ready! See docs/PLAN.md for tasks."
+	
 
 #
 # AI Attribution
 #
 
-ai-commit: ## Create AI-attributed commit (FILE=/path/to/msg.txt AI_MODEL=model)
-	@if [ -z "$(FILE)" ]; then \
-		echo "Usage:"; \
-		echo "  AI_MODEL=claude-opus-4-5 make ai-commit FILE=/path/to/commit-msg.txt"; \
-		echo ""; \
-		echo "Required: AI_MODEL must be set (agent auto-detected from OPENCODE env)"; \
-		echo ""; \
-		echo "Create your commit message file:"; \
-		echo "  cat > /tmp/commit.txt << 'EOF'"; \
-		echo "  feat(scope): short description"; \
-		echo "  "; \
-		echo "  Optional longer explanation..."; \
-		echo "  EOF"; \
-		echo ""; \
-		echo "  AI_MODEL=claude-opus-4-5 make ai-commit FILE=/tmp/commit.txt"; \
-		echo ""; \
-		exit 1; \
-	fi
-	@bash scripts/ai-commit.sh "$(FILE)" "$(NO_VERIFY)"
+ai-commit: ## Commit with external metadata (FILE=message RECORD=fetched-cache)
+	@bash scripts/ai-commit.sh "$(FILE)" "$(RECORD)"
 
-check-ai-attribution: ## Check latest commit for AI attribution
-	@echo "Checking latest commit for AI attribution..."
-	@git log -1 --pretty=%B | grep "AI-Generated-By:" || \
-		echo "Warning: No AI attribution found in latest commit"
+check-ai-attribution: ## Validate latest neutral metadata reference
+	@python3 scripts/project_metadata.py --changed --base HEAD~1
 
-list-ai-commits: ## List all AI-generated commits
-	@echo "AI-Generated Commits:"
-	@git log --all --grep="AI-Generated-By:" --oneline
+list-ai-commits: ## List commits carrying neutral external metadata references
+	@git log --all --grep="^Project-Metadata:" --oneline
 
 #
 # Task Management
 #
 
-new-task: ## Create a new task (TASK="task description")
-	@echo "# Task: $(TASK)" > tasks/$$(date +%Y%m%d)-$$(echo "$(TASK)" | tr ' ' '-' | tr '[:upper:]' '[:lower:]' | head -c 30).md
-	@echo "" >> tasks/$$(date +%Y%m%d)-*.md
-	@echo "Created: $$(date)" >> tasks/$$(date +%Y%m%d)-*.md
-	@echo "Status: pending" >> tasks/$$(date +%Y%m%d)-*.md
-	@echo "Task created!"
+new-task: ## Show external task-record policy
+	@echo "Create task packets in Dropbox /FlowState/Metadata/attempts, outside this checkout."
 
-list-tasks: ## List all tasks
-	@echo "Tasks:"
-	@for f in tasks/*.md; do \
-		if [ -f "$$f" ]; then \
-			name=$$(basename "$$f" .md); \
-			status=$$(grep -m1 "Status:" "$$f" 2>/dev/null | cut -d: -f2 | tr -d ' '); \
-			echo "[$${status:-unknown}] $$name"; \
-		fi \
-	done
+list-tasks: ## Show external task-record location
+	@echo "Read current task pointers in Dropbox /FlowState/Metadata/ACTIVE.json."
 
 #
 # Help

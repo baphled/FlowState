@@ -44,7 +44,12 @@
         "session",
         "mcp",
         "engine",
-        "streaming"
+        "streaming",
+        "app",
+        "storage",
+        "store",
+        "runtime",
+        "auth"
       ]
     ],
     "scope-empty": [1, "never"],

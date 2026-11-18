@@ -45,3 +45,23 @@ debug.log
 # Test artifacts
 test-results/
 *.log
+
+# Build artifacts (fresh harness)
+build/
+
+/coordination_store/
+# Node
+node_modules/
+bun.lock
+coverage.out
+coverage-func.txt
+
+# local dev artifact database (never commit)
+cmd/flowstate/flowstate.db
+__pycache__/
+
+# Developer-specific environment; commit only reviewed, non-secret templates.
+.env
+
+# Local agent workspace state (session receipts, token evidence)
+.omo/

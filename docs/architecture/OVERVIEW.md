@@ -1,204 +1,190 @@
-# Architecture Overview
+# Backend architecture overview
 
-FlowState is built as a layered TUI application using BubbleTea.
+FlowState's current milestone is a native Go CLI/headless engine. The accepted
+product boundaries and milestone scope live in Dropbox `/FlowState/Dev`; read the
+entry point and current packet before work. This guide describes source ownership,
+not completed capabilities or runtime qualification.
 
-## System Diagram
+## Dependency direction
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                           FlowState                             │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │                         App                              │   │
-│  │  - Manages active intent                                 │   │
-│  │  - Routes global keys (Ctrl+p, q, etc.)                 │   │
-│  │  - Renders layout                                        │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                              │                                  │
-│                              ▼                                  │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │                       Intents                            │   │
-│  │  ┌─────────┐  ┌───────────┐  ┌──────────┐              │   │
-│  │  │  Chat   │  │  Sessions │  │ Settings │              │   │
-│  │  └─────────┘  └───────────┘  └──────────┘              │   │
-│  │  - Workflow orchestrators                                │   │
-│  │  - Manage screen lifecycle                               │   │
-│  │  - Coordinate providers/tools                            │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                              │                                  │
-│                              ▼                                  │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │                       Screens                            │   │
-│  │  - Display UI components                                 │   │
-│  │  - Handle user input                                     │   │
-│  │  - Return ScreenResult to intent                         │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                              │                                  │
-│                              ▼                                  │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │                        UIKit                             │   │
-│  │  ┌────────────┐  ┌─────────┐  ┌──────────┐             │   │
-│  │  │ Containers │  │ Layout  │  │  Theme   │             │   │
-│  │  └────────────┘  └─────────┘  └──────────┘             │   │
-│  │  ┌────────────┐  ┌─────────┐  ┌──────────┐             │   │
-│  │  │ Primitives │  │ Render  │  │ Feedback │             │   │
-│  │  └────────────┘  └─────────┘  └──────────┘             │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                                                                 │
-├─────────────────────────────────────────────────────────────────┤
-│                        External Services                        │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │                       Providers                          │   │
-│  │  ┌────────┐  ┌─────────┐  ┌───────────┐                │   │
-│  │  │ Ollama │  │ OpenAI  │  │ Anthropic │                │   │
-│  │  └────────┘  └─────────┘  └───────────┘                │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │                         Tools                            │   │
-│  │  ┌──────┐  ┌──────────┐  ┌───────────┐                 │   │
-│  │  │ Bash │  │   File   │  │ WebFetch  │                 │   │
-│  │  └──────┘  └──────────┘  └───────────┘                 │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │                       Storage                            │   │
-│  │  ┌──────────────┐  ┌─────────────┐                      │   │
-│  │  │   Sessions   │  │   Memory    │                      │   │
-│  │  │   (SQLite)   │  │ (sqlite-vec)│                      │   │
-│  │  └──────────────┘  └─────────────┘                      │   │
-│  └─────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
+CLI adapters call application use cases. Explicit composition wires consumer-owned
+ports to persistence, provider and tool adapters. Domain code owns invariants and
+lifecycle; transports and concrete storage remain outside that boundary.
+
+| Area | Source responsibility |
+| --- | --- |
+| `cmd/flowstate` | Parse input and render stable output/exits |
+| `internal/app` | Compose collaborators and application use cases |
+| `internal/runtime`, `internal/session` | Lifecycle, identity and ordering policy |
+| `internal/provider`, `internal/tool` | Replaceable ports and domain-facing values |
+| Provider/auth/storage adapters | Implement external effects through those ports |
+
+See [the enforced code structure contract](../../rules/ARCHITECTURE.md) for exact
+ownership and import rules. Existing concrete-store coupling is refactoring debt;
+its presence is not permission to add another dependency or a new global.
+
+## Structured provider tools
+
+`internal/app` owns the M2 execution loop (`RunExecLoop`): a leased, fenced run replays
+verified history and drives bounded provider turns; replay skips uncorrelated denial
+results.
+`internal/provider` owns `ToolDefinition`, complete `ToolCall` values and message
+result correlation through `ToolCallID`. `ChatRequest.Validate` rejects malformed
+identifiers, non-object JSON arguments/parameters, duplicate call IDs and unmatched
+or repeated results. Identifiers use 1–128 ASCII letters, digits, underscores or
+hyphens; tool names additionally permit dots for namespaces. Arguments are complete
+JSON objects; schema evaluation is outside this
+contract. Calls may remain unresolved at the end of history.
+
+`StreamValidator.Accept` validates typed text, complete call, finish and error
+events in order, rejecting duplicate calls and events after termination. Use a
+fresh zero-value validator for each stream on one consumer goroutine. Failed
+validation leaves its state unchanged. Adapters assemble wire fragments before
+emitting a complete call. Zero-kind legacy content/error events remain supported.
+Existing role/content JSON keys are preserved; new message fields are omitted
+when empty. Callers own slices and raw JSON and must avoid concurrent mutation.
+
+The Z.ai OpenAI-compatible coding route (`WithCoding`) validates requests before
+HTTP and encodes function definitions, assistant call history and correlated tool
+results. `Stream` assembles indexed, interleaved name/argument fragments and emits
+complete calls in index order, followed by `StreamEventFinish`. Structured turns
+require a finish reason and `[DONE]`; malformed JSON, missing/conflicting metadata,
+duplicate IDs, invalid complete arguments and truncated streams terminate with
+`*zai.ToolProtocolError`. Calls are withheld until every call validates and the
+stream completes. Context cancellation unblocks event sends and closes the body.
+
+The selectable Anthropic coding route rejects structured tools/history before
+HTTP. Nonstream coding `Chat` encodes tool requests but rejects tool responses
+with `ToolProtocolError`; use `Stream` for tool calls. Legacy text coding streams
+remain supported, while unsolicited tool deltas fail closed. Other adapters and
+the engine retain their existing behavior. Consumers still validate structured
+events with `StreamValidator`; this adapter does not execute tools.
+
+With the Go toolchain and module dependencies installed, run from repository root:
+
+```sh
+go run github.com/onsi/ginkgo/v2/ginkgo --procs=2 --randomize-all --randomize-suites --race --fail-on-pending --fail-on-empty --timeout=3m ./internal/provider ./internal/provider/zai
 ```
 
-## Data Flow
+## Session tool catalog
 
-### Chat Message Flow
+`internal/app.NewSessionToolRegistry(workdir)` composes a fresh registry of `echo`,
+`fs.read`, `fs.write` and `fs.edit`. It adds `exec.run` only when the existing
+`FLOWSTATE_EXEC_ENABLED` opt-in is enabled. Registration grants no permission.
+The explicit session-tool use case reuses this constructor and keeps its default
+workdir at `SessionWorkdirRoot(dbPath)/sessionID`; an explicit workdir overrides it.
 
-```
-User Input
-    │
-    ▼
-┌─────────┐     ┌──────────────┐     ┌──────────┐
-│  Input  │ ──► │  ChatIntent  │ ──► │ Provider │
-│ Screen  │     │              │     │ (Ollama) │
-└─────────┘     └──────────────┘     └──────────┘
-                       │                   │
-                       │                   │
-                       ▼                   ▼
-                ┌──────────────┐   ┌────────────┐
-                │   Session    │   │  Streaming │
-                │    Store     │   │  Response  │
-                └──────────────┘   └────────────┘
-                                         │
-                                         ▼
-                                  ┌────────────┐
-                                  │  Viewport  │
-                                  │  (tokens)  │
-                                  └────────────┘
-```
+`SessionToolDefinitions(registry, allow)` returns independently owned
+`provider.ToolDefinition` values in explicit allowlist order. An empty allowlist
+advertises nothing, including exec. Unknown names, duplicate entries and custom
+implementations without a qualified builtin schema fail without a partial list.
+The function never registers an absent tool to satisfy an allow entry. Compose
+the registry before use and avoid concurrent registry mutation.
 
-### Tool Execution Flow
+The object schemas describe actual builtin decoder fields: `path` for reads;
+`path` and optional `content` for writes; `path`, `old_text`, optional `new_text`
+and `all` for edits; `cmd` and optional string-array `args` for exec. Omitted
+content writes an empty file; omitted replacement text deletes the match.
+Schemas advertise capabilities; the tool loop and implementations still enforce
+permissions, confinement, byte caps and exec policy, including its invocation-time
+environment gate. These APIs prepare metadata and do not execute an agent turn.
 
-```
-LLM Response (with tool call)
-    │
-    ▼
-┌─────────────────┐
-│  Parse Tool     │
-│  Request        │
-└─────────────────┘
-    │
-    ▼
-┌─────────────────┐     ┌───────────────┐
-│   Permission    │ ──► │ Ask User?     │
-│   Check         │     │ (if required) │
-└─────────────────┘     └───────────────┘
-    │
-    ▼ (allowed)
-┌─────────────────┐
-│  Execute Tool   │
-│  (sandboxed)    │
-└─────────────────┘
-    │
-    ▼
-┌─────────────────┐
-│  Return Result  │
-│  to LLM         │
-└─────────────────┘
+With the Go toolchain and module dependencies installed, run from repository root:
+
+```sh
+go run github.com/onsi/ginkgo/v2/ginkgo --procs=2 --randomize-all --randomize-suites --race --fail-on-pending --fail-on-empty --timeout=3m ./internal/app
 ```
 
-## Key Interfaces
+## Verified conversation history
 
-### Provider
+`LoadSessionHistory(ctx, store, sessionID, HistoryLimits)` calls the existing
+store's verified `Replay` before strict conversation projection. It preserves
+user messages, grouped assistant calls with original IDs/arguments, and correlated
+tool outcomes in journal order. Only explicit `tool_denied` outcomes may omit an
+execution start. Orphan, duplicate, mismatched, incomplete or ambiguous batches
+return `ErrInvalidHistory` and no partial conversation. Bootstrap metadata and
+manual tool rows outside pending batches create no synthetic messages; unfinished
+assistant deltas reject continuation projection. Unknown event types fail closed.
+Assistant messages and deltas require the engine actor or a nonempty `provider:`
+actor.
 
-```go
-type Provider interface {
-    Name() string
-    Models() ([]Model, error)
-    Chat(ctx context.Context, req ChatRequest) (ChatResponse, error)
-    Stream(ctx context.Context, req ChatRequest) (<-chan StreamChunk, error)
-    Embed(ctx context.Context, text string) ([]float32, error)
-}
-```
+All limits are positive hard bounds: inspected events, message count, serialized
+message-array bytes and each result's content bytes. Overflow returns
+`ErrHistoryLimit`; history is never silently pruned. Fitting result JSON stays
+byte-exact. Oversized results use a valid JSON envelope with `truncated`,
+`original_bytes` and a UTF8 `preview`; persisted payloads and hashes are unchanged.
+Replay still materializes the full journal. This read-only API grants no lifecycle
+admission, retry or execution permission and supplies no call-event producer.
+Use the app Ginkgo command above for local verification.
 
-### Intent
+## Per-call correlated event sink
 
-```go
-type Intent interface {
-    Init() tea.Cmd
-    Update(msg tea.Msg) tea.Cmd
-    View() string
-    Result() *IntentResult
-}
-```
+`NewCallEventSink(writer, provider.ToolCall)` builds an app-owned `tool.EventSink`
+adapter bound to one immutable provider call identity (ID, name, actor and a
+compacted copy of the arguments). Handed to a real `tool.Loop`, it annotates every
+emitted `tool.call`/`tool.result` event with the provider `tool_call_id` so the
+bounded-history projection can correlate durable outcomes with assistant calls.
+The caller's argument payload is never mutated; stored arguments are compared
+byte-for-byte after canonical compaction.
 
-### Tool
+Validation fails closed before persistence: an invalid call identity, a mismatched
+tool name or actor, arguments that differ from the bound call, a result before its
+call start, or a repeated start are all rejected with typed errors and no event
+reaches the store. Once an append fails the adapter is sticky: every later append
+returns `ErrCallEventSticky` joined with the original failure, so an
+unacknowledged outcome can never be exposed as acknowledged. A pre-call append
+failure therefore blocks the tool effect through the loop, and a post-result
+append failure exposes no acknowledged result.
 
-```go
-type Tool interface {
-    Name() string
-    Description() string
-    Parameters() []Parameter
-    Execute(ctx context.Context, args map[string]any) (Result, error)
-}
-```
+This adapter is a producer for the verified history consumer above; it grants no
+execution-loop admission, automatic provider execution, retry or lifecycle claim.
+Denied result-only feedback still comes from the loop's own deny path without a
+synthesised call start.
 
-## Component Patterns
+## Session run lifecycle
 
-### ContentProvider
+`flowstate session run` drives one bounded run of an active session, or an explicit
+resume of a paused one. A budget stop ends the run non-terminally: the single event
+writer appends `session.paused` (status paused, exit 5), and resumption is never
+implicit. A later run of a paused session routes through
+`app.ResumePausedSession` before any turn work: the writer's atomic `Resume`
+appends the correlated `session.resumed` event (actor `user`, `from_status`
+paused) and restores status active, then the ordinary turn/loop composition
+continues under a fresh budget taken from the rerun's own flags — the pre-pause
+budget is never carried over. Non-paused runnable sessions rerun unchanged with no
+`session.resumed` emission, and terminal sessions (completed, cancelled, failed)
+reject run as `session_terminal` (exit 6). A resume append failure blocks turn
+execution and surfaces the persisted failure; the session stays paused and
+unacknowledged. Use the app Ginkgo command above for local verification.
 
-Allows components to render as either screens or modals:
+## Session config composition
 
-```go
-type ContentProvider interface {
-    Content(width, height int) string
-    Title() string
-    Footer() string
-}
-```
+`flowstate.json` (CLI-AND-API-CONTRACT §4) supplies session defaults: an explicit
+`--config <path>` must exist, otherwise the ambient `./flowstate.json` in the
+process working directory applies when present, and with neither the CLI behaves
+exactly as before (flag-required). The schema is `{default_provider,
+default_model, default_budget, storage_path, tool_allowlist}`; unknown fields and
+any secret-bearing key at any depth are rejected — secrets come from the
+environment only, never the config file. Every config failure exits 4 with code
+`config_invalid`.
 
-### ScreenResult
+Explicit flags strictly override config values; a config `tool_allowlist`
+activates the same bounded execution loop as `--allow` when no tool-surface flag
+is given, with unchanged permission gates. `session new` pins the composition:
+it persists `config_sha256`, the SHA-256 of the canonical effective composition —
+a sorted-key, whitespace-free JSON object `{db_path, config_source, harness,
+model, provider, tool_allowlist}` (allowlist sorted, `config_source` one of the
+explicit path, `default`, or `none`). Identical effective composition yields an
+identical hash; any wiring change changes it, so identical config plus identical
+task produces identical wiring.
 
-Type-safe communication from screens to intents:
+## Changes and proof
 
-```go
-type ScreenResult struct {
-    Action  Action
-    Payload any
-}
-```
+A bounded refactor preserves the public contract, failure behaviour and tests.
+Keep named types with their owning package, inject collaborators, document the
+public surface and update the relevant guide with the change. Read [documentation
+standards](../../rules/DOCUMENTATION.md) and [the test contract](../../rules/BDD_WORKFLOW.md).
 
-### Theme-Aware
-
-Components embed theme for consistent styling:
-
-```go
-type Component struct {
-    theme theme.Theme
-}
-```
-
-## See Also
-
-- [ARCHITECTURE.md](../../rules/ARCHITECTURE.md) - Architecture rules
-- [PLAN.md](../PLAN.md) - Full project plan
+Source checks and unit/integration tests do not prove live provider qualification,
+T019 acceptance, product readiness, actual AI identity or independent review.
+Resolve candidate-bound evidence only from the assigned Dropbox Metadata packet.

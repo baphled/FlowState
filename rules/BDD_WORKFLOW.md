@@ -1,109 +1,66 @@
-# BDD Workflow
+# Go testing contract
 
-FlowState follows strict BDD (Behavior-Driven Development) practices using Godog/Cucumber.
+Read the current Dropbox `/FlowState/Dev/governance/RULE-TEST-FRAMEWORK.md` before
+work or resumption. Use Ginkgo v2 and Gomega, pinned in go.mod; Cucumber, Godog,
+Gherkin, and new plain TestX behavioural functions are forbidden. The ordinary
+TestX entry point only registers Gomega failure handling and calls RunSpecs.
 
-## The Golden Rule
+Each It/Specify/table-entry body owns one behavioural expectation. Keep required
+setup error checks explicit; move shared setup into BeforeEach, not mutable
+container initializers. Do not hide extra behavioural assertions in helpers or
+bundle unrelated outcomes in composite matchers. The AST gate checks syntax;
+independent review checks the meaning and preserved failure coverage.
 
-**Write the Cucumber scenario FIRST, before any implementation.**
+Specs run in parallel processes and randomized order. Use independent temporary
+resources, httptest servers and ports, explicit dependency injection, fresh
+fixtures and DeferCleanup. Do not share files/databases, mutate ambient process
+state or rely on another spec's results. Serial/Ordered need a separately reviewed
+policy change rather than a local waiver. Do not call t.Parallel inside Ginkgo.
 
-## Outside-In Development
+Use bounded Eventually/Consistently for observable asynchronous behaviour, with
+explicit timeouts/polling and cancellation. No arbitrary time.Sleep, live provider
+calls, focused/pending specs or runtime Skip in required coverage. Prefer fakes at
+ports and local fixtures. Exercise failures, cancellation and resource cleanup.
 
-```
-1. Write Cucumber scenario    -> Acceptance test (what user sees)
-2. Watch it fail              -> Verify correct failure
-3. Smallest possible change   -> Just enough to pass ONE step
-4. Run scenario               -> See next failure
-5. Repeat                     -> Until scenario passes
-6. Refactor                   -> Clean up while green
-```
+## Migration and required checks
 
-## Scenario Structure
+Existing unchanged legacy tests continue to execute with go test; migration is
+in small package PRs. A changed test file must satisfy the new contract in full.
+The guard compares actual PR base to committed HEAD, with rename detection off,
+so a rename does not exempt legacy tests. Working-copy edits cannot hide a committed
+violation; use explicit `--worktree` only for a precommit preview. Do not delete tests to make the gate pass;
+retain the behavioural cases and review coverage changes.
 
-```gherkin
-Feature: Basic Chat
-  As a user
-  I want to chat with an AI assistant
-  So that I can get help with tasks
+`make test` runs legacy coverage and Ginkgo recursively with process parallelism,
+full randomization, race detection, bounded timeout, fail-on-pending and
+fail-on-empty. Ginkgo prints the random seed; retain failures in Dropbox Metadata
+and reproduce with `--seed`. No retry-until-green gate or Copilot quota dependency.
 
-  @smoke
-  Scenario: Send message and receive streaming response
-    Given FlowState is running
-    When I type "What is 2 + 2?"
-    And I press Enter
-    Then I should see tokens appearing
-    And I should see "4" in the response
-```
+Run `make check-test-contract BASE_SHA=<actual PR base SHA>`, `make check` and the
+required Actions jobs. ginkgolinter additionally checks matcher usage, async
+intervals, focused containers and container-state pollution. Passing syntax/lint
+checks does not prove that an assertion is meaningful; independent review remains
+required. No merge is authorized by this testing change.
 
-## Tags
+## Test-file ownership and pairing
 
-| Tag | Purpose | When to Run |
-|-----|---------|-------------|
-| `@smoke` | Critical path tests | Every commit |
-| `@wip` | Work in progress | During development |
-| `@chat` | Chat functionality | Feature-specific |
-| `@navigation` | Vim navigation | Feature-specific |
-| `@sessions` | Session management | Feature-specific |
-| `@tools` | Tool system | Feature-specific |
+**One implementation file, at most one companion test file.** A changed or
+new `foo_test.go` must have an existing `foo.go` in the same package and
+directory in the committed candidate. A companion may contain many independent
+Ginkgo `It`/table specifications; this is a file-ownership rule, **not** a
+limit of one behavioural test. Do not introduce acceptance-number, fixture,
+qualification, or catch-all `*_test.go` suites that are not companions to
+an implementation file. Move coverage to its owning implementation's test
+file, preserving existing behavioural assertions.
 
-## Running Tests
+The sole structural exception is `suite_test.go`, which bootstraps Ginkgo.
+That exception must not become a catch-all behavioural suite. Existing
+untouched legacy files remain migration debt; any changed test file must
+satisfy this rule. New implementation files should have an appropriately
+scoped companion rather than gathering unrelated tests in a shared file.
 
-```bash
-make bdd           # All BDD tests
-make bdd-smoke     # Smoke tests only
-make bdd-wip       # WIP tests only
-make bdd TAGS=@chat # Specific tag
-```
-
-## Step Definitions
-
-Step definitions live in `features/steps/`. Each feature area has its own step file:
-
-```
-features/
-├── chat/
-│   └── basic_chat.feature
-├── navigation/
-│   └── vim_motions.feature
-└── steps/
-    ├── chat_steps.go
-    ├── navigation_steps.go
-    └── common_steps.go
-```
-
-## The Smallest Change
-
-When implementing steps, make the **smallest possible change**:
-
-| Situation | Smallest Change | NOT Smallest Change |
-|-----------|-----------------|---------------------|
-| Need a function | Return nil/zero value | Full implementation |
-| Need a struct | One required field | All possible fields |
-| Need validation | One check | All validations |
-| Need UI element | Minimal render | Full styled component |
-
-## Commit Cadence
-
-Commit at each meaningful step:
-
-```
-feat(chat): add scenario for basic chat [RED]
-feat(chat): create app struct [GREEN step 1]
-feat(chat): add input handling [GREEN step 2]
-feat(chat): implement streaming [GREEN step 3]
-feat(chat): display response [GREEN all steps]
-refactor(chat): extract message formatting [REFACTOR]
-```
-
-## Anti-Patterns
-
-**Never:**
-- Implement features without a failing scenario first
-- Write multiple features before testing
-- Skip the "watch it fail" step
-- Make large changes to pass a step
-
-**Always:**
-- One scenario at a time
-- One step at a time
-- Commit after each green step
-- Refactor only when green
+`make check-test-contract BASE_SHA=<actual PR base>` now validates exact
+committed test-to-implementation pairing before the AST/Ginkgo contract.
+The same command is enforced in PR CI against `next`. An explicit
+`--worktree` run is only a local preview, not a merge receipt. Semantic
+ownership of methods spanning files is still checked by independent review.

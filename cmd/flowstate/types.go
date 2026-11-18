@@ -1,0 +1,53 @@
+package main
+
+// cliError is a failure carrying one of the closed error codes; it
+// renders as a single JSON object on stderr.
+type cliError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// flags holds the parsed global flags for one invocation.
+type flags struct {
+	db     string
+	dbSet  bool // --db was supplied explicitly
+	json   bool
+	status string
+	// session new
+	provider string
+	model    string
+	task     string
+	// config file (CLI-AND-API-CONTRACT §4)
+	configPath   string
+	config       cliConfig
+	configSource string
+	// session tool
+	tool      string
+	toolArg   string
+	allow     []string
+	allowFile string
+	workdir   string
+	// session run
+	budget    int64
+	budgetSet bool // --budget was supplied explicitly
+	maxTokens int64
+}
+
+// cliConfig holds one parsed flowstate.json: session defaults that
+// explicit flags strictly override. Secrets are never config-sourced;
+// the loader rejects secret-looking keys at any depth.
+type cliConfig struct {
+	DefaultProvider string   `json:"default_provider"`
+	DefaultModel    string   `json:"default_model"`
+	DefaultBudget   int64    `json:"default_budget"`
+	StoragePath     string   `json:"storage_path"`
+	ToolAllowlist   []string `json:"tool_allowlist"`
+}
+
+// usageSentinel satisfies errors.Is against app.ErrUsage while
+// formatting a usage message.
+type usageSentinel struct{}
+
+// sigintCancelledKey marks a context cancelled by SIGINT; its
+// presence routes session cancel to the exit-130 contract path.
+type sigintCancelledKey struct{}

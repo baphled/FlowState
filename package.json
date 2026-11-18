@@ -1,7 +1,7 @@
 {
   "name": "flowstate",
   "version": "0.0.0-development",
-  "description": "FlowState - A general-purpose AI assistant TUI",
+  "description": "FlowState native Go backend development tooling",
   "private": true,
   "repository": {
     "type": "git",
@@ -19,10 +19,13 @@
     "@semantic-release/github": "^10.0.0",
     "@semantic-release/release-notes-generator": "^14.0.0",
     "conventional-changelog-conventionalcommits": "^8.0.0",
+    "github-slugger": "2.0.0",
+    "markdown-it": "14.1.0",
+    "markdownlint-cli2": "0.23.3",
     "semantic-release": "^24.0.0"
   },
   "engines": {
-    "node": ">=18.0.0",
+    "node": ">=22.0.0",
     "npm": ">=9.0.0"
   }
 }

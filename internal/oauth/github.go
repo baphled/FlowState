@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	githubDeviceCodeURL = "https://github.com/login/device/code"
-	githubTokenURL      = "https://github.com/login/oauth/access_token"
+	githubDeviceCodeURL = "https://github.com/login/device/code"        // #nosec G101 -- endpoint URL, not a credential
+	githubTokenURL      = "https://github.com/login/oauth/access_token" // #nosec G101 -- endpoint URL, not a credential
 )
 
 type GitHubOAuthProvider struct {

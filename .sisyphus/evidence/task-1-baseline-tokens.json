@@ -1,0 +1,8 @@
+{
+  "system_prompt_tokens": 60,
+  "skill_header_tokens": 252,
+  "estimated_first_turn_tokens": 50907,
+  "skill_count": 48,
+  "total_skill_bytes": 202379,
+  "skill_dir_path": "/home/baphled/.config/flowstate/skills"
+}

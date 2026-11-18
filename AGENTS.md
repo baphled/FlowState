@@ -1,203 +1,76 @@
-# FlowState AI Agent Instructions
+# FlowState contributor and agent bootstrap
 
-**Quick reference for AI coding agents working on FlowState - a Go TUI application using Bubble Tea framework.**
+Before starting, delegating or resuming, read the actual current Dropbox files:
 
-## Git Worktree Setup
+1. `/FlowState/Dev/00-AGENT-READ-FIRST.md` and `/FlowState/Dev/AGENTS.md`.
+2. Current owner decisions, code/documentation contract and relevant M1 contracts.
+3. `/FlowState/Metadata/ACTIVE.json`, the assigned packet and referenced evidence.
 
-FlowState uses git worktrees. The structure is:
+Pass verified source text/hashes and the bounded contract to children; do not
+assume prompt inheritance. Missing sources, changed scope or failed checks stop
+writes to the affected packet. Follow current roles, one item per agent and shared
+budgets. The coordinator arranges genuinely separate review.
 
-```
-~/Projects/
-└── FlowState.git/           # Bare repository
-    ├── main/                # Primary development worktree
-    ├── feature-xxx/         # Feature worktrees (temporary)
-    └── hooks/               # Git hooks (shared)
-```
+## Source and documentation contracts
 
-**Always work in a worktree, never in the bare repo directly.**
+Read [code ownership](rules/ARCHITECTURE.md), [documentation standards](rules/DOCUMENTATION.md)
+and [Ginkgo testing](rules/BDD_WORKFLOW.md). Keep domain/port/adaptor boundaries,
+explicit composition and cohesive packages. Named types belong in owning-package
+`types.go` or `*_types.go`; implementation and mutable variables stay elsewhere.
+No catch-all types/common/util packages or inline rule waivers.
 
-### Creating Feature Branches
+Document public APIs, invariants, ownership, errors and concurrency/cancellation
+where relevant. Update affected guides with the code. Check local links and
+examples against the candidate. A linter cannot establish semantic quality.
 
-```bash
-cd /home/baphled/Projects/FlowState.git
-git worktree add -b feature/my-feature feature-my-feature main
-cd feature-my-feature
-```
+Use Ginkgo v2/Gomega with one behavioural expectation per spec, explicit setup
+checks, isolated fixtures, cleanup and parallel randomized race tests. Preserve
+failure coverage during refactoring. No Cucumber/Godog/Gherkin or new plain TestX
+behavioural functions. Read the current Dropbox test rule before test work.
 
-### Cleaning Up
+## Delivery and evidence
 
-```bash
-cd /home/baphled/Projects/FlowState.git/main
-git worktree remove ../feature-my-feature
-git branch -d feature/my-feature
-```
+Read [CI and merge admission](rules/CI_QUALITY.md) before changing CI.
+Every mandatory Build prerequisite must succeed. Separate exact-head review,
+observed agent identity and merge authorisation remain required.
 
-## Getting Started
+Fetch actual `origin/next`; work in a registered feature worktree inside the
+verified bare root. Do not commit directly to `main`/`next` or transplant prototype
+runtime. An unmerged prerequisite needs an explicit scoped disposition in Dropbox.
+Keep PRs small and run the actual commands/hooks; never bypass protection.
+Read [the PR review budget](rules/PR_SCOPE.md): one outcome, with the changed-line
+limit set by `FLOWSTATE_PR_MAX_LINES` in the protected target branch's `.env.ci`
+(currently 600), and at most 10 paths including tests/docs. Estimate before delegation; checkpoint
+and split before exceeding it. Refactoring is a separate prerequisite, not padding.
 
-### Essential Commands
-
-| Task | Command |
-|------|---------|
-| **Run all tests** | `make test` |
-| **Run BDD tests** | `make bdd` |
-| **Run smoke tests** | `make bdd-smoke` |
-| **Build** | `make build` |
-| **Format** | `make fmt` |
-| **Lint** | `make lint` |
-| **Full check** | `make check` |
-
-## Development Workflow
-
-### BDD-Driven Development (MANDATORY)
-
-**ALWAYS develop from the outside-in:**
-
-1. **Write Cucumber scenario FIRST** - Start with acceptance test
-2. **Watch it fail** - Verify it fails for the right reason
-3. **Smallest change** - Implement just enough to pass ONE step
-4. **Run scenario** - See next failure
-5. **Repeat** - Until scenario passes
-6. **Refactor** - Clean up while green
-
-```gherkin
-# Example: features/chat/basic_chat.feature
-Feature: Basic Chat
-  Scenario: Send message and receive response
-    Given FlowState is running
-    When I type "Hello"
-    And I press Enter
-    Then I should see a response from the AI
+```sh
+make check
+make check-size-live        # live working-tree budget check after each save, before ai-commit
+make check-pr-size BASE_SHA=<actual-pr-base-sha>
+make check-code-quality BASE_SHA=<actual-pr-base-sha>
+make check-documentation BASE_SHA=<actual-pr-base-sha>
+make install-hooks          # once per clone: repo-managed pre-commit/pre-push hooks
+make check-admission-commits BASE_SHA=<actual-pr-base-sha>
+make check-admission PR=<number> BASE_SHA=<actual-pr-base-sha> # after review and CI
+make session-start          # requires installed/configured admission runner; fails on startup errors
 ```
 
-### The Smallest Change
+Read [admission preflight setup](rules/CI_QUALITY.md#local-admission-preflight).
+Before every push, validate actual parent-bound metadata and manifests, not only
+the admission unit tests. After a rebase/amend, refresh affected external records
+and obtain exact-head re-review. Before merge, attach the real `Agent-Review:`
+reference to the PR description and run the live read-only preflight. A local
+pass never substitutes for the trusted `flowstate/merge-admission` status.
+Install the [packaged admission runner](rules/STATUS_ISSUER.md#packaged-development-runner)
+before development. Never replace a missing publisher with a green source-test status.
 
-| Situation | Smallest Change | NOT Smallest Change |
-|-----------|-----------------|---------------------|
-| Need a function | Create empty function returning nil | Implement full logic |
-| Need a struct | Create struct with needed field | Add all possible fields |
-| Need validation | Add one validation rule | Add all validations |
-| Need UI element | Add minimal element | Full styled component |
+Keep packets, outputs, qualifications, AI attribution and review receipts only in
+Dropbox Metadata. Never guess a model/provider/harness or synthesize human review.
+Commit only the neutral Project-Metadata reference to a real external record.
+Native Git identity and GitHub checks/reviews remain native facts.
 
-### Commit Cadence
-
-```
-feat(chat): add scenario for basic chat [RED]
-feat(chat): create app struct [GREEN step 1]
-feat(chat): add input handling [GREEN step 2]
-feat(chat): implement provider call [GREEN step 3]
-feat(chat): display response [GREEN all steps]
-refactor(chat): extract message formatting [REFACTOR]
-```
-
-## Architecture
-
-### Layer Hierarchy (MUST follow)
-
-```
-App -> Intents -> Screens/Modals -> UIKit -> Behaviors
-```
-
-### Dependency Rules
-
-- `screens/` **NEVER** imports `intents/`
-- `uikit/` **NEVER** imports `screens/` or `intents/`
-- Use `ScreenResult` for screen -> intent communication
-
-### Intent Pattern
-
-```go
-type Intent interface {
-    Init() tea.Cmd
-    Update(msg tea.Msg) tea.Cmd  // Returns Cmd only, NOT (Model, Cmd)
-    View() string
-    Result() *IntentResult
-}
-```
-
-### ContentProvider Pattern
-
-```go
-type ContentProvider interface {
-    Content(width, height int) string
-    Title() string
-    Footer() string
-}
-
-// Usage
-asScreen := render.AsScreen(myComponent, layout)
-asModal := render.AsModal(myComponent, background, w, h, theme)
-```
-
-## Code Style
-
-### Imports
-
-```go
-import (
-    // 1. Standard library
-    "context"
-    "fmt"
-    
-    // 2. External (alphabetical)
-    tea "github.com/charmbracelet/bubbletea"
-    
-    // 3. Internal (alphabetical)
-    "github.com/baphled/flowstate/internal/tui/intents"
-)
-```
-
-### Naming
-
-- **Files:** `snake_case.go`
-- **Packages:** `lowercase` (single word)
-- **Types:** `PascalCase`
-- **Private:** `camelCase`
-
-### Comments (FORBIDDEN inside functions)
-
-- **NO** comments inside function bodies
-- **NO** inline comments
-- **NO** markers: `TODO`, `FIXME`, `HACK`
-
-**Exception:** E2E tests may have inline comments.
-
-## Testing
-
-### BDD Tags
-
-```gherkin
-@smoke       # Critical path, always run
-@wip         # Work in progress
-@navigation  # Navigation tests
-@chat        # Chat functionality
-```
-
-### Running Tests
-
-```bash
-make bdd           # All BDD tests
-make bdd-smoke     # Smoke tests only
-make bdd-wip       # WIP tests only
-make test          # Go tests
-```
-
-## When to REFUSE
-
-**Immediately refuse if asked to:**
-
-- Skip writing scenario/test first (BDD violation)
-- Build components bottom-up without acceptance test
-- Import `intents/` from `screens/`
-- Put comments inside function bodies
-- Work directly in the bare repo instead of a worktree
-
-## Key Files
-
-| File | Purpose |
-|------|---------|
-| `docs/PLAN.md` | Complete project plan |
-| `AGENTS.md` | This file - AI instructions |
-| `Makefile` | Build and development commands |
-| `rules/*.md` | Development rules |
-| `tasks/*.md` | Current tasks |
-| `features/*.feature` | BDD scenarios |
+Re-query exact-candidate checks and material review findings before any separately
+authorized merge. This contract grants no merge authority. After actual exact-head
+approval, clean only registered, safely pushed, clean worktrees; preserve hidden,
+ignored, untracked, unpushed work and unmerged branches. Installed harness identity,
+leases, budgets and live compliance are not proved by these offline source gates.
