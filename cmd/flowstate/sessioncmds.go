@@ -11,10 +11,13 @@ import (
 )
 
 // cmdNew implements `flowstate session new`: creates a session and
-// prints its JSON record (id, status) on stdout. Exit 0 on success;
-// 2 usage; 4 config invalid.
+// prints its JSON record (id, status) on stdout. Provider and model
+// resolve from explicit flags, else the config defaults, and the
+// canonical composition hash is pinned on the session. Exit 0 on
+// success; 2 usage; 4 config invalid.
 func cmdNew(ctx context.Context, st *app.Store, fl *flags, stdout, stderr *os.File) int {
-	if fl.provider == "" || fl.model == "" {
+	provider, model := effectiveProvider(fl), effectiveModel(fl)
+	if provider == "" || model == "" {
 		writeError(stderr, fmt.Errorf("%w: --provider and --model are required", app.ErrUsage))
 		return exitUsage
 	}
@@ -27,7 +30,12 @@ func cmdNew(ctx context.Context, st *app.Store, fl *flags, stdout, stderr *os.Fi
 		writeError(stderr, fmt.Errorf("%w: --task must not be empty", app.ErrUsage))
 		return exitUsage
 	}
-	sess, err := app.CreateSession(ctx, st, fl.provider, fl.model, app.DefaultHarness, "", task)
+	sha, cerr := compositionSHA256(provider, model, fl.db, fl.configSource, effectiveAllowlist(fl))
+	if cerr != nil {
+		writeError(stderr, cerr)
+		return exitCodeFor(cerr)
+	}
+	sess, err := app.CreateSession(ctx, st, provider, model, app.DefaultHarness, sha, task)
 	if err != nil {
 		writeError(stderr, err)
 		return exitCodeFor(err)
