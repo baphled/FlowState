@@ -10,12 +10,17 @@ type cliError struct {
 // flags holds the parsed global flags for one invocation.
 type flags struct {
 	db     string
+	dbSet  bool // --db was supplied explicitly
 	json   bool
 	status string
 	// session new
 	provider string
 	model    string
 	task     string
+	// config file (CLI-AND-API-CONTRACT §4)
+	configPath   string
+	config       cliConfig
+	configSource string
 	// session tool
 	tool      string
 	toolArg   string
@@ -24,7 +29,19 @@ type flags struct {
 	workdir   string
 	// session run
 	budget    int64
+	budgetSet bool // --budget was supplied explicitly
 	maxTokens int64
+}
+
+// cliConfig holds one parsed flowstate.json: session defaults that
+// explicit flags strictly override. Secrets are never config-sourced;
+// the loader rejects secret-looking keys at any depth.
+type cliConfig struct {
+	DefaultProvider string   `json:"default_provider"`
+	DefaultModel    string   `json:"default_model"`
+	DefaultBudget   int64    `json:"default_budget"`
+	StoragePath     string   `json:"storage_path"`
+	ToolAllowlist   []string `json:"tool_allowlist"`
 }
 
 // usageSentinel satisfies errors.Is against app.ErrUsage while

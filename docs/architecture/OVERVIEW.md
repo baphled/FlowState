@@ -157,6 +157,27 @@ reject run as `session_terminal` (exit 6). A resume append failure blocks turn
 execution and surfaces the persisted failure; the session stays paused and
 unacknowledged. Use the app Ginkgo command above for local verification.
 
+## Session config composition
+
+`flowstate.json` (CLI-AND-API-CONTRACT §4) supplies session defaults: an explicit
+`--config <path>` must exist, otherwise the ambient `./flowstate.json` in the
+process working directory applies when present, and with neither the CLI behaves
+exactly as before (flag-required). The schema is `{default_provider,
+default_model, default_budget, storage_path, tool_allowlist}`; unknown fields and
+any secret-bearing key at any depth are rejected — secrets come from the
+environment only, never the config file. Every config failure exits 4 with code
+`config_invalid`.
+
+Explicit flags strictly override config values; a config `tool_allowlist`
+activates the same bounded execution loop as `--allow` when no tool-surface flag
+is given, with unchanged permission gates. `session new` pins the composition:
+it persists `config_sha256`, the SHA-256 of the canonical effective composition —
+a sorted-key, whitespace-free JSON object `{db_path, config_source, harness,
+model, provider, tool_allowlist}` (allowlist sorted, `config_source` one of the
+explicit path, `default`, or `none`). Identical effective composition yields an
+identical hash; any wiring change changes it, so identical config plus identical
+task produces identical wiring.
+
 ## Changes and proof
 
 A bounded refactor preserves the public contract, failure behaviour and tests.

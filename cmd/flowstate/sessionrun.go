@@ -145,6 +145,7 @@ func selfTestTranscript(ctx context.Context, fl *flags, id string) ([]byte, erro
 // completed; 1 unknown session; 2 usage; 3 provider error; 4 gates
 // closed (task mode); 6 already terminal.
 func cmdRun(ctx context.Context, st *app.Store, id string, fl *flags, stdout, stderr *os.File) int {
+	applyRunDefaults(fl)
 	if fl.task != "" {
 		if id != "" {
 			writeError(stderr, fmt.Errorf("%w: session run takes an id or --task, not both", app.ErrUsage))
@@ -166,6 +167,16 @@ func cmdRun(ctx context.Context, st *app.Store, id string, fl *flags, stdout, st
 		return code
 	}
 	return runSessionTurn(ctx, st, sess, fl, stdout, stderr)
+}
+
+// applyRunDefaults resolves config-supplied run defaults for flags
+// the invocation omitted: --budget falls back to config
+// default_budget ahead of any built-in default, so explicit flags
+// strictly override config values.
+func applyRunDefaults(fl *flags) {
+	if !fl.budgetSet && fl.config.DefaultBudget > 0 {
+		fl.budget = fl.config.DefaultBudget
+	}
 }
 
 // resumePausedRun routes a paused session through the explicit
@@ -297,10 +308,12 @@ func finishRun(err error, res *app.TurnResult, fl *flags, stderr *os.File) int {
 }
 
 // runTurnOrLoop selects the execution surface for one run: a
-// tool-surface invocation (explicit --allow/--allow-file/--workdir)
-// drives the bounded provider execution loop; a plain invocation
-// keeps the single-turn path.
+// tool-surface invocation (explicit --allow/--allow-file/--workdir,
+// or a config-derived allowlist when no such flag was given) drives
+// the bounded provider execution loop; a plain invocation keeps the
+// single-turn path.
 func runTurnOrLoop(ctx context.Context, st *app.Store, sess *app.Session, s app.Streamer, fl *flags) (*app.TurnResult, error) {
+	allow := effectiveAllowlist(fl)
 	if !hasToolSurface(fl) {
 		return app.TurnWithOptions(ctx, st, sess, s, app.TurnOptions{
 			Budget:    fl.budget,
@@ -309,7 +322,7 @@ func runTurnOrLoop(ctx context.Context, st *app.Store, sess *app.Session, s app.
 		})
 	}
 	loopRes, err := app.RunSessionExecLoop(ctx, st, fl.db, sess, s, app.SessionExecLoopRequest{
-		Allow:     fl.allow,
+		Allow:     allow,
 		AllowFile: fl.allowFile,
 		Workdir:   fl.workdir,
 		Budget:    fl.budget,
@@ -318,10 +331,17 @@ func runTurnOrLoop(ctx context.Context, st *app.Store, sess *app.Session, s app.
 	return toTurnResult(sess, loopRes), err
 }
 
-// hasToolSurface reports whether the invocation asked for the tool
-// execution loop via --allow, --allow-file or --workdir.
-func hasToolSurface(fl *flags) bool {
+// toolSurfaceFlagged reports whether the invocation supplied any
+// explicit tool-surface flag (--allow, --allow-file, --workdir).
+func toolSurfaceFlagged(fl *flags) bool {
 	return len(fl.allow) > 0 || fl.allowFile != "" || fl.workdir != ""
+}
+
+// hasToolSurface reports whether the invocation activates the tool
+// execution loop: an explicit tool-surface flag or a config-derived
+// allowlist.
+func hasToolSurface(fl *flags) bool {
+	return toolSurfaceFlagged(fl) || len(fl.config.ToolAllowlist) > 0
 }
 
 // toTurnResult projects a loop result onto the shared turn result
