@@ -20,6 +20,8 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 // This suite productises the CLI contract end-to-end matrix: every
@@ -658,6 +660,65 @@ var _ = Describe("CLI end-to-end contract matrix", Label("e2e"), func() {
 		})
 		It("reports session_terminal on the rerun", func() {
 			Expect(observedRerunCode).To(Equal("session_terminal"))
+		})
+	})
+
+	Context("--json output validates against generated schemas", func() {
+		// The committed schemas in schemas/*.json are generated from
+		// the wire structs (schemagen.go) and validated in the Makefile
+		// check-schemas drift gate. The specs here prove that actual
+		// command outputs conform to them.
+		validateAgainst := func(schemaKey string, data string) error {
+			schemaPath := filepath.Join("..", "..", "schemas", "cli.json")
+			raw, rerr := os.ReadFile(schemaPath)
+			if rerr != nil {
+				return rerr
+			}
+			var combined map[string]any
+			if uerr := json.Unmarshal(raw, &combined); uerr != nil {
+				return uerr
+			}
+			sub, sok := combined[schemaKey]
+			if !sok {
+				return fmt.Errorf("schema %q not found in combined file", schemaKey)
+			}
+			compiler := jsonschema.NewCompiler()
+			if aerr := compiler.AddResource(schemaKey, sub); aerr != nil {
+				return aerr
+			}
+			compiled, cerr := compiler.Compile(schemaKey)
+			if cerr != nil {
+				return cerr
+			}
+			var decoded any
+			if derr := json.Unmarshal([]byte(data), &decoded); derr != nil {
+				return derr
+			}
+			return compiled.Validate(decoded)
+		}
+
+		It("session new output matches the session-new schema", func() {
+			Expect(validateAgainst("session-new", `{"id":"01a1ee79-ca3e-702f-9b6e-13fb693a8345","status":"active"}`)).To(Succeed())
+		})
+
+		It("event envelope matches the session-events schema", func() {
+			envelopes := `[{"session_id":"01a1ee79","seq":1,"created_at_utc":"2026-11-18T00:00:00Z","actor":"user","type":"turn.start","payload":{"task":"x"},"payload_sha256":"abc123"}]`
+			Expect(validateAgainst("session-events", envelopes)).To(Succeed())
+		})
+
+		It("rejects a tampered envelope missing payload_sha256", func() {
+			envelope := `{"session_id":"x","seq":1,"created_at_utc":"2026-11-18T00:00:00Z","actor":"user","type":"turn.start","payload":{}}`
+			Expect(validateAgainst("session-events", envelope)).NotTo(Succeed())
+		})
+
+		It("receipt verdict output matches the receipt-validate schema", func() {
+			verdicts := `[{"path":"receipt.json","verdict":"valid"}]`
+			Expect(validateAgainst("receipt-validate", verdicts)).To(Succeed())
+		})
+
+		It("session list output matches the session-list schema", func() {
+			list := `[{"id":"01a1ee79","created_at_utc":"2026-11-18T00:00:00Z","updated_at_utc":"2026-11-18T00:00:00Z","status":"active","provider":"z.ai","model_id":"glm-5.3-flash","harness":"flowstate-cli","config_sha256":"abc"}]`
+			Expect(validateAgainst("session-list", list)).To(Succeed())
 		})
 	})
 

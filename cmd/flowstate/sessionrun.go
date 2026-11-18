@@ -163,6 +163,15 @@ func cmdRun(ctx context.Context, st *app.Store, id string, fl *flags, stdout, st
 		writeError(stderr, loadErr)
 		return exitCodeFor(loadErr)
 	}
+	// Crash-recovery: detect an active session whose last turn was left
+	// incomplete (process died mid-turn) and append session.interrupted
+	// before proceeding, so the event log records the gap.
+	if crashed, derr := app.DetectCrashedSession(ctx, st, id); derr == nil && crashed {
+		if rerr := app.RecoverCrashedSession(ctx, st, id); rerr != nil {
+			writeError(stderr, fmt.Errorf("%w: crash recovery: %v", app.ErrConfigInvalid, rerr))
+			return exitConfigInvalid
+		}
+	}
 	if code, done := resumePausedRun(ctx, st, sess, stderr); done {
 		return code
 	}
