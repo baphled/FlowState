@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/baphled/flowstate/internal/app"
 )
@@ -96,7 +97,7 @@ func cmdList(ctx context.Context, st *app.Store, fl *flags, stdout, stderr *os.F
 // cmdEvents implements `flowstate session events <id>`: dumps the
 // ordered event log as JSON lines. Exit 0; 1 unknown session; 7
 // replay mismatch.
-func cmdEvents(ctx context.Context, st *app.Store, id string, stdout, stderr *os.File) int {
+func cmdEvents(ctx context.Context, st *app.Store, id string, fl *flags, stdout, stderr *os.File) int {
 	if id == "" {
 		writeError(stderr, fmt.Errorf("%w: session id required", app.ErrUsage))
 		return exitUsage
@@ -106,8 +107,8 @@ func cmdEvents(ctx context.Context, st *app.Store, id string, stdout, stderr *os
 		writeError(stderr, err)
 		return exitCodeFor(err)
 	}
-	for _, e := range events {
-		if err := writeJSON(stdout, map[string]any{
+	writeEvent := func(e app.RecordedEvent) error {
+		return writeJSON(stdout, map[string]any{
 			"session_id":     e.SessionID,
 			"seq":            e.Seq,
 			"created_at_utc": e.CreatedAt.UTC().Format(timeFormat),
@@ -115,12 +116,48 @@ func cmdEvents(ctx context.Context, st *app.Store, id string, stdout, stderr *os
 			"type":           e.Type,
 			"payload":        json.RawMessage(e.PayloadJSON),
 			"payload_sha256": e.PayloadSHA,
-		}); err != nil {
+		})
+	}
+	for _, e := range events {
+		if err := writeEvent(e); err != nil {
 			writeError(stderr, err)
 			return exitCodeFor(err)
 		}
 	}
-	return exitOK
+	if !fl.follow {
+		return exitOK
+	}
+	// Follow: tail new events until the session reaches a terminal
+	// status (completed/cancelled/failed). Polls the store; the
+	// single-connection pool serializes with any concurrent writer.
+	lastSeq := int64(-1)
+	if len(events) > 0 {
+		lastSeq = events[len(events)-1].Seq
+	}
+	for {
+		time.Sleep(200 * time.Millisecond)
+		sess, err := st.GetSession(ctx, id)
+		if err != nil {
+			writeError(stderr, err)
+			return exitCodeFor(err)
+		}
+		fresh, err := st.EventsAfter(ctx, id, lastSeq)
+		if err != nil {
+			writeError(stderr, err)
+			return exitCodeFor(err)
+		}
+		for _, e := range fresh {
+			if err := writeEvent(e); err != nil {
+				writeError(stderr, err)
+				return exitCodeFor(err)
+			}
+			lastSeq = e.Seq
+		}
+		switch sess.Status {
+		case "completed", "cancelled", "failed":
+			return exitOK
+		}
+	}
 }
 
 // cmdClose implements `flowstate session close <id>`: transitions to

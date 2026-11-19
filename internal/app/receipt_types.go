@@ -12,6 +12,9 @@ import (
 type (
 	// Session aliases the session row so cmd depends only on app.
 	Session = store.Session
+	// RecordedEvent aliases the committed event row so cmd depends
+	// only on app.
+	RecordedEvent = store.RecordedEvent
 	// Attempt is the inbound attempt record awaiting emission.
 	Attempt = metadata.Attempt
 	// Attribution is the runtime-observed attribution recorded in
