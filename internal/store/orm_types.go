@@ -97,3 +97,26 @@ type SessionSteeringMessage struct {
 	Body      string
 	CreatedAt time.Time
 }
+
+// swarmRunRow mirrors the swarm_runs table (v7): one durable record
+// per configured-swarm run; the outcome whitelist is domain-layer
+// (no DB CHECK, see sessionRow comment).
+type swarmRunRow struct {
+	ID             string `gorm:"column:id;primaryKey;not null;type:text"`
+	Name           string `gorm:"column:name;not null;type:text"`
+	ManifestSHA256 string `gorm:"column:manifest_sha256;not null;type:text"`
+	Outcome        string `gorm:"column:outcome;not null;type:text"`
+	CreatedAtUTC   string `gorm:"column:created_at_utc;not null;type:text"`
+}
+
+// swarmRunPacketRow mirrors the swarm_run_packets table (v7): one
+// admission decision per packet; SQLite stores the boolean as 1/0
+// and the run link carries no FK (run and rows persist together).
+type swarmRunPacketRow struct {
+	ID           string `gorm:"column:id;primaryKey;not null;type:text"`
+	RunID        string `gorm:"column:run_id;not null;type:text;index:idx_swarm_run_packets_run_id"`
+	PacketID     string `gorm:"column:packet_id;not null;type:text"`
+	Admitted     int64  `gorm:"column:admitted;not null;type:integer"`
+	Reason       string `gorm:"column:reason;not null;type:text"`
+	CreatedAtUTC string `gorm:"column:created_at_utc;not null;type:text"`
+}

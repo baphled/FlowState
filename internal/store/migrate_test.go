@@ -202,18 +202,18 @@ var _ = Describe("Legacy v3 database upgrade", func() {
 		store = s
 	})
 
-	It("records schema version 6 after the first migrated open", func() {
+	It("records schema version 7 after the first migrated open", func() {
 		v, err := store.SchemaVersion()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(v).To(Equal(int64(6)))
+		Expect(v).To(Equal(int64(7)))
 	})
 
-	It("appends versions 4 through 6 to the recorded schema_migrations", func() {
-		// version is INTEGER PRIMARY KEY, so count 6 with max 6 pins {1..6}.
+	It("appends versions 4 through 7 to the recorded schema_migrations", func() {
+		// version is INTEGER PRIMARY KEY, so count 7 with max 7 pins {1..7}.
 		var n, maxV int64
 		err := store.db.QueryRow(`SELECT count(*), max(version) FROM schema_migrations`).Scan(&n, &maxV)
 		Expect(err).NotTo(HaveOccurred())
-		Expect([2]int64{n, maxV}).To(Equal([2]int64{6, 6}))
+		Expect([2]int64{n, maxV}).To(Equal([2]int64{7, 7}))
 	})
 
 	It("preserves the committed session row field-for-field", func() {
@@ -282,10 +282,10 @@ var _ = Describe("Legacy v3 database upgrade", func() {
 		Expect(tableDDL(store.db, "receipts")).To(Equal(f.before["receipts"]))
 	})
 
-	It("creates the budget_reservations and session_messages tables on the legacy database", func() {
+	It("creates the v5 through v7 tables on the legacy database", func() {
 		var n int
-		err := store.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('budget_reservations','session_messages')`).Scan(&n)
+		err := store.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('budget_reservations','session_messages','swarm_runs','swarm_run_packets')`).Scan(&n)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(n).To(Equal(2))
+		Expect(n).To(Equal(4))
 	})
 })
