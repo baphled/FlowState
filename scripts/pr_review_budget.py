@@ -4,6 +4,11 @@
 CI obtains --policy from git show <protected-base>:.env.ci. A PR's title
 must agree with its source branch; neither PR labels nor candidate .env
 files can change the selected budget. Push events can omit --branch.
+
+Exit codes: 0 selects a budget; 1 rejects policy/configuration/IO
+failure; 2 reports an unclassifiable subject (missing or unrecognised
+Conventional change type, or title/branch change-type disagreement) so
+push jobs can skip the PR-scoped gate while CI fails everything else.
 """
 import argparse
 import re
@@ -15,6 +20,10 @@ TYPES = {'feat': 'feature', 'fix': 'fix', 'chore': 'chore',
          'perf': 'perf', 'revert': 'revert'}
 TITLE = re.compile(r'^([a-z]+)(?:\([a-z0-9-]+\))?!?: .+')
 POSITIVE = re.compile(r'[1-9][0-9]{0,5}\Z')
+
+
+class ClassificationError(ValueError):
+    """Subject-classification failure; push CI may skip only this class."""
 
 
 def select(policy, title, branch=None):
@@ -32,10 +41,10 @@ def select(policy, title, branch=None):
         values[key] = value
     match = TITLE.match(title)
     if not match or match.group(1) not in TYPES:
-        raise ValueError('Conventional change type is required')
+        raise ClassificationError('Conventional change type is required')
     kind = match.group(1)
     if branch is not None and branch.split('/', 1)[0] != TYPES[kind]:
-        raise ValueError('PR title and branch change types disagree')
+        raise ClassificationError('PR title and branch change types disagree')
     default = values.get('FLOWSTATE_PR_MAX_LINES')
     budget = values.get('FLOWSTATE_PR_MAX_LINES_' + kind.upper(), default)
     if budget is None or not POSITIVE.fullmatch(budget):
@@ -51,6 +60,9 @@ def main():
     args = parser.parse_args()
     try:
         print(select(args.policy.read_text(encoding='utf-8'), args.title, args.branch))
+    except ClassificationError as exc:
+        print('PR review budget blocked: ' + str(exc), file=sys.stderr)
+        return 2
     except (OSError, ValueError) as exc:
         print('PR review budget blocked: ' + str(exc), file=sys.stderr)
         return 1

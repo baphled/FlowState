@@ -5,7 +5,7 @@ type: adr
 status: accepted
 adr_group: Go CLI
 created: 2026-11-18
-modified: 2026-11-18T21:40
+modified: 2026-11-19T21:30
 deciders:
   - Engineering Team
 consulted:
@@ -249,3 +249,13 @@ The store type is aliased in app (`type Store = store.Store` in `internal/app/tu
   composition.
 - *Ongoing:* any packet touching `cmd/flowstate/*.go` inherits the whole-file gate; the boundary table above is the
   reference for "where does this go" questions.
+
+### Addendum — 2026-11-18: BudgetOverview
+
+The `session budget` read now routes through a fifth app wrapper, `BudgetOverview`
+(`internal/app/budgetoverview.go`), instead of calling `store.BudgetSnapshot` through the alias seam directly. Unlike
+the reservation wrapper, it is a sentinel-preserving pass-through: store errors surface unchanged, so
+`store.ErrUnknownSession` still maps to `session_not_found` (exit 1) — wrapping into `ErrUsage` would flip the
+mapping to exit 2 because `ErrorCode` matches the usage sentinel first. CLI exit codes are pinned by a pre/post
+oracle recorded at base `b97401f3` before the reroute: unknown session ids exit 1 with stderr code
+`session_not_found`, identical before and after the change.

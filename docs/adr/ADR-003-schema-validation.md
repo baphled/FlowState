@@ -5,7 +5,7 @@ type: adr
 status: accepted
 adr_group: Go CLI
 created: 2026-11-18
-modified: 2026-11-18T21:40
+modified: 2026-11-19T21:20
 deciders:
   - Engineering Team
 consulted:
@@ -89,6 +89,17 @@ The done checklist had one unchecked item left. Schema validation was deferred d
 | `session-events` | array of event envelopes | seven fields each |
 | `session-replay` | array of event envelopes | seven fields each |
 | `receipt-validate` | array of verdict records | `path`, `verdict` (enum: `valid`/`invalid`) |
+| `session-budget` | object | `session_id`, `reserved`, `budget_pool`, `available` (pool/available nullable) |
+| `session-message` | object | `id`, `session_id`, `sender` |
+| `session-tool` | object | `session_id`, `tool`, `ok`, `result` |
+| `swarm-validate` | object | `name`, `valid` |
+| `swarm-run` | object with children array | `manifest`, `admitted`, `accepted`, `children` (four string fields each) |
+
+PR #295 shipped the first six keys. `session-budget` followed with the budget snapshot output, and `session-message`,
+  `session-tool`, `swarm-validate` and `swarm-run` landed with the schema-parity packet (2026-11-19). Two of the newer
+  keys are deliberately asymmetric: `session-tool`'s `result` is permissive (the `true` schema keyword) because tool
+  outcomes are heterogeneous (`any` at the write site), while `ok` and `valid` are pinned to the literal `true` with
+  `const` — the commands only ever emit those flags on their success path.
 
 ### The event envelope schema
 
@@ -205,7 +216,8 @@ A reflection-based generator (`invopop/jsonschema`) was attempted first. It viol
 
 ## Sources
 
-- `schemas/cli.json` — the six schema keys; envelope requires seven fields with `additionalProperties: false`.
+- `schemas/cli.json` — the eleven schema keys (six from PR #295, plus `session-budget` and the four schema-parity
+  keys); envelope requires seven fields with `additionalProperties: false`.
 - `go.mod:11` — `github.com/santhosh-tekuri/jsonschema/v6 v6.0.3` (test dependency).
 - `cmd/flowstate/schemagen*.go` — absent; the abandoned generator's removal is verified by the file not existing and
   by PR #295's diff.

@@ -256,6 +256,40 @@ func e2eFindEvent(evs []e2eEvent, typ string) (e2eEvent, error) {
 	return e2eEvent{}, errors.New("event not persisted: " + typ)
 }
 
+// validateAgainst compiles the named key of the hand-authored
+// schemas/cli.json contract (ADR-003) and returns its validation
+// error for data, so specs assert output conformance with one
+// expectation. Reading the file per call keeps the check live:
+// an edited schema is exercised immediately, without caching.
+func validateAgainst(schemaKey, data string) error {
+	schemaPath := filepath.Join("..", "..", "schemas", "cli.json")
+	raw, rerr := os.ReadFile(schemaPath)
+	if rerr != nil {
+		return rerr
+	}
+	var combined map[string]any
+	if uerr := json.Unmarshal(raw, &combined); uerr != nil {
+		return uerr
+	}
+	sub, sok := combined[schemaKey]
+	if !sok {
+		return fmt.Errorf("schema %q not found in combined file", schemaKey)
+	}
+	compiler := jsonschema.NewCompiler()
+	if aerr := compiler.AddResource(schemaKey, sub); aerr != nil {
+		return aerr
+	}
+	compiled, cerr := compiler.Compile(schemaKey)
+	if cerr != nil {
+		return cerr
+	}
+	var decoded any
+	if derr := json.Unmarshal([]byte(data), &decoded); derr != nil {
+		return derr
+	}
+	return compiled.Validate(decoded)
+}
+
 // e2eVerdict decodes the first verdict line of receipt validate.
 func e2eVerdict(out string) string {
 	var v struct {
@@ -597,6 +631,26 @@ var _ = Describe("CLI end-to-end contract matrix", Label("e2e"), func() {
 			}))
 		})
 
+		It("schema-validates the null-pool budget overview", func() {
+			r := runArgv([]string{"session", "budget", parentID, "--db", db, "--json"})
+			if r.exit != 0 {
+				panic("session budget failed: " + r.stderr)
+			}
+			Expect(validateAgainst("session-budget", r.stdout)).To(Succeed())
+		})
+
+		It("reports budget_pool as JSON null without a pool", func() {
+			r := runArgv([]string{"session", "budget", parentID, "--db", db, "--json"})
+			if r.exit != 0 {
+				panic("session budget failed: " + r.stderr)
+			}
+			var rec map[string]any
+			if err := json.Unmarshal([]byte(r.stdout), &rec); err != nil {
+				panic(err)
+			}
+			Expect(rec["budget_pool"]).To(BeNil())
+		})
+
 		It("exits with the unknown-session code for an unknown id", func() {
 			r := runArgv([]string{"session", "budget", "01a1f000-0000-4000-8000-000000000000", "--db", db})
 			Expect(r.exit).NotTo(Equal(0))
@@ -930,39 +984,11 @@ var _ = Describe("CLI end-to-end contract matrix", Label("e2e"), func() {
 		})
 	})
 
-	Context("--json output validates against generated schemas", func() {
-		// The committed schemas in schemas/*.json are generated from
-		// the wire structs (schemagen.go) and validated in the Makefile
-		// check-schemas drift gate. The specs here prove that actual
-		// command outputs conform to them.
-		validateAgainst := func(schemaKey string, data string) error {
-			schemaPath := filepath.Join("..", "..", "schemas", "cli.json")
-			raw, rerr := os.ReadFile(schemaPath)
-			if rerr != nil {
-				return rerr
-			}
-			var combined map[string]any
-			if uerr := json.Unmarshal(raw, &combined); uerr != nil {
-				return uerr
-			}
-			sub, sok := combined[schemaKey]
-			if !sok {
-				return fmt.Errorf("schema %q not found in combined file", schemaKey)
-			}
-			compiler := jsonschema.NewCompiler()
-			if aerr := compiler.AddResource(schemaKey, sub); aerr != nil {
-				return aerr
-			}
-			compiled, cerr := compiler.Compile(schemaKey)
-			if cerr != nil {
-				return cerr
-			}
-			var decoded any
-			if derr := json.Unmarshal([]byte(data), &decoded); derr != nil {
-				return derr
-			}
-			return compiled.Validate(decoded)
-		}
+	Context("--json output validates against committed schemas", func() {
+		// The schemas in schemas/cli.json are hand-authored per
+		// ADR-003: one key per --json output shape, every field
+		// required, additionalProperties:false. The specs here
+		// prove that actual command outputs conform to them.
 
 		It("session new output matches the session-new schema", func() {
 			root := `{"id":"01a1ee79-ca3e-702f-9b6e-13fb693a8345","status":"active","parent_id":""}`
@@ -992,6 +1018,36 @@ var _ = Describe("CLI end-to-end contract matrix", Label("e2e"), func() {
 		It("session list output matches the session-list schema", func() {
 			list := `[{"id":"01a1ee79","created_at_utc":"2026-11-18T00:00:00Z","updated_at_utc":"2026-11-18T00:00:00Z","status":"active","provider":"z.ai","model_id":"glm-5.3-flash","harness":"flowstate-cli","config_sha256":"abc","parent_id":""},{"id":"01a1ee80","created_at_utc":"2026-11-18T00:00:01Z","updated_at_utc":"2026-11-18T00:00:01Z","status":"active","provider":"z.ai","model_id":"glm-5.3-flash","harness":"flowstate-cli","config_sha256":"abc","parent_id":"01a1ee79"}]`
 			Expect(validateAgainst("session-list", list)).To(Succeed())
+		})
+
+		It("session message output matches the session-message schema", func() {
+			msg := `{"id":"01a1ee79-ca3e-702f-9b6e-13fb693a8346","session_id":"01a1ee79-ca3e-702f-9b6e-13fb693a8345","sender":"01a1ee79-ca3e-702f-9b6e-13fb693a8344"}`
+			Expect(validateAgainst("session-message", msg)).To(Succeed())
+		})
+
+		It("rejects a session message with an unknown extra field", func() {
+			tampered := `{"id":"01a1ee79-ca3e-702f-9b6e-13fb693a8346","session_id":"01a1ee79-ca3e-702f-9b6e-13fb693a8345","sender":"01a1ee79-ca3e-702f-9b6e-13fb693a8344","body":"drift"}`
+			Expect(validateAgainst("session-message", tampered)).NotTo(Succeed())
+		})
+
+		It("session tool output matches the session-tool schema", func() {
+			toolOut := `{"session_id":"01a1ee79-ca3e-702f-9b6e-13fb693a8345","tool":"echo","ok":true,"result":{"a":1}}`
+			Expect(validateAgainst("session-tool", toolOut)).To(Succeed())
+		})
+
+		It("session budget output with a pool matches the session-budget schema", func() {
+			budgetOut := `{"session_id":"01a1ee79-ca3e-702f-9b6e-13fb693a8345","reserved":5,"budget_pool":100,"available":95}`
+			Expect(validateAgainst("session-budget", budgetOut)).To(Succeed())
+		})
+
+		It("swarm validate output matches the swarm-validate schema", func() {
+			verdictOut := `{"name":"bug-hunt","valid":true}`
+			Expect(validateAgainst("swarm-validate", verdictOut)).To(Succeed())
+		})
+
+		It("swarm run output matches the swarm-run schema", func() {
+			swarmOut := `{"manifest":"bug-hunt","admitted":["packet-a","packet-b"],"accepted":true,"children":[{"packet":"packet-a","session":"01a1ee79-ca3e-702f-9b6e-13fb693a8345","status":"active","parent_id":"01a1ee79-ca3e-702f-9b6e-13fb693a8344"},{"packet":"packet-b","session":"01a1ee79-ca3e-702f-9b6e-13fb693a8346","status":"active","parent_id":"01a1ee79-ca3e-702f-9b6e-13fb693a8344"}]}`
+			Expect(validateAgainst("swarm-run", swarmOut)).To(Succeed())
 		})
 	})
 
