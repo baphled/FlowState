@@ -2,6 +2,30 @@
 
 All notable changes to the FlowState project will be documented in this file.
 
+## [1.3.0](https://github.com/baphled/FlowState/compare/v1.2.1...v1.3.0) (2026-11-19)
+
+### Features
+
+* **app:** child runs draw from budget reservations ([#313](https://github.com/baphled/FlowState/issues/313)) ([65cb11b](https://github.com/baphled/FlowState/commit/65cb11bb0e994c18aca611688563eabffe2c2076))
+* **app:** child-session creation wrapper ([#310](https://github.com/baphled/FlowState/issues/310)) ([11fd887](https://github.com/baphled/FlowState/commit/11fd8870a8889687798a4e33a623a83b197cc972))
+* **app:** delegation chain queries with depth enforcement ([#317](https://github.com/baphled/FlowState/issues/317)) ([f4539af](https://github.com/baphled/FlowState/commit/f4539afb9d42edf864f44959c4d0b4e447362d4a))
+* **app:** durable steering message ledger with run-preamble drain ([#318](https://github.com/baphled/FlowState/issues/318)) ([baf1cae](https://github.com/baphled/FlowState/commit/baf1cae7e204d60e04cc44ea458d2809eac796f2))
+* **app:** swarm execution wiring for delegated children ([#322](https://github.com/baphled/FlowState/issues/322)) ([a609f4e](https://github.com/baphled/FlowState/commit/a609f4e425baf8ba298eb53b20a74271fe9e9375))
+* **app:** swarm validate and run commands ([#323](https://github.com/baphled/FlowState/issues/323)) ([86d7d53](https://github.com/baphled/FlowState/commit/86d7d5379513d41021fea18300fd6824bbca8e4a))
+* **session:** budget reservations and overview on the session surface ([#315](https://github.com/baphled/FlowState/issues/315)) ([3d0bc0b](https://github.com/baphled/FlowState/commit/3d0bc0ba03db8842e94907983438dfce48ba06f3))
+* **session:** child sessions via session new --parent ([#311](https://github.com/baphled/FlowState/issues/311)) ([ccb8372](https://github.com/baphled/FlowState/commit/ccb83724b6a16d6250fbc7825a6dbc950052f790))
+* **session:** events --follow tails child streams ([#321](https://github.com/baphled/FlowState/issues/321)) ([4b2eebf](https://github.com/baphled/FlowState/commit/4b2eebffa15f3fe5aec3b3dfb6aa61a039243840))
+* **session:** steering directives via session message ([#319](https://github.com/baphled/FlowState/issues/319)) ([1edcffd](https://github.com/baphled/FlowState/commit/1edcffdba9f8d89628c60d8f564ee17303f61bd1))
+* **store:** durable budget reservations ledger ([#312](https://github.com/baphled/FlowState/issues/312)) ([dba96b9](https://github.com/baphled/FlowState/commit/dba96b912e78a925c4378817ea8daefe790631e7))
+* **store:** durable swarm-run record ([#320](https://github.com/baphled/FlowState/issues/320)) ([036836b](https://github.com/baphled/FlowState/commit/036836b853ff05fb405c06973ad9cffeae664599))
+* **store:** gorm-managed schema for the session store ([#308](https://github.com/baphled/FlowState/issues/308)) ([7f7fee5](https://github.com/baphled/FlowState/commit/7f7fee5f57c43cc4a3a00f08d00e16a7dc4f879a))
+* **store:** orm session writer with child-session linkage ([#309](https://github.com/baphled/FlowState/issues/309)) ([c6670f6](https://github.com/baphled/FlowState/commit/c6670f64296a096d062098f28b84ea1fb49ac308))
+
+### Bug Fixes
+
+* **app:** resolve run budgets on every run path ([#314](https://github.com/baphled/FlowState/issues/314)) ([eb0da94](https://github.com/baphled/FlowState/commit/eb0da94fbd898d973855b1a246139d04732c2561))
+* **ci:** close unbalanced fi in ci.yml budget fallback branch ([#307](https://github.com/baphled/FlowState/issues/307)) ([9f4a044](https://github.com/baphled/FlowState/commit/9f4a044092690916b57355ae87d0ec6493281a6b))
+
 ## [1.2.1](https://github.com/baphled/FlowState/compare/v1.2.0...v1.2.1) (2026-11-18)
 
 ### Bug Fixes
