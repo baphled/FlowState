@@ -143,6 +143,8 @@ func dispatchSession(ctx context.Context, sub string, fl *flags, id string, stdo
 		return cmdTool(ctx, fl.db, fl, id, stdout, stderr)
 	case "budget":
 		return cmdBudget(ctx, st, id, stdout)
+	case "doctor":
+		return cmdDoctor(ctx, st, id, stdout, stderr)
 	case "message":
 		return cmdMessage(ctx, st, id, fl, stdout, stderr)
 	default:
@@ -311,6 +313,7 @@ func usage(w *os.File) {
 
 session new    --provider <p> --model <m> --task <text|@file> [--parent <id>] [--reserve <n>] [--db path]
 session budget <id> [--db path]
+session doctor <id> [--db path]
 session message <id> --from <parent> --body <text|@file> [--db path]
 session list   [--status <s>] [--db path]
 session run    <id> [--budget <n>] [--max-tokens <n>] [--allow <name>]... [--allow-file <manifest>] [--workdir <path>] [--db path]

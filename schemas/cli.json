@@ -320,5 +320,51 @@
         }
       }
     }
+  },
+  "session-doctor": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "session_id",
+      "status",
+      "crashed",
+      "run_activity",
+      "pending_messages",
+      "reserved",
+      "budget_pool",
+      "available"
+    ],
+    "properties": {
+      "session_id": {
+        "type": "string"
+      },
+      "status": {
+        "type": "string"
+      },
+      "crashed": {
+        "type": "boolean"
+      },
+      "run_activity": {
+        "type": "boolean"
+      },
+      "pending_messages": {
+        "type": "integer"
+      },
+      "reserved": {
+        "type": "integer"
+      },
+      "budget_pool": {
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "available": {
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    }
   }
 }

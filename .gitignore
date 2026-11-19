@@ -58,6 +58,7 @@ coverage-func.txt
 
 # local dev artifact database (never commit)
 cmd/flowstate/flowstate.db
+/flowstate.db
 __pycache__/
 
 # Developer-specific environment; commit only reviewed, non-secret templates.
