@@ -339,3 +339,84 @@ var _ = Describe("ResolveRunBudget", func() {
 		Expect(got).To(Equal(int64(18)))
 	})
 })
+
+var _ = Describe("Delegation graph", func() {
+	graphStore := func() *store.Store {
+		st, err := store.OpenMemory()
+		if err != nil {
+			panic(err)
+		}
+		DeferCleanup(func() { _ = st.Close() })
+		return st
+	}
+	newGraphSession := func(st *store.Store, id, task string) *store.Session {
+		sess, err := CreateSession(context.Background(), st, id, "model-x", DefaultHarness, "cfg", task)
+		if err != nil {
+			panic(err)
+		}
+		return sess
+	}
+
+	It("creates a nested child at depth 2", func() {
+		st := graphStore()
+		root := newGraphSession(st, "graph-root", "root")
+		child, err := CreateChildSession(context.Background(), st, root.ID, "prov", "model-x", DefaultHarness, "cfg", "child")
+		Expect(err).NotTo(HaveOccurred())
+		nested, err := CreateChildSession(context.Background(), st, child.ID, "prov", "model-x", DefaultHarness, "cfg", "nested")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(nested.ParentID).To(Equal(child.ID))
+	})
+
+	It("rejects a child of a nested child as beyond the depth cap", func() {
+		st := graphStore()
+		ctx := context.Background()
+		root := newGraphSession(st, "graph-root-2", "root")
+		child, err := CreateChildSession(ctx, st, root.ID, "prov", "model-x", DefaultHarness, "cfg", "child")
+		Expect(err).NotTo(HaveOccurred())
+		nested, err := CreateChildSession(ctx, st, child.ID, "prov", "model-x", DefaultHarness, "cfg", "nested")
+		Expect(err).NotTo(HaveOccurred())
+
+		_, derr := CreateChildSession(ctx, st, nested.ID, "prov", "model-x", DefaultHarness, "cfg", "too deep")
+		Expect(errors.Is(derr, ErrUsage)).To(BeTrue())
+	})
+
+	It("names the depth cap in the rejection", func() {
+		st := graphStore()
+		ctx := context.Background()
+		root := newGraphSession(st, "graph-root-3", "root")
+		child, err := CreateChildSession(ctx, st, root.ID, "prov", "model-x", DefaultHarness, "cfg", "child")
+		Expect(err).NotTo(HaveOccurred())
+		nested, err := CreateChildSession(ctx, st, child.ID, "prov", "model-x", DefaultHarness, "cfg", "nested")
+		Expect(err).NotTo(HaveOccurred())
+
+		_, derr := CreateChildSession(ctx, st, nested.ID, "prov", "model-x", DefaultHarness, "cfg", "too deep")
+		Expect(derr.Error()).To(ContainSubstring("delegation depth"))
+	})
+
+	It("rejects the over-depth child with the usage sentinel", func() {
+		gst := graphStore()
+		gctx := context.Background()
+		groot := newGraphSession(gst, "graph-root-5", "root")
+		gchild, err := CreateChildSession(gctx, gst, groot.ID, "prov", "model-x", DefaultHarness, "cfg", "child")
+		Expect(err).NotTo(HaveOccurred())
+		gnested, err := CreateChildSession(gctx, gst, gchild.ID, "prov", "model-x", DefaultHarness, "cfg", "nested")
+		Expect(err).NotTo(HaveOccurred())
+
+		_, derr2 := CreateChildSession(gctx, gst, gnested.ID, "prov", "model-x", DefaultHarness, "cfg", "too deep")
+		Expect(derr2).To(MatchError(ErrUsage))
+	})
+
+	It("returns the root-first chain through the owning passthrough", func() {
+		st := graphStore()
+		ctx := context.Background()
+		root := newGraphSession(st, "graph-root-4", "root")
+		child, err := CreateChildSession(ctx, st, root.ID, "prov", "model-x", DefaultHarness, "cfg", "child")
+		Expect(err).NotTo(HaveOccurred())
+
+		chain, cerr := DelegationChain(ctx, st, child.ID)
+		if cerr != nil {
+			panic(cerr)
+		}
+		Expect([]string{chain[0].ID}).To(Equal([]string{root.ID}))
+	})
+})

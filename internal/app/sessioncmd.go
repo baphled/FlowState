@@ -16,6 +16,10 @@ const DefaultHarness = session.DefaultHarness
 // attributing the delegation to the user (M2 child sessions).
 const TypeSessionDelegated = "session.delegated"
 
+// MaxDelegationDepth caps delegation nesting: root (0), child (1) and
+// nested child (2) per the M1 delegation vocabulary.
+const MaxDelegationDepth = 2
+
 // delegatedParentTerminal marks parent statuses that reject delegation.
 var delegatedParentTerminal = map[string]bool{
 	"completed": true, "cancelled": true, "failed": true,
@@ -43,6 +47,13 @@ func CreateChildSession(ctx context.Context, st *Store, parentID, provider, mode
 	}
 	if delegatedParentTerminal[parent.Status] {
 		return nil, fmt.Errorf("%w: parent session %s is %s", ErrUsage, parentID, parent.Status)
+	}
+	chain, cerr := st.DelegationChain(ctx, parentID)
+	if cerr != nil {
+		return nil, fmt.Errorf("%w: delegation chain: %v", ErrUsage, cerr)
+	}
+	if len(chain)+1 > MaxDelegationDepth {
+		return nil, fmt.Errorf("%w: delegation depth exceeds %d (root/child/nested-child)", ErrUsage, MaxDelegationDepth)
 	}
 	if harness == "" {
 		harness = DefaultHarness
@@ -105,6 +116,13 @@ func ReserveChildBudget(ctx context.Context, st *Store, parentID, childID string
 // terminal transition has already committed.
 func settleReservation(ctx context.Context, st *Store, sessionID string) {
 	_ = st.SetReservationCharged(ctx, sessionID)
+}
+
+// DelegationChain returns the delegation ancestors of sessionID
+// ordered root-first (empty for a root), so the CLI and future API
+// surfaces read the delegation graph through the owning layer.
+func DelegationChain(ctx context.Context, st *Store, sessionID string) ([]store.Session, error) {
+	return st.DelegationChain(ctx, sessionID)
 }
 
 // ResolveRunBudget resolves the effective budget for a session run:
