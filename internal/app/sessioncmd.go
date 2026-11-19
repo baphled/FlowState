@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/baphled/flowstate/internal/session"
@@ -104,4 +105,33 @@ func ReserveChildBudget(ctx context.Context, st *Store, parentID, childID string
 // terminal transition has already committed.
 func settleReservation(ctx context.Context, st *Store, sessionID string) {
 	_ = st.SetReservationCharged(ctx, sessionID)
+}
+
+// ResolveRunBudget resolves the effective budget for a session run:
+// an explicitly requested budget anchors the session's shared pool and
+// is returned unchanged; without one, a delegated child draws from its
+// reservation (grant minus recorded consumption). Sessions with
+// neither return 0 (the caller's unlimited/default handling).
+func ResolveRunBudget(ctx context.Context, st *Store, sess *Session, requested int64) (int64, error) {
+	if requested > 0 {
+		if err := st.SetBudgetPool(ctx, sess.ID, requested); err != nil {
+			return 0, err
+		}
+		return requested, nil
+	}
+	res, err := st.ReservationFor(ctx, sess.ID)
+	if errors.Is(err, store.ErrUnknownReservation) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	if res.Status != store.ReservationStatusReserved {
+		return 0, nil
+	}
+	budget := res.Granted - res.Consumed
+	if budget < 0 {
+		budget = 0
+	}
+	return budget, nil
 }

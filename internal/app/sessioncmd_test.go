@@ -253,3 +253,89 @@ var _ = Describe("ReserveChildBudget", func() {
 		Expect(errors.Is(err, ErrUsage)).To(BeTrue())
 	})
 })
+
+var _ = Describe("ResolveRunBudget", func() {
+	resolveStore := func() *store.Store {
+		st, err := store.OpenMemory()
+		if err != nil {
+			panic(err)
+		}
+		DeferCleanup(func() { _ = st.Close() })
+		return st
+	}
+
+	It("returns an explicit budget unchanged", func() {
+		st := resolveStore()
+		ctx := context.Background()
+		sess, err := CreateSession(ctx, st, "prov", "model-x", DefaultHarness, "cfg", "task")
+		if err != nil {
+			panic(err)
+		}
+
+		got, rerr := ResolveRunBudget(ctx, st, sess, 2000)
+		if rerr != nil {
+			panic(rerr)
+		}
+		Expect(got).To(Equal(int64(2000)))
+	})
+
+	It("anchors the session pool to an explicit budget", func() {
+		st := resolveStore()
+		ctx := context.Background()
+		sess, err := CreateSession(ctx, st, "prov", "model-x", DefaultHarness, "cfg", "task")
+		if err != nil {
+			panic(err)
+		}
+
+		if _, rerr := ResolveRunBudget(ctx, st, sess, 2000); rerr != nil {
+			panic(rerr)
+		}
+		snap, serr := st.BudgetSnapshot(ctx, sess.ID)
+		if serr != nil {
+			panic(serr)
+		}
+		pool := int64(0)
+		if snap.Pool != nil {
+			pool = *snap.Pool
+		}
+		Expect(pool).To(Equal(int64(2000)))
+	})
+
+	It("returns zero for a session without a reservation", func() {
+		st := resolveStore()
+		sess, err := CreateSession(context.Background(), st, "prov", "model-x", DefaultHarness, "cfg", "task")
+		if err != nil {
+			panic(err)
+		}
+
+		got, err := ResolveRunBudget(context.Background(), st, sess, 0)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).To(Equal(int64(0)))
+	})
+
+	It("binds a delegated child to its remaining grant", func() {
+		st := resolveStore()
+		ctx := context.Background()
+		parent, err := CreateSession(ctx, st, "prov", "model-x", DefaultHarness, "cfg", "parent")
+		if err != nil {
+			panic(err)
+		}
+		child, err := CreateChildSession(ctx, st, parent.ID, "prov", "model-x", DefaultHarness, "cfg", "child")
+		if err != nil {
+			panic(err)
+		}
+		if err := st.SetBudgetPool(ctx, parent.ID, 100); err != nil {
+			panic(err)
+		}
+		if _, err := st.ReserveBudget(ctx, parent.ID, child.ID, 30); err != nil {
+			panic(err)
+		}
+		if err := st.ChargeReservation(ctx, child.ID, 12); err != nil {
+			panic(err)
+		}
+
+		got, err := ResolveRunBudget(ctx, st, child, 0)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).To(Equal(int64(18)))
+	})
+})
