@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -190,5 +191,65 @@ var _ = Describe("session command wrappers", func() {
 		st := mustOpenStore()
 		_, _, err := InspectSession(ctx, st, "00000000-0000-4000-8000-000000000000")
 		Expect(err).To(HaveOccurred())
+	})
+})
+
+var _ = Describe("ReserveChildBudget", func() {
+	reserveStore := func() *store.Store {
+		st, err := store.OpenMemory()
+		if err != nil {
+			panic(err)
+		}
+		DeferCleanup(func() { _ = st.Close() })
+		return st
+	}
+	newSess := func(st *store.Store, id, task string) *store.Session {
+		sess, err := CreateSession(context.Background(), st, "prov", "model-x", DefaultHarness, "cfg", task)
+		if err != nil {
+			panic(err)
+		}
+		return sess
+	}
+
+	It("records the reservation grant for a pooled parent", func() {
+		st := reserveStore()
+		ctx := context.Background()
+		parent := newSess(st, "rsv-parent", "parent")
+		child := newSess(st, "rsv-child", "child")
+		if err := st.SetBudgetPool(ctx, parent.ID, 100); err != nil {
+			panic(err)
+		}
+
+		if rerr := ReserveChildBudget(ctx, st, parent.ID, child.ID, 40); rerr != nil {
+			panic(rerr)
+		}
+		snap, serr := st.BudgetSnapshot(ctx, parent.ID)
+		if serr != nil {
+			panic(serr)
+		}
+		Expect(snap).To(Equal(store.BudgetSnapshot{Pool: &[]int64{100}[0], Reserved: 40, Available: &[]int64{60}[0]}))
+	})
+
+	It("maps a missing parent pool to usage on reserve", func() {
+		st := reserveStore()
+		ctx := context.Background()
+		parent := newSess(st, "rsv-parent-2", "parent")
+		child := newSess(st, "rsv-child-2", "child")
+
+		err := ReserveChildBudget(ctx, st, parent.ID, child.ID, 10)
+		Expect(errors.Is(err, ErrUsage)).To(BeTrue())
+	})
+
+	It("maps a capacity overrun to usage on reserve", func() {
+		st := reserveStore()
+		ctx := context.Background()
+		parent := newSess(st, "rsv-parent-3", "parent")
+		child := newSess(st, "rsv-child-3", "child")
+		if err := st.SetBudgetPool(ctx, parent.ID, 10); err != nil {
+			panic(err)
+		}
+
+		err := ReserveChildBudget(ctx, st, parent.ID, child.ID, 50)
+		Expect(errors.Is(err, ErrUsage)).To(BeTrue())
 	})
 })
