@@ -631,6 +631,26 @@ var _ = Describe("CLI end-to-end contract matrix", Label("e2e"), func() {
 			}))
 		})
 
+		It("schema-validates the null-pool budget overview", func() {
+			r := runArgv([]string{"session", "budget", parentID, "--db", db, "--json"})
+			if r.exit != 0 {
+				panic("session budget failed: " + r.stderr)
+			}
+			Expect(validateAgainst("session-budget", r.stdout)).To(Succeed())
+		})
+
+		It("reports budget_pool as JSON null without a pool", func() {
+			r := runArgv([]string{"session", "budget", parentID, "--db", db, "--json"})
+			if r.exit != 0 {
+				panic("session budget failed: " + r.stderr)
+			}
+			var rec map[string]any
+			if err := json.Unmarshal([]byte(r.stdout), &rec); err != nil {
+				panic(err)
+			}
+			Expect(rec["budget_pool"]).To(BeNil())
+		})
+
 		It("exits with the unknown-session code for an unknown id", func() {
 			r := runArgv([]string{"session", "budget", "01a1f000-0000-4000-8000-000000000000", "--db", db})
 			Expect(r.exit).NotTo(Equal(0))
