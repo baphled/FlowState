@@ -20,6 +20,9 @@ type flags struct {
 	parent     string
 	reserve    int64
 	reserveSet bool
+	// session message
+	msgFrom string
+	msgBody string
 	// config file (CLI-AND-API-CONTRACT §4)
 	configPath   string
 	config       cliConfig
