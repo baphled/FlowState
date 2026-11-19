@@ -5,7 +5,8 @@
     "required": ["id", "status"],
     "properties": {
       "id": {"type": "string"},
-      "status": {"type": "string"}
+      "status": {"type": "string"},
+      "parent_id": {"type": "string"}
     }
   },
   "session-cancel": {
@@ -22,7 +23,7 @@
     "items": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "created_at_utc", "updated_at_utc", "status", "provider", "model_id", "harness", "config_sha256"],
+      "required": ["id", "created_at_utc", "updated_at_utc", "status", "provider", "model_id", "harness", "config_sha256", "parent_id"],
       "properties": {
         "id": {"type": "string"},
         "created_at_utc": {"type": "string"},
@@ -31,7 +32,8 @@
         "provider": {"type": "string"},
         "model_id": {"type": "string"},
         "harness": {"type": "string"},
-        "config_sha256": {"type": "string"}
+        "config_sha256": {"type": "string"},
+        "parent_id": {"type": "string"}
       }
     }
   },

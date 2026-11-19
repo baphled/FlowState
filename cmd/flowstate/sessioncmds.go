@@ -35,12 +35,17 @@ func cmdNew(ctx context.Context, st *app.Store, fl *flags, stdout, stderr *os.Fi
 		writeError(stderr, cerr)
 		return exitCodeFor(cerr)
 	}
-	sess, err := app.CreateSession(ctx, st, provider, model, app.DefaultHarness, sha, task)
+	var sess *app.Session
+	if fl.parent != "" {
+		sess, err = app.CreateChildSession(ctx, st, fl.parent, provider, model, app.DefaultHarness, sha, task)
+	} else {
+		sess, err = app.CreateSession(ctx, st, provider, model, app.DefaultHarness, sha, task)
+	}
 	if err != nil {
 		writeError(stderr, err)
 		return exitCodeFor(err)
 	}
-	if err := writeJSON(stdout, map[string]any{"id": sess.ID, "status": sess.Status}); err != nil {
+	if err := writeJSON(stdout, map[string]any{"id": sess.ID, "status": sess.Status, "parent_id": sess.ParentID}); err != nil {
 		writeError(stderr, err)
 		return exitCodeFor(err)
 	}
@@ -142,6 +147,7 @@ func sessionJSON(s app.Session) map[string]any {
 		"model_id":       s.ModelID,
 		"harness":        s.Harness,
 		"config_sha256":  s.ConfigSHA,
+		"parent_id":      s.ParentID,
 	}
 }
 
