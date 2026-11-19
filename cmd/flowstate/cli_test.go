@@ -427,6 +427,38 @@ var _ = Describe("CLI end-to-end contract matrix", Label("e2e"), func() {
 		})
 	})
 
+	Context("session events --follow", func() {
+		It("prints all events of a terminal session and exits", func() {
+			db := filepath.Join(GinkgoT().TempDir(), "follow.db")
+			nr := runArgv([]string{"session", "new", "--db", db,
+				"--provider", "z.ai", "--model", "glm-5.3", "--task", "follow me"})
+			if nr.exit != 0 {
+				panic("session new failed: " + nr.stderr)
+			}
+			var nrec map[string]any
+			if err := json.Unmarshal([]byte(nr.stdout), &nrec); err != nil {
+				panic(err)
+			}
+			id := nrec["id"].(string)
+			cl := runArgv([]string{"session", "close", "--db", db, id})
+			if cl.exit != 0 {
+				panic("session close failed: " + cl.stderr)
+			}
+			fr := runArgv([]string{"session", "events", "--db", db, id, "--follow"})
+			if fr.exit != 0 {
+				panic("session events --follow failed: " + fr.stderr)
+			}
+			Expect(strings.Contains(fr.stdout, "session.cancelled")).To(BeTrue())
+		})
+
+		It("exits with the unknown-session code for an unknown id", func() {
+			db := filepath.Join(GinkgoT().TempDir(), "follow-unknown.db")
+			r := runArgv([]string{"session", "events", "--db", db,
+				"01a1f000-0000-4000-8000-000000000000", "--follow"})
+			Expect(r.exit).NotTo(Equal(0))
+		})
+	})
+
 	Context("session message steering", func() {
 		var db string
 		var parentID string

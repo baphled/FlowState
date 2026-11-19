@@ -20,6 +20,7 @@ type flags struct {
 	parent     string
 	reserve    int64
 	reserveSet bool
+	follow     bool
 	// session message
 	msgFrom string
 	msgBody string

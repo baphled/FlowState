@@ -132,7 +132,7 @@ func dispatchSession(ctx context.Context, sub string, fl *flags, id string, stdo
 	case "run":
 		return cmdRun(ctx, st, id, fl, stdout, stderr)
 	case "events":
-		return cmdEvents(ctx, st, id, stdout, stderr)
+		return cmdEvents(ctx, st, id, fl, stdout, stderr)
 	case "cancel":
 		return cmdCancel(ctx, st, id, stdout, stderr)
 	case "replay":
@@ -185,6 +185,8 @@ func parseFlags(args []string) (*flags, []string, error) {
 			fl.dbSet = true
 		case a == "--json":
 			fl.json = true
+		case a == "--follow":
+			fl.follow = true
 		case strings.HasPrefix(a, "--status"), strings.HasPrefix(a, "--provider"),
 			strings.HasPrefix(a, "--model"), strings.HasPrefix(a, "--task"),
 			strings.HasPrefix(a, "--parent"), strings.HasPrefix(a, "--config"),
@@ -310,7 +312,7 @@ session budget <id> [--db path]
 session message <id> --from <parent> --body <text|@file> [--db path]
 session list   [--status <s>] [--db path]
 session run    <id> [--budget <n>] [--max-tokens <n>] [--allow <name>]... [--allow-file <manifest>] [--workdir <path>] [--db path]
-session events <id> [--db path]
+session events <id> [--follow] [--db path]
 session close  <id> [--db path]
 session cancel <id> [--db path]
 session replay <id> [--db path]
