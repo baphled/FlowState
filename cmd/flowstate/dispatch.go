@@ -156,8 +156,8 @@ func (usageSentinel) Error() string { return "usage" }
 // Is reports equality with the app usage sentinel.
 func (usageSentinel) Is(target error) bool { return target.Error() == "usage" }
 
-// parseFlags extracts --db, --json, --status, --provider, --model and
-// --task flags; positional arguments are returned in order.
+// parseFlags extracts --db, --json, --status, --provider, --model,
+// --task and --parent flags; positional arguments are returned in order.
 func parseFlags(args []string) (*flags, []string, error) {
 	fl := &flags{db: defaultDBPath}
 	var positional []string
@@ -182,7 +182,7 @@ func parseFlags(args []string) (*flags, []string, error) {
 			fl.json = true
 		case strings.HasPrefix(a, "--status"), strings.HasPrefix(a, "--provider"),
 			strings.HasPrefix(a, "--model"), strings.HasPrefix(a, "--task"),
-			strings.HasPrefix(a, "--config"):
+			strings.HasPrefix(a, "--parent"), strings.HasPrefix(a, "--config"):
 			if serr := fl.setString(a, take); serr != nil {
 				return nil, nil, serr
 			}
@@ -225,6 +225,8 @@ func (f *flags) setString(name string, take func() (string, error)) error {
 		f.model = v
 	case strings.HasPrefix(name, "--task"):
 		f.task = v
+	case strings.HasPrefix(name, "--parent"):
+		f.parent = v
 	default:
 		return fmt.Errorf("unknown flag %s", name)
 	}
@@ -289,7 +291,7 @@ func openStore(path string) (*app.Store, error) {
 func usage(w *os.File) {
 	_, _ = fmt.Fprint(w, `usage: flowstate [--version] session <subcommand> [flags] [id]
 
-session new    --provider <p> --model <m> --task <text|@file> [--db path]
+session new    --provider <p> --model <m> --task <text|@file> [--parent <id>] [--db path]
 session list   [--status <s>] [--db path]
 session run    <id> [--budget <n>] [--max-tokens <n>] [--allow <name>]... [--allow-file <manifest>] [--workdir <path>] [--db path]
 session events <id> [--db path]

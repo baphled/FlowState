@@ -335,6 +335,91 @@ func e2eToolLoopProvider() *httptest.Server {
 }
 
 var _ = Describe("CLI end-to-end contract matrix", Label("e2e"), func() {
+
+	Context("session new --parent creates a linked child", func() {
+		var db string
+		var parentID string
+		newChild := func() map[string]any {
+			r := runArgv([]string{"session", "new", "--db", db, "--parent", parentID,
+				"--provider", "z.ai", "--model", "glm-5.3", "--task", "child task"})
+			if r.exit != 0 {
+				panic("session new --parent failed: " + r.stderr)
+			}
+			var rec map[string]any
+			if err := json.Unmarshal([]byte(r.stdout), &rec); err != nil {
+				panic(err)
+			}
+			return rec
+		}
+		listJSON := func() []map[string]any {
+			r := runArgv([]string{"session", "list", "--db", db, "--json"})
+			if r.exit != 0 {
+				panic("session list failed: " + r.stderr)
+			}
+			var out []map[string]any
+			for _, line := range strings.Split(strings.TrimSpace(r.stdout), "\n") {
+				var m map[string]any
+				if err := json.Unmarshal([]byte(line), &m); err != nil {
+					panic(err)
+				}
+				out = append(out, m)
+			}
+			return out
+		}
+		BeforeEach(func() {
+			db = filepath.Join(GinkgoT().TempDir(), "child.db")
+			r := runArgv([]string{"session", "new", "--db", db,
+				"--provider", "z.ai", "--model", "glm-5.3", "--task", "parent task"})
+			if r.exit != 0 {
+				panic("parent session new failed: " + r.stderr)
+			}
+			var rec map[string]any
+			if err := json.Unmarshal([]byte(r.stdout), &rec); err != nil {
+				panic(err)
+			}
+			parentID = rec["id"].(string)
+		})
+
+		It("emits the child record with the parent linkage", func() {
+			rec := newChild()
+			Expect(rec["parent_id"]).To(Equal(parentID))
+		})
+
+		It("persists the linkage visible in session list", func() {
+			rec := newChild()
+			childID := rec["id"].(string)
+			var childRecord map[string]any
+			for _, m := range listJSON() {
+				if m["id"] == childID {
+					childRecord = m
+				}
+			}
+			// A missing record leaves the map nil, whose lookup reads as
+			// nil and fails the Equal — one behavioural expectation.
+			Expect(childRecord["parent_id"]).To(Equal(parentID))
+		})
+
+		It("opens the child log with a session.delegated event", func() {
+			rec := newChild()
+			childID := rec["id"].(string)
+			er := runArgv([]string{"session", "events", childID, "--db", db, "--json"})
+			if er.exit != 0 {
+				panic("session events failed: " + er.stderr)
+			}
+			first := strings.SplitN(strings.TrimSpace(er.stdout), "\n", 2)[0]
+			var ev map[string]any
+			if err := json.Unmarshal([]byte(first), &ev); err != nil {
+				panic(err)
+			}
+			Expect(ev["type"]).To(Equal("session.delegated"))
+		})
+
+		It("exits 2 with usage for an unknown parent", func() {
+			r := runArgv([]string{"session", "new", "--db", db, "--parent", "01a1f000-0000-7000-8000-000000000000",
+				"--provider", "z.ai", "--model", "glm-5.3", "--task", "child task"})
+			Expect(r.exit).To(Equal(2))
+		})
+	})
 	Context("session new prints its record", func() {
 		var observedExit int
 		BeforeEach(func() {
@@ -698,7 +783,13 @@ var _ = Describe("CLI end-to-end contract matrix", Label("e2e"), func() {
 		}
 
 		It("session new output matches the session-new schema", func() {
-			Expect(validateAgainst("session-new", `{"id":"01a1ee79-ca3e-702f-9b6e-13fb693a8345","status":"active"}`)).To(Succeed())
+			root := `{"id":"01a1ee79-ca3e-702f-9b6e-13fb693a8345","status":"active","parent_id":""}`
+			Expect(validateAgainst("session-new", root)).To(Succeed())
+		})
+
+		It("child session new output matches the session-new schema", func() {
+			child := `{"id":"01a1ee79-ca3e-702f-9b6e-13fb693a8345","status":"active","parent_id":"01a1ee79-ca3e-702f-9b6e-13fb693a8344"}`
+			Expect(validateAgainst("session-new", child)).To(Succeed())
 		})
 
 		It("event envelope matches the session-events schema", func() {
@@ -717,7 +808,7 @@ var _ = Describe("CLI end-to-end contract matrix", Label("e2e"), func() {
 		})
 
 		It("session list output matches the session-list schema", func() {
-			list := `[{"id":"01a1ee79","created_at_utc":"2026-11-18T00:00:00Z","updated_at_utc":"2026-11-18T00:00:00Z","status":"active","provider":"z.ai","model_id":"glm-5.3-flash","harness":"flowstate-cli","config_sha256":"abc"}]`
+			list := `[{"id":"01a1ee79","created_at_utc":"2026-11-18T00:00:00Z","updated_at_utc":"2026-11-18T00:00:00Z","status":"active","provider":"z.ai","model_id":"glm-5.3-flash","harness":"flowstate-cli","config_sha256":"abc","parent_id":""},{"id":"01a1ee80","created_at_utc":"2026-11-18T00:00:01Z","updated_at_utc":"2026-11-18T00:00:01Z","status":"active","provider":"z.ai","model_id":"glm-5.3-flash","harness":"flowstate-cli","config_sha256":"abc","parent_id":"01a1ee79"}]`
 			Expect(validateAgainst("session-list", list)).To(Succeed())
 		})
 	})

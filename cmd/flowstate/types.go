@@ -17,6 +17,7 @@ type flags struct {
 	provider string
 	model    string
 	task     string
+	parent   string
 	// config file (CLI-AND-API-CONTRACT §4)
 	configPath   string
 	config       cliConfig
