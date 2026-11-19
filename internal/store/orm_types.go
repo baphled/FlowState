@@ -6,9 +6,10 @@ type schemaMigrationRow struct {
 	AppliedAtUTC string `gorm:"column:applied_at_utc;not null;type:text"`
 }
 
-// sessionRow mirrors the sessions table (v2 DDL plus v4 parent_id);
-// ParentID is a pointer (roots persist NULL, read back empty). The
-// status whitelist is domain-layer; no DB CHECK (see PR discussion).
+// sessionRow mirrors the sessions table (v2 DDL plus v4 parent_id and
+// v5 budget_pool); ParentID and BudgetPool are pointers (roots and
+// unbudgeted sessions persist NULL, read back empty/nil). The status
+// whitelist is domain-layer; no DB CHECK (see PR discussion).
 type sessionRow struct {
 	ID           string  `gorm:"column:id;primaryKey;not null;type:text"`
 	CreatedAtUTC string  `gorm:"column:created_at_utc;not null;type:text"`
@@ -19,6 +20,7 @@ type sessionRow struct {
 	Harness      string  `gorm:"column:harness;not null;type:text"`
 	ConfigSHA    string  `gorm:"column:config_sha256;not null;type:text"`
 	ParentID     *string `gorm:"column:parent_id;type:text"`
+	BudgetPool   *int64  `gorm:"column:budget_pool;type:integer"`
 }
 
 // eventRow mirrors the events table (v2 DDL): composite PK
@@ -57,4 +59,18 @@ type leaseRow struct {
 type leaseHistoryRow struct {
 	Item  string `gorm:"column:item;primaryKey;not null;type:text"`
 	Token int64  `gorm:"column:token;primaryKey;not null;type:integer"`
+}
+
+// budgetReservationRow mirrors the budget_reservations table (v5
+// DDL): one durable grant per child session against the parent's
+// declared pool. The status whitelist ('reserved','charged') is
+// domain-layer; no DB CHECK (see sessionRow comment).
+type budgetReservationRow struct {
+	ID           string `gorm:"column:id;primaryKey;not null;type:text"`
+	ParentID     string `gorm:"column:parent_id;not null;type:text"`
+	ChildID      string `gorm:"column:child_id;not null;type:text;uniqueIndex:idx_budget_reservations_child_id"`
+	Granted      int64  `gorm:"column:granted;not null;type:integer"`
+	Consumed     int64  `gorm:"column:consumed;not null;default:0;type:integer"`
+	Status       string `gorm:"column:status;not null;type:text"`
+	CreatedAtUTC string `gorm:"column:created_at_utc;not null;type:text"`
 }

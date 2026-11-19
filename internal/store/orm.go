@@ -41,6 +41,9 @@ func (leaseRow) TableName() string { return "leases" }
 // TableName pins the physical table name.
 func (leaseHistoryRow) TableName() string { return "lease_history" }
 
+// TableName pins the physical table name.
+func (budgetReservationRow) TableName() string { return "budget_reservations" }
+
 // migrateModels lists every model so AutoMigrate completes the schema
 // idempotently. Index names match the committed DDL; no CHECK
 // constraints are declared (v1–v3 checks are unnamed — naming them
@@ -53,6 +56,7 @@ func migrateModels() []any {
 		&receiptRow{},
 		&leaseRow{},
 		&leaseHistoryRow{},
+		&budgetReservationRow{},
 	}
 }
 

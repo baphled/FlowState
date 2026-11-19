@@ -231,13 +231,51 @@ func (w *EventWriter) Pause(ctx context.Context, pi PauseInfo) error {
 		if err := w.insertEvent(ctx, tx, seq, "engine", "session.paused", payload); err != nil {
 			return err
 		}
-		return w.setSessionStatus(ctx, tx, "paused")
+		if err := w.setSessionStatus(ctx, tx, "paused"); err != nil {
+			return err
+		}
+		return chargePausedReservation(ctx, tx, w.session, pi.ConsumedBudget)
 	})
 	if txErr != nil {
 		return txErr
 	}
 	w.next++
 	w.paused = true
+	return nil
+}
+
+// chargePausedReservation records the pause's consumed figure on the
+// session's live reservation inside the pause transaction: consumed
+// grows monotonically and caps at the granted amount, so a pause
+// carrying no consumption figure (the exec loop) never resurrects
+// spent budget. Sessions without a live reservation are untouched.
+func chargePausedReservation(ctx context.Context, scope *gorm.DB, sessionID string, consumed int64) error {
+	var row budgetReservationRow
+	err := scope.WithContext(ctx).
+		Where(map[string]any{"child_id": sessionID, "status": ReservationStatusReserved}).
+		First(&row).Error
+	if isRecordNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load reservation for pause: %w", err)
+	}
+	next := consumed
+	if next < row.Consumed {
+		next = row.Consumed
+	}
+	if next > row.Granted {
+		next = row.Granted
+	}
+	if next == row.Consumed {
+		return nil
+	}
+	q := scope.WithContext(ctx).Model(&budgetReservationRow{}).
+		Where(map[string]any{"id": row.ID}).
+		Updates(map[string]any{"consumed": next})
+	if q.Error != nil {
+		return fmt.Errorf("charge reservation %s on pause: %w", row.ID, q.Error)
+	}
 	return nil
 }
 

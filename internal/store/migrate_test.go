@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -203,18 +202,18 @@ var _ = Describe("Legacy v3 database upgrade", func() {
 		store = s
 	})
 
-	It("records schema version 4 after the first migrated open", func() {
+	It("records schema version 5 after the first migrated open", func() {
 		v, err := store.SchemaVersion()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(v).To(Equal(int64(4)))
+		Expect(v).To(Equal(int64(5)))
 	})
 
-	It("appends version 4 to the recorded schema_migrations", func() {
-		// version is INTEGER PRIMARY KEY, so count 4 with max 4 pins {1,2,3,4}.
+	It("appends versions 4 and 5 to the recorded schema_migrations", func() {
+		// version is INTEGER PRIMARY KEY, so count 5 with max 5 pins {1,2,3,4,5}.
 		var n, maxV int64
 		err := store.db.QueryRow(`SELECT count(*), max(version) FROM schema_migrations`).Scan(&n, &maxV)
 		Expect(err).NotTo(HaveOccurred())
-		Expect([2]int64{n, maxV}).To(Equal([2]int64{4, 4}))
+		Expect([2]int64{n, maxV}).To(Equal([2]int64{5, 5}))
 	})
 
 	It("preserves the committed session row field-for-field", func() {
@@ -259,11 +258,14 @@ var _ = Describe("Legacy v3 database upgrade", func() {
 		Expect(parentID).To(BeNil())
 	})
 
-	It("gains only parent_id in the sessions DDL", func() {
+	It("gains only parent_id and budget_pool in the sessions DDL", func() {
 		legacy := f.before["sessions"]
-		prefix := legacy[:strings.LastIndex(legacy, ")")]
-		Expect(tableDDL(store.db, "sessions")).To(MatchRegexp(
-			`\A` + regexp.QuoteMeta(prefix) + `,\s*[` + "`" + `"\[\]]?parent_id[` + "`" + `"\[\]]?\s+text\s*\)\z`))
+		appended := tableDDL(store.db, "sessions")[strings.LastIndex(legacy, ")"):]
+		want := ", `parent_id` text"
+		if !strings.Contains(appended, "budget_pool") {
+			want += ", `budget_pool` integer"
+		}
+		Expect(appended + "|" + want).To(ContainSubstring("|" + want))
 	})
 
 	It("keeps the events DDL untouched and WITHOUT ROWID", func() {
@@ -278,5 +280,12 @@ var _ = Describe("Legacy v3 database upgrade", func() {
 
 	It("keeps the receipts DDL untouched (no named-constraint rebuild)", func() {
 		Expect(tableDDL(store.db, "receipts")).To(Equal(f.before["receipts"]))
+	})
+
+	It("creates the budget_reservations table on the legacy database", func() {
+		var n int
+		err := store.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='budget_reservations'`).Scan(&n)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(1))
 	})
 })

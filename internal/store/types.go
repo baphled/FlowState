@@ -75,3 +75,26 @@ type RecordedEvent struct {
 	PayloadSHA  string
 	PayloadJSON string
 }
+
+// BudgetSnapshot reports the durable budget state of one session:
+// the declared pool anchor (nil = none declared), the outstanding
+// reserved budget held by its children's live reservations, and the
+// available budget (Pool - Reserved, nil when no pool is declared).
+type BudgetSnapshot struct {
+	Pool      *int64
+	Reserved  int64
+	Available *int64
+}
+
+// BudgetReservation is one durable child grant: Granted is the
+// reserved amount, Consumed the settled usage (capped at Granted),
+// and Status the domain-layer lifecycle (reserved or charged).
+type BudgetReservation struct {
+	ID        string
+	ParentID  string
+	ChildID   string
+	Granted   int64
+	Consumed  int64
+	Status    string
+	CreatedAt time.Time
+}

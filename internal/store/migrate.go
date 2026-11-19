@@ -6,12 +6,15 @@ import (
 )
 
 // knownSchemaVersion is the highest schema version this code manages.
-// v4 adds the sessions.parent_id column for child-session delegation.
-const knownSchemaVersion = int64(4)
+// v4 adds the sessions.parent_id column for child-session delegation;
+// v5 adds sessions.budget_pool and the budget_reservations table for
+// durable shared budgets.
+const knownSchemaVersion = int64(5)
 
 // migrate applies forward-only schema management through the ORM:
-// idempotent AutoMigrate (v4 parent_id, missing tables/indexes; never
-// drops or rewrites rows), then v1..v4 bookkeeping. A database whose
+// idempotent AutoMigrate (v4 parent_id, v5 budget_pool and
+// budget_reservations, missing tables/indexes; never drops or
+// rewrites rows), then v1..v5 bookkeeping. A database whose
 // recorded version exceeds knownSchemaVersion fails with
 // ErrFutureSchema, checked before any migration touches the schema.
 func (s *Store) migrate() error {
