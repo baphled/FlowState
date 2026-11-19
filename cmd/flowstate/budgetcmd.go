@@ -11,7 +11,7 @@ import (
 // pool anchor, the outstanding reserved total and the available
 // remainder. Sessions without a pool report null pool/available.
 func cmdBudget(ctx context.Context, st *app.Store, id string, stdout *os.File) int {
-	snap, err := st.BudgetSnapshot(ctx, id)
+	snap, err := app.BudgetOverview(ctx, st, id)
 	if err != nil {
 		writeError(os.Stderr, err)
 		return exitCodeFor(err)
