@@ -427,6 +427,79 @@ var _ = Describe("CLI end-to-end contract matrix", Label("e2e"), func() {
 		})
 	})
 
+	Context("session message steering", func() {
+		var db string
+		var parentID string
+		var childID string
+		BeforeEach(func() {
+			db = filepath.Join(GinkgoT().TempDir(), "steer.db")
+			pr := runArgv([]string{"session", "new", "--db", db,
+				"--provider", "z.ai", "--model", "glm-5.3", "--task", "parent"})
+			if pr.exit != 0 {
+				panic("parent session new failed: " + pr.stderr)
+			}
+			var prec map[string]any
+			if err := json.Unmarshal([]byte(pr.stdout), &prec); err != nil {
+				panic(err)
+			}
+			parentID = prec["id"].(string)
+			cr := runArgv([]string{"session", "new", "--db", db, "--parent", parentID,
+				"--provider", "z.ai", "--model", "glm-5.3", "--task", "child"})
+			if cr.exit != 0 {
+				panic("child session new failed: " + cr.stderr)
+			}
+			var crec map[string]any
+			if err := json.Unmarshal([]byte(cr.stdout), &crec); err != nil {
+				panic(err)
+			}
+			childID = crec["id"].(string)
+		})
+
+		It("records a steering message addressed to the child", func() {
+			r := runArgv([]string{"session", "message", "--db", db, childID,
+				"--from", parentID, "--body", "refocus on the parser"})
+			if r.exit != 0 {
+				panic("session message failed: " + r.stderr)
+			}
+			var rec map[string]any
+			if err := json.Unmarshal([]byte(r.stdout), &rec); err != nil {
+				panic(err)
+			}
+			Expect(map[string]any{"session_id": rec["session_id"], "sender": rec["sender"]}).
+				To(Equal(map[string]any{"session_id": childID, "sender": parentID}))
+		})
+
+		It("exits 2 when the sender is outside the delegation chain", func() {
+			sdb := filepath.Join(GinkgoT().TempDir(), "stranger.db")
+			sr := runArgv([]string{"session", "new", "--db", sdb,
+				"--provider", "z.ai", "--model", "glm-5.3", "--task", "stranger"})
+			if sr.exit != 0 {
+				panic("stranger session new failed: " + sr.stderr)
+			}
+			var srec map[string]any
+			if err := json.Unmarshal([]byte(sr.stdout), &srec); err != nil {
+				panic(err)
+			}
+
+			r := runArgv([]string{"session", "message", "--db", db, childID,
+				"--from", srec["id"].(string), "--body", "cross-tree injection"})
+			Expect(r.exit).To(Equal(2))
+		})
+
+		It("keeps the message pending until the child run drains it", func() {
+			mr := runArgv([]string{"session", "message", "--db", db, childID,
+				"--from", parentID, "--body", "steer body"})
+			if mr.exit != 0 {
+				panic("session message failed: " + mr.stderr)
+			}
+			er := runArgv([]string{"session", "events", "--db", db, childID, "--json"})
+			if er.exit != 0 {
+				panic("session events failed: " + er.stderr)
+			}
+			Expect(strings.Contains(er.stdout, "session.steered")).To(BeFalse())
+		})
+	})
+
 	Context("session budget reports the shared pool", func() {
 		var db string
 		var parentID string

@@ -143,6 +143,8 @@ func dispatchSession(ctx context.Context, sub string, fl *flags, id string, stdo
 		return cmdTool(ctx, fl.db, fl, id, stdout, stderr)
 	case "budget":
 		return cmdBudget(ctx, st, id, stdout)
+	case "message":
+		return cmdMessage(ctx, st, id, fl, stdout, stderr)
 	default:
 		writeError(stderr, fmt.Errorf("%w: unknown session subcommand %q", errUsageCmd, sub))
 		return exitUsage
@@ -185,7 +187,8 @@ func parseFlags(args []string) (*flags, []string, error) {
 			fl.json = true
 		case strings.HasPrefix(a, "--status"), strings.HasPrefix(a, "--provider"),
 			strings.HasPrefix(a, "--model"), strings.HasPrefix(a, "--task"),
-			strings.HasPrefix(a, "--parent"), strings.HasPrefix(a, "--config"):
+			strings.HasPrefix(a, "--parent"), strings.HasPrefix(a, "--config"),
+			a == "--from", a == "--body":
 			if serr := fl.setString(a, take); serr != nil {
 				return nil, nil, serr
 			}
@@ -230,6 +233,10 @@ func (f *flags) setString(name string, take func() (string, error)) error {
 		f.task = v
 	case strings.HasPrefix(name, "--parent"):
 		f.parent = v
+	case name == "--from":
+		f.msgFrom = v
+	case name == "--body":
+		f.msgBody = v
 	default:
 		return fmt.Errorf("unknown flag %s", name)
 	}
@@ -300,6 +307,7 @@ func usage(w *os.File) {
 
 session new    --provider <p> --model <m> --task <text|@file> [--parent <id>] [--reserve <n>] [--db path]
 session budget <id> [--db path]
+session message <id> --from <parent> --body <text|@file> [--db path]
 session list   [--status <s>] [--db path]
 session run    <id> [--budget <n>] [--max-tokens <n>] [--allow <name>]... [--allow-file <manifest>] [--workdir <path>] [--db path]
 session events <id> [--db path]
