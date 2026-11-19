@@ -5,7 +5,7 @@ type: adr-index
 status: current
 adr_group: Go CLI
 created: 2026-11-18
-modified: 2026-11-18T21:40
+modified: 2026-11-19T23:40
 deciders:
   - Engineering Team
 consulted:
@@ -41,6 +41,7 @@ The Go CLI's architecture decision records, in the vault template. The prototype
 | 004 | [[ADR - Merge Trailer Policy]] | Single Project-Metadata trailer; (#N) subject; make merge-pr is the only merge path |
 | 005 | [[ADR - Config-Driven Session Composition]] | flowstate.json defaults; flags override; SHA-256 composition pin; secret keys rejected pre-decode |
 | 006 | [[ADR - Crash-Recovery Detection and Recovery]] | Run-activity gate + dangling-turn scan; idempotent session.interrupted append |
+| 007 | [[ADR - Transport Adapter Packages]] | internal/server classified as transport adapter; cmd allowlist app+config+server; net/http subtree banned from cmd |
 
 ## Reading order
 
@@ -50,6 +51,6 @@ New contributors: 001 → 002 → 005 covers the layering, runtime, and configur
 ## Vault relationship
 
 The vault corpus (78 ADRs — 37 accepted, 22 proposed, 19 superseded) documents the prototype architecture. This
-  index's six ADRs are the greenfield Go CLI's own decisions, written in the same template and cross-linked to their
+  index's seven ADRs are the greenfield Go CLI's own decisions, written in the same template and cross-linked to their
   vault ancestors. Where a vault ADR is superseded (TUI-era patterns), it has no Go CLI descendant; where it is
   accepted and carried forward, the Go CLI ADR cites it under Cross-links.

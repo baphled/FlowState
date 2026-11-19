@@ -109,7 +109,7 @@ lint: ## Run linters
 check: fmt lint test test-e2e ## Run all checks
 
 check-code-contract: ## Check committed changed Go structure (BASE_SHA=PR base)
-	python3 -B -m unittest discover -s scripts/tests -p test_code_contract.py
+	python3 -B -m unittest discover -s scripts/tests -p 'test_*code_contract*.py'
 	python3 -B scripts/check_code_contract.py --base "$(BASE_SHA)"
 
 check-python-contract: ## Check committed Python complexity and test ownership (BASE_SHA=PR base)

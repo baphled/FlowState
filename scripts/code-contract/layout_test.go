@@ -11,6 +11,7 @@ var _ = Describe("Owning-package structure", func() {
 	},
 		Entry("new internal owner needs contract", "internal/runtime_extra/types.go", "package runtime_extra; type event struct{}", 1),
 		Entry("nested known owner", "internal/runtime/nested/types.go", "package nested; type event struct{}", 0),
+		Entry("transport adapter area is a registered owner", "internal/server/types.go", "package server; type event struct{}", 0),
 		Entry("unregistered public root", "pkg/engine/engine.go", "package engine;func work(){}", 1),
 		Entry("type beside implementation", "scripts/fixture/service.go", "package service; type record struct{}", 1),
 		Entry("type alias beside implementation", "scripts/fixture/service.go", "package service; type record = string", 1),
@@ -43,6 +44,12 @@ var _ = Describe("Layer dependencies", func() {
 		Entry("adapter cannot import lifecycle", "internal/provider/zai/deep/a.go", modulePath+"internal/runtime/child", false),
 		Entry("adapter imports port", "internal/provider/zai/a.go", modulePath+"internal/provider", true),
 		Entry("internal never imports command", "internal/config/a.go", modulePath+"cmd/flowstate", false),
+		Entry("CLI imports server adapter", "cmd/flowstate/main.go", modulePath+"internal/server", true),
+		Entry("CLI cannot serve HTTP", "cmd/flowstate/main.go", "net/http", false),
+		Entry("CLI cannot import HTTP test subtree", "cmd/flowstate/main.go", "net/http/httptest", false),
+		Entry("server adapter serves HTTP", "internal/server/a.go", "net/http", true),
+		Entry("server adapter cannot import application", "internal/server/a.go", modulePath+"internal/app", false),
+		Entry("server adapter cannot import command", "internal/server/a.go", modulePath+"cmd/flowstate", false),
 	)
 	It("rejects inline rule suppression", func() {
 		Expect(inspectSource("scripts/fixture/service.go", []byte("package service\n//nolint:depguard\nfunc work(){}"))).To(HaveLen(1))

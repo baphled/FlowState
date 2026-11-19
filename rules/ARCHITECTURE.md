@@ -17,6 +17,7 @@ for this backend.
 | `internal/tool` | Tool port, permission and loop policy | Domain/ports; storage behind a narrow consumer port |
 | `internal/store`, `internal/storage` | Persistence adapters | No application, CLI or engine lifecycle dependency |
 | `internal/provider/*`, `internal/oauth` | External transports/authentication | Implement ports; no application, CLI or lifecycle ownership |
+| `internal/server` | HTTP transport adapter (ratified ahead of implementation) | Standard library incl. `net/http`; no application, runtime or CLI dependency; cmd may import it, cmd production files ban the `net/http` subtree |
 | `internal/config` | Configuration values and validation | Configuration is passed into composition, not ambient domain wiring |
 
 Production Go roots are `cmd/flowstate`, the classified `internal` areas, and
