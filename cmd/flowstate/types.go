@@ -14,10 +14,12 @@ type flags struct {
 	json   bool
 	status string
 	// session new
-	provider string
-	model    string
-	task     string
-	parent   string
+	provider   string
+	model      string
+	task       string
+	parent     string
+	reserve    int64
+	reserveSet bool
 	// config file (CLI-AND-API-CONTRACT §4)
 	configPath   string
 	config       cliConfig
