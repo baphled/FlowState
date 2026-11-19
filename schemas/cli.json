@@ -2,19 +2,36 @@
   "session-new": {
     "type": "object",
     "additionalProperties": false,
-    "required": ["id", "status"],
+    "required": [
+      "id",
+      "status"
+    ],
     "properties": {
-      "id": {"type": "string"},
-      "status": {"type": "string"}
+      "id": {
+        "type": "string"
+      },
+      "status": {
+        "type": "string"
+      },
+      "parent_id": {
+        "type": "string"
+      }
     }
   },
   "session-cancel": {
     "type": "object",
     "additionalProperties": false,
-    "required": ["id", "status"],
+    "required": [
+      "id",
+      "status"
+    ],
     "properties": {
-      "id": {"type": "string"},
-      "status": {"type": "string"}
+      "id": {
+        "type": "string"
+      },
+      "status": {
+        "type": "string"
+      }
     }
   },
   "session-list": {
@@ -22,16 +39,45 @@
     "items": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "created_at_utc", "updated_at_utc", "status", "provider", "model_id", "harness", "config_sha256"],
+      "required": [
+        "id",
+        "created_at_utc",
+        "updated_at_utc",
+        "status",
+        "provider",
+        "model_id",
+        "harness",
+        "config_sha256",
+        "parent_id"
+      ],
       "properties": {
-        "id": {"type": "string"},
-        "created_at_utc": {"type": "string"},
-        "updated_at_utc": {"type": "string"},
-        "status": {"type": "string"},
-        "provider": {"type": "string"},
-        "model_id": {"type": "string"},
-        "harness": {"type": "string"},
-        "config_sha256": {"type": "string"}
+        "id": {
+          "type": "string"
+        },
+        "created_at_utc": {
+          "type": "string"
+        },
+        "updated_at_utc": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "model_id": {
+          "type": "string"
+        },
+        "harness": {
+          "type": "string"
+        },
+        "config_sha256": {
+          "type": "string"
+        },
+        "parent_id": {
+          "type": "string"
+        }
       }
     }
   },
@@ -40,15 +86,37 @@
     "items": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["session_id", "seq", "created_at_utc", "actor", "type", "payload", "payload_sha256"],
+      "required": [
+        "session_id",
+        "seq",
+        "created_at_utc",
+        "actor",
+        "type",
+        "payload",
+        "payload_sha256"
+      ],
       "properties": {
-        "session_id": {"type": "string"},
-        "seq": {"type": "integer"},
-        "created_at_utc": {"type": "string"},
-        "actor": {"type": "string"},
-        "type": {"type": "string"},
-        "payload": {"type": "object"},
-        "payload_sha256": {"type": "string"}
+        "session_id": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "created_at_utc": {
+          "type": "string"
+        },
+        "actor": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "payload": {
+          "type": "object"
+        },
+        "payload_sha256": {
+          "type": "string"
+        }
       }
     }
   },
@@ -57,15 +125,37 @@
     "items": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["session_id", "seq", "created_at_utc", "actor", "type", "payload", "payload_sha256"],
+      "required": [
+        "session_id",
+        "seq",
+        "created_at_utc",
+        "actor",
+        "type",
+        "payload",
+        "payload_sha256"
+      ],
       "properties": {
-        "session_id": {"type": "string"},
-        "seq": {"type": "integer"},
-        "created_at_utc": {"type": "string"},
-        "actor": {"type": "string"},
-        "type": {"type": "string"},
-        "payload": {"type": "object"},
-        "payload_sha256": {"type": "string"}
+        "session_id": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "created_at_utc": {
+          "type": "string"
+        },
+        "actor": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "payload": {
+          "type": "object"
+        },
+        "payload_sha256": {
+          "type": "string"
+        }
       }
     }
   },
@@ -74,10 +164,51 @@
     "items": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "verdict"],
+      "required": [
+        "path",
+        "verdict"
+      ],
       "properties": {
-        "path": {"type": "string"},
-        "verdict": {"type": "string", "enum": ["valid", "invalid"]}
+        "path": {
+          "type": "string"
+        },
+        "verdict": {
+          "type": "string",
+          "enum": [
+            "valid",
+            "invalid"
+          ]
+        }
+      }
+    }
+  },
+  "session-budget": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "session_id",
+      "reserved",
+      "budget_pool",
+      "available"
+    ],
+    "properties": {
+      "session_id": {
+        "type": "string"
+      },
+      "reserved": {
+        "type": "integer"
+      },
+      "budget_pool": {
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "available": {
+        "type": [
+          "integer",
+          "null"
+        ]
       }
     }
   }

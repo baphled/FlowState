@@ -132,7 +132,7 @@ func dispatchSession(ctx context.Context, sub string, fl *flags, id string, stdo
 	case "run":
 		return cmdRun(ctx, st, id, fl, stdout, stderr)
 	case "events":
-		return cmdEvents(ctx, st, id, stdout, stderr)
+		return cmdEvents(ctx, st, id, fl, stdout, stderr)
 	case "cancel":
 		return cmdCancel(ctx, st, id, stdout, stderr)
 	case "replay":
@@ -141,6 +141,10 @@ func dispatchSession(ctx context.Context, sub string, fl *flags, id string, stdo
 		return cmdClose(ctx, st, id, stdout, stderr)
 	case "tool":
 		return cmdTool(ctx, fl.db, fl, id, stdout, stderr)
+	case "budget":
+		return cmdBudget(ctx, st, id, stdout)
+	case "message":
+		return cmdMessage(ctx, st, id, fl, stdout, stderr)
 	default:
 		writeError(stderr, fmt.Errorf("%w: unknown session subcommand %q", errUsageCmd, sub))
 		return exitUsage
@@ -156,8 +160,9 @@ func (usageSentinel) Error() string { return "usage" }
 // Is reports equality with the app usage sentinel.
 func (usageSentinel) Is(target error) bool { return target.Error() == "usage" }
 
-// parseFlags extracts --db, --json, --status, --provider, --model and
-// --task flags; positional arguments are returned in order.
+// parseFlags extracts --db, --json, --status, --provider, --model,
+// --task, --parent and --reserve flags; positional arguments are
+// returned in order.
 func parseFlags(args []string) (*flags, []string, error) {
 	fl := &flags{db: defaultDBPath}
 	var positional []string
@@ -180,9 +185,12 @@ func parseFlags(args []string) (*flags, []string, error) {
 			fl.dbSet = true
 		case a == "--json":
 			fl.json = true
+		case a == "--follow":
+			fl.follow = true
 		case strings.HasPrefix(a, "--status"), strings.HasPrefix(a, "--provider"),
 			strings.HasPrefix(a, "--model"), strings.HasPrefix(a, "--task"),
-			strings.HasPrefix(a, "--config"):
+			strings.HasPrefix(a, "--parent"), strings.HasPrefix(a, "--config"),
+			strings.HasPrefix(a, "--manifest"), a == "--from", a == "--body":
 			if serr := fl.setString(a, take); serr != nil {
 				return nil, nil, serr
 			}
@@ -190,7 +198,7 @@ func parseFlags(args []string) (*flags, []string, error) {
 			if serr := fl.setToolFlag(a, take); serr != nil {
 				return nil, nil, serr
 			}
-		case a == "--budget", a == "--max-tokens":
+		case a == "--budget", a == "--max-tokens", a == "--reserve":
 			v, err := flagValue(a, take)
 			if err != nil {
 				return nil, nil, err
@@ -225,6 +233,14 @@ func (f *flags) setString(name string, take func() (string, error)) error {
 		f.model = v
 	case strings.HasPrefix(name, "--task"):
 		f.task = v
+	case strings.HasPrefix(name, "--parent"):
+		f.parent = v
+	case name == "--from":
+		f.msgFrom = v
+	case name == "--body":
+		f.msgBody = v
+	case strings.HasPrefix(name, "--manifest"):
+		f.manifestPath = v
 	default:
 		return fmt.Errorf("unknown flag %s", name)
 	}
@@ -262,10 +278,14 @@ func setLimit(fl *flags, name, v string) error {
 	if err != nil || n < 0 {
 		return fmt.Errorf("flag %s expects a non-negative integer, got %q", name, v)
 	}
-	if name == "--budget" {
+	switch name {
+	case "--budget":
 		fl.budget = n
 		fl.budgetSet = true
-	} else {
+	case "--reserve":
+		fl.reserve = n
+		fl.reserveSet = true
+	default:
 		fl.maxTokens = n
 	}
 	return nil
@@ -289,10 +309,12 @@ func openStore(path string) (*app.Store, error) {
 func usage(w *os.File) {
 	_, _ = fmt.Fprint(w, `usage: flowstate [--version] session <subcommand> [flags] [id]
 
-session new    --provider <p> --model <m> --task <text|@file> [--db path]
+session new    --provider <p> --model <m> --task <text|@file> [--parent <id>] [--reserve <n>] [--db path]
+session budget <id> [--db path]
+session message <id> --from <parent> --body <text|@file> [--db path]
 session list   [--status <s>] [--db path]
 session run    <id> [--budget <n>] [--max-tokens <n>] [--allow <name>]... [--allow-file <manifest>] [--workdir <path>] [--db path]
-session events <id> [--db path]
+session events <id> [--follow] [--db path]
 session close  <id> [--db path]
 session cancel <id> [--db path]
 session replay <id> [--db path]

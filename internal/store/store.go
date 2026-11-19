@@ -14,11 +14,6 @@ import (
 	_ "modernc.org/sqlite" // CGO-free SQLite driver (T019-qualified)
 )
 
-// Store wraps a workspace SQLite database.
-type Store struct {
-	db *sql.DB
-}
-
 func openDSN(dsn string) (*Store, error) {
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -32,6 +27,10 @@ func openDSN(dsn string) (*Store, error) {
 		return nil, fmt.Errorf("ping sqlite: %w", err)
 	}
 	s := &Store{db: db}
+	if err := s.openORM(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := s.migrate(); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -60,5 +59,6 @@ func (s *Store) Close() error {
 	}
 	err := s.db.Close()
 	s.db = nil
+	s.gdb = nil
 	return err
 }

@@ -27,6 +27,14 @@ python3 -B scripts/pr_size.py --base "$BASE" --head "$HEAD"
 python3 -B scripts/check_code_contract.py --base "$BASE"
 python3 -B scripts/check_test_contract.py --base "$BASE"
 python3 -B -m scripts.check_python_contract --base "$BASE"
+# Subject policy on every pushed commit (commit-msg validates locally
+# created commits; this also covers amended or transplanted histories).
+git log --format=%s "$BASE..$HEAD" | while IFS= read -r subject; do
+  python3 -B scripts/check_commit_subject.py --header "$subject" || {
+    echo "pre-push: invalid commit subject: $subject" >&2
+    exit 1
+  }
+done
 while read -r local_ref local_sha remote_ref remote_sha; do
     case "$local_ref" in refs/heads/*) ;; *) continue ;; esac
     case "$local_sha" in 0000000000000000000000000000000000000000) continue ;; esac

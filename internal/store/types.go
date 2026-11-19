@@ -1,11 +1,25 @@
 package store
 
 import (
+	"database/sql"
 	"sync"
 	"time"
+
+	"gorm.io/gorm"
 )
 
+// Store wraps a workspace SQLite database: db is the single
+// serialized connection pool (the event writer is serialized by
+// design) and gdb is the GORM session bound onto that same pool; the
+// raw handle stays reserved for grandfathered files.
+type Store struct {
+	db  *sql.DB
+	gdb *gorm.DB
+}
+
 // Session is the persisted session record per DATA-MODEL §2.
+// ParentID links a delegated child session to its parent; roots keep
+// the empty string.
 type Session struct {
 	ID        string
 	CreatedAt time.Time
@@ -15,13 +29,7 @@ type Session struct {
 	ModelID   string
 	Harness   string
 	ConfigSHA string
-}
-
-// migration is one forward-only schema step. Migrations must never be
-// edited once shipped; append new ones with an incremented Version.
-type migration struct {
-	version int64
-	stmts   []string
+	ParentID  string
 }
 
 // EventWriter is the single serialized event writer for one session
@@ -66,4 +74,27 @@ type RecordedEvent struct {
 	Type        string
 	PayloadSHA  string
 	PayloadJSON string
+}
+
+// BudgetSnapshot reports the durable budget state of one session:
+// the declared pool anchor (nil = none declared), the outstanding
+// reserved budget held by its children's live reservations, and the
+// available budget (Pool - Reserved, nil when no pool is declared).
+type BudgetSnapshot struct {
+	Pool      *int64
+	Reserved  int64
+	Available *int64
+}
+
+// BudgetReservation is one durable child grant: Granted is the
+// reserved amount, Consumed the settled usage (capped at Granted),
+// and Status the domain-layer lifecycle (reserved or charged).
+type BudgetReservation struct {
+	ID        string
+	ParentID  string
+	ChildID   string
+	Granted   int64
+	Consumed  int64
+	Status    string
+	CreatedAt time.Time
 }

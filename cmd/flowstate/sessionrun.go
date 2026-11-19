@@ -175,6 +175,22 @@ func cmdRun(ctx context.Context, st *app.Store, id string, fl *flags, stdout, st
 	if code, done := resumePausedRun(ctx, st, sess, stderr); done {
 		return code
 	}
+	// Steering drain: pending messages addressed to this session
+	// become session.steered events (send order) before turn work, so
+	// a directive lands at the next turn boundary.
+	if _, derr := app.DrainSteeringMessages(ctx, st, sess.ID); derr != nil {
+		writeError(stderr, fmt.Errorf("%w: steering drain: %v", app.ErrConfigInvalid, derr))
+		return exitConfigInvalid
+	}
+	// Resolve the effective budget: an explicit --budget anchors the
+	// session's shared pool; a delegated child without one draws from
+	// its reservation remainder (M2 shared budgets).
+	budget, berr := app.ResolveRunBudget(ctx, st, sess, fl.budget)
+	if berr != nil {
+		writeError(stderr, berr)
+		return exitCodeFor(berr)
+	}
+	fl.budget = budget
 	return runSessionTurn(ctx, st, sess, fl, stdout, stderr)
 }
 

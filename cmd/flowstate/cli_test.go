@@ -335,6 +335,273 @@ func e2eToolLoopProvider() *httptest.Server {
 }
 
 var _ = Describe("CLI end-to-end contract matrix", Label("e2e"), func() {
+
+	Context("session new --parent creates a linked child", func() {
+		var db string
+		var parentID string
+		newChild := func() map[string]any {
+			r := runArgv([]string{"session", "new", "--db", db, "--parent", parentID,
+				"--provider", "z.ai", "--model", "glm-5.3", "--task", "child task"})
+			if r.exit != 0 {
+				panic("session new --parent failed: " + r.stderr)
+			}
+			var rec map[string]any
+			if err := json.Unmarshal([]byte(r.stdout), &rec); err != nil {
+				panic(err)
+			}
+			return rec
+		}
+		listJSON := func() []map[string]any {
+			r := runArgv([]string{"session", "list", "--db", db, "--json"})
+			if r.exit != 0 {
+				panic("session list failed: " + r.stderr)
+			}
+			var out []map[string]any
+			for _, line := range strings.Split(strings.TrimSpace(r.stdout), "\n") {
+				var m map[string]any
+				if err := json.Unmarshal([]byte(line), &m); err != nil {
+					panic(err)
+				}
+				out = append(out, m)
+			}
+			return out
+		}
+		BeforeEach(func() {
+			db = filepath.Join(GinkgoT().TempDir(), "child.db")
+			r := runArgv([]string{"session", "new", "--db", db,
+				"--provider", "z.ai", "--model", "glm-5.3", "--task", "parent task"})
+			if r.exit != 0 {
+				panic("parent session new failed: " + r.stderr)
+			}
+			var rec map[string]any
+			if err := json.Unmarshal([]byte(r.stdout), &rec); err != nil {
+				panic(err)
+			}
+			parentID = rec["id"].(string)
+		})
+
+		It("emits the child record with the parent linkage", func() {
+			rec := newChild()
+			Expect(rec["parent_id"]).To(Equal(parentID))
+		})
+
+		It("persists the linkage visible in session list", func() {
+			rec := newChild()
+			childID := rec["id"].(string)
+			var childRecord map[string]any
+			for _, m := range listJSON() {
+				if m["id"] == childID {
+					childRecord = m
+				}
+			}
+			// A missing record leaves the map nil, whose lookup reads as
+			// nil and fails the Equal — one behavioural expectation.
+			Expect(childRecord["parent_id"]).To(Equal(parentID))
+		})
+
+		It("opens the child log with a session.delegated event", func() {
+			rec := newChild()
+			childID := rec["id"].(string)
+			er := runArgv([]string{"session", "events", childID, "--db", db, "--json"})
+			if er.exit != 0 {
+				panic("session events failed: " + er.stderr)
+			}
+			first := strings.SplitN(strings.TrimSpace(er.stdout), "\n", 2)[0]
+			var ev map[string]any
+			if err := json.Unmarshal([]byte(first), &ev); err != nil {
+				panic(err)
+			}
+			Expect(ev["type"]).To(Equal("session.delegated"))
+		})
+
+		It("exits 2 with usage for an unknown parent", func() {
+			r := runArgv([]string{"session", "new", "--db", db, "--parent", "01a1f000-0000-7000-8000-000000000000",
+				"--provider", "z.ai", "--model", "glm-5.3", "--task", "child task"})
+			Expect(r.exit).To(Equal(2))
+		})
+
+		It("exits 2 when --reserve is given without --parent", func() {
+			r := runArgv([]string{"session", "new", "--db", db, "--reserve", "40",
+				"--provider", "z.ai", "--model", "glm-5.3", "--task", "no parent"})
+			Expect(r.exit).To(Equal(2))
+		})
+	})
+
+	Context("session events --follow", func() {
+		It("prints all events of a terminal session and exits", func() {
+			db := filepath.Join(GinkgoT().TempDir(), "follow.db")
+			nr := runArgv([]string{"session", "new", "--db", db,
+				"--provider", "z.ai", "--model", "glm-5.3", "--task", "follow me"})
+			if nr.exit != 0 {
+				panic("session new failed: " + nr.stderr)
+			}
+			var nrec map[string]any
+			if err := json.Unmarshal([]byte(nr.stdout), &nrec); err != nil {
+				panic(err)
+			}
+			id := nrec["id"].(string)
+			cl := runArgv([]string{"session", "close", "--db", db, id})
+			if cl.exit != 0 {
+				panic("session close failed: " + cl.stderr)
+			}
+			fr := runArgv([]string{"session", "events", "--db", db, id, "--follow"})
+			if fr.exit != 0 {
+				panic("session events --follow failed: " + fr.stderr)
+			}
+			Expect(strings.Contains(fr.stdout, "session.cancelled")).To(BeTrue())
+		})
+
+		It("exits with the unknown-session code for an unknown id", func() {
+			db := filepath.Join(GinkgoT().TempDir(), "follow-unknown.db")
+			r := runArgv([]string{"session", "events", "--db", db,
+				"01a1f000-0000-4000-8000-000000000000", "--follow"})
+			Expect(r.exit).NotTo(Equal(0))
+		})
+	})
+
+	Context("session message steering", func() {
+		var db string
+		var parentID string
+		var childID string
+		BeforeEach(func() {
+			db = filepath.Join(GinkgoT().TempDir(), "steer.db")
+			pr := runArgv([]string{"session", "new", "--db", db,
+				"--provider", "z.ai", "--model", "glm-5.3", "--task", "parent"})
+			if pr.exit != 0 {
+				panic("parent session new failed: " + pr.stderr)
+			}
+			var prec map[string]any
+			if err := json.Unmarshal([]byte(pr.stdout), &prec); err != nil {
+				panic(err)
+			}
+			parentID = prec["id"].(string)
+			cr := runArgv([]string{"session", "new", "--db", db, "--parent", parentID,
+				"--provider", "z.ai", "--model", "glm-5.3", "--task", "child"})
+			if cr.exit != 0 {
+				panic("child session new failed: " + cr.stderr)
+			}
+			var crec map[string]any
+			if err := json.Unmarshal([]byte(cr.stdout), &crec); err != nil {
+				panic(err)
+			}
+			childID = crec["id"].(string)
+		})
+
+		It("records a steering message addressed to the child", func() {
+			r := runArgv([]string{"session", "message", "--db", db, childID,
+				"--from", parentID, "--body", "refocus on the parser"})
+			if r.exit != 0 {
+				panic("session message failed: " + r.stderr)
+			}
+			var rec map[string]any
+			if err := json.Unmarshal([]byte(r.stdout), &rec); err != nil {
+				panic(err)
+			}
+			Expect(map[string]any{"session_id": rec["session_id"], "sender": rec["sender"]}).
+				To(Equal(map[string]any{"session_id": childID, "sender": parentID}))
+		})
+
+		It("exits 2 when the sender is outside the delegation chain", func() {
+			sdb := filepath.Join(GinkgoT().TempDir(), "stranger.db")
+			sr := runArgv([]string{"session", "new", "--db", sdb,
+				"--provider", "z.ai", "--model", "glm-5.3", "--task", "stranger"})
+			if sr.exit != 0 {
+				panic("stranger session new failed: " + sr.stderr)
+			}
+			var srec map[string]any
+			if err := json.Unmarshal([]byte(sr.stdout), &srec); err != nil {
+				panic(err)
+			}
+
+			r := runArgv([]string{"session", "message", "--db", db, childID,
+				"--from", srec["id"].(string), "--body", "cross-tree injection"})
+			Expect(r.exit).To(Equal(2))
+		})
+
+		It("keeps the message pending until the child run drains it", func() {
+			mr := runArgv([]string{"session", "message", "--db", db, childID,
+				"--from", parentID, "--body", "steer body"})
+			if mr.exit != 0 {
+				panic("session message failed: " + mr.stderr)
+			}
+			er := runArgv([]string{"session", "events", "--db", db, childID, "--json"})
+			if er.exit != 0 {
+				panic("session events failed: " + er.stderr)
+			}
+			Expect(strings.Contains(er.stdout, "session.steered")).To(BeFalse())
+		})
+	})
+
+	Context("session budget reports the shared pool", func() {
+		var db string
+		var parentID string
+		BeforeEach(func() {
+			db = filepath.Join(GinkgoT().TempDir(), "budget.db")
+			r := runArgv([]string{"session", "new", "--db", db,
+				"--provider", "z.ai", "--model", "glm-5.3", "--task", "pool owner"})
+			if r.exit != 0 {
+				panic("parent session new failed: " + r.stderr)
+			}
+			var rec map[string]any
+			if err := json.Unmarshal([]byte(r.stdout), &rec); err != nil {
+				panic(err)
+			}
+			parentID = rec["id"].(string)
+		})
+
+		runParent := func() int {
+			rr := runArgv([]string{"session", "run", "--db", db, parentID, "--budget", "100"})
+			// The anchor persists regardless of the turn outcome: the
+			// resolved budget is written before the provider is contacted,
+			// so live, budget-stop and provider-error exits all qualify.
+			if rr.exit != 0 && rr.exit != 3 && rr.exit != 5 {
+				panic("session run failed unexpectedly: " + rr.stderr)
+			}
+			return rr.exit
+		}
+
+		It("reports the anchored pool with no reservations", func() {
+			runParent()
+			r := runArgv([]string{"session", "budget", parentID, "--db", db, "--json"})
+			if r.exit != 0 {
+				panic("session budget failed: " + r.stderr)
+			}
+			var rec map[string]any
+			if err := json.Unmarshal([]byte(r.stdout), &rec); err != nil {
+				panic(err)
+			}
+			Expect(rec).To(Equal(map[string]any{
+				"session_id": parentID, "budget_pool": float64(100),
+				"reserved": float64(0), "available": float64(100),
+			}))
+		})
+
+		It("reflects a child reservation against the parent pool", func() {
+			runParent()
+			cr := runArgv([]string{"session", "new", "--db", db, "--parent", parentID, "--reserve", "40",
+				"--provider", "z.ai", "--model", "glm-5.3", "--task", "reserved child"})
+			if cr.exit != 0 {
+				panic("child session new failed: " + cr.stderr)
+			}
+			r := runArgv([]string{"session", "budget", parentID, "--db", db, "--json"})
+			if r.exit != 0 {
+				panic("session budget failed: " + r.stderr)
+			}
+			var rec map[string]any
+			if err := json.Unmarshal([]byte(r.stdout), &rec); err != nil {
+				panic(err)
+			}
+			Expect(rec).To(Equal(map[string]any{
+				"session_id": parentID, "budget_pool": float64(100),
+				"reserved": float64(40), "available": float64(60),
+			}))
+		})
+
+		It("exits with the unknown-session code for an unknown id", func() {
+			r := runArgv([]string{"session", "budget", "01a1f000-0000-4000-8000-000000000000", "--db", db})
+			Expect(r.exit).NotTo(Equal(0))
+		})
+	})
 	Context("session new prints its record", func() {
 		var observedExit int
 		BeforeEach(func() {
@@ -698,7 +965,13 @@ var _ = Describe("CLI end-to-end contract matrix", Label("e2e"), func() {
 		}
 
 		It("session new output matches the session-new schema", func() {
-			Expect(validateAgainst("session-new", `{"id":"01a1ee79-ca3e-702f-9b6e-13fb693a8345","status":"active"}`)).To(Succeed())
+			root := `{"id":"01a1ee79-ca3e-702f-9b6e-13fb693a8345","status":"active","parent_id":""}`
+			Expect(validateAgainst("session-new", root)).To(Succeed())
+		})
+
+		It("child session new output matches the session-new schema", func() {
+			child := `{"id":"01a1ee79-ca3e-702f-9b6e-13fb693a8345","status":"active","parent_id":"01a1ee79-ca3e-702f-9b6e-13fb693a8344"}`
+			Expect(validateAgainst("session-new", child)).To(Succeed())
 		})
 
 		It("event envelope matches the session-events schema", func() {
@@ -717,7 +990,7 @@ var _ = Describe("CLI end-to-end contract matrix", Label("e2e"), func() {
 		})
 
 		It("session list output matches the session-list schema", func() {
-			list := `[{"id":"01a1ee79","created_at_utc":"2026-11-18T00:00:00Z","updated_at_utc":"2026-11-18T00:00:00Z","status":"active","provider":"z.ai","model_id":"glm-5.3-flash","harness":"flowstate-cli","config_sha256":"abc"}]`
+			list := `[{"id":"01a1ee79","created_at_utc":"2026-11-18T00:00:00Z","updated_at_utc":"2026-11-18T00:00:00Z","status":"active","provider":"z.ai","model_id":"glm-5.3-flash","harness":"flowstate-cli","config_sha256":"abc","parent_id":""},{"id":"01a1ee80","created_at_utc":"2026-11-18T00:00:01Z","updated_at_utc":"2026-11-18T00:00:01Z","status":"active","provider":"z.ai","model_id":"glm-5.3-flash","harness":"flowstate-cli","config_sha256":"abc","parent_id":"01a1ee79"}]`
 			Expect(validateAgainst("session-list", list)).To(Succeed())
 		})
 	})
@@ -854,5 +1127,58 @@ var _ = Describe("CLI end-to-end contract matrix", Label("e2e"), func() {
 		p := writeReceipt(doc)
 		res := runArgv([]string{"receipt", "validate", p})
 		Expect(res.exit).To(Equal(0))
+	})
+})
+
+var _ = Describe("swarm validate", func() {
+	It("accepts a valid manifest and prints the name", func() {
+		mf := filepath.Join(GinkgoT().TempDir(), "swarm.yaml")
+		yaml := "name: test-swarm\nscope: m2.runtime\npackets:\n  - id: p1\n    scope: m2.runtime\n    task: do the thing\n    source_sha256: " + strings.Repeat("a", 64) + "\n"
+		if err := os.WriteFile(mf, []byte(yaml), 0o644); err != nil {
+			panic(err)
+		}
+		r := runArgv([]string{"swarm", "validate", "--manifest", mf})
+		if r.exit != 0 {
+			panic("swarm validate failed: " + r.stderr)
+		}
+		Expect(strings.Contains(r.stdout, "test-swarm")).To(BeTrue())
+	})
+
+	It("exits 2 for an invalid manifest path", func() {
+		r := runArgv([]string{"swarm", "validate", "--manifest", "/nonexistent/swarm.yaml"})
+		Expect(r.exit).To(Equal(2))
+	})
+})
+
+var _ = Describe("swarm run", func() {
+	It("exits 2 when --parent is missing", func() {
+		db := filepath.Join(GinkgoT().TempDir(), "swarmrun.db")
+		r := runArgv([]string{"swarm", "run", "--db", db, "--manifest", "/tmp/x.yaml", "--budget", "100"})
+		Expect(r.exit).To(Equal(2))
+	})
+
+	It("runs a one-packet manifest and reports the child", func() {
+		db := filepath.Join(GinkgoT().TempDir(), "swarmrun2.db")
+		r := runArgv([]string{"session", "new", "--db", db, "--budget", "100",
+			"--provider", "z.ai", "--model", "glm-5.3", "--task", "parent task"})
+		if r.exit != 0 {
+			panic("parent session new failed: " + r.stderr)
+		}
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(r.stdout), &rec); err != nil {
+			panic(err)
+		}
+		parentID := rec["id"].(string)
+		mf := filepath.Join(GinkgoT().TempDir(), "swarm.yaml")
+		yaml := "name: run-swarm\nscope: m2.runtime\npackets:\n  - id: p1\n    scope: m2.runtime\n    task: do the thing\n    source_sha256: " + strings.Repeat("b", 64) + "\ngates:\n  - name: ok\n    description: trivially pass\n    command: true\n"
+		if err := os.WriteFile(mf, []byte(yaml), 0o644); err != nil {
+			panic(err)
+		}
+		r = runArgv([]string{"swarm", "run", "--db", db, "--manifest", mf,
+			"--parent", parentID, "--budget", "100"})
+		if r.exit != 0 {
+			panic("swarm run failed: " + r.stderr)
+		}
+		Expect(strings.Contains(r.stdout, `"packet":"p1"`)).To(BeTrue())
 	})
 })
