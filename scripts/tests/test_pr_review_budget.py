@@ -1,6 +1,13 @@
 """Test protected per-type PR budget selection and untrusted input rejection."""
+import contextlib
+import io
+import sys
+import tempfile
 import unittest
-from scripts.pr_review_budget import select
+from pathlib import Path
+from unittest import mock
+
+from scripts.pr_review_budget import main, select
 
 POLICY = '''FLOWSTATE_PR_MAX_LINES=600
 FLOWSTATE_PR_MAX_LINES_FEAT=1200
@@ -37,6 +44,48 @@ class TypedPRBudget(unittest.TestCase):
 
     def test_protected_push_uses_commit_type(self):
         self.assertEqual(select(POLICY, 'feat(app): squash merged'), 1200)
+
+
+class MainExitCodes(unittest.TestCase):
+    """main() separates classification failures from policy/IO failures."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.policy = Path(self._tmp.name) / 'env.ci'
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def invoke(self, *args):
+        argv = ['pr_review_budget.py', '--policy', str(self.policy), *args]
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch.object(sys, 'argv', argv), \
+                contextlib.redirect_stdout(stdout), \
+                contextlib.redirect_stderr(stderr):
+            code = main()
+        return code, stderr.getvalue()
+
+    def test_unclassified_subject_exits_two(self):
+        self.policy.write_text(POLICY, encoding='utf-8')
+        code, stderr = self.invoke('--title', 'v1.2.3 release aggregate')
+        self.assertEqual(code, 2)
+        self.assertIn('PR review budget blocked: ', stderr)
+
+    def test_malformed_policy_exits_one(self):
+        self.policy.write_text('FLOWSTATE_PR_MAX_LINES\n', encoding='utf-8')
+        code, _ = self.invoke('--title', 'feat(app): streaming loop')
+        self.assertEqual(code, 1)
+
+    def test_missing_policy_file_exits_one(self):
+        code, _ = self.invoke('--title', 'feat(app): streaming loop')
+        self.assertEqual(code, 1)
+
+    def test_valid_selection_exits_zero(self):
+        self.policy.write_text(POLICY, encoding='utf-8')
+        code, stderr = self.invoke('--title', 'fix(store): replay text',
+                                   '--branch', 'fix/replay')
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, '')
 
 
 if __name__ == '__main__':
