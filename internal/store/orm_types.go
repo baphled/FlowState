@@ -1,5 +1,7 @@
 package store
 
+import "time"
+
 // schemaMigrationRow mirrors schema_migrations (v1 bootstrap).
 type schemaMigrationRow struct {
 	Version      int64  `gorm:"column:version;primaryKey;not null;type:integer"`
@@ -73,4 +75,25 @@ type budgetReservationRow struct {
 	Consumed     int64  `gorm:"column:consumed;not null;default:0;type:integer"`
 	Status       string `gorm:"column:status;not null;type:text"`
 	CreatedAtUTC string `gorm:"column:created_at_utc;not null;type:text"`
+}
+
+// sessionMessageRow mirrors the session_messages table (v6): one
+// durable steering directive addressed to a child session, delivered
+// when the child's run drains it at the next turn boundary.
+type sessionMessageRow struct {
+	ID           string  `gorm:"column:id;primaryKey;not null;type:text"`
+	SessionID    string  `gorm:"column:session_id;not null;type:text;index:idx_session_messages_session_id"`
+	Sender       string  `gorm:"column:sender;not null;type:text"`
+	Body         string  `gorm:"column:body;not null;type:text"`
+	CreatedAtUTC string  `gorm:"column:created_at_utc;not null;type:text"`
+	DeliveredAt  *string `gorm:"column:delivered_at_utc;type:text"`
+}
+
+// SessionSteeringMessage is the wire shape of one steering message.
+type SessionSteeringMessage struct {
+	ID        string
+	SessionID string
+	Sender    string
+	Body      string
+	CreatedAt time.Time
 }
