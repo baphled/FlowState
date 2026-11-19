@@ -211,5 +211,114 @@
         ]
       }
     }
+  },
+  "session-message": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "id",
+      "session_id",
+      "sender"
+    ],
+    "properties": {
+      "id": {
+        "type": "string"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "sender": {
+        "type": "string"
+      }
+    }
+  },
+  "session-tool": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "session_id",
+      "tool",
+      "ok",
+      "result"
+    ],
+    "properties": {
+      "session_id": {
+        "type": "string"
+      },
+      "tool": {
+        "type": "string"
+      },
+      "ok": {
+        "const": true
+      },
+      "result": true
+    }
+  },
+  "swarm-validate": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "name",
+      "valid"
+    ],
+    "properties": {
+      "name": {
+        "type": "string"
+      },
+      "valid": {
+        "const": true
+      }
+    }
+  },
+  "swarm-run": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "manifest",
+      "admitted",
+      "accepted",
+      "children"
+    ],
+    "properties": {
+      "manifest": {
+        "type": "string"
+      },
+      "admitted": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "accepted": {
+        "type": "boolean"
+      },
+      "children": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "packet",
+            "session",
+            "status",
+            "parent_id"
+          ],
+          "properties": {
+            "packet": {
+              "type": "string"
+            },
+            "session": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            },
+            "parent_id": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
   }
 }
