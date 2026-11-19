@@ -80,5 +80,28 @@ func InspectSession(ctx context.Context, st *Store, id string) (*store.Session, 
 
 // CloseSession composes explicit session close for the CLI surface.
 func CloseSession(ctx context.Context, st *Store, id string) (*store.Session, error) {
-	return session.Close(ctx, st, id)
+	sess, err := session.Close(ctx, st, id)
+	if err == nil {
+		settleReservation(ctx, st, id)
+	}
+	return sess, err
+}
+
+// ReserveChildBudget reserves grant budget for childID against the
+// parent's declared pool. Pool-missing and pool-exceeded failures map
+// to ErrUsage so the CLI surfaces exit 2; store sentinels stay
+// distinct inside the wrapped chain.
+func ReserveChildBudget(ctx context.Context, st *Store, parentID, childID string, grant int64) error {
+	if _, err := st.ReserveBudget(ctx, parentID, childID, grant); err != nil {
+		return fmt.Errorf("%w: %v", ErrUsage, err)
+	}
+	return nil
+}
+
+// settleReservation marks a terminal session's budget reservation as
+// charged, returning unused grant to the parent pool. Sessions without
+// a reservation are untouched; a failed settle surfaces after the
+// terminal transition has already committed.
+func settleReservation(ctx context.Context, st *Store, sessionID string) {
+	_ = st.SetReservationCharged(ctx, sessionID)
 }

@@ -54,9 +54,26 @@ func RunSessionExecLoop(ctx context.Context, st *store.Store, dbPath string, ses
 		MaxTurns:   maxTurns,
 		MaxTokens:  req.MaxTokens,
 	}
-	if req.Budget > 0 {
+	switch {
+	case req.Budget > 0:
+		// An explicit budget anchors the session's shared pool: child
+		// sessions may reserve against it (M2 hierarchical budgets).
+		if serr := st.SetBudgetPool(ctx, sess.ID, req.Budget); serr != nil {
+			return nil, serr
+		}
 		cfg.Pool = NewBudgetPool(req.Budget)
 		cfg.TurnBudget = 1
+	default:
+		// Without an explicit budget a delegated child draws from its
+		// reservation: the pool is the grant minus what it has spent.
+		if res, rerr := st.ReservationFor(ctx, sess.ID); rerr == nil && res.Status == store.ReservationStatusReserved {
+			grant := res.Granted - res.Consumed
+			if grant < 0 {
+				grant = 0
+			}
+			cfg.Pool = NewBudgetPool(grant)
+			cfg.TurnBudget = 1
+		}
 	}
 	res, err := RunExecLoop(ctx, cfg)
 	if err != nil {
@@ -114,6 +131,7 @@ func completeExecLoopRun(ctx context.Context, st *store.Store, sessionID string)
 	if _, err := w.Append(ctx, session.ActorEngine, TypeTurnEnd, map[string]any{"status": "completed"}); err != nil {
 		return fmt.Errorf("record loop completion: %w", err)
 	}
+	settleReservation(ctx, st, sessionID)
 	if err := st.UpdateSessionStatus(ctx, sessionID, "completed"); err != nil {
 		return fmt.Errorf("mark session completed: %w", err)
 	}

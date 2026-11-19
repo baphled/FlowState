@@ -61,7 +61,11 @@ func (c *Composition) Allowed(name string) bool { return c.allow[name] }
 // CancelSession transitions an active or paused session to
 // cancelled (session.cancelled event) so cmd stays app-only.
 func CancelSession(ctx context.Context, st *store.Store, id string) (*store.Session, error) {
-	return session.Close(ctx, st, id)
+	sess, err := session.Close(ctx, st, id)
+	if err == nil {
+		settleReservation(ctx, st, id)
+	}
+	return sess, err
 }
 
 // Close releases the loop's event-writer registration.
