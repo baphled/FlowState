@@ -9,7 +9,7 @@ import (
 // v4 adds the sessions.parent_id column for child-session delegation;
 // v5 adds sessions.budget_pool and the budget_reservations table for
 // durable shared budgets.
-const knownSchemaVersion = int64(5)
+const knownSchemaVersion = int64(6)
 
 // migrate applies forward-only schema management through the ORM:
 // idempotent AutoMigrate (v4 parent_id, v5 budget_pool and
