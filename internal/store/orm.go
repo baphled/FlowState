@@ -58,11 +58,19 @@ func migrateModels() []any {
 		&leaseHistoryRow{},
 		&budgetReservationRow{},
 		&sessionMessageRow{},
+		&swarmRunRow{},
+		&swarmRunPacketRow{},
 	}
 }
 
 // TableName pins the physical table name.
 func (sessionMessageRow) TableName() string { return "session_messages" }
+
+// TableName pins the physical table name.
+func (swarmRunRow) TableName() string { return "swarm_runs" }
+
+// TableName pins the physical table name.
+func (swarmRunPacketRow) TableName() string { return "swarm_run_packets" }
 
 // isRecordNotFound maps gorm.ErrRecordNotFound for call sites that
 // treat absence as data, not error.
