@@ -50,7 +50,15 @@ jobs:
             if [ -n "$GITHUB_HEAD_REF" ]; then
               budget="$(python3 -B "$RUNNER_TEMP/pr_review_budget_base.py" --policy "$RUNNER_TEMP/env_ci_base" --title "$pr_title" --branch "$GITHUB_HEAD_REF")" || exit 1
             else
-              budget="$(python3 -B "$RUNNER_TEMP/pr_review_budget_base.py" --policy "$RUNNER_TEMP/env_ci_base" --title "$pr_title")" || exit 1
+              budget_unclassified=0
+              budget="$(python3 -B "$RUNNER_TEMP/pr_review_budget_base.py" --policy "$RUNNER_TEMP/env_ci_base" --title "$pr_title")" || budget_unclassified=1
+              if [ "${budget_unclassified:-0}" = 1 ]; then
+                # Release merges to main carry a non-Conventional subject and
+                # aggregate packets already budget-enforced at PR time on
+                # next; skip the PR-scoped gate instead of failing the run.
+                echo "PR review budget skipped on push: release aggregate of PR-enforced packets"
+                exit 0
+              fi
             fi
           else
             if git cat-file -e "$BASE_SHA:.env.ci" 2>/dev/null; then
