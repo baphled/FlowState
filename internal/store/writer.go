@@ -3,20 +3,26 @@ package store
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 // CreateSession inserts a session row with status active and returns it.
 // The ID must be a caller-generated UUIDv7; attribution fields must be
 // runtime-observed, never prompt-claimed.
 func (s *Store) CreateSession(ctx context.Context, id, provider, modelID, harness, configSHA string) (*Session, error) {
+	return s.insertSession(ctx, id, "", provider, modelID, harness, configSHA)
+}
+
+// insertSession persists one session row in a single ORM operation. An
+// empty parentID stores a root session with a SQL NULL parent_id.
+func (s *Store) insertSession(ctx context.Context, id, parentID, provider, modelID, harness, configSHA string) (*Session, error) {
 	if err := s.checkOpen(); err != nil {
 		return nil, err
 	}
@@ -24,12 +30,14 @@ func (s *Store) CreateSession(ctx context.Context, id, provider, modelID, harnes
 	sess := &Session{
 		ID: id, CreatedAt: now, UpdatedAt: now, Status: "active",
 		Provider: provider, ModelID: modelID, Harness: harness, ConfigSHA: configSHA,
+		ParentID: parentID,
 	}
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO sessions (id, created_at_utc, updated_at_utc, status, provider, model_id, harness, config_sha256)
-		 VALUES (?,?,?,?,?,?,?,?)`,
-		sess.ID, iso(sess.CreatedAt), iso(sess.UpdatedAt), sess.Status, sess.Provider, sess.ModelID, sess.Harness, sess.ConfigSHA)
-	if err != nil {
+	row := sessionRow{
+		ID: sess.ID, CreatedAtUTC: iso(sess.CreatedAt), UpdatedAtUTC: iso(sess.UpdatedAt),
+		Status: sess.Status, Provider: sess.Provider, ModelID: sess.ModelID,
+		Harness: sess.Harness, ConfigSHA: sess.ConfigSHA, ParentID: nullableParent(parentID),
+	}
+	if err := s.gdb.WithContext(ctx).Create(&row).Error; err != nil {
 		return nil, fmt.Errorf("create session: %w", err)
 	}
 	return sess, nil
@@ -40,20 +48,15 @@ func (s *Store) GetSession(ctx context.Context, id string) (*Session, error) {
 	if err := s.checkOpen(); err != nil {
 		return nil, err
 	}
-	var sess Session
-	var created, updated string
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id, created_at_utc, updated_at_utc, status, provider, model_id, harness, config_sha256 FROM sessions WHERE id=?`, id).
-		Scan(&sess.ID, &created, &updated, &sess.Status, &sess.Provider, &sess.ModelID, &sess.Harness, &sess.ConfigSHA)
-	if errors.Is(err, sql.ErrNoRows) {
+	var row sessionRow
+	err := s.gdb.WithContext(ctx).Where(map[string]any{"id": id}).First(&row).Error
+	if isRecordNotFound(err) {
 		return nil, fmt.Errorf("%w: %s", ErrUnknownSession, id)
 	}
 	if err != nil {
 		return nil, err
 	}
-	sess.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
-	sess.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
-	return &sess, nil
+	return row.session(), nil
 }
 
 func (s *Store) checkOpen() error {
@@ -61,6 +64,29 @@ func (s *Store) checkOpen() error {
 		return ErrClosed
 	}
 	return nil
+}
+
+// nullableParent maps the empty root marker to a SQL NULL parent_id.
+func nullableParent(parentID string) *string {
+	if parentID == "" {
+		return nil
+	}
+	return &parentID
+}
+
+// session projects the row onto the public Session record; stored
+// timestamps are RFC3339Nano UTC text.
+func (r sessionRow) session() *Session {
+	sess := &Session{
+		ID: r.ID, Status: r.Status, Provider: r.Provider, ModelID: r.ModelID,
+		Harness: r.Harness, ConfigSHA: r.ConfigSHA,
+	}
+	sess.CreatedAt, _ = time.Parse(time.RFC3339Nano, r.CreatedAtUTC)
+	sess.UpdatedAt, _ = time.Parse(time.RFC3339Nano, r.UpdatedAtUTC)
+	if r.ParentID != nil {
+		sess.ParentID = *r.ParentID
+	}
+	return sess
 }
 
 func iso(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
@@ -98,30 +124,28 @@ func (s *Store) NewEventWriter(ctx context.Context, sessionID string) (*EventWri
 	if err := s.checkOpen(); err != nil {
 		return nil, err
 	}
-	if _, err := s.GetSession(ctx, sessionID); err != nil {
+	sess, err := s.GetSession(ctx, sessionID)
+	if err != nil {
 		return nil, err
 	}
 	w := &EventWriter{store: s, session: sessionID}
 	// Restore paused writers as paused: a fresh writer for a session
 	// whose persisted status is paused must keep the pause invariant
 	// (Resume stays available; Append stays guarded) across processes.
-	var status string
-	if err := s.db.QueryRowContext(ctx, `SELECT status FROM sessions WHERE id=?`, sessionID).Scan(&status); err == nil && status == "paused" {
-		w.paused = true
-	}
+	w.paused = sess.Status == "paused"
 	if _, loaded := writerRegistry.LoadOrStore(sessionID, w); loaded {
 		return nil, fmt.Errorf("%w: %s", ErrWriterExists, sessionID)
 	}
 	// Recover next seq from the committed log.
-	var maxSeq sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT MAX(seq) FROM events WHERE session_id=?`, sessionID).Scan(&maxSeq)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	var top eventRow
+	err = s.gdb.WithContext(ctx).Where(map[string]any{"session_id": sessionID}).Order("seq desc").First(&top).Error
+	if err != nil && !isRecordNotFound(err) {
 		writerRegistry.Delete(sessionID)
 		return nil, fmt.Errorf("load max seq: %w", err)
 	}
 	w.next = 0
-	if maxSeq.Valid {
-		w.next = maxSeq.Int64 + 1
+	if err == nil {
+		w.next = top.Seq + 1
 	}
 	return w, nil
 }
@@ -144,39 +168,27 @@ func (w *EventWriter) Append(ctx context.Context, actor, typ string, payload any
 	if typ == "" {
 		return -1, ErrEmptyType
 	}
-	payloadJSON, err := canonicalJSON(payload)
-	if err != nil {
-		return -1, fmt.Errorf("canonicalize payload: %w", err)
-	}
-	digest := sha256Hex(payloadJSON)
 	seq := w.next
-	_, err = w.store.db.ExecContext(ctx,
-		`INSERT INTO events (session_id, seq, created_at_utc, actor, type, payload_sha256, payload_json)
-		 VALUES (?,?,?,?,?,?,?)`,
-		w.session, seq, iso(time.Now().UTC()), actor, typ, digest, string(payloadJSON))
-	if err != nil {
-		if isUniqueConstraint(err) {
-			return -1, fmt.Errorf("%w: session %s seq %d", ErrSeqCollision, w.session, seq)
-		}
-		return -1, fmt.Errorf("append event seq %d: %w", seq, err)
+	if err := w.insertEvent(ctx, w.store.gdb, seq, actor, typ, payload); err != nil {
+		return -1, err
 	}
 	w.next++
 	return seq, nil
 }
 
-// pauseTxEvent inserts an event row inside tx with the canonical
-// payload hash, mirroring Append's row shape.
-func (w *EventWriter) pauseTxEvent(ctx context.Context, tx *sql.Tx, seq int64, actor, typ string, payload any) error {
+// insertEvent canonicalises the payload and inserts the mapped event
+// row inside the given ORM scope (plain or transactional).
+func (w *EventWriter) insertEvent(ctx context.Context, scope *gorm.DB, seq int64, actor, typ string, payload any) error {
 	payloadJSON, err := canonicalJSON(payload)
 	if err != nil {
 		return fmt.Errorf("canonicalize payload: %w", err)
 	}
-	digest := sha256Hex(payloadJSON)
-	_, err = tx.ExecContext(ctx,
-		`INSERT INTO events (session_id, seq, created_at_utc, actor, type, payload_sha256, payload_json)
-		 VALUES (?,?,?,?,?,?,?)`,
-		w.session, seq, iso(time.Now().UTC()), actor, typ, digest, string(payloadJSON))
-	if err != nil {
+	row := eventRow{
+		SessionID: w.session, Seq: seq, CreatedAtUTC: iso(time.Now().UTC()),
+		Actor: actor, Type: typ,
+		PayloadSHA: sha256Hex(payloadJSON), PayloadJSON: string(payloadJSON),
+	}
+	if err := scope.WithContext(ctx).Create(&row).Error; err != nil {
 		if isUniqueConstraint(err) {
 			return fmt.Errorf("%w: session %s seq %d", ErrSeqCollision, w.session, seq)
 		}
@@ -185,12 +197,13 @@ func (w *EventWriter) pauseTxEvent(ctx context.Context, tx *sql.Tx, seq int64, a
 	return nil
 }
 
-// pauseTxStatus updates the session status inside tx.
-func (w *EventWriter) pauseTxStatus(ctx context.Context, tx *sql.Tx, status string) error {
-	_, err := tx.ExecContext(ctx, `UPDATE sessions SET status=?, updated_at_utc=? WHERE id=?`,
-		status, iso(time.Now().UTC()), w.session)
-	if err != nil {
-		return fmt.Errorf("set status %s: %w", status, err)
+// setSessionStatus updates the session status inside the ORM scope.
+func (w *EventWriter) setSessionStatus(ctx context.Context, scope *gorm.DB, status string) error {
+	q := scope.WithContext(ctx).Model(&sessionRow{}).
+		Where(map[string]any{"id": w.session}).
+		Updates(map[string]any{"status": status, "updated_at_utc": iso(time.Now().UTC())})
+	if q.Error != nil {
+		return fmt.Errorf("set status %s: %w", status, q.Error)
 	}
 	return nil
 }
@@ -213,20 +226,15 @@ func (w *EventWriter) Pause(ctx context.Context, pi PauseInfo) error {
 		"consumed_budget": pi.ConsumedBudget,
 		"next_safe_op":    pi.NextSafeOp,
 	}
-	tx, err := w.store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("pause begin tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
 	seq := w.next
-	if err := w.pauseTxEvent(ctx, tx, seq, "engine", "session.paused", payload); err != nil {
-		return err
-	}
-	if err := w.pauseTxStatus(ctx, tx, "paused"); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("pause commit: %w", err)
+	txErr := w.store.gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := w.insertEvent(ctx, tx, seq, "engine", "session.paused", payload); err != nil {
+			return err
+		}
+		return w.setSessionStatus(ctx, tx, "paused")
+	})
+	if txErr != nil {
+		return txErr
 	}
 	w.next++
 	w.paused = true
@@ -246,20 +254,15 @@ func (w *EventWriter) Resume(ctx context.Context) error {
 	if !w.paused {
 		return ErrNotPaused
 	}
-	tx, err := w.store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("resume begin tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
 	seq := w.next
-	if err := w.pauseTxEvent(ctx, tx, seq, "user", "session.resumed", map[string]any{"from_status": "paused"}); err != nil {
-		return err
-	}
-	if err := w.pauseTxStatus(ctx, tx, "active"); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("resume commit: %w", err)
+	txErr := w.store.gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := w.insertEvent(ctx, tx, seq, "user", "session.resumed", map[string]any{"from_status": "paused"}); err != nil {
+			return err
+		}
+		return w.setSessionStatus(ctx, tx, "active")
+	})
+	if txErr != nil {
+		return txErr
 	}
 	w.next++
 	w.paused = false
