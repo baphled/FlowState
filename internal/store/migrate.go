@@ -1,115 +1,73 @@
 package store
 
 import (
-	"database/sql"
 	"fmt"
+	"time"
 )
 
-var migrations = []migration{
-	{
-		// Version 1 is the schema_migrations bootstrap itself; the table
-		// is created idempotently above, so this entry only records it.
-		version: 1,
-	},
-	{
-		version: 2,
-		stmts: []string{
-			`CREATE TABLE sessions (
-				id            TEXT PRIMARY KEY,
-				created_at_utc TEXT NOT NULL,
-				updated_at_utc TEXT NOT NULL,
-				status        TEXT NOT NULL CHECK (status IN ('active','paused','completed','cancelled','failed')),
-				provider      TEXT NOT NULL,
-				model_id      TEXT NOT NULL,
-				harness       TEXT NOT NULL,
-				config_sha256 TEXT NOT NULL
-			)`,
-			`CREATE TABLE events (
-				session_id    TEXT NOT NULL REFERENCES sessions(id),
-				seq           INTEGER NOT NULL,
-				created_at_utc TEXT NOT NULL,
-				actor         TEXT NOT NULL,
-				type          TEXT NOT NULL,
-				payload_sha256 TEXT NOT NULL,
-				payload_json  TEXT NOT NULL,
-				PRIMARY KEY (session_id, seq)
-			) WITHOUT ROWID`,
-			`CREATE TABLE receipts (
-				id            TEXT PRIMARY KEY,
-				capability_id TEXT NOT NULL,
-				commit_sha    TEXT NOT NULL,
-				receipt_ref   TEXT NOT NULL,
-				receipt_sha256 TEXT NOT NULL,
-				gate_outcome  TEXT NOT NULL CHECK (gate_outcome IN ('pass','fail')),
-				recorded_at_utc TEXT NOT NULL
-			)`,
-			`CREATE INDEX idx_events_session_type ON events(session_id, type)`,
-			`CREATE INDEX idx_sessions_status ON sessions(status)`,
-		},
-	},
-	{
-		version: 3,
-		stmts: []string{
-			`CREATE TABLE leases (
-				item            TEXT PRIMARY KEY,
-				agent           TEXT NOT NULL,
-				token           INTEGER NOT NULL,
-				acquired_at_utc TEXT NOT NULL
-			) WITHOUT ROWID`,
-			`CREATE TABLE lease_history (
-				item     TEXT NOT NULL,
-				token    INTEGER NOT NULL,
-				PRIMARY KEY (item, token)
-			) WITHOUT ROWID`,
-		},
-	},
-}
+// knownSchemaVersion is the highest schema version this code manages.
+// v4 adds the sessions.parent_id column for child-session delegation.
+const knownSchemaVersion = int64(4)
 
-// migrate applies forward-only versioned migrations to the database.
-// Applying to an already-migrated database is a no-op. A database whose
-// schema_migrations contains a version greater than the highest known
-// version fails with ErrFutureSchema (downgrades are forbidden).
+// migrate applies forward-only schema management through the ORM:
+// idempotent AutoMigrate (v4 parent_id, missing tables/indexes; never
+// drops or rewrites rows), then v1..v4 bookkeeping. A database whose
+// recorded version exceeds knownSchemaVersion fails with
+// ErrFutureSchema, checked before any migration touches the schema.
 func (s *Store) migrate() error {
-	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
-		version     INTEGER PRIMARY KEY,
-		applied_at_utc TEXT NOT NULL
-	)`); err != nil {
-		return fmt.Errorf("bootstrap schema_migrations: %w", err)
-	}
-	var maxApplied sql.NullInt64
-	if err := s.db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&maxApplied); err != nil {
-		return fmt.Errorf("read schema_migrations: %w", err)
-	}
-	for _, m := range migrations {
-		if maxApplied.Valid && m.version <= maxApplied.Int64 {
-			continue
-		}
-		tx, err := s.db.Begin()
-		if err != nil {
-			return fmt.Errorf("migration %d begin: %w", m.version, err)
-		}
-		for _, stmt := range m.stmts {
-			if _, err := tx.Exec(stmt); err != nil {
-				_ = tx.Rollback() // best effort; original error takes precedence
-				return fmt.Errorf("migration %d: %w", m.version, err)
-			}
-		}
-		if _, err := tx.Exec(`INSERT INTO schema_migrations (version, applied_at_utc) VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))`, m.version); err != nil {
-			_ = tx.Rollback() // best effort; original error takes precedence
-			return fmt.Errorf("migration %d record: %w", m.version, err)
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("migration %d commit: %w", m.version, err)
-		}
-	}
-	var top int64
-	if err := s.db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&top); err != nil {
+	if err := s.rejectFutureSchema(); err != nil {
 		return err
 	}
-	if len(migrations) > 0 && top > migrations[len(migrations)-1].version {
-		return fmt.Errorf("%w: db at %d, code knows %d", ErrFutureSchema, top, migrations[len(migrations)-1].version)
+	if err := s.gdb.AutoMigrate(migrateModels()...); err != nil {
+		return fmt.Errorf("automigrate schema: %w", err)
+	}
+	maxApplied, err := s.maxAppliedVersion()
+	if err != nil {
+		return err
+	}
+	if maxApplied > knownSchemaVersion {
+		return fmt.Errorf("%w: db at %d, code knows %d", ErrFutureSchema, maxApplied, knownSchemaVersion)
+	}
+	for v := int64(1); v <= knownSchemaVersion; v++ {
+		if v <= maxApplied {
+			continue
+		}
+		row := schemaMigrationRow{Version: v, AppliedAtUTC: iso(time.Now().UTC())}
+		if err := s.gdb.Create(&row).Error; err != nil {
+			return fmt.Errorf("record schema version %d: %w", v, err)
+		}
 	}
 	return nil
+}
+
+// rejectFutureSchema fails opening a database that already records a
+// version newer than this build, before AutoMigrate could mutate it.
+func (s *Store) rejectFutureSchema() error {
+	if !s.gdb.Migrator().HasTable(&schemaMigrationRow{}) {
+		return nil
+	}
+	maxApplied, err := s.maxAppliedVersion()
+	if err != nil {
+		return err
+	}
+	if maxApplied > knownSchemaVersion {
+		return fmt.Errorf("%w: db at %d, code knows %d", ErrFutureSchema, maxApplied, knownSchemaVersion)
+	}
+	return nil
+}
+
+// maxAppliedVersion returns the highest recorded schema version, 0 for
+// an empty schema_migrations table.
+func (s *Store) maxAppliedVersion() (int64, error) {
+	var top schemaMigrationRow
+	err := s.gdb.Order("version desc").First(&top).Error
+	if isRecordNotFound(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read schema_migrations: %w", err)
+	}
+	return top.Version, nil
 }
 
 // SchemaVersion returns the highest applied migration version.
@@ -117,9 +75,5 @@ func (s *Store) SchemaVersion() (int64, error) {
 	if err := s.checkOpen(); err != nil {
 		return 0, err
 	}
-	var v sql.NullInt64
-	if err := s.db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&v); err != nil {
-		return 0, err
-	}
-	return v.Int64, nil
+	return s.maxAppliedVersion()
 }
