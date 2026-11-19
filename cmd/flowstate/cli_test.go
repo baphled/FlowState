@@ -419,6 +419,83 @@ var _ = Describe("CLI end-to-end contract matrix", Label("e2e"), func() {
 				"--provider", "z.ai", "--model", "glm-5.3", "--task", "child task"})
 			Expect(r.exit).To(Equal(2))
 		})
+
+		It("exits 2 when --reserve is given without --parent", func() {
+			r := runArgv([]string{"session", "new", "--db", db, "--reserve", "40",
+				"--provider", "z.ai", "--model", "glm-5.3", "--task", "no parent"})
+			Expect(r.exit).To(Equal(2))
+		})
+	})
+
+	Context("session budget reports the shared pool", func() {
+		var db string
+		var parentID string
+		BeforeEach(func() {
+			db = filepath.Join(GinkgoT().TempDir(), "budget.db")
+			r := runArgv([]string{"session", "new", "--db", db,
+				"--provider", "z.ai", "--model", "glm-5.3", "--task", "pool owner"})
+			if r.exit != 0 {
+				panic("parent session new failed: " + r.stderr)
+			}
+			var rec map[string]any
+			if err := json.Unmarshal([]byte(r.stdout), &rec); err != nil {
+				panic(err)
+			}
+			parentID = rec["id"].(string)
+		})
+
+		runParent := func() int {
+			rr := runArgv([]string{"session", "run", "--db", db, parentID, "--budget", "100"})
+			// The anchor persists regardless of the turn outcome: the
+			// resolved budget is written before the provider is contacted,
+			// so live, budget-stop and provider-error exits all qualify.
+			if rr.exit != 0 && rr.exit != 3 && rr.exit != 5 {
+				panic("session run failed unexpectedly: " + rr.stderr)
+			}
+			return rr.exit
+		}
+
+		It("reports the anchored pool with no reservations", func() {
+			runParent()
+			r := runArgv([]string{"session", "budget", parentID, "--db", db, "--json"})
+			if r.exit != 0 {
+				panic("session budget failed: " + r.stderr)
+			}
+			var rec map[string]any
+			if err := json.Unmarshal([]byte(r.stdout), &rec); err != nil {
+				panic(err)
+			}
+			Expect(rec).To(Equal(map[string]any{
+				"session_id": parentID, "budget_pool": float64(100),
+				"reserved": float64(0), "available": float64(100),
+			}))
+		})
+
+		It("reflects a child reservation against the parent pool", func() {
+			runParent()
+			cr := runArgv([]string{"session", "new", "--db", db, "--parent", parentID, "--reserve", "40",
+				"--provider", "z.ai", "--model", "glm-5.3", "--task", "reserved child"})
+			if cr.exit != 0 {
+				panic("child session new failed: " + cr.stderr)
+			}
+			r := runArgv([]string{"session", "budget", parentID, "--db", db, "--json"})
+			if r.exit != 0 {
+				panic("session budget failed: " + r.stderr)
+			}
+			var rec map[string]any
+			if err := json.Unmarshal([]byte(r.stdout), &rec); err != nil {
+				panic(err)
+			}
+			Expect(rec).To(Equal(map[string]any{
+				"session_id": parentID, "budget_pool": float64(100),
+				"reserved": float64(40), "available": float64(60),
+			}))
+		})
+
+		It("exits with the unknown-session code for an unknown id", func() {
+			r := runArgv([]string{"session", "budget", "01a1f000-0000-4000-8000-000000000000", "--db", db})
+			Expect(r.exit).NotTo(Equal(0))
+		})
 	})
 	Context("session new prints its record", func() {
 		var observedExit int

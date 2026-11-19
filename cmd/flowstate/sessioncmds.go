@@ -35,6 +35,10 @@ func cmdNew(ctx context.Context, st *app.Store, fl *flags, stdout, stderr *os.Fi
 		writeError(stderr, cerr)
 		return exitCodeFor(cerr)
 	}
+	if fl.reserveSet && fl.parent == "" {
+		writeError(stderr, fmt.Errorf("%w: --reserve requires --parent", app.ErrUsage))
+		return exitUsage
+	}
 	var sess *app.Session
 	if fl.parent != "" {
 		sess, err = app.CreateChildSession(ctx, st, fl.parent, provider, model, app.DefaultHarness, sha, task)
@@ -44,6 +48,12 @@ func cmdNew(ctx context.Context, st *app.Store, fl *flags, stdout, stderr *os.Fi
 	if err != nil {
 		writeError(stderr, err)
 		return exitCodeFor(err)
+	}
+	if fl.reserveSet {
+		if rerr := app.ReserveChildBudget(ctx, st, fl.parent, sess.ID, fl.reserve); rerr != nil {
+			writeError(stderr, fmt.Errorf("%w: reservation failed: %v", app.ErrUsage, rerr))
+			return exitUsage
+		}
 	}
 	if err := writeJSON(stdout, map[string]any{"id": sess.ID, "status": sess.Status, "parent_id": sess.ParentID}); err != nil {
 		writeError(stderr, err)

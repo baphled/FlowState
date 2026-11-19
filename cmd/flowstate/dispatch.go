@@ -141,6 +141,8 @@ func dispatchSession(ctx context.Context, sub string, fl *flags, id string, stdo
 		return cmdClose(ctx, st, id, stdout, stderr)
 	case "tool":
 		return cmdTool(ctx, fl.db, fl, id, stdout, stderr)
+	case "budget":
+		return cmdBudget(ctx, st, id, stdout)
 	default:
 		writeError(stderr, fmt.Errorf("%w: unknown session subcommand %q", errUsageCmd, sub))
 		return exitUsage
@@ -157,7 +159,8 @@ func (usageSentinel) Error() string { return "usage" }
 func (usageSentinel) Is(target error) bool { return target.Error() == "usage" }
 
 // parseFlags extracts --db, --json, --status, --provider, --model,
-// --task and --parent flags; positional arguments are returned in order.
+// --task, --parent and --reserve flags; positional arguments are
+// returned in order.
 func parseFlags(args []string) (*flags, []string, error) {
 	fl := &flags{db: defaultDBPath}
 	var positional []string
@@ -190,7 +193,7 @@ func parseFlags(args []string) (*flags, []string, error) {
 			if serr := fl.setToolFlag(a, take); serr != nil {
 				return nil, nil, serr
 			}
-		case a == "--budget", a == "--max-tokens":
+		case a == "--budget", a == "--max-tokens", a == "--reserve":
 			v, err := flagValue(a, take)
 			if err != nil {
 				return nil, nil, err
@@ -264,10 +267,14 @@ func setLimit(fl *flags, name, v string) error {
 	if err != nil || n < 0 {
 		return fmt.Errorf("flag %s expects a non-negative integer, got %q", name, v)
 	}
-	if name == "--budget" {
+	switch name {
+	case "--budget":
 		fl.budget = n
 		fl.budgetSet = true
-	} else {
+	case "--reserve":
+		fl.reserve = n
+		fl.reserveSet = true
+	default:
 		fl.maxTokens = n
 	}
 	return nil
@@ -291,7 +298,8 @@ func openStore(path string) (*app.Store, error) {
 func usage(w *os.File) {
 	_, _ = fmt.Fprint(w, `usage: flowstate [--version] session <subcommand> [flags] [id]
 
-session new    --provider <p> --model <m> --task <text|@file> [--parent <id>] [--db path]
+session new    --provider <p> --model <m> --task <text|@file> [--parent <id>] [--reserve <n>] [--db path]
+session budget <id> [--db path]
 session list   [--status <s>] [--db path]
 session run    <id> [--budget <n>] [--max-tokens <n>] [--allow <name>]... [--allow-file <manifest>] [--workdir <path>] [--db path]
 session events <id> [--db path]
