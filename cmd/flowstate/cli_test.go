@@ -1129,3 +1129,56 @@ var _ = Describe("CLI end-to-end contract matrix", Label("e2e"), func() {
 		Expect(res.exit).To(Equal(0))
 	})
 })
+
+var _ = Describe("swarm validate", func() {
+	It("accepts a valid manifest and prints the name", func() {
+		mf := filepath.Join(GinkgoT().TempDir(), "swarm.yaml")
+		yaml := "name: test-swarm\nscope: m2.runtime\npackets:\n  - id: p1\n    scope: m2.runtime\n    task: do the thing\n    source_sha256: " + strings.Repeat("a", 64) + "\n"
+		if err := os.WriteFile(mf, []byte(yaml), 0o644); err != nil {
+			panic(err)
+		}
+		r := runArgv([]string{"swarm", "validate", "--manifest", mf})
+		if r.exit != 0 {
+			panic("swarm validate failed: " + r.stderr)
+		}
+		Expect(strings.Contains(r.stdout, "test-swarm")).To(BeTrue())
+	})
+
+	It("exits 2 for an invalid manifest path", func() {
+		r := runArgv([]string{"swarm", "validate", "--manifest", "/nonexistent/swarm.yaml"})
+		Expect(r.exit).To(Equal(2))
+	})
+})
+
+var _ = Describe("swarm run", func() {
+	It("exits 2 when --parent is missing", func() {
+		db := filepath.Join(GinkgoT().TempDir(), "swarmrun.db")
+		r := runArgv([]string{"swarm", "run", "--db", db, "--manifest", "/tmp/x.yaml", "--budget", "100"})
+		Expect(r.exit).To(Equal(2))
+	})
+
+	It("runs a one-packet manifest and reports the child", func() {
+		db := filepath.Join(GinkgoT().TempDir(), "swarmrun2.db")
+		r := runArgv([]string{"session", "new", "--db", db, "--budget", "100",
+			"--provider", "z.ai", "--model", "glm-5.3", "--task", "parent task"})
+		if r.exit != 0 {
+			panic("parent session new failed: " + r.stderr)
+		}
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(r.stdout), &rec); err != nil {
+			panic(err)
+		}
+		parentID := rec["id"].(string)
+		mf := filepath.Join(GinkgoT().TempDir(), "swarm.yaml")
+		yaml := "name: run-swarm\nscope: m2.runtime\npackets:\n  - id: p1\n    scope: m2.runtime\n    task: do the thing\n    source_sha256: " + strings.Repeat("b", 64) + "\ngates:\n  - name: ok\n    description: trivially pass\n    command: true\n"
+		if err := os.WriteFile(mf, []byte(yaml), 0o644); err != nil {
+			panic(err)
+		}
+		r = runArgv([]string{"swarm", "run", "--db", db, "--manifest", mf,
+			"--parent", parentID, "--budget", "100"})
+		if r.exit != 0 {
+			panic("swarm run failed: " + r.stderr)
+		}
+		Expect(strings.Contains(r.stdout, `"packet":"p1"`)).To(BeTrue())
+	})
+})

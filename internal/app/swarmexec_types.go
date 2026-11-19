@@ -43,4 +43,10 @@ type SwarmExecResult struct {
 	// Gates is the aggregated gate decision of the durable run; the
 	// zero value marks a run that never reached its gates.
 	Gates swarm.GatesDecision
+	// Manifest is the validated manifest the run executed.
+	Manifest swarm.Manifest
 }
+
+// AlwaysAdmit is the S2 always-accept admission policy; gates are the
+// meaningful completion check.
+type AlwaysAdmit struct{}

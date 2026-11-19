@@ -22,8 +22,9 @@ type flags struct {
 	reserveSet bool
 	follow     bool
 	// session message
-	msgFrom string
-	msgBody string
+	msgFrom      string
+	msgBody      string
+	manifestPath string
 	// config file (CLI-AND-API-CONTRACT §4)
 	configPath   string
 	config       cliConfig

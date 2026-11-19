@@ -46,7 +46,7 @@ func RunSwarm(ctx context.Context, st *Store, parent *store.Session, m swarm.Man
 		return SwarmExecResult{}, fmt.Errorf("%w: run swarm: admitter and gates are required", ErrUsage)
 	}
 	children, reservations, err := swarmChildren(ctx, st, parent, m, budgetPerChild)
-	res := SwarmExecResult{Children: children, Reservations: reservations}
+	res := SwarmExecResult{Children: children, Reservations: reservations, Manifest: m}
 	if err != nil {
 		return res, err
 	}
@@ -144,3 +144,35 @@ func swarmManifestSHA(m swarm.Manifest) (string, error) {
 // compile-time contract: the concrete store satisfies the durable
 // receipts sink (RunSwarm persists through it without an adapter).
 var _ swarm.RunSink = (*store.Store)(nil)
+
+// ValidateSwarmManifest reads and validates one swarm manifest file
+// without executing it. Unknown files map to ErrUsage at the CLI.
+func ValidateSwarmManifest(path string) (swarm.Manifest, error) {
+	return swarm.LoadManifest(path)
+}
+
+// RunSwarmFile composes manifest loading with RunSwarm: an explicit
+// budgetTotal anchors the parent's pool (the same semantics as a
+// session run's --budget), each admitted packet becomes a delegated
+// child with an even budget share, and the durable gate receipts
+// persist. Validation failures map to ErrUsage.
+func RunSwarmFile(ctx context.Context, st *Store, parent *Session, manifestPath string, budgetTotal int64) (SwarmExecResult, error) {
+	m, err := swarm.LoadManifest(manifestPath)
+	if err != nil {
+		return SwarmExecResult{}, fmt.Errorf("%w: %v", ErrUsage, err)
+	}
+	if budgetTotal > 0 {
+		if err := st.SetBudgetPool(ctx, parent.ID, budgetTotal); err != nil {
+			return SwarmExecResult{}, fmt.Errorf("app: run swarm: %w", err)
+		}
+	}
+	share := budgetTotal
+	if n := len(m.Packets); n > 0 {
+		share = budgetTotal / int64(n)
+	}
+	return RunSwarm(ctx, st, parent, m, share, AlwaysAdmit{}, swarm.NewGateRunner())
+}
+
+// Admit always accepts the packet; gates are the meaningful
+// completion check.
+func (AlwaysAdmit) Admit(swarm.Packet, []byte) error { return nil }

@@ -190,7 +190,7 @@ func parseFlags(args []string) (*flags, []string, error) {
 		case strings.HasPrefix(a, "--status"), strings.HasPrefix(a, "--provider"),
 			strings.HasPrefix(a, "--model"), strings.HasPrefix(a, "--task"),
 			strings.HasPrefix(a, "--parent"), strings.HasPrefix(a, "--config"),
-			a == "--from", a == "--body":
+			strings.HasPrefix(a, "--manifest"), a == "--from", a == "--body":
 			if serr := fl.setString(a, take); serr != nil {
 				return nil, nil, serr
 			}
@@ -239,6 +239,8 @@ func (f *flags) setString(name string, take func() (string, error)) error {
 		f.msgFrom = v
 	case name == "--body":
 		f.msgBody = v
+	case strings.HasPrefix(name, "--manifest"):
+		f.manifestPath = v
 	default:
 		return fmt.Errorf("unknown flag %s", name)
 	}
