@@ -2,6 +2,18 @@
 
 All notable changes to the FlowState project will be documented in this file.
 
+## [1.4.0](https://github.com/baphled/FlowState/compare/v1.3.0...v1.4.0) (2026-11-19)
+
+### Features
+
+* **app:** budget overview wrapper on the owning layer ([#327](https://github.com/baphled/FlowState/issues/327)) ([1496d56](https://github.com/baphled/FlowState/commit/1496d56bcefff642932ace414ec3699e5d58d882))
+* **session:** schema keys for message tool and swarm outputs ([#326](https://github.com/baphled/FlowState/issues/326)) ([faf1560](https://github.com/baphled/FlowState/commit/faf1560dde492fa50b418c95437b516b54256b27))
+
+### Bug Fixes
+
+* **workflow:** distinguish budget gate failure classes on push ([#328](https://github.com/baphled/FlowState/issues/328)) ([4661767](https://github.com/baphled/FlowState/commit/466176714e861eb383def5402efd312648306a5b))
+* **workflow:** skip pr budget gate on release aggregate pushes ([#325](https://github.com/baphled/FlowState/issues/325)) ([b97401f](https://github.com/baphled/FlowState/commit/b97401f3e8ee85496d9a0b6bfe70a8915ed45cbe))
+
 ## [1.3.0](https://github.com/baphled/FlowState/compare/v1.2.1...v1.3.0) (2026-11-19)
 
 ### Features
