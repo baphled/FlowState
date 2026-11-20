@@ -155,17 +155,30 @@ jobs:
         id: review_budget
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          # Same trusted inputs as the PR Review Budget gate: policy and
+          # selector come from the protected base, never the candidate, and
+          # the kind (feat/docs/...) from the head commit subject, so a
+          # feature PR is sized against its feature tier.
+          budget=500
           if git cat-file -e "$PR_BASE_SHA:.env.ci" 2>/dev/null; then
-            budget="$(git show "$PR_BASE_SHA:.env.ci" | sed -n 's/^FLOWSTATE_PR_MAX_LINES=//p')"
-          else
-            budget=500
+            git show "$PR_BASE_SHA:.env.ci" > "$RUNNER_TEMP/env_ci_base"
+            if git cat-file -e "$PR_BASE_SHA:scripts/pr_review_budget.py" 2>/dev/null; then
+              git show "$PR_BASE_SHA:scripts/pr_review_budget.py" > "$RUNNER_TEMP/pr_review_budget_base.py"
+              pr_title="$(git show -s --format=%s "$PR_HEAD_SHA")"
+              budget="$(python3 -B "$RUNNER_TEMP/pr_review_budget_base.py" --policy "$RUNNER_TEMP/env_ci_base" --title "$pr_title" --branch "$GITHUB_HEAD_REF")" || exit 1
+            else
+              budget="$(sed -n 's/^FLOWSTATE_PR_MAX_LINES=//p' "$RUNNER_TEMP/env_ci_base")"
+            fi
           fi
           if ! [[ "$budget" =~ ^[1-9][0-9]{0,5}$ ]]; then
             echo "::error::Invalid review budget in target .env.ci"
             exit 1
           fi
-          echo "limit=$budget" >> "$GITHUB_OUTPUT"
+          # The labeller's cutoffs are exclusive and the review budget is
+          # inclusive, so a PR exactly at budget must still label size/L.
+          echo "limit=$((budget + 1))" >> "$GITHUB_OUTPUT"
       - uses: codelytv/pr-size-labeler@19c335e7695ba922de938806dd129f0a9b992644 # v1
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
