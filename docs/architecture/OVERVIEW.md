@@ -24,7 +24,7 @@ See [the enforced code structure contract](../../rules/ARCHITECTURE.md) for exac
 ownership and import rules. Existing concrete-store coupling is refactoring debt;
 its presence is not permission to add another dependency or a new global.
 
-## Serve transport (S1–S3)
+## Serve transport (S1–S4)
 
 `flowstate serve` exposes the session surface over HTTP from `internal/server`:
 `GET /health`, `GET /sessions[?status=…]`, `GET /sessions/{id}` (session
@@ -41,6 +41,12 @@ response is the updated overview), and `POST /sessions/{id}/message`
 `{"from","body"}` (session-message shape) — steering failures, including
 unknown sessions, answer 400 `usage` because the app layer wraps them into
 `ErrUsage` before the shared code table.
+S4 adds the path-based swarm and receipt endpoints — `POST /swarm/validate`
+`{"path"}`, `POST /swarm/run` `{"parent","path","budget"}` (unknown parent 404,
+budget stops 409, gate-not-accepted surfaces the app's unwrapped error → 500) and
+`POST /receipt/validate` `{"path"}` (an invalid receipt is a 200 `"invalid"`
+verdict mirroring the CLI's per-file line) — reusing the CLI `swarm-validate`,
+`swarm-run` and `receipt-validate` schema keys.
 Session creation stays out of scope (its config composition is a separate
 packet). Errors render the shared `{code,message}` body with statuses from the
 closed error-code table — an empty or unknown `ErrCode` result maps explicitly

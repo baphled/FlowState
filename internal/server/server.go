@@ -21,13 +21,17 @@ func New(p Ports) *Server {
 	return &Server{ports: p, token: os.Getenv(TokenEnv)}
 }
 
-// Handler routes /health, /sessions and the /sessions/{id}[/action]
-// subtree behind the token middleware.
+// Handler routes /health, /sessions, the /sessions/{id}[/action]
+// subtree and the path-based swarm/receipt endpoints behind the
+// token middleware.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", s.getOnly(s.handleHealth))
 	mux.HandleFunc("/sessions", s.getOnly(s.handleList))
 	mux.HandleFunc("/sessions/", s.handleSessions)
+	mux.HandleFunc("/swarm/validate", s.methodOnly(http.MethodPost, s.swarmValidateHandler))
+	mux.HandleFunc("/swarm/run", s.methodOnly(http.MethodPost, s.swarmRunHandler))
+	mux.HandleFunc("/receipt/validate", s.methodOnly(http.MethodPost, s.receiptValidateHandler))
 	mux.HandleFunc("/", s.getOnly(func(w http.ResponseWriter, _ *http.Request) {
 		s.writeErrorStatus(w, http.StatusNotFound, "usage", "unknown route")
 	}))

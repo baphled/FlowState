@@ -26,6 +26,18 @@ type Ports struct {
 	// SendSteeringMessage records one steering directive addressed to
 	// the session and returns the stored message.
 	SendSteeringMessage func(ctx context.Context, id, sender, body string) (Message, error)
+	// ValidateSwarm validates one swarm manifest file without
+	// executing it; validation failures surface the app error.
+	ValidateSwarm func(ctx context.Context, manifestPath string) (SwarmValidation, error)
+	// RunSwarm executes one configured swarm on behalf of a parent
+	// session with the caller's budget total and returns the run
+	// result; parent, manifest, budget and gate failures surface the
+	// app error for the shared code table.
+	RunSwarm func(ctx context.Context, parentID, manifestPath string, budget int64) (SwarmRun, error)
+	// ValidateReceipt validates one receipt file and reports its
+	// verdict; the verdict mirrors the CLI's per-file line, so an
+	// invalid receipt is a verdict, not an error.
+	ValidateReceipt func(ctx context.Context, path string) (ReceiptVerdict, error)
 	// ErrCode maps an error onto the closed contract code set.
 	ErrCode func(err error) string
 }
@@ -83,6 +95,42 @@ type Budget struct {
 	Reserved  int64
 	Pool      *int64
 	Available *int64
+}
+
+// SwarmValidation is the swarm-validate DTO mirroring the CLI swarm
+// validate output (wire fields name/valid); Valid is true on every
+// success body because a validation failure surfaces as an error
+// through the shared code table instead.
+type SwarmValidation struct {
+	Name  string
+	Valid bool
+}
+
+// SwarmChild is one delegated child row of a swarm run, mirroring
+// the CLI swarm run child item (wire fields packet/session/status/
+// parent_id).
+type SwarmChild struct {
+	Packet   string
+	Session  string
+	Status   string
+	ParentID string
+}
+
+// SwarmRun is the swarm-run DTO mirroring the CLI swarm run output
+// (wire fields manifest/admitted/accepted/children).
+type SwarmRun struct {
+	Manifest string
+	Admitted []string
+	Accepted bool
+	Children []SwarmChild
+}
+
+// ReceiptVerdict is the receipt-validate DTO mirroring the CLI
+// receipt validate per-file output (wire fields path/verdict; the
+// verdict is "valid" or "invalid").
+type ReceiptVerdict struct {
+	Path    string
+	Verdict string
 }
 
 // Server renders the read-only serve surface over Ports.
@@ -151,6 +199,53 @@ type budgetRequest struct {
 type messageRequest struct {
 	From string `json:"from"`
 	Body string `json:"body"`
+}
+
+// pathRequest is the POST body for the path-based endpoints
+// (/swarm/validate, /receipt/validate), mirroring the CLI surface
+// that names one operator-local file.
+type pathRequest struct {
+	Path string `json:"path"`
+}
+
+// swarmRunRequest is the POST /swarm/run body; Budget is a pointer
+// so a missing budget is distinguishable from zero.
+type swarmRunRequest struct {
+	Parent string `json:"parent"`
+	Path   string `json:"path"`
+	Budget *int64 `json:"budget"`
+}
+
+// swarmValidationBody mirrors the CLI swarm validate output
+// field-for-field (schemas/cli.json key swarm-validate).
+type swarmValidationBody struct {
+	Name  string `json:"name"`
+	Valid bool   `json:"valid"`
+}
+
+// swarmChildBody mirrors the CLI swarm run child item
+// field-for-field.
+type swarmChildBody struct {
+	Packet   string `json:"packet"`
+	Session  string `json:"session"`
+	Status   string `json:"status"`
+	ParentID string `json:"parent_id"`
+}
+
+// swarmRunBody mirrors the CLI swarm run output field-for-field
+// (schemas/cli.json key swarm-run).
+type swarmRunBody struct {
+	Manifest string           `json:"manifest"`
+	Admitted []string         `json:"admitted"`
+	Accepted bool             `json:"accepted"`
+	Children []swarmChildBody `json:"children"`
+}
+
+// receiptVerdictBody mirrors the CLI receipt validate per-file
+// output field-for-field (schemas/cli.json key receipt-validate).
+type receiptVerdictBody struct {
+	Path    string `json:"path"`
+	Verdict string `json:"verdict"`
 }
 
 // diagnosisBody mirrors the session-doctor item field-for-field; a nil
