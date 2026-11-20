@@ -5,7 +5,7 @@ type: adr
 status: accepted
 adr_group: Go CLI
 created: 2026-11-18
-modified: 2026-11-18T21:40
+modified: 2026-11-20T00:37
 deciders:
   - Engineering Team
 consulted:
@@ -87,7 +87,8 @@ The naive predicate (`turn.start` without `turn.end` ⇒ crashed) false-positive
 
 ### Part 1 — Run-activity evidence gate
 
-`DetectCrashedSession` requires at least one `provider.request` or `tool.call` event in the session's log. A session
+`DetectCrashedSession` requires at least one `provider.request`, `tool.call` or content-delta
+  (`assistant.delta`) event in the session's log. A session
   with only the initial `turn.start` from `session.Create` has no run activity and is never detected as crashed. This
   gate is what separates "created but not yet run" from "run interrupted mid-flight".
 
@@ -151,7 +152,8 @@ The run-activity gate was added *after* the first implementation broke the suite
   structural integrity rests on the envelope schema (see [[ADR - Schema Validation of JSON Output]]) rather than a
   type whitelist.
 4. **The gate discriminates on event type, not process evidence.** A run that crashed before its first
-  `provider.request` (e.g., during prompt assembly) is indistinguishable from a fresh session. The window is small and
+  run-activity event (e.g., during prompt assembly, before the first content delta) is indistinguishable from a fresh
+  session. The window is small and
   the consequence benign (no gap event), but it exists.
 
 ### Neutral
@@ -220,7 +222,7 @@ The run-activity gate was added *after* the first implementation broke the suite
 
 ## Sources
 
-- `internal/app/session_recovery.go:30-37` — run-activity gate (`provider.request` or `tool.call`).
+- `internal/app/session_recovery.go:26-37` — run-activity gate (`provider.request`, `tool.call` or `assistant.delta`).
 - `internal/app/session_recovery.go:38-46` — backward dangling-turn scan; terminal marker set includes
   `session.interrupted`.
 - `internal/app/session_recovery.go:52-72` — `RecoverCrashedSession` atomic append; actor `engine`, reason
@@ -237,3 +239,5 @@ The run-activity gate was added *after* the first implementation broke the suite
 - *Noted follow-up:* read-path surfacing of interrupted state (`session doctor`-style), deliberately deferred.
 - *Delivered:* the deferred read-path follow-up — read-only `session doctor` diagnosis aggregates
   existing primitives only; recovery remains in the run preamble.
+- *Follow-up (2026-11-20):* content deltas count as run-activity evidence — the gate was widened to match the
+  decision text above after the #330 session-doctor review found tool-less runs (delta-only logs) undetectable.

@@ -26,10 +26,12 @@ func DetectCrashedSession(ctx context.Context, st *store.Store, sessionID string
 	// A freshly created session has only the initial turn.start from
 	// session.Create — it has not been run yet. Crash recovery requires
 	// evidence that a run was actually in progress: at least one
-	// provider request or tool call event.
+	// provider request, tool call or streamed content-delta event. The
+	// delta matters because the run path persists deltas for every
+	// turn, including tool-less ones (ADR-006 run-activity evidence).
 	hasRunActivity := false
 	for _, e := range events {
-		if e.Type == "provider.request" || e.Type == "tool.call" {
+		if e.Type == "provider.request" || e.Type == "tool.call" || e.Type == TypeAssistantDelta {
 			hasRunActivity = true
 		}
 	}
