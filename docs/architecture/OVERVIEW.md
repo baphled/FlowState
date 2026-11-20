@@ -24,7 +24,7 @@ See [the enforced code structure contract](../../rules/ARCHITECTURE.md) for exac
 ownership and import rules. Existing concrete-store coupling is refactoring debt;
 its presence is not permission to add another dependency or a new global.
 
-## Serve transport (S1/S2)
+## Serve transport (S1–S3)
 
 `flowstate serve` exposes the session surface over HTTP from `internal/server`:
 `GET /health`, `GET /sessions[?status=…]`, `GET /sessions/{id}` (session
@@ -34,6 +34,13 @@ session answers 409 `session_terminal` — closing/cancelling is not idempotent)
 and `GET /sessions/{id}/doctor` reusing the CLI `session-doctor` output shape,
 wired through narrow `server.Ports`; no store
 type crosses into transport and `cmd` only builds the closures and listener.
+S3 adds the budget and steering resources: `GET /sessions/{id}/budget`
+(session-budget shape), `POST /sessions/{id}/budget` `{"pool":N}` anchoring
+the shared pool through the run budget seam (positive pool only; the
+response is the updated overview), and `POST /sessions/{id}/message`
+`{"from","body"}` (session-message shape) — steering failures, including
+unknown sessions, answer 400 `usage` because the app layer wraps them into
+`ErrUsage` before the shared code table.
 Session creation stays out of scope (its config composition is a separate
 packet). Errors render the shared `{code,message}` body with statuses from the
 closed error-code table — an empty or unknown `ErrCode` result maps explicitly

@@ -40,8 +40,10 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSessions routes the /sessions/ subtree: /{id} and /{id}/doctor
-// are GET reads, /{id}/close and /{id}/cancel are POST writes, and any
-// other shape stays the S1 404 usage unknown route.
+// are GET reads, /{id}/close and /{id}/cancel are POST writes,
+// /{id}/budget serves GET overview + POST pool anchor, /{id}/message
+// is a POST write, and any other shape stays the S1 404 usage unknown
+// route.
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	id, action, ok := splitSessionPath(r.URL.Path)
 	if !ok {
@@ -57,6 +59,10 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		s.methodOnly(http.MethodPost, s.closeHandler(id))(w, r)
 	case "cancel":
 		s.methodOnly(http.MethodPost, s.cancelHandler(id))(w, r)
+	case "budget":
+		s.budgetRoute(id)(w, r)
+	case "message":
+		s.methodOnly(http.MethodPost, s.messageHandler(id))(w, r)
 	default:
 		s.writeErrorStatus(w, http.StatusNotFound, "usage", "unknown route")
 	}
