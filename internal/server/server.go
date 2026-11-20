@@ -21,21 +21,30 @@ func New(p Ports) *Server {
 	return &Server{ports: p, token: os.Getenv(TokenEnv)}
 }
 
-// Handler routes /health, /sessions and /sessions/{id} behind the token middleware.
+// Handler routes /health, /sessions and the /sessions/{id}[/action]
+// subtree behind the token middleware.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", s.getOnly(s.handleHealth))
 	mux.HandleFunc("/sessions", s.getOnly(s.handleList))
-	mux.HandleFunc("/sessions/", s.getOnly(s.handleInspect))
+	mux.HandleFunc("/sessions/", s.handleSessions)
 	mux.HandleFunc("/", s.getOnly(func(w http.ResponseWriter, _ *http.Request) {
 		s.writeErrorStatus(w, http.StatusNotFound, "usage", "unknown route")
 	}))
 	return s.withToken(mux)
 }
 
+// httpServer builds the transport's net/http server with one timeout
+// envelope: read headers 5s, writes 30s and idle 30s. Serve and the
+// construction spec share this seam.
+func (s *Server) httpServer() *http.Server {
+	return &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout: 30 * time.Second, IdleTimeout: 30 * time.Second}
+}
+
 // Serve runs Handler on l until ctx is done, then drains within 5s.
 func (s *Server) Serve(ctx context.Context, l net.Listener) error {
-	srv := &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
+	srv := s.httpServer()
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(l) }()
 	select {
