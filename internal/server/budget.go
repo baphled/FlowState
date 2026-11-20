@@ -66,7 +66,7 @@ func (s *Server) setBudgetHandler(id string) http.HandlerFunc {
 			s.writeErrorStatus(w, http.StatusBadRequest, "usage", "pool must be positive")
 			return
 		}
-		b, err := s.ports.SetBudgetPool(r.Context(), id, *req.Pool)
+		b, err := s.ports.SetBudgetPool(writeContext(r), id, *req.Pool)
 		if err != nil {
 			s.writeError(w, err)
 			return

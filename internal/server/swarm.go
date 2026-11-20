@@ -84,7 +84,7 @@ func (s *Server) swarmRunHandler(w http.ResponseWriter, r *http.Request) {
 		s.writeErrorStatus(w, http.StatusBadRequest, "usage", "budget must be positive")
 		return
 	}
-	res, err := s.ports.RunSwarm(r.Context(), req.Parent, req.Path, *req.Budget)
+	res, err := s.ports.RunSwarm(writeContext(r), req.Parent, req.Path, *req.Budget)
 	if err != nil {
 		s.writeError(w, err)
 		return

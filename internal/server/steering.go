@@ -34,7 +34,7 @@ func (s *Server) messageHandler(id string) http.HandlerFunc {
 			s.writeErrorStatus(w, http.StatusBadRequest, "usage", "from and body are required")
 			return
 		}
-		m, err := s.ports.SendSteeringMessage(r.Context(), id, req.From, req.Body)
+		m, err := s.ports.SendSteeringMessage(writeContext(r), id, req.From, req.Body)
 		if err != nil {
 			s.writeError(w, err)
 			return

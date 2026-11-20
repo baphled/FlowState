@@ -8,7 +8,7 @@ import "net/http"
 // error, which the shared code table maps onto 409.
 func (s *Server) closeHandler(id string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		sess, err := s.ports.CloseSession(r.Context(), id)
+		sess, err := s.ports.CloseSession(writeContext(r), id)
 		if err != nil {
 			s.writeError(w, err)
 			return
@@ -22,7 +22,7 @@ func (s *Server) closeHandler(id string) http.HandlerFunc {
 // session_terminal → 409 rather than a second terminal transition.
 func (s *Server) cancelHandler(id string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		sess, err := s.ports.CancelSession(r.Context(), id)
+		sess, err := s.ports.CancelSession(writeContext(r), id)
 		if err != nil {
 			s.writeError(w, err)
 			return
