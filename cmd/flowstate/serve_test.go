@@ -53,6 +53,46 @@ func serveStart() (string, func() int) {
 	}
 }
 
+var _ = Describe("Serve write port wiring", func() {
+	seedStore := func() (*app.Store, *app.Session) {
+		st, err := app.OpenStore(filepath.Join(GinkgoT().TempDir(), "wiring.db"))
+		must(err)
+		DeferCleanup(func() { must(st.Close()) })
+		sess, err := app.CreateSession(context.Background(), st, "z.ai", "glm-5.3", app.DefaultHarness, "3f7a", "wiring")
+		must(err)
+		return st, sess
+	}
+
+	It("closes a session through the store-backed port", func() {
+		st, sess := seedStore()
+		closed, err := servePorts(st).CloseSession(context.Background(), sess.ID)
+		must(err)
+		Expect(closed.Status).To(Equal("cancelled"))
+	})
+
+	It("cancels a session through the store-backed port", func() {
+		st, sess := seedStore()
+		cancelled, err := servePorts(st).CancelSession(context.Background(), sess.ID)
+		must(err)
+		Expect(cancelled.ID).To(Equal(sess.ID))
+	})
+
+	It("rejects a terminal close through the shared error table", func() {
+		st, sess := seedStore()
+		_, err := servePorts(st).CloseSession(context.Background(), sess.ID)
+		must(err)
+		_, err = servePorts(st).CloseSession(context.Background(), sess.ID)
+		Expect(servePorts(st).ErrCode(err)).To(Equal("session_terminal"))
+	})
+
+	It("diagnoses a session through the store-backed port", func() {
+		st, sess := seedStore()
+		d, err := servePorts(st).DiagnoseSession(context.Background(), sess.ID)
+		must(err)
+		Expect(d.Status).To(Equal("active"))
+	})
+})
+
 var _ = Describe("Serve command wiring", Label("e2e"), func() {
 	It("serves the seeded session list over a real store", func() {
 		base, stop := serveStart()

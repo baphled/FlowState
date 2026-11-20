@@ -72,7 +72,7 @@ func cmdServe(ctx context.Context, fl *flags, addr string, stdout, stderr *os.Fi
 	return exitOK
 }
 
-// servePorts maps the app read surface onto the server DTO ports.
+// servePorts maps the app session surface onto the server DTO ports.
 func servePorts(st *app.Store) server.Ports {
 	list := func(ctx context.Context, status string) ([]server.Session, error) {
 		rows, err := app.ListSessions(ctx, st, status)
@@ -97,7 +97,46 @@ func servePorts(st *app.Store) server.Ports {
 		}
 		return serveSession(*sess), out, nil
 	}
-	return server.Ports{ListSessions: list, InspectSession: inspect, ErrCode: app.ErrorCode}
+	closePort := func(ctx context.Context, id string) (server.Session, error) {
+		return serveClose(ctx, st, id)
+	}
+	cancelPort := func(ctx context.Context, id string) (server.Session, error) {
+		return serveCancel(ctx, st, id)
+	}
+	return server.Ports{ListSessions: list, InspectSession: inspect,
+		CloseSession: closePort, CancelSession: cancelPort, DiagnoseSession: func(ctx context.Context, id string) (server.Diagnosis, error) {
+			return serveDiagnose(ctx, st, id)
+		}, ErrCode: app.ErrorCode}
+}
+
+// serveClose wires POST /sessions/{id}/close onto app.CloseSession;
+// a terminal close surfaces the app error for the shared table.
+func serveClose(ctx context.Context, st *app.Store, id string) (server.Session, error) {
+	sess, err := app.CloseSession(ctx, st, id)
+	if err != nil {
+		return server.Session{}, err
+	}
+	return serveSession(*sess), nil
+}
+
+// serveCancel wires POST /sessions/{id}/cancel onto app.CancelSession.
+func serveCancel(ctx context.Context, st *app.Store, id string) (server.Session, error) {
+	sess, err := app.CancelSession(ctx, st, id)
+	if err != nil {
+		return server.Session{}, err
+	}
+	return serveSession(*sess), nil
+}
+
+// serveDiagnose wires GET /sessions/{id}/doctor onto app.DiagnoseSession.
+func serveDiagnose(ctx context.Context, st *app.Store, id string) (server.Diagnosis, error) {
+	d, err := app.DiagnoseSession(ctx, st, id)
+	if err != nil {
+		return server.Diagnosis{}, err
+	}
+	return server.Diagnosis{SessionID: d.SessionID, Status: d.Status, Crashed: d.Crashed,
+		RunActivity: d.RunActivity, PendingMessages: d.PendingMessages,
+		Reserved: d.Reserved, Pool: d.Pool, Available: d.Available}, nil
 }
 func serveSession(r app.Session) server.Session {
 	return server.Session{ID: r.ID, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, Status: r.Status,
