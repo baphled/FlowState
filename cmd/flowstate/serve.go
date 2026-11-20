@@ -65,15 +65,17 @@ func cmdServe(ctx context.Context, fl *flags, addr string, stdout, stderr *os.Fi
 		writeError(stderr, werr)
 		return exitCodeFor(werr)
 	}
-	if serr := server.New(servePorts(st)).Serve(ctx, ln); serr != nil {
+	if serr := server.New(servePorts(st, fl)).Serve(ctx, ln); serr != nil {
 		writeError(stderr, serr)
 		return exitCodeFor(serr)
 	}
 	return exitOK
 }
 
-// servePorts maps the app session surface onto the server DTO ports.
-func servePorts(st *app.Store) server.Ports {
+// servePorts maps the app session surface onto the server DTO ports;
+// fl carries the invocation's config composition so creation and run
+// defaults resolve exactly as the CLI's flags-over-config precedence does.
+func servePorts(st *app.Store, fl *flags) server.Ports {
 	list := func(ctx context.Context, status string) ([]server.Session, error) {
 		rows, err := app.ListSessions(ctx, st, status)
 		if err != nil {
@@ -116,7 +118,17 @@ func servePorts(st *app.Store) server.Ports {
 		CloseSession: closePort, CancelSession: cancelPort, DiagnoseSession: func(ctx context.Context, id string) (server.Diagnosis, error) {
 			return serveDiagnose(ctx, st, id)
 		}, BudgetOverview: budgetPort, SetBudgetPool: setBudgetPort,
-		SendSteeringMessage: messagePort, ValidateSwarm: swarmValidatePort,
+		SendSteeringMessage: messagePort,
+		EventsAfter: func(ctx context.Context, id string, afterSeq int64) ([]server.Event, error) {
+			return serveEventsAfter(ctx, st, id, afterSeq)
+		}, SessionStatus: func(ctx context.Context, id string) (string, error) {
+			return serveSessionStatus(ctx, st, id)
+		}, RunSession: func(ctx context.Context, id string, opts server.RunOptions) ([]server.Event, error) {
+			return serveRun(ctx, st, fl, id, opts)
+		}, CreateSession: func(ctx context.Context, req server.CreateRequest) (server.Session, error) {
+			return serveCreate(ctx, st, fl, req)
+		},
+		ValidateSwarm: swarmValidatePort,
 		RunSwarm: func(ctx context.Context, parentID, manifestPath string, budget int64) (server.SwarmRun, error) {
 			return swarmRunPort(ctx, st, parentID, manifestPath, budget)
 		}, ValidateReceipt: receiptPort, ErrCode: app.ErrorCode}

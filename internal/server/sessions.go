@@ -40,10 +40,10 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSessions routes the /sessions/ subtree: /{id} and /{id}/doctor
-// are GET reads, /{id}/close and /{id}/cancel are POST writes,
-// /{id}/budget serves GET overview + POST pool anchor, /{id}/message
-// is a POST write, and any other shape stays the S1 404 usage unknown
-// route.
+// are GET reads, /{id}/close, /{id}/cancel and /{id}/run are POST
+// writes, /{id}/events serves the GET snapshot and /{id}/events/stream
+// the SSE follow, /{id}/budget GET+POST, /{id}/message POST; any other
+// shape stays the S1 404 usage unknown route.
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	id, action, ok := splitSessionPath(r.URL.Path)
 	if !ok {
@@ -63,13 +63,33 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		s.budgetRoute(id)(w, r)
 	case "message":
 		s.methodOnly(http.MethodPost, s.messageHandler(id))(w, r)
+	case "events":
+		s.methodOnly(http.MethodGet, s.eventsHandler(id))(w, r)
+	case "events/stream":
+		s.methodOnly(http.MethodGet, s.streamHandler(id))(w, r)
+	case "run":
+		s.methodOnly(http.MethodPost, s.runHandler(id))(w, r)
 	default:
 		s.writeErrorStatus(w, http.StatusNotFound, "usage", "unknown route")
 	}
 }
 
-// splitSessionPath splits "/sessions/{id}[/action]" into the session id
-// and optional action; ok is false for any other path shape.
+// handleSessionsRoot routes the collection: GET lists sessions and
+// POST creates one (S5); other methods stay 405 usage.
+func (s *Server) handleSessionsRoot(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleList(w, r)
+	case http.MethodPost:
+		s.createHandler(w, r)
+	default:
+		s.writeErrorStatus(w, http.StatusMethodNotAllowed, "usage", "method not allowed")
+	}
+}
+
+// splitSessionPath splits "/sessions/{id}[/action[/sub]]" into the
+// session id and action path; the only three-segment shape is the
+// events follow stream. Ok is false for any other path shape.
 func splitSessionPath(path string) (id, action string, ok bool) {
 	parts := strings.Split(strings.TrimPrefix(path, "/sessions/"), "/")
 	switch len(parts) {
@@ -78,6 +98,10 @@ func splitSessionPath(path string) (id, action string, ok bool) {
 	case 2:
 		if parts[0] != "" && parts[1] != "" {
 			return parts[0], parts[1], true
+		}
+	case 3:
+		if parts[0] != "" && parts[1] == "events" && parts[2] == "stream" {
+			return parts[0], "events/stream", true
 		}
 	}
 	return "", "", false

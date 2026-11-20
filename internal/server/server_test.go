@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -22,6 +23,8 @@ var errFakeMissing = errors.New("unknown session 01a1f000-0000-4000-8000-0000000
 var errFakeTerminal = errors.New("session 01a1f000-0000-4000-8000-000000000001 is cancelled")
 var errFakeUnmapped = errors.New("boom: disk detached")
 var errFakeScope = errors.New("usage: steering sender is outside the delegation chain")
+var errFakeProvider = errors.New("provider: upstream refused")
+var errFakeBudget = errors.New("budget of 5 exceeded after 6 tokens; session paused")
 var errFakeManifest = errors.New("usage: manifest name is required")
 var errFakeBudgetStop = errors.New("budget exceeded: grant 200 exceeds available 100")
 var errFakeGate = errors.New("app: run swarm demo.swarm not accepted: failed gates [no], admitted 1 of 1 packets")
@@ -30,6 +33,7 @@ var fakeCodes = map[error]string{
 	errFakeUsage: "usage", errFakeMissing: "session_not_found", errFakeTerminal: "session_terminal",
 	errFakeScope: "usage", errFakeManifest: "usage", errFakeBudgetStop: "budget_exceeded",
 	errFakeGate: "internal", errFakeReceipt: "receipt_invalid",
+	errFakeProvider: "provider_error", errFakeBudget: "budget_exceeded",
 }
 
 func must(err error) {
@@ -53,6 +57,19 @@ type fakePorts struct {
 	swarmErr        error
 	receipt         ReceiptVerdict
 	receiptErr      error
+	mu              sync.Mutex
+	streamEvents    []Event
+	streamStatus    string
+	onEvents        func() // one-shot commit landing right after an events read
+	streamErr       error
+	deferEvents     int  // polls that answer empty before the log arrives
+	logLanded       bool // true once a poll answered the real (non-deferred) log
+	runEvents       []Event
+	runErr          error
+	runOpts         RunOptions
+	created         Session
+	createErr       error
+	createdReq      CreateRequest
 }
 
 func (f *fakePorts) ports() Ports {
@@ -122,6 +139,50 @@ func (f *fakePorts) ports() Ports {
 				return ReceiptVerdict{}, f.receiptErr
 			}
 			return f.receipt, nil
+		},
+		EventsAfter: func(_ context.Context, _ string, afterSeq int64) ([]Event, error) {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if f.streamErr != nil {
+				return nil, f.streamErr
+			}
+			if f.deferEvents > 0 {
+				f.deferEvents--
+				return nil, nil
+			}
+			f.logLanded = true
+			if f.onEvents != nil {
+				defer f.onEvents() // runs before the unlock above
+			}
+			out := make([]Event, 0, len(f.streamEvents))
+			for _, e := range f.streamEvents {
+				if e.Seq > afterSeq {
+					out = append(out, e)
+				}
+			}
+			return out, nil
+		},
+		SessionStatus: func(_ context.Context, _ string) (string, error) {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			// While the deferred log has not landed the session stays
+			// active, so the stream polls on instead of ending early.
+			if !f.logLanded {
+				return "active", nil
+			}
+			return f.streamStatus, nil
+		},
+		RunSession: func(_ context.Context, _ string, opts RunOptions) ([]Event, error) {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			f.runOpts = opts
+			return f.runEvents, f.runErr
+		},
+		CreateSession: func(_ context.Context, req CreateRequest) (Session, error) {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			f.createdReq = req
+			return f.created, f.createErr
 		},
 		ErrCode: func(err error) string { return fakeCodes[err] },
 	}
@@ -220,7 +281,7 @@ var _ = Describe("Serve S1 transport", func() {
 			Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{wantStatus, wantBody}))
 		},
 		Entry("invalid status filter is 400 usage", http.MethodGet, "/sessions?status=bogus", "", "", errFakeUsage, http.StatusBadRequest, `{"code":"usage","message":"usage: unknown status"}`),
-		Entry("POST /sessions is 405 usage", http.MethodPost, "/sessions", "", "", nil, http.StatusMethodNotAllowed, `{"code":"usage","message":"method not allowed"}`),
+		Entry("PUT /sessions is 405 usage", http.MethodPut, "/sessions", "", "", nil, http.StatusMethodNotAllowed, `{"code":"usage","message":"method not allowed"}`),
 		Entry("unknown session is 404 session_not_found", http.MethodGet, "/sessions/01a1f000-0000-4000-8000-000000000002", "", "", errFakeMissing, http.StatusNotFound, `{"code":"session_not_found","message":"unknown session 01a1f000-0000-4000-8000-000000000002"}`),
 		Entry("unknown route is 404 usage", http.MethodGet, "/nope", "", "", nil, http.StatusNotFound, `{"code":"usage","message":"unknown route"}`),
 		Entry("wrong bearer is 401", http.MethodGet, "/health", "wrong", "s3cret", nil, http.StatusUnauthorized, `{"code":"usage","message":"unauthorized"}`),
@@ -676,6 +737,10 @@ var _ = Describe("Serve S1 transport", func() {
 				note(ctx)
 				return SwarmRun{}, nil
 			}
+			p.CreateSession = func(ctx context.Context, _ CreateRequest) (Session, error) {
+				note(ctx)
+				return Session{}, nil
+			}
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
 			New(p).Handler().ServeHTTP(httptest.NewRecorder(),
@@ -686,6 +751,7 @@ var _ = Describe("Serve S1 transport", func() {
 		Entry("cancel", "/sessions/s1/cancel", ""),
 		Entry("budget anchor", "/sessions/s1/budget", `{"pool":100}`),
 		Entry("steering message", "/sessions/s1/message", `{"from":"s2","body":"go"}`),
+		Entry("create", "/sessions", `{"task":"greet"}`),
 		Entry("swarm run", "/swarm/run", `{"parent":"s1","path":"m.yaml","budget":100}`),
 	)
 })

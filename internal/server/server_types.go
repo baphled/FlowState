@@ -38,6 +38,18 @@ type Ports struct {
 	// verdict; the verdict mirrors the CLI's per-file line, so an
 	// invalid receipt is a verdict, not an error.
 	ValidateReceipt func(ctx context.Context, path string) (ReceiptVerdict, error)
+	// EventsAfter returns committed events with seq > afterSeq,
+	// ordered by seq. SessionStatus returns the current status; the
+	// SSE stream polls it for the terminal end states.
+	EventsAfter   func(ctx context.Context, id string, afterSeq int64) ([]Event, error)
+	SessionStatus func(ctx context.Context, id string) (string, error)
+	// RunSession runs one bounded provider turn synchronously and
+	// returns the projected event log; the run preamble (crash
+	// recovery, resume, steering drain, budget) is owned by the
+	// port, mirroring `session run <id>`. CreateSession creates one
+	// session; empty Provider/Model defer to the serve config.
+	RunSession    func(ctx context.Context, id string, opts RunOptions) ([]Event, error)
+	CreateSession func(ctx context.Context, req CreateRequest) (Session, error)
 	// ErrCode maps an error onto the closed contract code set.
 	ErrCode func(err error) string
 }
@@ -131,6 +143,22 @@ type SwarmRun struct {
 type ReceiptVerdict struct {
 	Path    string
 	Verdict string
+}
+
+// RunOptions carries the optional run request body onto the run
+// port, mirroring the CLI --budget/--max-tokens flags; zero values
+// mean unset exactly as omitted flags do.
+type RunOptions struct {
+	Budget    int64
+	MaxTokens int64
+}
+
+// CreateRequest carries the POST /sessions body onto the create
+// port; empty Provider/Model defer to the serve config defaults.
+type CreateRequest struct {
+	Provider string
+	Model    string
+	Task     string
 }
 
 // Server renders the read-only serve surface over Ports.
@@ -246,6 +274,36 @@ type swarmRunBody struct {
 type receiptVerdictBody struct {
 	Path    string `json:"path"`
 	Verdict string `json:"verdict"`
+}
+
+// runRequest is the optional POST /sessions/{id}/run body mirroring
+// the CLI run flags; a missing field decodes as the unset zero value.
+type runRequest struct {
+	Budget    int64 `json:"budget"`
+	MaxTokens int64 `json:"max_tokens"`
+}
+
+// createBody is the POST /sessions request body; empty provider and
+// model fall back to the serve config defaults inside the port.
+type createBody struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	Task     string `json:"task"`
+}
+
+// sessionNewBody mirrors the CLI session-new wire shape
+// (schemas/cli.json key session-new, shared with `session new`).
+type sessionNewBody struct {
+	ID       string `json:"id"`
+	Status   string `json:"status"`
+	ParentID string `json:"parent_id"`
+}
+
+// streamStatusBody is the terminal status frame that closes an SSE
+// follow stream after the last committed event frame.
+type streamStatusBody struct {
+	SessionID string `json:"session_id"`
+	Status    string `json:"status"`
 }
 
 // diagnosisBody mirrors the session-doctor item field-for-field; a nil

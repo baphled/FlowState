@@ -67,43 +67,43 @@ var _ = Describe("Serve write port wiring", func() {
 
 	It("closes a session through the store-backed port", func() {
 		st, sess := seedStore()
-		closed, err := servePorts(st).CloseSession(context.Background(), sess.ID)
+		closed, err := servePorts(st, &flags{}).CloseSession(context.Background(), sess.ID)
 		must(err)
 		Expect(closed.Status).To(Equal("cancelled"))
 	})
 
 	It("cancels a session through the store-backed port", func() {
 		st, sess := seedStore()
-		cancelled, err := servePorts(st).CancelSession(context.Background(), sess.ID)
+		cancelled, err := servePorts(st, &flags{}).CancelSession(context.Background(), sess.ID)
 		must(err)
 		Expect(cancelled.ID).To(Equal(sess.ID))
 	})
 
 	It("rejects a terminal close through the shared error table", func() {
 		st, sess := seedStore()
-		_, err := servePorts(st).CloseSession(context.Background(), sess.ID)
+		_, err := servePorts(st, &flags{}).CloseSession(context.Background(), sess.ID)
 		must(err)
-		_, err = servePorts(st).CloseSession(context.Background(), sess.ID)
-		Expect(servePorts(st).ErrCode(err)).To(Equal("session_terminal"))
+		_, err = servePorts(st, &flags{}).CloseSession(context.Background(), sess.ID)
+		Expect(servePorts(st, &flags{}).ErrCode(err)).To(Equal("session_terminal"))
 	})
 
 	It("diagnoses a session through the store-backed port", func() {
 		st, sess := seedStore()
-		d, err := servePorts(st).DiagnoseSession(context.Background(), sess.ID)
+		d, err := servePorts(st, &flags{}).DiagnoseSession(context.Background(), sess.ID)
 		must(err)
 		Expect(d.Status).To(Equal("active"))
 	})
 
 	It("reports the budget overview through the store-backed port", func() {
 		st, sess := seedStore()
-		b, err := servePorts(st).BudgetOverview(context.Background(), sess.ID)
+		b, err := servePorts(st, &flags{}).BudgetOverview(context.Background(), sess.ID)
 		must(err)
 		Expect(b).To(Equal(server.Budget{SessionID: sess.ID}))
 	})
 
 	It("anchors a budget pool through the run budget seam", func() {
 		st, sess := seedStore()
-		b, err := servePorts(st).SetBudgetPool(context.Background(), sess.ID, 120000)
+		b, err := servePorts(st, &flags{}).SetBudgetPool(context.Background(), sess.ID, 120000)
 		must(err)
 		want := int64(120000)
 		Expect(b).To(Equal(server.Budget{SessionID: sess.ID, Pool: &want, Available: &want}))
@@ -111,8 +111,8 @@ var _ = Describe("Serve write port wiring", func() {
 
 	It("maps an unknown session on the pool anchor onto session_not_found", func() {
 		st, _ := seedStore()
-		_, err := servePorts(st).SetBudgetPool(context.Background(), "01a1f000-0000-4000-8000-0000000000ff", 10)
-		Expect(servePorts(st).ErrCode(err)).To(Equal("session_not_found"))
+		_, err := servePorts(st, &flags{}).SetBudgetPool(context.Background(), "01a1f000-0000-4000-8000-0000000000ff", 10)
+		Expect(servePorts(st, &flags{}).ErrCode(err)).To(Equal("session_not_found"))
 	})
 })
 
@@ -131,14 +131,14 @@ var _ = Describe("Serve steering port wiring", func() {
 
 	It("sends a steering message from an ancestor through the store-backed port", func() {
 		st, parent, child := seedParentChild()
-		m, err := servePorts(st).SendSteeringMessage(context.Background(), child.ID, parent.ID, "steer left")
+		m, err := servePorts(st, &flags{}).SendSteeringMessage(context.Background(), child.ID, parent.ID, "steer left")
 		must(err)
 		Expect(m.SessionID).To(Equal(child.ID))
 	})
 
 	It("attributes the sent message to the ancestor sender", func() {
 		st, parent, child := seedParentChild()
-		m, err := servePorts(st).SendSteeringMessage(context.Background(), child.ID, parent.ID, "steer left")
+		m, err := servePorts(st, &flags{}).SendSteeringMessage(context.Background(), child.ID, parent.ID, "steer left")
 		must(err)
 		Expect(m.Sender).To(Equal(parent.ID))
 	})
@@ -150,8 +150,8 @@ var _ = Describe("Serve steering port wiring", func() {
 		st, _, child := seedParentChild()
 		outsider, err := app.CreateSession(context.Background(), st, "z.ai", "glm-5.3", app.DefaultHarness, "3f7a", "outsider")
 		must(err)
-		_, err = servePorts(st).SendSteeringMessage(context.Background(), child.ID, outsider.ID, "steer left")
-		Expect(servePorts(st).ErrCode(err)).To(Equal("usage"))
+		_, err = servePorts(st, &flags{}).SendSteeringMessage(context.Background(), child.ID, outsider.ID, "steer left")
+		Expect(servePorts(st, &flags{}).ErrCode(err)).To(Equal("usage"))
 	})
 })
 

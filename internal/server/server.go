@@ -27,7 +27,7 @@ func New(p Ports) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", s.getOnly(s.handleHealth))
-	mux.HandleFunc("/sessions", s.getOnly(s.handleList))
+	mux.HandleFunc("/sessions", s.handleSessionsRoot)
 	mux.HandleFunc("/sessions/", s.handleSessions)
 	mux.HandleFunc("/swarm/validate", s.methodOnly(http.MethodPost, s.swarmValidateHandler))
 	mux.HandleFunc("/swarm/run", s.methodOnly(http.MethodPost, s.swarmRunHandler))

@@ -47,8 +47,7 @@ budget stops 409, gate-not-accepted surfaces the app's unwrapped error → 500) 
 `POST /receipt/validate` `{"path"}` (an invalid receipt is a 200 `"invalid"`
 verdict mirroring the CLI's per-file line) — reusing the CLI `swarm-validate`,
 `swarm-run` and `receipt-validate` schema keys.
-Session creation stays out of scope (its config composition is a separate
-packet). Errors render the shared `{code,message}` body with statuses from the
+Errors render the shared `{code,message}` body with statuses from the
 closed error-code table — an empty or unknown `ErrCode` result maps explicitly
 to `internal`/500; the listener defaults to loopback `127.0.0.1:7600`
 (`--addr`), auth is an optional `FLOWSTATE_SERVE_TOKEN` bearer, and the
@@ -56,7 +55,21 @@ to `internal`/500; the listener defaults to loopback `127.0.0.1:7600`
 in-flight reads (requests inherit the serve context) and drains within 5s;
 writes are detached from request cancellation, so neither shutdown nor a client
 disconnect stops one half way, and a swarm run that outlives the grace period
-still ends the process with an error. Run endpoints stay out of scope for now.
+still ends the process with an error.
+
+S5 completes the surface. `GET /sessions/{id}/events?after=N` answers events
+past the strictly-greater cursor (absent is 0; `after=-1` replays seq 0);
+`.../events/stream?after=N` follows the log over SSE (200ms poll reading status
+before events, terminal status frame, per-write deadline reset 15s ahead of the
+global 30s `WriteTimeout`). `POST /sessions/{id}/run` runs one
+synchronous turn behind the `session run` preamble and answers the projected
+event log; `{"budget","max_tokens"}` mirrors the CLI flags, provider failures
+502 `provider_error`, budget stops 409, and the route's deadline extends 10
+minutes; a client disconnect or shutdown mid-run cancels the session, as
+SIGINT does for the CLI.
+`POST /sessions` creates via the `session new` composition (a write, so it is
+detached from cancellation): body fields override serve config, secret-looking
+keys are 400 `usage` (client input, unlike the config's `config_invalid`).
 
 ## Structured provider tools
 
