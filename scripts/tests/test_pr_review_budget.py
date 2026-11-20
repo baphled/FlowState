@@ -90,3 +90,10 @@ class MainExitCodes(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class ShippedPolicy(unittest.TestCase):
+    def test_repo_policy_tiers(self):
+        policy = (Path(__file__).resolve().parents[2] / '.env.ci').read_text(encoding='utf-8')
+        self.assertEqual(select(policy, 'feat(app): wide surface', 'feature/wide'), 1200)
+        self.assertEqual(select(policy, 'fix(store): replay text', 'fix/replay'), 600)
+        self.assertEqual(select(policy, 'docs(adr): notes', 'docs/notes'), 2000)
