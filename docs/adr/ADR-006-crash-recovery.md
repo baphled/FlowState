@@ -235,3 +235,5 @@ The run-activity gate was added *after* the first implementation broke the suite
 
 - *Completed:* PR #296; M2 recovery item closed.
 - *Noted follow-up:* read-path surfacing of interrupted state (`session doctor`-style), deliberately deferred.
+- *Delivered:* the deferred read-path follow-up — read-only `session doctor` diagnosis aggregates
+  existing primitives only; recovery remains in the run preamble.
