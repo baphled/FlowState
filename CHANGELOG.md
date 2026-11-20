@@ -2,6 +2,21 @@
 
 All notable changes to the FlowState project will be documented in this file.
 
+## [1.5.0](https://github.com/baphled/FlowState/compare/v1.4.0...v1.5.0) (2026-11-20)
+
+### Features
+
+* **build:** add a kind-aware changed-path budget ([#335](https://github.com/baphled/FlowState/issues/335)) ([3d5438a](https://github.com/baphled/FlowState/commit/3d5438a791c116630bcc25d9a9f22bd51ee822ac))
+* **build:** confine net/http to transport adapters via internal/server ([#331](https://github.com/baphled/FlowState/issues/331)) ([fc73cf1](https://github.com/baphled/FlowState/commit/fc73cf10de80753a22e94ed4eaaa6c8fdd6a48fb))
+* **server:** add serve skeleton with health and session list/get ([#336](https://github.com/baphled/FlowState/issues/336)) ([22a7942](https://github.com/baphled/FlowState/commit/22a7942c6d56bd27c1accd061169191124653f68))
+* **server:** add session close cancel and doctor endpoints ([#337](https://github.com/baphled/FlowState/issues/337)) ([218b549](https://github.com/baphled/FlowState/commit/218b549b3d1134ae009692175c9fa4a0679ffa06))
+* **session:** add read-only session doctor diagnosis ([#330](https://github.com/baphled/FlowState/issues/330)) ([aab65b9](https://github.com/baphled/FlowState/commit/aab65b9dd9b3e6086cd86822b32bb24ddc6a8245))
+
+### Bug Fixes
+
+* **app:** count content deltas as crash run-activity evidence ([#332](https://github.com/baphled/FlowState/issues/332)) ([038fda7](https://github.com/baphled/FlowState/commit/038fda73f51ae227f1241179bf0ee5d832fa5dbe))
+* **build:** allow cmd to import the server adapter in contract lint ([#334](https://github.com/baphled/FlowState/issues/334)) ([4308edd](https://github.com/baphled/FlowState/commit/4308eddc4146967cd309b54f5a3f4e3a868dd5eb))
+
 ## [1.4.0](https://github.com/baphled/FlowState/compare/v1.3.0...v1.4.0) (2026-11-19)
 
 ### Features
