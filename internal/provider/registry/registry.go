@@ -10,6 +10,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/provider/claudecode"
 	"github.com/baphled/flowstate/internal/provider/zai"
 )
 
@@ -20,9 +21,18 @@ func Resolve(name string) (provider.Provider, error) {
 	switch name {
 	case "z.ai", "zai":
 		return resolveZai()
+	case "claude-code":
+		return resolveClaudeCode(), nil
 	default:
 		return nil, fmt.Errorf("registry: unknown provider %q", name)
 	}
+}
+
+// resolveClaudeCode builds the claude-code adapter. The binary is `claude` on
+// PATH unless FLOWSTATE_CLAUDE_BIN names another. Resolving never runs the
+// binary or checks sign-in; both happen on the first turn.
+func resolveClaudeCode() provider.Provider {
+	return claudecode.New(os.Getenv("FLOWSTATE_CLAUDE_BIN"))
 }
 
 // resolveZai builds the z.ai adapter from config.yaml

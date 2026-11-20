@@ -42,6 +42,7 @@ The Go CLI's architecture decision records, in the vault template. The prototype
 | 005 | [[ADR - Config-Driven Session Composition]] | flowstate.json defaults; flags override; SHA-256 composition pin; secret keys rejected pre-decode |
 | 006 | [[ADR - Crash-Recovery Detection and Recovery]] | Run-activity gate + dangling-turn scan; idempotent session.interrupted append |
 | 007 | [[ADR - Transport Adapter Packages]] | internal/server classified as transport adapter; cmd allowlist app+config+server; net/http subtree banned from cmd |
+| 008 | [[ADR - Claude Code Provider]] | claude-code provider runs the user's own unmodified `claude` binary headless; no credentials handled by FlowState |
 
 ## Reading order
 
@@ -51,6 +52,6 @@ New contributors: 001 → 002 → 005 covers the layering, runtime, and configur
 ## Vault relationship
 
 The vault corpus (78 ADRs — 37 accepted, 22 proposed, 19 superseded) documents the prototype architecture. This
-  index's seven ADRs are the greenfield Go CLI's own decisions, written in the same template and cross-linked to their
+  index's eight ADRs are the greenfield Go CLI's own decisions, written in the same template and cross-linked to their
   vault ancestors. Where a vault ADR is superseded (TUI-era patterns), it has no Go CLI descendant; where it is
   accepted and carried forward, the Go CLI ADR cites it under Cross-links.

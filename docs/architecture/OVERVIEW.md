@@ -114,6 +114,16 @@ With the Go toolchain and module dependencies installed, run from repository roo
 go run github.com/onsi/ginkgo/v2/ginkgo --procs=2 --randomize-all --randomize-suites --race --fail-on-pending --fail-on-empty --timeout=3m ./internal/provider ./internal/provider/zai
 ```
 
+## Claude Code provider
+
+`internal/provider/claudecode` (registry name `claude-code`) reaches a user's Claude
+subscription only by running the user's own unmodified `claude` binary in headless
+print mode, prompt on stdin, and parsing its stream-json output. FlowState never reads,
+stores or forwards a Claude credential and sends nothing to Anthropic itself; the user
+signs in with `claude` and `/login`. `FLOWSTATE_CLAUDE_BIN` overrides the binary. The
+provider refuses structured tool calls, maps multi-turn history to a lossy transcript and
+ignores `MaxTokens` (stream budget enforcement still applies). See ADR-008.
+
 ## Session tool catalog
 
 `internal/app.NewSessionToolRegistry(workdir)` composes a fresh registry of `echo`,

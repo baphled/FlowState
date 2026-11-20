@@ -1,6 +1,7 @@
 package registry_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -8,6 +9,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/provider/claudecode"
 	"github.com/baphled/flowstate/internal/provider/registry"
 	"github.com/baphled/flowstate/internal/provider/zai"
 )
@@ -134,5 +137,49 @@ var _ = Describe("zai config wiring", func() {
 			observedCoding = resolveCoding()
 		})
 		It("lets env override config away from coding", func() { Expect(observedCoding).To(BeFalse()) })
+	})
+})
+
+var _ = Describe("claude-code resolution", func() {
+	BeforeEach(func() {
+		GinkgoT().Setenv("FLOWSTATE_CONFIG_DIR", GinkgoT().TempDir())
+	})
+
+	It("resolves claude-code to the claudecode provider type", func() {
+		p, err := registry.Resolve("claude-code")
+		if err != nil {
+			panic(err)
+		}
+		Expect(p).To(BeAssignableToTypeOf(&claudecode.Provider{}))
+	})
+
+	It("reports the claude-code provider name", func() {
+		p, err := registry.Resolve("claude-code")
+		if err != nil {
+			panic(err)
+		}
+		Expect(p.Name()).To(Equal("claude-code"))
+	})
+
+	It("honours FLOWSTATE_CLAUDE_BIN as the binary to run", func() {
+		missing := filepath.Join(GinkgoT().TempDir(), "custom-claude")
+		GinkgoT().Setenv("FLOWSTATE_CLAUDE_BIN", missing)
+		p, err := registry.Resolve("claude-code")
+		if err != nil {
+			panic(err)
+		}
+		_, err = p.Chat(context.Background(), &provider.ChatRequest{
+			Messages: []provider.Message{{Role: "user", Content: "hi"}},
+		})
+		Expect(err).To(MatchError(ContainSubstring(missing)))
+	})
+
+	It("does not run or require the binary at resolve time", func() {
+		GinkgoT().Setenv("FLOWSTATE_CLAUDE_BIN", filepath.Join(GinkgoT().TempDir(), "absent-claude"))
+		p, err := registry.Resolve("claude-code")
+		if err != nil {
+			panic(err)
+		}
+		Expect(p).NotTo(BeNil())
 	})
 })
