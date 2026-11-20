@@ -52,16 +52,16 @@ func DiagnoseSession(ctx context.Context, st *Store, sessionID string) (SessionD
 }
 
 // sessionRunActivity reports whether the session's event log holds
-// provider.request or tool.call events — the same evidence predicate
-// DetectCrashedSession applies to tell a crashed run from a freshly
-// created session.
+// provider.request, tool.call or assistant.delta events — the same
+// run-activity evidence DetectCrashedSession applies to tell a
+// crashed run from a freshly created session.
 func sessionRunActivity(ctx context.Context, st *Store, sessionID string) (bool, error) {
 	events, err := st.Replay(ctx, sessionID)
 	if err != nil {
 		return false, fmt.Errorf("run-activity replay: %w", err)
 	}
 	for _, e := range events {
-		if e.Type == "provider.request" || e.Type == "tool.call" {
+		if e.Type == "provider.request" || e.Type == "tool.call" || e.Type == TypeAssistantDelta {
 			return true, nil
 		}
 	}

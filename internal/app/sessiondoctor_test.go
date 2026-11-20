@@ -40,6 +40,20 @@ var _ = Describe("DiagnoseSession", func() {
 		Expect(d.Crashed).To(BeTrue())
 	})
 
+	It("flags a crashed session whose only run activity is a content delta", func() {
+		st := mustOpenCrashStore()
+		DeferCleanup(func() { _ = st.Close() })
+		sess := mustCreateCrashSession(ctx, st)
+		mustAppendEvent(ctx, st, sess.ID, "user", "turn.start", map[string]any{"task": "x"})
+		mustAppendEvent(ctx, st, sess.ID, "user", TypeUserMessage, map[string]any{"content": "x"})
+		mustAppendEvent(ctx, st, sess.ID, "engine", TypeAssistantDelta, map[string]any{"delta": "par"})
+		d, err := DiagnoseSession(ctx, st, sess.ID)
+		if err != nil {
+			panic(err)
+		}
+		Expect(d.Crashed).To(BeTrue())
+	})
+
 	It("keeps a fresh never-run session un-crashed", func() {
 		st := mustOpenCrashStore()
 		DeferCleanup(func() { _ = st.Close() })
@@ -246,5 +260,18 @@ var _ = Describe("DiagnoseSession", func() {
 			panic(err)
 		}
 		Expect(d.PendingMessages).To(Equal(0))
+	})
+})
+
+var _ = Describe("session doctor run activity", func() {
+	It("counts a content delta as run activity", func() {
+		ctx := context.Background()
+		st := mustOpenCrashStore()
+		defer st.Close()
+		sess := mustCreateCrashSession(ctx, st)
+		mustAppendEvent(ctx, st, sess.ID, "engine", TypeAssistantDelta, map[string]any{"delta": "c"})
+		d, err := DiagnoseSession(ctx, st, sess.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(d.RunActivity).To(BeTrue())
 	})
 })

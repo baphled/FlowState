@@ -74,6 +74,27 @@ var _ = Describe("crash recovery detection", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(crashed).To(BeFalse())
 	})
+
+	It("detects a delta-only dangling turn as crashed", func() {
+		st := mustOpenCrashStore()
+		sess := mustCreateCrashSession(ctx, st)
+		mustAppendEvent(ctx, st, sess.ID, "user", "turn.start", map[string]any{"task": "x"})
+		mustAppendEvent(ctx, st, sess.ID, "engine", TypeAssistantDelta, map[string]any{"delta": "par"})
+		crashed, err := DetectCrashedSession(ctx, st, sess.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(crashed).To(BeTrue())
+	})
+
+	It("does not detect a delta-only completed turn as crashed", func() {
+		st := mustOpenCrashStore()
+		sess := mustCreateCrashSession(ctx, st)
+		mustAppendEvent(ctx, st, sess.ID, "user", "turn.start", map[string]any{"task": "x"})
+		mustAppendEvent(ctx, st, sess.ID, "engine", TypeAssistantDelta, map[string]any{"delta": "par"})
+		mustAppendEvent(ctx, st, sess.ID, "engine", "turn.end", map[string]any{"status": "completed"})
+		crashed, err := DetectCrashedSession(ctx, st, sess.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(crashed).To(BeFalse())
+	})
 })
 
 var _ = Describe("crash recovery", func() {
