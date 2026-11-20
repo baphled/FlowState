@@ -22,6 +22,10 @@ fi
 title=$(git log --reverse --format=%s "$BASE..$HEAD" | sed -n '1p')
 budget=$(python3 -B "$selector" --policy "$policy" --title "$title" --branch "$branch") || exit 1
 export FLOWSTATE_PR_MAX_LINES="$budget"
+# Changed-path budget: same selector/title agreement; protected bases that
+# predate the --files flag fall back to the reviewed default of 10 paths.
+files=$(python3 -B "$selector" --policy "$policy" --title "$title" --branch "$branch" --files 2>/dev/null) || files="${FLOWSTATE_PR_MAX_FILES:-10}"
+export FLOWSTATE_PR_MAX_FILES="$files"
 python3 -B scripts/pr_size.py --base "$BASE" --head "$HEAD"
 
 python3 -B scripts/check_code_contract.py --base "$BASE"
@@ -40,8 +44,9 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     case "$local_sha" in 0000000000000000000000000000000000000000) continue ;; esac
     tip_title=$(git log --reverse --format=%s "$BASE..$local_sha" | sed -n 1p)
     budget=$(python3 -B "$selector" --policy "$policy" --title "$tip_title" --branch "$local_ref" 2>/dev/null) || budget="$FLOWSTATE_PR_MAX_LINES"
-    FLOWSTATE_PR_MAX_LINES="$budget" make check-admission-commits BASE_SHA="$BASE" HEAD_SHA="$local_sha"
+    files=$(python3 -B "$selector" --policy "$policy" --title "$tip_title" --branch "$local_ref" --files 2>/dev/null) || files="$FLOWSTATE_PR_MAX_FILES"
+    FLOWSTATE_PR_MAX_LINES="$budget" FLOWSTATE_PR_MAX_FILES="$files" make check-admission-commits BASE_SHA="$BASE" HEAD_SHA="$local_sha"
 done
 python3 -B -m unittest discover -s scripts/tests -p 'test_review_handoff.py'
 python3 -B -m unittest discover -s scripts/tests -p 'test_pr_review_budget.py'
-printf 'pre-push: qualified %s against %s (%s lines)\n' "$HEAD" "$BASE" "$FLOWSTATE_PR_MAX_LINES"
+printf 'pre-push: qualified %s against %s (%s lines, %s files)\n' "$HEAD" "$BASE" "$FLOWSTATE_PR_MAX_LINES" "$FLOWSTATE_PR_MAX_FILES"
