@@ -42,7 +42,10 @@ func allowedImport(path, name string) bool {
 	}
 	if strings.HasPrefix(path, "cmd/") {
 		if strings.HasPrefix(name, modulePath) {
-			return within(internal, "internal/app") || within(internal, "internal/config")
+			return within(internal, "internal/app") || within(internal, "internal/config") || within(internal, "internal/server")
+		}
+		if within(name, "net/http") {
+			return false
 		}
 		return standardImport(name)
 	}
@@ -66,7 +69,7 @@ func isDomain(path string) bool {
 }
 
 func isAdapter(path string) bool {
-	return withinAny(path, []string{"internal/store", "internal/storage", "internal/oauth"}) || strings.HasPrefix(path, "internal/provider/")
+	return withinAny(path, []string{"internal/store", "internal/storage", "internal/oauth", "internal/server"}) || strings.HasPrefix(path, "internal/provider/")
 }
 
 func withinAny(path string, owners []string) bool {
