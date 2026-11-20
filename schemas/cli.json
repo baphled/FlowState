@@ -1,4 +1,10 @@
 {
+  "serve-health": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["status"],
+    "properties": { "status": { "type": "string" } }
+  },
   "session-new": {
     "type": "object",
     "additionalProperties": false,

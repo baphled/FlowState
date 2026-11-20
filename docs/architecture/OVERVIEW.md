@@ -24,6 +24,17 @@ See [the enforced code structure contract](../../rules/ARCHITECTURE.md) for exac
 ownership and import rules. Existing concrete-store coupling is refactoring debt;
 its presence is not permission to add another dependency or a new global.
 
+## Serve transport (S1)
+
+`flowstate serve` exposes the read-only session surface over HTTP from `internal/server`:
+`GET /health`, `GET /sessions[?status=…]` and `GET /sessions/{id}` (session
+fields with embedded `events`), wired through narrow `server.Ports`; no store
+type crosses into transport and `cmd` only builds the closures and listener.
+Errors render the shared `{code,message}` body with statuses from the closed
+error-code table; the listener defaults to loopback `127.0.0.1:7600`
+(`--addr`), auth is an optional `FLOWSTATE_SERVE_TOKEN` bearer, and shutdown
+drains within 5s. Writes and run endpoints stay out of scope for now.
+
 ## Structured provider tools
 
 `internal/app` owns the M2 execution loop (`RunExecLoop`): a leased, fenced run replays
