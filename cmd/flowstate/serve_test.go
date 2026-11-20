@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -151,6 +152,138 @@ var _ = Describe("Serve steering port wiring", func() {
 		must(err)
 		_, err = servePorts(st).SendSteeringMessage(context.Background(), child.ID, outsider.ID, "steer left")
 		Expect(servePorts(st).ErrCode(err)).To(Equal("usage"))
+	})
+})
+
+var _ = Describe("Serve swarm port wiring", func() {
+	writeManifest := func(body string) string {
+		p := filepath.Join(GinkgoT().TempDir(), "swarm.yaml")
+		must(os.WriteFile(p, []byte(body), 0o600))
+		return p
+	}
+	var passingManifest string
+	BeforeEach(func() {
+		passingManifest = "name: demo.swarm\nscope: demo.swarm\npackets:\n  - id: p1\n    scope: demo.swarm.build\n    task: build it\n    source_sha256: " +
+			strings.Repeat("b", 64) + "\ngates:\n  - name: ok\n    description: trivially pass\n    command: true\n"
+	})
+	seedSwarmParent := func() (*app.Store, *app.Session) {
+		st, err := app.OpenStore(filepath.Join(GinkgoT().TempDir(), "swarmport.db"))
+		must(err)
+		DeferCleanup(func() { must(st.Close()) })
+		parent, err := app.CreateSession(context.Background(), st, "z.ai", "glm-5.3", app.DefaultHarness, "3f7a", "swarm parent")
+		must(err)
+		return st, parent
+	}
+
+	It("validates a manifest through the store-backed port", func() {
+		v, err := swarmValidatePort(context.Background(), writeManifest(passingManifest))
+		must(err)
+		Expect(v).To(Equal(server.SwarmValidation{Name: "demo.swarm", Valid: true}))
+	})
+
+	It("maps a manifest validation failure onto usage", func() {
+		_, err := swarmValidatePort(context.Background(), writeManifest("scope: demo.swarm\n"))
+		Expect(app.ErrorCode(err)).To(Equal("usage"))
+	})
+
+	runPassing := func() (*app.Store, *app.Session, server.SwarmRun) {
+		st, parent := seedSwarmParent()
+		run, err := swarmRunPort(context.Background(), st, parent.ID, writeManifest(passingManifest), 100)
+		must(err)
+		return st, parent, run
+	}
+
+	It("reports the executed manifest through the run port", func() {
+		_, _, run := runPassing()
+		Expect(run.Manifest).To(Equal("demo.swarm"))
+	})
+
+	It("lists the admitted packets through the run port", func() {
+		_, _, run := runPassing()
+		Expect(run.Admitted).To(Equal([]string{"p1"}))
+	})
+
+	It("reports the accepted gate decision through the run port", func() {
+		_, _, run := runPassing()
+		Expect(run.Accepted).To(BeTrue())
+	})
+
+	It("reports one delegated child through the run port", func() {
+		_, _, run := runPassing()
+		Expect(run.Children).To(HaveLen(1))
+	})
+
+	It("labels the child with its manifest packet", func() {
+		_, _, run := runPassing()
+		Expect(run.Children[0].Packet).To(Equal("p1"))
+	})
+
+	It("names the child session created for the packet", func() {
+		_, _, run := runPassing()
+		Expect(run.Children[0].Session).NotTo(BeEmpty())
+	})
+
+	It("creates the child active", func() {
+		_, _, run := runPassing()
+		Expect(run.Children[0].Status).To(Equal("active"))
+	})
+
+	It("attributes the child to the parent session", func() {
+		_, parent, run := runPassing()
+		Expect(run.Children[0].ParentID).To(Equal(parent.ID))
+	})
+
+	It("maps an unknown parent onto session_not_found", func() {
+		st, _ := seedSwarmParent()
+		_, err := swarmRunPort(context.Background(), st, "01a1f000-0000-4000-8000-0000000000ff",
+			writeManifest(passingManifest), 100)
+		Expect(app.ErrorCode(err)).To(Equal("session_not_found"))
+	})
+
+	It("maps a terminal parent onto session_terminal", func() {
+		st, parent := seedSwarmParent()
+		_, err := app.CloseSession(context.Background(), st, parent.ID)
+		must(err)
+		_, err = swarmRunPort(context.Background(), st, parent.ID, writeManifest(passingManifest), 100)
+		Expect(app.ErrorCode(err)).To(Equal("session_terminal"))
+	})
+
+	// Actual mapping: the app's not-accepted gate error carries no
+	// sentinel, so the shared table answers internal — the endpoint
+	// renders 500, mirroring the CLI exit path.
+	It("reports the gate not-accepted error from the run port", func() {
+		st, parent := seedSwarmParent()
+		failing := strings.Replace(passingManifest, "command: true", "command: false", 1)
+		_, err := swarmRunPort(context.Background(), st, parent.ID, writeManifest(failing), 100)
+		Expect(err).To(MatchError(ContainSubstring("not accepted")))
+	})
+
+	It("maps a gate-not-accepted run onto internal", func() {
+		st, parent := seedSwarmParent()
+		failing := strings.Replace(passingManifest, "command: true", "command: false", 1)
+		_, err := swarmRunPort(context.Background(), st, parent.ID, writeManifest(failing), 100)
+		Expect(app.ErrorCode(err)).To(Equal("internal"))
+	})
+})
+
+var _ = Describe("Serve receipt port wiring", func() {
+	It("reports a valid receipt through the store-backed port", func() {
+		p := writeReceipt(validReceipt())
+		v, err := receiptPort(context.Background(), p)
+		must(err)
+		Expect(v).To(Equal(server.ReceiptVerdict{Path: p, Verdict: "valid"}))
+	})
+
+	// Mirrors the CLI: an invalid receipt renders the invalid verdict
+	// line, not an error; the port's error return stays reserved for
+	// transport-level failures through the shared code table.
+	It("reports a tampered receipt as the invalid verdict without an error", func() {
+		doc := validReceipt()
+		doc["repo_state"].(map[string]any)["manifest_sha256"] = "tampered"
+		p := writeReceipt(doc)
+		v, err := receiptPort(context.Background(), p)
+		must(err)
+		Expect(v).To(Equal(server.ReceiptVerdict{Path: p, Verdict: "invalid"}))
 	})
 })
 

@@ -22,9 +22,14 @@ var errFakeMissing = errors.New("unknown session 01a1f000-0000-4000-8000-0000000
 var errFakeTerminal = errors.New("session 01a1f000-0000-4000-8000-000000000001 is cancelled")
 var errFakeUnmapped = errors.New("boom: disk detached")
 var errFakeScope = errors.New("usage: steering sender is outside the delegation chain")
+var errFakeManifest = errors.New("usage: manifest name is required")
+var errFakeBudgetStop = errors.New("budget exceeded: grant 200 exceeds available 100")
+var errFakeGate = errors.New("app: run swarm demo.swarm not accepted: failed gates [no], admitted 1 of 1 packets")
+var errFakeReceipt = errors.New(`receipt_invalid: "receipt.json": gate_outcome inconsistent with review verdict`)
 var fakeCodes = map[error]string{
 	errFakeUsage: "usage", errFakeMissing: "session_not_found", errFakeTerminal: "session_terminal",
-	errFakeScope: "usage",
+	errFakeScope: "usage", errFakeManifest: "usage", errFakeBudgetStop: "budget_exceeded",
+	errFakeGate: "internal", errFakeReceipt: "receipt_invalid",
 }
 
 func must(err error) {
@@ -34,15 +39,20 @@ func must(err error) {
 }
 
 type fakePorts struct {
-	sessions  []Session
-	events    []Event
-	err       error
-	writeErr  error
-	closed    Session
-	diagnosis Diagnosis
-	budget    Budget
-	anchored  Budget
-	message   Message
+	sessions        []Session
+	events          []Event
+	err             error
+	writeErr        error
+	closed          Session
+	diagnosis       Diagnosis
+	budget          Budget
+	anchored        Budget
+	message         Message
+	swarmValidation SwarmValidation
+	swarmRun        SwarmRun
+	swarmErr        error
+	receipt         ReceiptVerdict
+	receiptErr      error
 }
 
 func (f *fakePorts) ports() Ports {
@@ -95,6 +105,24 @@ func (f *fakePorts) ports() Ports {
 			}
 			return f.message, nil
 		},
+		ValidateSwarm: func(_ context.Context, _ string) (SwarmValidation, error) {
+			if f.swarmErr != nil {
+				return SwarmValidation{}, f.swarmErr
+			}
+			return f.swarmValidation, nil
+		},
+		RunSwarm: func(_ context.Context, _, _ string, _ int64) (SwarmRun, error) {
+			if f.swarmErr != nil {
+				return SwarmRun{}, f.swarmErr
+			}
+			return f.swarmRun, nil
+		},
+		ValidateReceipt: func(_ context.Context, _ string) (ReceiptVerdict, error) {
+			if f.receiptErr != nil {
+				return ReceiptVerdict{}, f.receiptErr
+			}
+			return f.receipt, nil
+		},
 		ErrCode: func(err error) string { return fakeCodes[err] },
 	}
 }
@@ -118,6 +146,11 @@ func sampleServer() (*Server, *fakePorts) {
 		Pool: &anchoredPool, Available: &anchoredAvailable}
 	f.message = Message{ID: "01a1f000-0000-4000-8000-00000000000a", SessionID: closed.ID,
 		Sender: "01a1f000-0000-4000-8000-000000000002"}
+	f.swarmValidation = SwarmValidation{Name: "demo.swarm", Valid: true}
+	f.swarmRun = SwarmRun{Manifest: "demo.swarm", Admitted: []string{"p1"}, Accepted: true,
+		Children: []SwarmChild{{Packet: "p1", Session: "01a1f000-0000-4000-8000-000000000003",
+			Status: "active", ParentID: closed.ID}}}
+	f.receipt = ReceiptVerdict{Path: "receipt.json", Verdict: "valid"}
 	return New(f.ports()), f
 }
 
@@ -354,6 +387,190 @@ var _ = Describe("Serve S1 transport", func() {
 		It("rejects a GET on the message route with 405 usage", func() {
 			s, _ := sampleServer()
 			rec := doRequest(s, http.MethodGet, "/sessions/01a1f000-0000-4000-8000-000000000001/message", "")
+			Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusMethodNotAllowed, `{"code":"usage","message":"method not allowed"}`}))
+		})
+	})
+
+	Describe("swarm validate", func() {
+		It("answers POST with the manifest verdict body", func() {
+			s, _ := sampleServer()
+			rec := doBody(s, http.MethodPost, "/swarm/validate", `{"path":"swarm.yaml"}`)
+			Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusOK, `{"name":"demo.swarm","valid":true}`}))
+		})
+
+		It("returns the verdict shape validated against schemas/cli.json swarm-validate", func() {
+			s, _ := sampleServer()
+			Expect(schemaError("swarm-validate", doBody(s, http.MethodPost, "/swarm/validate",
+				`{"path":"swarm.yaml"}`).Body.String())).To(Succeed())
+		})
+
+		It("rejects a malformed body with 400 usage", func() {
+			s, _ := sampleServer()
+			rec := doBody(s, http.MethodPost, "/swarm/validate", `not json`)
+			Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusBadRequest,
+				`{"code":"usage","message":"invalid swarm validate body"}`}))
+		})
+
+		It("rejects a missing path with 400 usage", func() {
+			s, _ := sampleServer()
+			rec := doBody(s, http.MethodPost, "/swarm/validate", `{}`)
+			Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusBadRequest,
+				`{"code":"usage","message":"path is required"}`}))
+		})
+
+		It("maps a manifest validation failure onto 400 usage with the selector message", func() {
+			s, f := sampleServer()
+			f.swarmErr = errFakeManifest
+			rec := doBody(s, http.MethodPost, "/swarm/validate", `{"path":"swarm.yaml"}`)
+			Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusBadRequest,
+				`{"code":"usage","message":"usage: manifest name is required"}`}))
+		})
+
+		It("rejects a GET on the route with 405 usage", func() {
+			s, _ := sampleServer()
+			rec := doRequest(s, http.MethodGet, "/swarm/validate", "")
+			Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusMethodNotAllowed, `{"code":"usage","message":"method not allowed"}`}))
+		})
+	})
+
+	Describe("swarm run", func() {
+		var runOK, runBody string
+		BeforeEach(func() {
+			runOK = `{"parent":"01a1f000-0000-4000-8000-000000000001","path":"swarm.yaml","budget":100}`
+			runBody = `{"manifest":"demo.swarm","admitted":["p1"],"accepted":true,` +
+				`"children":[{"packet":"p1","session":"01a1f000-0000-4000-8000-000000000003",` +
+				`"status":"active","parent_id":"01a1f000-0000-4000-8000-000000000001"}]}`
+		})
+
+		It("answers POST with the run result body", func() {
+			s, _ := sampleServer()
+			rec := doBody(s, http.MethodPost, "/swarm/run", runOK)
+			Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusOK, runBody}))
+		})
+
+		It("returns the run shape validated against schemas/cli.json swarm-run", func() {
+			s, _ := sampleServer()
+			Expect(schemaError("swarm-run", doBody(s, http.MethodPost, "/swarm/run", runOK).Body.String())).To(Succeed())
+		})
+
+		It("rejects a malformed body with 400 usage", func() {
+			s, _ := sampleServer()
+			rec := doBody(s, http.MethodPost, "/swarm/run", `not json`)
+			Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusBadRequest,
+				`{"code":"usage","message":"invalid swarm run body"}`}))
+		})
+
+		It("rejects a missing parent with 400 usage", func() {
+			s, _ := sampleServer()
+			rec := doBody(s, http.MethodPost, "/swarm/run", `{"path":"swarm.yaml","budget":100}`)
+			Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusBadRequest,
+				`{"code":"usage","message":"parent is required"}`}))
+		})
+
+		It("rejects a missing path with 400 usage", func() {
+			s, _ := sampleServer()
+			rec := doBody(s, http.MethodPost, "/swarm/run", `{"parent":"01a1f000-0000-4000-8000-000000000001","budget":100}`)
+			Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusBadRequest,
+				`{"code":"usage","message":"path is required"}`}))
+		})
+
+		It("rejects a missing budget with 400 usage", func() {
+			s, _ := sampleServer()
+			rec := doBody(s, http.MethodPost, "/swarm/run", `{"parent":"01a1f000-0000-4000-8000-000000000001","path":"swarm.yaml"}`)
+			Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusBadRequest,
+				`{"code":"usage","message":"budget is required"}`}))
+		})
+
+		It("rejects a non-positive budget with 400 usage", func() {
+			s, _ := sampleServer()
+			rec := doBody(s, http.MethodPost, "/swarm/run",
+				`{"parent":"01a1f000-0000-4000-8000-000000000001","path":"swarm.yaml","budget":0}`)
+			Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusBadRequest,
+				`{"code":"usage","message":"budget must be positive"}`}))
+		})
+
+		It("maps an unknown parent onto 404 session_not_found", func() {
+			s, f := sampleServer()
+			f.swarmErr = errFakeMissing
+			rec := doBody(s, http.MethodPost, "/swarm/run", runOK)
+			Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusNotFound,
+				`{"code":"session_not_found","message":"unknown session 01a1f000-0000-4000-8000-000000000002"}`}))
+		})
+
+		It("maps a budget stop onto 409 budget_exceeded", func() {
+			s, f := sampleServer()
+			f.swarmErr = errFakeBudgetStop
+			rec := doBody(s, http.MethodPost, "/swarm/run", runOK)
+			Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusConflict,
+				`{"code":"budget_exceeded","message":"budget exceeded: grant 200 exceeds available 100"}`}))
+		})
+
+		// Actual mapping: RunSwarm's not-accepted error carries no
+		// sentinel, so ErrorCode answers internal and the shared table
+		// renders 500 — the same outcome the CLI exit path takes.
+		It("maps a gate-not-accepted run onto 500 internal", func() {
+			s, f := sampleServer()
+			f.swarmErr = errFakeGate
+			rec := doBody(s, http.MethodPost, "/swarm/run", runOK)
+			Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusInternalServerError,
+				`{"code":"internal","message":"app: run swarm demo.swarm not accepted: failed gates [no], admitted 1 of 1 packets"}`}))
+		})
+
+		It("rejects a GET on the route with 405 usage", func() {
+			s, _ := sampleServer()
+			rec := doRequest(s, http.MethodGet, "/swarm/run", "")
+			Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusMethodNotAllowed, `{"code":"usage","message":"method not allowed"}`}))
+		})
+	})
+
+	Describe("receipt validate", func() {
+		It("answers POST with the valid verdict body", func() {
+			s, _ := sampleServer()
+			rec := doBody(s, http.MethodPost, "/receipt/validate", `{"path":"receipt.json"}`)
+			Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusOK, `{"path":"receipt.json","verdict":"valid"}`}))
+		})
+
+		It("answers POST with the invalid verdict body", func() {
+			s, f := sampleServer()
+			f.receipt.Verdict = "invalid"
+			rec := doBody(s, http.MethodPost, "/receipt/validate", `{"path":"receipt.json"}`)
+			Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusOK, `{"path":"receipt.json","verdict":"invalid"}`}))
+		})
+
+		// The receipt-validate key covers the CLI's array of per-file
+		// verdict lines; this single-path endpoint returns one item, so
+		// the spec validates the wrapped one-element array.
+		It("returns the verdict shape validated against schemas/cli.json receipt-validate", func() {
+			s, _ := sampleServer()
+			Expect(schemaError("receipt-validate", "["+doBody(s, http.MethodPost, "/receipt/validate",
+				`{"path":"receipt.json"}`).Body.String()+"]")).To(Succeed())
+		})
+
+		It("rejects a malformed body with 400 usage", func() {
+			s, _ := sampleServer()
+			rec := doBody(s, http.MethodPost, "/receipt/validate", `not json`)
+			Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusBadRequest,
+				`{"code":"usage","message":"invalid receipt body"}`}))
+		})
+
+		It("rejects a missing path with 400 usage", func() {
+			s, _ := sampleServer()
+			rec := doBody(s, http.MethodPost, "/receipt/validate", `{}`)
+			Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusBadRequest,
+				`{"code":"usage","message":"path is required"}`}))
+		})
+
+		It("maps a receipt_invalid port error onto 422", func() {
+			s, f := sampleServer()
+			f.receiptErr = errFakeReceipt
+			rec := doBody(s, http.MethodPost, "/receipt/validate", `{"path":"receipt.json"}`)
+			Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusUnprocessableEntity,
+				`{"code":"receipt_invalid","message":"receipt_invalid: \"receipt.json\": gate_outcome inconsistent with review verdict"}`}))
+		})
+
+		It("rejects a GET on the route with 405 usage", func() {
+			s, _ := sampleServer()
+			rec := doRequest(s, http.MethodGet, "/receipt/validate", "")
 			Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusMethodNotAllowed, `{"code":"usage","message":"method not allowed"}`}))
 		})
 	})

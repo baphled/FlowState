@@ -116,7 +116,10 @@ func servePorts(st *app.Store) server.Ports {
 		CloseSession: closePort, CancelSession: cancelPort, DiagnoseSession: func(ctx context.Context, id string) (server.Diagnosis, error) {
 			return serveDiagnose(ctx, st, id)
 		}, BudgetOverview: budgetPort, SetBudgetPool: setBudgetPort,
-		SendSteeringMessage: messagePort, ErrCode: app.ErrorCode}
+		SendSteeringMessage: messagePort, ValidateSwarm: swarmValidatePort,
+		RunSwarm: func(ctx context.Context, parentID, manifestPath string, budget int64) (server.SwarmRun, error) {
+			return swarmRunPort(ctx, st, parentID, manifestPath, budget)
+		}, ValidateReceipt: receiptPort, ErrCode: app.ErrorCode}
 }
 
 // serveClose wires POST /sessions/{id}/close onto app.CloseSession;
@@ -187,6 +190,57 @@ func serveMessage(ctx context.Context, st *app.Store, id, sender, body string) (
 		return server.Message{}, err
 	}
 	return server.Message{ID: msg.ID, SessionID: msg.SessionID, Sender: msg.Sender}, nil
+}
+
+// swarmValidatePort wires POST /swarm/validate onto
+// app.ValidateSwarmManifest, wrapping failures into ErrUsage exactly
+// as the CLI's swarm validate does, so the shared table answers
+// usage/400 with the selector's message.
+func swarmValidatePort(ctx context.Context, manifestPath string) (server.SwarmValidation, error) {
+	m, err := app.ValidateSwarmManifest(manifestPath)
+	if err != nil {
+		return server.SwarmValidation{}, fmt.Errorf("%w: %v", app.ErrUsage, err)
+	}
+	return server.SwarmValidation{Name: m.Name, Valid: true}, nil
+}
+
+// swarmRunPort wires POST /swarm/run onto the CLI run composition:
+// loadRunnableSession resolves the parent (unknown →
+// session_not_found, terminal → session_terminal) and app.RunSwarmFile
+// anchors the pool for a positive budget, creates the delegated
+// children and drives the durable gate run. The app's gate
+// not-accepted error carries no sentinel, so it maps through
+// ErrorCode onto internal — the endpoint documents that as-built.
+func swarmRunPort(ctx context.Context, st *app.Store, parentID, manifestPath string, budget int64) (server.SwarmRun, error) {
+	parent, err := loadRunnableSession(ctx, st, parentID)
+	if err != nil {
+		return server.SwarmRun{}, err
+	}
+	res, err := app.RunSwarmFile(ctx, st, parent, manifestPath, budget)
+	if err != nil {
+		return server.SwarmRun{}, err
+	}
+	children := make([]server.SwarmChild, 0, len(res.Children))
+	for _, c := range res.Children {
+		children = append(children, server.SwarmChild{Packet: c.PacketID, Session: c.Session.ID,
+			Status: c.Session.Status, ParentID: c.Session.ParentID})
+	}
+	return server.SwarmRun{Manifest: res.Manifest.Name, Admitted: res.Admitted,
+		Accepted: res.Gates.Accepted, Children: children}, nil
+}
+
+// receiptPort wires POST /receipt/validate onto
+// app.ValidateReceiptFile, mirroring the CLI's per-file verdict
+// rendering: an invalid receipt is the "invalid" verdict, not an
+// error. The error return stays reserved for failures that carry a
+// contract code and render through the shared table
+// (receipt_invalid → 422).
+func receiptPort(ctx context.Context, path string) (server.ReceiptVerdict, error) {
+	verdict := "valid"
+	if err := app.ValidateReceiptFile(path); err != nil {
+		verdict = "invalid"
+	}
+	return server.ReceiptVerdict{Path: path, Verdict: verdict}, nil
 }
 func serveSession(r app.Session) server.Session {
 	return server.Session{ID: r.ID, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, Status: r.Status,
