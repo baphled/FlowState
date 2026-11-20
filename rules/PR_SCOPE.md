@@ -13,7 +13,10 @@ Split vertically along contracts; every intermediate PR must remain tested and u
   ships as one PR, and `DOCS` carries 2000. Every other kind uses the default.
   Aim below 800 for feature PRs where the surface allows it — the wider bound
   is a ceiling for genuinely wide packets, not a target.
-- At most 10 changed paths.
+- Changed paths are capped by `FLOWSTATE_PR_MAX_FILES` in the same trusted
+  `.env.ci` (currently 10), selected by the same commit type: `FEAT` carries
+  15 so a complete surface is not split below reviewable granularity. Every
+  other kind uses the default; completeness never excuses unrelated files.
 - Tests, documentation, dependency files, generated files and deletions all count.
 - Moves count as deletion plus addition; changed text/binary bytes share a 128 KiB cap.
 - A changed blob larger than 1 MiB fails closed. No label, title, environment flag,

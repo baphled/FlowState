@@ -22,9 +22,13 @@ if git cat-file -e "$BASE:.env.ci" 2>/dev/null; then
   esac
   if [ -n "$kind" ]; then
     budget="$(printf '%s\n' "$policy" | sed -n "s/^FLOWSTATE_PR_MAX_LINES_${kind}=//p")"
+    files="$(printf '%s\n' "$policy" | sed -n "s/^FLOWSTATE_PR_MAX_FILES_${kind}=//p")"
   fi
   [ -n "$budget" ] || budget="$(printf '%s\n' "$policy" | sed -n 's/^FLOWSTATE_PR_MAX_LINES=//p')"
+  [ -n "$files" ] || files="$(printf '%s\n' "$policy" | sed -n 's/^FLOWSTATE_PR_MAX_FILES=//p')"
 fi
 [ -n "$budget" ] || budget=500
+[ -n "$files" ] || files=10
 export FLOWSTATE_PR_MAX_LINES="$budget"
+export FLOWSTATE_PR_MAX_FILES="$files"
 python3 -B scripts/pr_size.py --live --base "$BASE"

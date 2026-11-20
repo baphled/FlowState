@@ -142,6 +142,7 @@ class PRSize(unittest.TestCase):
             source = (ROOT / '.github/workflows' / name).read_text()
             self.assertIn('git show "$BASE_SHA:.env.ci"', source)
             self.assertIn('export FLOWSTATE_PR_MAX_LINES', source)
+            self.assertIn('export FLOWSTATE_PR_MAX_FILES', source)
 
     def test_build_requires_scope_gate_in_both_workflows(self):
         for name in ('ci-next.yml', 'ci.yml'):
