@@ -13,6 +13,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/app"
+	"github.com/baphled/flowstate/internal/server"
 )
 
 // runOutcome pairs one run's exit code with its stdout.
@@ -90,6 +91,66 @@ var _ = Describe("Serve write port wiring", func() {
 		d, err := servePorts(st).DiagnoseSession(context.Background(), sess.ID)
 		must(err)
 		Expect(d.Status).To(Equal("active"))
+	})
+
+	It("reports the budget overview through the store-backed port", func() {
+		st, sess := seedStore()
+		b, err := servePorts(st).BudgetOverview(context.Background(), sess.ID)
+		must(err)
+		Expect(b).To(Equal(server.Budget{SessionID: sess.ID}))
+	})
+
+	It("anchors a budget pool through the run budget seam", func() {
+		st, sess := seedStore()
+		b, err := servePorts(st).SetBudgetPool(context.Background(), sess.ID, 120000)
+		must(err)
+		want := int64(120000)
+		Expect(b).To(Equal(server.Budget{SessionID: sess.ID, Pool: &want, Available: &want}))
+	})
+
+	It("maps an unknown session on the pool anchor onto session_not_found", func() {
+		st, _ := seedStore()
+		_, err := servePorts(st).SetBudgetPool(context.Background(), "01a1f000-0000-4000-8000-0000000000ff", 10)
+		Expect(servePorts(st).ErrCode(err)).To(Equal("session_not_found"))
+	})
+})
+
+var _ = Describe("Serve steering port wiring", func() {
+	seedParentChild := func() (*app.Store, *app.Session, *app.Session) {
+		st, err := app.OpenStore(filepath.Join(GinkgoT().TempDir(), "steering.db"))
+		must(err)
+		DeferCleanup(func() { must(st.Close()) })
+		parent, err := app.CreateSession(context.Background(), st, "z.ai", "glm-5.3", app.DefaultHarness, "3f7a", "wiring")
+		must(err)
+		child, err := app.CreateChildSession(context.Background(), st, parent.ID,
+			"z.ai", "glm-5.3", app.DefaultHarness, "3f7a", "child task")
+		must(err)
+		return st, parent, child
+	}
+
+	It("sends a steering message from an ancestor through the store-backed port", func() {
+		st, parent, child := seedParentChild()
+		m, err := servePorts(st).SendSteeringMessage(context.Background(), child.ID, parent.ID, "steer left")
+		must(err)
+		Expect(m.SessionID).To(Equal(child.ID))
+	})
+
+	It("attributes the sent message to the ancestor sender", func() {
+		st, parent, child := seedParentChild()
+		m, err := servePorts(st).SendSteeringMessage(context.Background(), child.ID, parent.ID, "steer left")
+		must(err)
+		Expect(m.Sender).To(Equal(parent.ID))
+	})
+
+	// Real behaviour: the app layer wraps delegation-scope failures
+	// into ErrUsage, so the shared table answers usage — not 404 — and
+	// the endpoint documents and tests that as-is.
+	It("maps a delegation-scope rejection onto usage", func() {
+		st, _, child := seedParentChild()
+		outsider, err := app.CreateSession(context.Background(), st, "z.ai", "glm-5.3", app.DefaultHarness, "3f7a", "outsider")
+		must(err)
+		_, err = servePorts(st).SendSteeringMessage(context.Background(), child.ID, outsider.ID, "steer left")
+		Expect(servePorts(st).ErrCode(err)).To(Equal("usage"))
 	})
 })
 

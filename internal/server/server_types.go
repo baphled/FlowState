@@ -18,6 +18,14 @@ type Ports struct {
 	CancelSession func(ctx context.Context, id string) (Session, error)
 	// DiagnoseSession returns one session's read-only diagnosis.
 	DiagnoseSession func(ctx context.Context, id string) (Diagnosis, error)
+	// BudgetOverview returns one session's budget overview.
+	BudgetOverview func(ctx context.Context, id string) (Budget, error)
+	// SetBudgetPool anchors the session's shared budget pool at a
+	// positive total and returns the updated overview.
+	SetBudgetPool func(ctx context.Context, id string, pool int64) (Budget, error)
+	// SendSteeringMessage records one steering directive addressed to
+	// the session and returns the stored message.
+	SendSteeringMessage func(ctx context.Context, id, sender, body string) (Message, error)
 	// ErrCode maps an error onto the closed contract code set.
 	ErrCode func(err error) string
 }
@@ -59,6 +67,24 @@ type Diagnosis struct {
 	Available       *int64
 }
 
+// Message is the steering-message DTO mirroring the CLI message
+// output (wire fields id/session_id/sender).
+type Message struct {
+	ID        string
+	SessionID string
+	Sender    string
+}
+
+// Budget is the budget-overview DTO mirroring the CLI budget output
+// (wire fields session_id/reserved/budget_pool/available); Pool and
+// Available are nil without a declared pool.
+type Budget struct {
+	SessionID string
+	Reserved  int64
+	Pool      *int64
+	Available *int64
+}
+
 // Server renders the read-only serve surface over Ports.
 type Server struct {
 	ports Ports
@@ -97,6 +123,34 @@ type eventItem struct {
 type inspectBody struct {
 	sessionItem
 	Events []eventItem `json:"events"`
+}
+
+// budgetBody mirrors the CLI budget output field-for-field; a nil
+// pool renders budget_pool/available as JSON null, as the CLI does.
+type budgetBody struct {
+	SessionID  string `json:"session_id"`
+	Reserved   int64  `json:"reserved"`
+	BudgetPool *int64 `json:"budget_pool"`
+	Available  *int64 `json:"available"`
+}
+
+// messageBody mirrors the CLI message output field-for-field.
+type messageBody struct {
+	ID        string `json:"id"`
+	SessionID string `json:"session_id"`
+	Sender    string `json:"sender"`
+}
+
+// budgetRequest is the POST /sessions/{id}/budget body; Pool is a
+// pointer so a missing pool field is distinguishable from zero.
+type budgetRequest struct {
+	Pool *int64 `json:"pool"`
+}
+
+// messageRequest is the POST /sessions/{id}/message body.
+type messageRequest struct {
+	From string `json:"from"`
+	Body string `json:"body"`
 }
 
 // diagnosisBody mirrors the session-doctor item field-for-field; a nil

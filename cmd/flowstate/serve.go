@@ -103,10 +103,20 @@ func servePorts(st *app.Store) server.Ports {
 	cancelPort := func(ctx context.Context, id string) (server.Session, error) {
 		return serveCancel(ctx, st, id)
 	}
+	budgetPort := func(ctx context.Context, id string) (server.Budget, error) {
+		return serveBudget(ctx, st, id)
+	}
+	setBudgetPort := func(ctx context.Context, id string, pool int64) (server.Budget, error) {
+		return serveSetBudget(ctx, st, id, pool)
+	}
+	messagePort := func(ctx context.Context, id, sender, body string) (server.Message, error) {
+		return serveMessage(ctx, st, id, sender, body)
+	}
 	return server.Ports{ListSessions: list, InspectSession: inspect,
 		CloseSession: closePort, CancelSession: cancelPort, DiagnoseSession: func(ctx context.Context, id string) (server.Diagnosis, error) {
 			return serveDiagnose(ctx, st, id)
-		}, ErrCode: app.ErrorCode}
+		}, BudgetOverview: budgetPort, SetBudgetPool: setBudgetPort,
+		SendSteeringMessage: messagePort, ErrCode: app.ErrorCode}
 }
 
 // serveClose wires POST /sessions/{id}/close onto app.CloseSession;
@@ -137,6 +147,46 @@ func serveDiagnose(ctx context.Context, st *app.Store, id string) (server.Diagno
 	return server.Diagnosis{SessionID: d.SessionID, Status: d.Status, Crashed: d.Crashed,
 		RunActivity: d.RunActivity, PendingMessages: d.PendingMessages,
 		Reserved: d.Reserved, Pool: d.Pool, Available: d.Available}, nil
+}
+
+// serveBudget wires GET /sessions/{id}/budget onto
+// app.BudgetOverview; the snapshot stays unwrapped so an unknown
+// session keeps its session_not_found mapping.
+func serveBudget(ctx context.Context, st *app.Store, id string) (server.Budget, error) {
+	snap, err := app.BudgetOverview(ctx, st, id)
+	if err != nil {
+		return server.Budget{}, err
+	}
+	return server.Budget{SessionID: id, Reserved: snap.Reserved,
+		Pool: snap.Pool, Available: snap.Available}, nil
+}
+
+// serveSetBudget anchors the session's shared budget pool through the
+// run command's seam: the row is loaded first (ResolveRunBudget takes
+// the session), the positive pool anchors it exactly as `run --budget`
+// does, and the response reports the updated overview.
+func serveSetBudget(ctx context.Context, st *app.Store, id string, pool int64) (server.Budget, error) {
+	sess, _, err := app.InspectSession(ctx, st, id)
+	if err != nil {
+		return server.Budget{}, err
+	}
+	if _, err := app.ResolveRunBudget(ctx, st, sess, pool); err != nil {
+		return server.Budget{}, err
+	}
+	return serveBudget(ctx, st, id)
+}
+
+// serveMessage wires POST /sessions/{id}/message onto
+// app.SendSteeringMessage. The app layer wraps every failure —
+// unknown sessions and delegation-scope rejections — into ErrUsage,
+// so the shared code table answers usage/400 for this endpoint; that
+// wrapping is S2 app semantics and stays as-is.
+func serveMessage(ctx context.Context, st *app.Store, id, sender, body string) (server.Message, error) {
+	msg, err := app.SendSteeringMessage(ctx, st, id, sender, body)
+	if err != nil {
+		return server.Message{}, err
+	}
+	return server.Message{ID: msg.ID, SessionID: msg.SessionID, Sender: msg.Sender}, nil
 }
 func serveSession(r app.Session) server.Session {
 	return server.Session{ID: r.ID, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, Status: r.Status,
