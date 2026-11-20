@@ -16,12 +16,31 @@ lifecycle; transports and concrete storage remain outside that boundary.
 | `cmd/flowstate` | Parse input and render stable output/exits |
 | `internal/app` | Compose collaborators and application use cases |
 | `internal/runtime`, `internal/session` | Lifecycle, identity and ordering policy |
+| `internal/server` | HTTP transport adapter — ratified ahead of implementation (ADR-007); owns the `net/http` surface cmd is banned from |
 | `internal/provider`, `internal/tool` | Replaceable ports and domain-facing values |
 | Provider/auth/storage adapters | Implement external effects through those ports |
 
 See [the enforced code structure contract](../../rules/ARCHITECTURE.md) for exact
 ownership and import rules. Existing concrete-store coupling is refactoring debt;
 its presence is not permission to add another dependency or a new global.
+
+## Serve transport (S1/S2)
+
+`flowstate serve` exposes the session surface over HTTP from `internal/server`:
+`GET /health`, `GET /sessions[?status=…]`, `GET /sessions/{id}` (session
+fields with embedded `events`), the write endpoints `POST /sessions/{id}/close`
+and `POST /sessions/{id}/cancel` (200 with the terminal session row; a terminal
+session answers 409 `session_terminal` — closing/cancelling is not idempotent),
+and `GET /sessions/{id}/doctor` reusing the CLI `session-doctor` output shape,
+wired through narrow `server.Ports`; no store
+type crosses into transport and `cmd` only builds the closures and listener.
+Session creation stays out of scope (its config composition is a separate
+packet). Errors render the shared `{code,message}` body with statuses from the
+closed error-code table — an empty or unknown `ErrCode` result maps explicitly
+to `internal`/500; the listener defaults to loopback `127.0.0.1:7600`
+(`--addr`), auth is an optional `FLOWSTATE_SERVE_TOKEN` bearer, and the
+`http.Server` caps read headers at 5s and writes/idle at 30s; shutdown drains
+within 5s. Run endpoints stay out of scope for now.
 
 ## Structured provider tools
 

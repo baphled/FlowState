@@ -62,18 +62,30 @@ jobs:
                 exit "$budget_rc"
               fi
             fi
+            # Changed-path budget from the same trusted selector and title
+            # agreement; a protected base that predates the --files flag or
+            # the FILES keys falls back to the reviewed default of 10 paths.
+            if [ -n "$GITHUB_HEAD_REF" ]; then
+              files="$(python3 -B "$RUNNER_TEMP/pr_review_budget_base.py" --policy "$RUNNER_TEMP/env_ci_base" --title "$pr_title" --branch "$GITHUB_HEAD_REF" --files)" || files=10
+            else
+              files="$(python3 -B "$RUNNER_TEMP/pr_review_budget_base.py" --policy "$RUNNER_TEMP/env_ci_base" --title "$pr_title" --files)" || files=10
+            fi
           else
             if git cat-file -e "$BASE_SHA:.env.ci" 2>/dev/null; then
               budget="$(git show "$BASE_SHA:.env.ci" | sed -n 's/^FLOWSTATE_PR_MAX_LINES=//p')"
+              files="$(git show "$BASE_SHA:.env.ci" | sed -n 's/^FLOWSTATE_PR_MAX_FILES=//p')"
             else
               budget=500
+              files=10
             fi
             if ! [[ "$budget" =~ ^[1-9][0-9]{0,5}$ ]]; then
               echo "::error::Invalid FLOWSTATE_PR_MAX_LINES in target .env.ci"
               exit 1
             fi
+            [ -n "$files" ] || files=10
           fi
           export FLOWSTATE_PR_MAX_LINES="$budget"
+          export FLOWSTATE_PR_MAX_FILES="$files"
           python3 -B "$checker" --base "$BASE_SHA" --head "$HEAD_SHA"
 
   commitlint:
