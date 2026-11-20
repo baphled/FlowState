@@ -80,6 +80,17 @@ func CreateChildSession(ctx context.Context, st *Store, parentID, provider, mode
 	return child, nil
 }
 
+// SessionEventsAfter returns one session's committed events with seq
+// greater than afterSeq, ordered by seq (the follow/tail surface).
+// Unlike the bare store port it first checks the session exists, so
+// an unknown id surfaces session_not_found instead of an empty log.
+func SessionEventsAfter(ctx context.Context, st *Store, id string, afterSeq int64) ([]store.RecordedEvent, error) {
+	if _, err := st.GetSession(ctx, id); err != nil {
+		return nil, err
+	}
+	return st.EventsAfter(ctx, id, afterSeq)
+}
+
 // ListSessions composes the session listing for the CLI surface.
 func ListSessions(ctx context.Context, st *Store, status string) ([]store.Session, error) {
 	return session.List(ctx, st, status)

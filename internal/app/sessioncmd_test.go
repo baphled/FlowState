@@ -420,3 +420,58 @@ var _ = Describe("Delegation graph", func() {
 		Expect([]string{chain[0].ID}).To(Equal([]string{root.ID}))
 	})
 })
+
+// eventsAfterStore seeds a session with turn.start (seq 0), one
+// delta (seq 1) and turn.end (seq 2); panics are setup failures.
+func eventsAfterStore() (*store.Store, string) {
+	st := mustOpenStore()
+	DeferCleanup(func() { _ = st.Close() })
+	ctx := context.Background()
+	sess := mustCreateSession(ctx, st, "z.ai")
+	mustAppendEvent(ctx, st, sess.ID, "engine", "assistant.delta", map[string]any{"content": "he"})
+	mustAppendEvent(ctx, st, sess.ID, "engine", "turn.end", map[string]any{"status": "completed"})
+	return st, sess.ID
+}
+
+// seqs projects an event slice onto its seq values.
+func seqs(events []store.RecordedEvent) []int64 {
+	out := make([]int64, len(events))
+	for i, e := range events {
+		out[i] = e.Seq
+	}
+	return out
+}
+
+var _ = Describe("Session events after", func() {
+	It("returns every committed event past the zero cursor", func() {
+		st, id := eventsAfterStore()
+		events, err := SessionEventsAfter(context.Background(), st, id, 0)
+		Expect(err).NotTo(HaveOccurred())
+		// Seqs are 0-based and the cursor strictly greater-than, so the
+		// zero cursor skips the seq-0 turn.start exactly as defined.
+		Expect(seqs(events)).To(Equal([]int64{1, 2}))
+	})
+
+	It("returns only events past the cursor", func() {
+		st, id := eventsAfterStore()
+		events, err := SessionEventsAfter(context.Background(), st, id, 1)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(seqs(events)).To(Equal([]int64{2}))
+	})
+
+	It("returns the whole log including seq 0 for cursor -1", func() {
+		st, id := eventsAfterStore()
+		events, err := SessionEventsAfter(context.Background(), st, id, -1)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(seqs(events)).To(Equal([]int64{0, 1, 2}))
+	})
+
+	It("maps an unknown session onto session_not_found", func() {
+		st, _ := eventsAfterStore()
+		_, err := SessionEventsAfter(context.Background(), st, "01a1f000-0000-4000-8000-00000000dead", 0)
+		if !errors.Is(err, store.ErrUnknownSession) {
+			panic(err)
+		}
+		Expect(ErrorCode(err)).To(Equal(CodeSessionMissing))
+	})
+})
