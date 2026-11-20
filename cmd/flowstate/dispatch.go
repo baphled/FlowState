@@ -20,6 +20,19 @@ func dispatch(args []string, stdout, stderr *os.File) int {
 
 // dispatchContexted routes with a context that may carry the SIGINT
 // marker into session subcommands.
+
+// routeTopLevel handles the non-session top-level commands that own
+// their full argv routing; routed=false leaves the command unhandled.
+func routeTopLevel(ctx context.Context, args []string, stdout, stderr *os.File) (int, bool) {
+	switch args[0] {
+	case "swarm":
+		return routeSwarm(ctx, args, stdout, stderr), true
+	case "serve":
+		return routeServe(ctx, args, stdout, stderr), true
+	}
+	return 0, false
+}
+
 func dispatchContexted(ctx context.Context, args []string, stdout, stderr *os.File) int {
 	if len(args) < 1 {
 		writeError(stderr, fmt.Errorf("%w: missing command", errUsageCmd))
@@ -34,8 +47,8 @@ func dispatchContexted(ctx context.Context, args []string, stdout, stderr *os.Fi
 	if code, routed := routeReceipt(args, stdout, stderr); routed {
 		return code
 	}
-	if args[0] == "swarm" {
-		return routeSwarm(ctx, args, stdout, stderr)
+	if code, routed := routeTopLevel(ctx, args, stdout, stderr); routed {
+		return code
 	}
 	if args[0] != "session" {
 		writeError(stderr, fmt.Errorf("%w: unknown command %q", errUsageCmd, args[0]))
@@ -310,6 +323,7 @@ func openStore(path string) (*app.Store, error) {
 // usage prints the CLI help text.
 func usage(w *os.File) {
 	_, _ = fmt.Fprint(w, `usage: flowstate [--version] session <subcommand> [flags] [id]
+serve [--addr <host:port>] [--db path] [--config <path>]
 
 session new    --provider <p> --model <m> --task <text|@file> [--parent <id>] [--reserve <n>] [--db path]
 session budget <id> [--db path]
