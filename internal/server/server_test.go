@@ -598,4 +598,94 @@ var _ = Describe("Serve S1 transport", func() {
 		Eventually(done).WithTimeout(2 * time.Second).WithPolling(10 * time.Millisecond).
 			To(Receive(Succeed()))
 	})
+
+	It("cancels an in-flight read on shutdown instead of waiting it out", func() {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		must(err)
+		entered := make(chan struct{})
+		p := (&fakePorts{}).ports()
+		p.ListSessions = func(ctx context.Context, _ string) ([]Session, error) {
+			close(entered)
+			<-ctx.Done() // a read that only its request context can end
+			return nil, ctx.Err()
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		DeferCleanup(cancel)
+		// The client keeps its own context: were it tied to the serve
+		// context, the disconnect alone would end the handler.
+		clientCtx, hangUp := context.WithCancel(context.Background())
+		DeferCleanup(hangUp)
+		req, err := http.NewRequestWithContext(clientCtx, http.MethodGet,
+			"http://"+l.Addr().String()+"/sessions", http.NoBody)
+		must(err)
+		done := make(chan error, 1)
+		go func() { done <- New(p).Serve(ctx, l) }()
+		go func() {
+			if res, derr := http.DefaultClient.Do(req); derr == nil {
+				_ = res.Body.Close()
+			}
+		}()
+		select {
+		case <-entered:
+		case <-time.After(2 * time.Second):
+			panic("the request never reached its handler")
+		}
+		cancel()
+		Eventually(done).WithTimeout(2 * time.Second).WithPolling(10 * time.Millisecond).
+			To(Receive(Succeed()))
+	})
+
+	It("lets a read observe its request's cancellation", func() {
+		var seen error
+		p := (&fakePorts{}).ports()
+		p.ListSessions = func(ctx context.Context, _ string) ([]Session, error) {
+			seen = ctx.Err()
+			return nil, nil
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		New(p).Handler().ServeHTTP(httptest.NewRecorder(),
+			httptest.NewRequest(http.MethodGet, "/sessions", nil).WithContext(ctx))
+		Expect(seen).To(MatchError(context.Canceled))
+	})
+
+	// A write must finish once started: its port never sees the request's
+	// cancellation, whether that comes from shutdown or a client disconnect.
+	DescribeTable("detaches writes from request cancellation",
+		func(target, body string) {
+			var seen []error
+			note := func(ctx context.Context) { seen = append(seen, ctx.Err()) }
+			p := (&fakePorts{}).ports()
+			p.CloseSession = func(ctx context.Context, _ string) (Session, error) {
+				note(ctx)
+				return Session{}, nil
+			}
+			p.CancelSession = func(ctx context.Context, _ string) (Session, error) {
+				note(ctx)
+				return Session{}, nil
+			}
+			p.SetBudgetPool = func(ctx context.Context, _ string, _ int64) (Budget, error) {
+				note(ctx)
+				return Budget{}, nil
+			}
+			p.SendSteeringMessage = func(ctx context.Context, _, _, _ string) (Message, error) {
+				note(ctx)
+				return Message{}, nil
+			}
+			p.RunSwarm = func(ctx context.Context, _, _ string, _ int64) (SwarmRun, error) {
+				note(ctx)
+				return SwarmRun{}, nil
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			New(p).Handler().ServeHTTP(httptest.NewRecorder(),
+				httptest.NewRequest(http.MethodPost, target, strings.NewReader(body)).WithContext(ctx))
+			Expect(seen).To(Equal([]error{nil}))
+		},
+		Entry("close", "/sessions/s1/close", ""),
+		Entry("cancel", "/sessions/s1/cancel", ""),
+		Entry("budget anchor", "/sessions/s1/budget", `{"pool":100}`),
+		Entry("steering message", "/sessions/s1/message", `{"from":"s2","body":"go"}`),
+		Entry("swarm run", "/swarm/run", `{"parent":"s1","path":"m.yaml","budget":100}`),
+	)
 })

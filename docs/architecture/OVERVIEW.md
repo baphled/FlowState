@@ -52,8 +52,11 @@ packet). Errors render the shared `{code,message}` body with statuses from the
 closed error-code table — an empty or unknown `ErrCode` result maps explicitly
 to `internal`/500; the listener defaults to loopback `127.0.0.1:7600`
 (`--addr`), auth is an optional `FLOWSTATE_SERVE_TOKEN` bearer, and the
-`http.Server` caps read headers at 5s and writes/idle at 30s; shutdown drains
-within 5s. Run endpoints stay out of scope for now.
+`http.Server` caps read headers at 5s and writes/idle at 30s. Shutdown cancels
+in-flight reads (requests inherit the serve context) and drains within 5s;
+writes are detached from request cancellation, so neither shutdown nor a client
+disconnect stops one half way, and a swarm run that outlives the grace period
+still ends the process with an error. Run endpoints stay out of scope for now.
 
 ## Structured provider tools
 

@@ -49,6 +49,10 @@ func (s *Server) httpServer() *http.Server {
 // Serve runs Handler on l until ctx is done, then drains within 5s.
 func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 	srv := s.httpServer()
+	// Requests inherit the serve context, so shutdown cancels in-flight
+	// reads instead of waiting the whole grace period on them; writes
+	// opt out through writeContext and are drained by Shutdown.
+	srv.BaseContext = func(net.Listener) context.Context { return ctx }
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(l) }()
 	select {
@@ -62,6 +66,13 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 		defer cancel()
 		return srv.Shutdown(shutdownCtx)
 	}
+}
+
+// writeContext detaches a write from request cancellation: neither a
+// client disconnect nor shutdown may stop a multi-step store operation
+// half way, and Shutdown's grace period still bounds the wait for it.
+func writeContext(r *http.Request) context.Context {
+	return context.WithoutCancel(r.Context())
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
