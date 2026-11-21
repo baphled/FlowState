@@ -85,7 +85,7 @@ var _ = Describe("Subscription request mapping", func() {
 		Expect(run(userReq("hi")).Args).To(Equal([]string{
 			"-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
 			"--no-session-persistence", "--tools", "", "--strict-mcp-config", "--setting-sources", "",
-			"--model", "sonnet",
+			"--model", "sonnet", "--system-prompt=",
 		}))
 	})
 
@@ -122,8 +122,8 @@ var _ = Describe("Subscription request mapping", func() {
 		sys := strings.Repeat("s", anthropic.MaxSystemPromptBytes)
 		Expect(run(msgs("system", sys, "user", "hi")).Args).To(ContainElement("--system-prompt=" + sys))
 	})
-	It("omits --system-prompt without system messages", func() {
-		Expect(run(userReq("hi")).Args).NotTo(ContainElement(HavePrefix("--system-prompt")))
+	It("replaces Claude Code's default system prompt with an empty one without system messages", func() {
+		Expect(run(userReq("hi")).Args).To(ContainElement("--system-prompt="))
 	})
 	It("ignores MaxTokens", func() {
 		req := userReq("hi")

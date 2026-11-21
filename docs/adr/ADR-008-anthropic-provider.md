@@ -53,7 +53,8 @@ FlowState must be able to use a user's Claude subscription through the `anthropi
 
 1. One process per request: `claude -p --output-format stream-json --verbose --include-partial-messages
    --no-session-persistence --tools "" --strict-mcp-config --setting-sources "" --model <model>`, plus
-   `--system-prompt=<text>` when the request has system messages. The prompt goes to stdin, never argv. The working
+   `--system-prompt=<text>`, which is always sent and is empty when the request has no system message, so the
+   child never runs under Claude Code's own agent prompt. The prompt goes to stdin, never argv. The working
    directory is a fresh private directory (`os.MkdirTemp`, mode 0700) per request, removed when the turn ends, never
    the shared temp directory itself, so a planted `CLAUDE.md` there cannot reach the model. Only a directory the
    default factory created in that same call is removed (and only if it is still a direct child of the system temp
@@ -149,7 +150,9 @@ content headers, to `<base>/v1/messages`.
    `WaitDelay` (`DefaultWaitDelay`; `NewExecLauncher` takes another bound, which the specs use). The
    child inherits the whole environment, secrets included, because sign-in depends on it. A relative
    `FLOWSTATE_CLAUDE_BIN` is resolved against the working directory of FlowState. `tool_use` blocks are ignored.
-   A request with no system message runs under Claude Code's own default system prompt.
+   A request with no system message runs with an empty system prompt. It first ran under Claude Code's default
+   agent prompt; the first signed-in turns showed the model writing tool-call markup as text for tools this route
+   switches off, and a prompt about five times larger.
    A real `claude` may use an inherited `ANTHROPIC_API_KEY` and bill the API instead of the subscription.
 
 ### Negative (API-key route)
