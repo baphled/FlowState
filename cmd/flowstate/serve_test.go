@@ -94,6 +94,29 @@ var _ = Describe("Serve write port wiring", func() {
 		Expect(d.Status).To(Equal("active"))
 	})
 
+	// truncatedDiagnosis diagnoses, through the store-backed port, a
+	// session whose last turn.end was cut off at the token limit.
+	truncatedDiagnosis := func() server.Diagnosis {
+		st, sess := seedStore()
+		w, werr := st.NewEventWriter(context.Background(), sess.ID)
+		must(werr)
+		_, aerr := w.Append(context.Background(), "engine", "turn.end",
+			map[string]any{"status": "completed", "finish_reason": "length"})
+		must(aerr)
+		must(w.Close())
+		d, err := servePorts(st, &flags{}).DiagnoseSession(context.Background(), sess.ID)
+		must(err)
+		return d
+	}
+
+	It("carries a truncated final turn through the store-backed doctor port", func() {
+		Expect(truncatedDiagnosis().Truncated).To(BeTrue())
+	})
+
+	It("carries the finish reason through the store-backed doctor port", func() {
+		Expect(truncatedDiagnosis().FinishReason).To(Equal("length"))
+	})
+
 	It("reports the budget overview through the store-backed port", func() {
 		st, sess := seedStore()
 		b, err := servePorts(st, &flags{}).BudgetOverview(context.Background(), sess.ID)

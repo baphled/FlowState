@@ -339,6 +339,30 @@ var _ = Describe("Serve S1 transport", func() {
 				"/sessions/01a1f000-0000-4000-8000-000000000001/doctor", "").Body.String())).To(Succeed())
 		})
 
+		DescribeTable("carries a truncated diagnosis in the body",
+			func(want string) {
+				s, f := sampleServer()
+				f.diagnosis.FinishReason, f.diagnosis.Truncated = "length", true
+				Expect(doRequest(s, http.MethodGet, "/sessions/01a1f000-0000-4000-8000-000000000001/doctor", "").
+					Body.String()).To(ContainSubstring(want))
+			},
+			Entry("the finish reason", `"finish_reason":"length"`),
+			Entry("the truncated flag", `"truncated":true`),
+		)
+
+		It("validates a truncated diagnosis against schemas/cli.json session-doctor", func() {
+			s, f := sampleServer()
+			f.diagnosis.FinishReason, f.diagnosis.Truncated = "length", true
+			Expect(schemaError("session-doctor", doRequest(s, http.MethodGet,
+				"/sessions/01a1f000-0000-4000-8000-000000000001/doctor", "").Body.String())).To(Succeed())
+		})
+
+		It("omits finish_reason and truncated when none was recorded", func() {
+			s, _ := sampleServer()
+			body := doRequest(s, http.MethodGet, "/sessions/01a1f000-0000-4000-8000-000000000001/doctor", "").Body.String()
+			Expect(body).NotTo(Or(ContainSubstring("finish_reason"), ContainSubstring("truncated")))
+		})
+
 		It("maps an unknown session onto 404 session_not_found", func() {
 			s, f := sampleServer()
 			f.err = errFakeMissing
