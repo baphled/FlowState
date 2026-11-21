@@ -26,14 +26,12 @@ func DiagnoseSession(ctx context.Context, st *Store, sessionID string) (SessionD
 	if err != nil {
 		return SessionDiagnosis{}, err
 	}
-	crashed, err := DetectCrashedSession(ctx, st, sessionID)
+	events, err := st.Replay(ctx, sessionID)
 	if err != nil {
-		return SessionDiagnosis{}, err
+		return SessionDiagnosis{}, fmt.Errorf("doctor replay: %w", err)
 	}
-	activity, err := sessionRunActivity(ctx, st, sessionID)
-	if err != nil {
-		return SessionDiagnosis{}, err
-	}
+	crashed := crashedFromEvents(events)
+	activity := hasRunActivity(events)
 	snap, err := st.BudgetSnapshot(ctx, sessionID)
 	if err != nil {
 		return SessionDiagnosis{}, fmt.Errorf("doctor budget snapshot: %w", err)
@@ -42,17 +40,14 @@ func DiagnoseSession(ctx context.Context, st *Store, sessionID string) (SessionD
 	if err != nil {
 		return SessionDiagnosis{}, fmt.Errorf("doctor pending steering messages: %w", err)
 	}
-	finish, err := lastFinishReason(ctx, st, sessionID)
-	if err != nil {
-		return SessionDiagnosis{}, err
-	}
+	finish := lastFinishReason(events)
 	liveCrash := crashed && sess.Status == "active"
 	return SessionDiagnosis{
 		SessionID:       sess.ID,
 		Status:          sess.Status,
 		Crashed:         liveCrash,
 		FinishReason:    finish,
-		Truncated:       finish == provider.FinishLength && !liveCrash && truncationStatus(sess.Status),
+		Truncated:       FinishTruncated(finish) && !liveCrash && truncationStatus(sess.Status),
 		RunActivity:     activity,
 		PendingMessages: len(pending),
 		Reserved:        snap.Reserved,
@@ -61,21 +56,23 @@ func DiagnoseSession(ctx context.Context, st *Store, sessionID string) (SessionD
 	}, nil
 }
 
-// sessionRunActivity reports whether the session's event log holds
-// provider.request, tool.call or assistant.delta events — the same
-// run-activity evidence DetectCrashedSession applies to tell a
-// crashed run from a freshly created session.
-func sessionRunActivity(ctx context.Context, st *Store, sessionID string) (bool, error) {
-	events, err := st.Replay(ctx, sessionID)
-	if err != nil {
-		return false, fmt.Errorf("run-activity replay: %w", err)
-	}
+// hasRunActivity reports whether the events hold provider.request,
+// tool.call or assistant.delta events — the same run-activity
+// evidence the crash predicate applies to tell a crashed run from a
+// freshly created session.
+func hasRunActivity(events []RecordedEvent) bool {
 	for _, e := range events {
 		if e.Type == "provider.request" || e.Type == "tool.call" || e.Type == TypeAssistantDelta {
-			return true, nil
+			return true
 		}
 	}
-	return false, nil
+	return false
+}
+
+// FinishTruncated reports whether a turn's finish reason says the
+// answer was cut off at the token limit (provider.FinishLength).
+func FinishTruncated(reason string) bool {
+	return reason == provider.FinishLength
 }
 
 // truncationStatus reports whether a row status may carry a truncated
@@ -84,19 +81,15 @@ func truncationStatus(status string) bool {
 	return status == "active" || status == "completed"
 }
 
-// lastFinishReason returns the finish_reason of the session's LAST
-// turn.end event, "" when there is none, the reason is absent, or the
-// payload is not a JSON object with a string reason — the doctor is
+// lastFinishReason returns the finish_reason of the LAST turn.end
+// event, "" when there is none, the reason is absent, or the payload
+// is not a JSON object with a string reason — the doctor is
 // read-only and must not fail on old or odd logs.
-func lastFinishReason(ctx context.Context, st *Store, sessionID string) (string, error) {
-	events, err := st.Replay(ctx, sessionID)
-	if err != nil {
-		return "", fmt.Errorf("finish-reason replay: %w", err)
-	}
+func lastFinishReason(events []RecordedEvent) string {
 	for i := len(events) - 1; i >= 0; i-- {
 		if events[i].Type == "turn.end" {
-			return payloadFieldText(events[i].PayloadJSON, "finish_reason"), nil
+			return payloadFieldText(events[i].PayloadJSON, "finish_reason")
 		}
 	}
-	return "", nil
+	return ""
 }

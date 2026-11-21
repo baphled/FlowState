@@ -142,8 +142,12 @@ func selfTestTranscript(ctx context.Context, fl *flags, id string) ([]byte, erro
 // a gated live self-test): runs one bounded provider turn, explicitly
 // resuming a paused session first, projects the persisted events as
 // JSONL on stdout and ends with a terminal event envelope. Exit 0
-// completed; 1 unknown session; 2 usage; 3 provider error; 4 gates
-// closed (task mode); 6 already terminal.
+// completed (a truncated answer, finish reason length, is still 0 and
+// adds one stderr warning line); 1 unknown session or any other
+// unclassified failure, which reports code `internal`; 2 usage; 3
+// provider error; 4 gates closed (task mode); 5 budget stop; 6
+// already terminal; 7 replay_mismatch (corrupt replay found during
+// the turn); 130 interrupted.
 func cmdRun(ctx context.Context, st *app.Store, id string, fl *flags, stdout, stderr *os.File) int {
 	applyRunDefaults(fl)
 	if fl.task != "" {
@@ -304,12 +308,9 @@ func runSessionTurn(ctx context.Context, st *app.Store, sess *app.Session, fl *f
 }
 
 // providerFailure labels an error from provider resolution as the
-// provider's failure, exactly once: the engine already wraps the
-// failures of a running turn in app.ErrProvider.
+// provider's failure. A single wrap suffices: resolver errors never
+// already carry app.ErrProvider (the engine wraps only running turns).
 func providerFailure(err error) error {
-	if errors.Is(err, app.ErrProvider) {
-		return err
-	}
 	return fmt.Errorf("%w: %v", app.ErrProvider, err)
 }
 
@@ -345,7 +346,19 @@ func finishRun(err error, res *app.TurnResult, fl *flags, stderr *os.File) int {
 		writeError(stderr, fmt.Errorf("%w: budget of %d exceeded after %d tokens; session paused", app.ErrBudgetExceeded, fl.budget, res.ConsumedBudget))
 		return exitBudget
 	}
+	noteTruncation(res, stderr)
 	return exitOK
+}
+
+// noteTruncation tells the person running the command that the final
+// answer was cut off at the token limit. It writes one plain stderr
+// line and never changes the exit code or the stdout event stream.
+func noteTruncation(res *app.TurnResult, stderr *os.File) {
+	if res == nil || !app.FinishTruncated(res.FinishReason) {
+		return
+	}
+	_, _ = fmt.Fprintf(stderr, "warning: the answer was cut off at the token limit; run `flowstate session doctor %s` "+
+		"to inspect it, or rerun with a higher --max-tokens\n", res.SessionID)
 }
 
 // runTurnOrLoop selects the execution surface for one run: a
@@ -392,5 +405,5 @@ func toTurnResult(sess *app.Session, res *app.ExecLoopResult) *app.TurnResult {
 	if res == nil {
 		return nil
 	}
-	return &app.TurnResult{SessionID: sess.ID, FinalContent: res.FinalContent}
+	return &app.TurnResult{SessionID: sess.ID, FinalContent: res.FinalContent, FinishReason: res.FinishReason}
 }

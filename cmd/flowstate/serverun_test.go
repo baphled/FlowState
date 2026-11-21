@@ -270,6 +270,7 @@ var _ = Describe("Serve run failure classification", func() {
 		It("answers 500", func() { Expect(status).To(Equal(http.StatusInternalServerError)) })
 		It("reports the internal code", func() { Expect(code).To(Equal("internal")) })
 		It("does not blame the provider", func() { Expect(message).NotTo(ContainSubstring("provider_error")) })
+		It("reports the storage cause", func() { Expect(message).To(ContainSubstring("disk full")) })
 	})
 
 	Context("a provider HTTP failure", func() {
