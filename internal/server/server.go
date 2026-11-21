@@ -61,6 +61,9 @@ func (s *Server) withBodyLimit(next http.Handler) http.Handler {
 // rejecting unknown fields and any data after the value. An empty body
 // yields io.EOF so callers that allow it can tell it apart.
 func decodeStrict(rd io.Reader, dst any) error {
+	if rd == nil { // a request built without a body, as a direct handler call may do
+		return io.EOF
+	}
 	dec := json.NewDecoder(rd)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {

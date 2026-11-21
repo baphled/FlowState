@@ -161,7 +161,7 @@ type CreateRequest struct {
 	Task     string
 }
 
-// Server renders the read-only serve surface over Ports.
+// Server renders the serve surface (reads, session writes, turn runs) over Ports.
 type Server struct {
 	ports Ports
 	token string
