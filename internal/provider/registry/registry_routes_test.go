@@ -92,4 +92,39 @@ var _ = Describe("zai coding route precedence", func() {
 		_, _ = p.Chat(tctx(), &provider.ChatRequest{})
 		Expect(path.Load()).To(Equal("POST /api/anthropic/v1/messages"))
 	})
+
+	writeCfg := func(body string) {
+		dir := GinkgoT().TempDir()
+		if err := os.WriteFile(filepath.Join(dir, config.FileName), []byte(body), 0o600); err != nil {
+			panic(err)
+		}
+		GinkgoT().Setenv("FLOWSTATE_CONFIG_DIR", dir)
+	}
+
+	It("lets ZAI_CODING_ROUTE win over providers.zai.route", func() {
+		srv, path := routeServer()
+		defer srv.Close()
+		zai.TestHookSetCodingBaseURL(srv.URL + "/api/coding/paas/v4")
+		zai.TestHookSetAnthropicBaseURL(srv.URL + "/api/anthropic")
+		writeCfg("providers:\n  zai:\n    plan: coding\n    route: anthropic\n")
+		GinkgoT().Setenv("ZAI_CODING_ROUTE", "openai")
+		p, err := resolveForRoute()
+		Expect(err).NotTo(HaveOccurred())
+		_, err = p.Chat(tctx(), &provider.ChatRequest{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(path.Load()).To(Equal("POST /api/coding/paas/v4/chat/completions"))
+	})
+
+	It("lets ZAI_BASE_URL win over the config host when inferring the route", func() {
+		srv, path := routeServer()
+		defer srv.Close()
+		zai.TestHookSetCodingBaseURL("https://zai-invalid.example.invalid")
+		writeCfg("providers:\n  zai:\n    plan: coding\n    host: " + srv.URL + "/api/anthropic\n")
+		GinkgoT().Setenv("ZAI_BASE_URL", srv.URL+"/plain")
+		p, err := resolveForRoute()
+		Expect(err).NotTo(HaveOccurred())
+		_, err = p.Chat(tctx(), &provider.ChatRequest{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(path.Load()).To(Equal("POST /plain/chat/completions"))
+	})
 })
