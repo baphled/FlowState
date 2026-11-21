@@ -37,11 +37,12 @@ func (p *Subscription) command(req *provider.ChatRequest) (cmd Command, cleanup 
 		"-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
 		"--no-session-persistence", "--tools", "", "--strict-mcp-config", "--setting-sources", "",
 		"--model", model,
-	}
-	if system != "" {
-		// The = form binds the text to the flag, so a system prompt that
-		// starts with a dash cannot be read as another option.
-		args = append(args, "--system-prompt="+system)
+		// Always sent, empty when the request has no system message: without
+		// it the child runs under Claude Code's own agent prompt, which
+		// describes tools this route has switched off. The = form binds the
+		// text to the flag, so a system prompt that starts with a dash
+		// cannot be read as another option.
+		"--system-prompt=" + system,
 	}
 	// A fresh private directory, never the shared temp dir itself, so a
 	// planted CLAUDE.md there cannot reach the model. Created last, so a
