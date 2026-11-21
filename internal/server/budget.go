@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"net/http"
 )
 
@@ -54,8 +53,7 @@ func (s *Server) budgetHandler(id string) http.HandlerFunc {
 func (s *Server) setBudgetHandler(id string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req budgetRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			s.writeErrorStatus(w, http.StatusBadRequest, "usage", "invalid budget body")
+		if !s.decodeBody(w, r, &req, "invalid budget body") {
 			return
 		}
 		if req.Pool == nil {

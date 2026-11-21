@@ -1,17 +1,25 @@
 // Package server is the HTTP transport adapter (ADR-007): it owns the
-// net/http surface cmd is banned from and serves read-only over narrow Ports.
+// net/http surface cmd is banned from and serves reads, session
+// creation/lifecycle writes and synchronous turn runs over narrow Ports.
 package server
 
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 )
+
+// maxBodyBytes caps every request body (1 MiB); Handler enforces it once
+// for all routes and decodeStrict reports an over-limit read as usage.
+const maxBodyBytes = 1 << 20
 
 // TokenEnv names the optional bearer-token variable; empty disables auth.
 const TokenEnv = "FLOWSTATE_SERVE_TOKEN"
@@ -35,7 +43,59 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/", s.getOnly(func(w http.ResponseWriter, _ *http.Request) {
 		s.writeErrorStatus(w, http.StatusNotFound, "usage", "unknown route")
 	}))
-	return s.withToken(mux)
+	return s.withToken(s.withBodyLimit(mux))
+}
+
+// withBodyLimit wraps every request body in http.MaxBytesReader so no
+// handler can read more than maxBodyBytes.
+func (s *Server) withBodyLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// decodeStrict decodes exactly one JSON value from rd into dst,
+// rejecting unknown fields and any data after the value. An empty body
+// yields io.EOF so callers that allow it can tell it apart.
+func decodeStrict(rd io.Reader, dst any) error {
+	dec := json.NewDecoder(rd)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("unexpected data after JSON value")
+		}
+		return err
+	}
+	return nil
+}
+
+// badBody answers a failed body read or decode as 400 usage: an
+// over-limit body names the limit, anything else the route's message.
+func (s *Server) badBody(w http.ResponseWriter, err error, invalid string) {
+	var tooBig *http.MaxBytesError
+	if errors.As(err, &tooBig) {
+		s.writeErrorStatus(w, http.StatusBadRequest, "usage",
+			fmt.Sprintf("request body exceeds the %d byte limit", tooBig.Limit))
+		return
+	}
+	s.writeErrorStatus(w, http.StatusBadRequest, "usage", invalid)
+}
+
+// decodeBody strictly decodes the request body into dst, answering 400
+// usage itself on failure; it reports whether the handler may continue.
+func (s *Server) decodeBody(w http.ResponseWriter, r *http.Request, dst any, invalid string) bool {
+	if err := decodeStrict(r.Body, dst); err != nil {
+		s.badBody(w, err, invalid)
+		return false
+	}
+	return true
 }
 
 // httpServer builds the transport's net/http server with one timeout

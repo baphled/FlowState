@@ -62,6 +62,29 @@ var _ = Describe("Session run", func() {
 		Expect(rec.Body.String()).To(ContainSubstring("budget_exceeded"))
 	})
 
+	It("passes the body budget and max_tokens to the run port", func() {
+		s, f := runServer()
+		rec := doBody(s, http.MethodPost, "/sessions/"+streamID+"/run", `{"budget":100,"max_tokens":50}`)
+		if rec.Code != http.StatusOK {
+			panic("run returned " + rec.Body.String())
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		Expect(f.runOpts).To(Equal(RunOptions{Budget: 100, MaxTokens: 50}))
+	})
+
+	It("treats an empty body as no run options", func() {
+		s, f := runServer()
+		f.runOpts = RunOptions{Budget: -1, MaxTokens: -1}
+		rec := doBody(s, http.MethodPost, "/sessions/"+streamID+"/run", "")
+		if rec.Code != http.StatusOK {
+			panic("run returned " + rec.Body.String())
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		Expect(f.runOpts).To(Equal(RunOptions{}))
+	})
+
 	It("rejects a negative budget with usage", func() {
 		s, _ := runServer()
 		rec := doBody(s, http.MethodPost, "/sessions/"+streamID+"/run", `{"budget":-3}`)

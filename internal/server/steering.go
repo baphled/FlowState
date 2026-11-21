@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"net/http"
 	"strings"
 )
@@ -26,8 +25,7 @@ func messageWire(m Message) messageBody {
 func (s *Server) messageHandler(id string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req messageRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			s.writeErrorStatus(w, http.StatusBadRequest, "usage", "invalid message body")
+		if !s.decodeBody(w, r, &req, "invalid message body") {
 			return
 		}
 		if req.From == "" || strings.TrimSpace(req.Body) == "" {

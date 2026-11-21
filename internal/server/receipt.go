@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"net/http"
 )
 
@@ -21,8 +20,7 @@ func receiptVerdictWire(v ReceiptVerdict) receiptVerdictBody {
 // A malformed body or a missing path is 400 usage.
 func (s *Server) receiptValidateHandler(w http.ResponseWriter, r *http.Request) {
 	var req pathRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeErrorStatus(w, http.StatusBadRequest, "usage", "invalid receipt body")
+	if !s.decodeBody(w, r, &req, "invalid receipt body") {
 		return
 	}
 	if req.Path == "" {
