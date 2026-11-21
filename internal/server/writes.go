@@ -25,7 +25,7 @@ var secretBodyKeyPattern = regexp.MustCompile(`(?i)key|token|secret|password`)
 func (s *Server) createHandler(w http.ResponseWriter, r *http.Request) {
 	data, rerr := io.ReadAll(r.Body)
 	if rerr != nil {
-		s.writeErrorStatus(w, http.StatusBadRequest, "usage", "invalid create body")
+		s.badBody(w, rerr, "invalid create body")
 		return
 	}
 	var raw any
@@ -37,11 +37,9 @@ func (s *Server) createHandler(w http.ResponseWriter, r *http.Request) {
 		s.writeErrorStatus(w, http.StatusBadRequest, "usage", serr.Error())
 		return
 	}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
 	var body createBody
-	if derr := dec.Decode(&body); derr != nil {
-		s.writeErrorStatus(w, http.StatusBadRequest, "usage", "invalid create body")
+	if derr := decodeStrict(bytes.NewReader(data), &body); derr != nil {
+		s.badBody(w, derr, "invalid create body")
 		return
 	}
 	if strings.TrimSpace(body.Task) == "" {
@@ -139,19 +137,16 @@ const runWriteWindow = 10 * time.Minute
 // provider turn behind the run port, mirroring `session run <id>`
 // including the detect-crash → recover → resume-pause preamble, with
 // the projected event log answered as the session-events array. The
-// optional body {"budget":N,"max_tokens":N} mirrors the CLI flags;
-// negative values are usage. Failure classes ride the shared code
+// optional body {"budget":N,"max_tokens":N} mirrors the CLI flags
+// (an empty body means no options; unknown fields are usage); negative values are usage. Failure classes ride the shared code
 // table (provider 502, budget stop 409, terminal 409). The run's
 // EventWriter holds no connection across the turn, so polls proceed.
 func (s *Server) runHandler(id string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req runRequest
-		if r.Body != nil {
-			err := json.NewDecoder(r.Body).Decode(&req)
-			if err != nil && !errors.Is(err, io.EOF) {
-				s.writeErrorStatus(w, http.StatusBadRequest, "usage", "invalid run body")
-				return
-			}
+		if err := decodeStrict(r.Body, &req); err != nil && !errors.Is(err, io.EOF) {
+			s.badBody(w, err, "invalid run body")
+			return
 		}
 		if req.Budget < 0 || req.MaxTokens < 0 {
 			s.writeErrorStatus(w, http.StatusBadRequest, "usage", "budget and max_tokens must not be negative")

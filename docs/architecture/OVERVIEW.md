@@ -54,8 +54,11 @@ to `internal`/500; the listener defaults to loopback `127.0.0.1:7600`
 `http.Server` caps read headers at 5s and writes/idle at 30s. Shutdown cancels
 in-flight reads (requests inherit the serve context) and drains within 5s;
 writes are detached from request cancellation, so neither shutdown nor a client
-disconnect stops one half way, and a swarm run that outlives the grace period
-still ends the process with an error.
+disconnect stops one half way; the run endpoint is the deliberate exception:
+its turn follows the request context, so a disconnect or shutdown mid-run
+cancels the session, as SIGINT does for the CLI. Every POST body is capped at
+1 MiB and decoded strictly (unknown fields and trailing data are 400 usage).
+A swarm run that outlives the grace period still ends the process with an error.
 
 S5 completes the surface. `GET /sessions/{id}/events?after=N` answers events
 past the strictly-greater cursor (absent is 0; `after=-1` replays seq 0);

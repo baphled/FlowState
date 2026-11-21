@@ -754,4 +754,42 @@ var _ = Describe("Serve S1 transport", func() {
 		Entry("create", "/sessions", `{"task":"greet"}`),
 		Entry("swarm run", "/swarm/run", `{"parent":"s1","path":"m.yaml","budget":100}`),
 	)
+	DescribeTable("rejects an over-limit body as usage naming the limit",
+		func(target string, prefix string) {
+			s, _ := sampleServer()
+			rec := doBody(s, http.MethodPost, target, prefix+strings.Repeat("a", 2<<20)+`"}`)
+			Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusBadRequest,
+				`{"code":"usage","message":"request body exceeds the 1048576 byte limit"}`}))
+		},
+		Entry("create", "/sessions", `{"task":"`),
+		Entry("run", "/sessions/s1/run", `{"budget":1,"x":"`),
+		Entry("budget anchor", "/sessions/s1/budget", `{"x":"`),
+		Entry("steering message", "/sessions/s1/message", `{"from":"s2","body":"`),
+		Entry("swarm validate", "/swarm/validate", `{"path":"`),
+		Entry("swarm run", "/swarm/run", `{"parent":"s1","path":"`),
+		Entry("receipt validate", "/receipt/validate", `{"path":"`),
+	)
+
+	DescribeTable("rejects unknown fields and trailing data as usage",
+		func(target, body, message string) {
+			s, _ := sampleServer()
+			rec := doBody(s, http.MethodPost, target, body)
+			Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusBadRequest,
+				`{"code":"usage","message":"` + message + `"}`}))
+		},
+		Entry("create unknown field", "/sessions", `{"task":"t","tsak":"x"}`, "invalid create body"),
+		Entry("create trailing data", "/sessions", `{"task":"t"} {}`, "invalid create body"),
+		Entry("run unknown field", "/sessions/s1/run", `{"budgt":100}`, "invalid run body"),
+		Entry("run trailing data", "/sessions/s1/run", `{"budget":1} trailing`, "invalid run body"),
+		Entry("budget unknown field", "/sessions/s1/budget", `{"pool":5,"pol":1}`, "invalid budget body"),
+		Entry("budget trailing data", "/sessions/s1/budget", `{"pool":5}{"pool":6}`, "invalid budget body"),
+		Entry("message unknown field", "/sessions/s1/message", `{"from":"a","body":"b","bdy":"c"}`, "invalid message body"),
+		Entry("message trailing data", "/sessions/s1/message", `{"from":"a","body":"b"} x`, "invalid message body"),
+		Entry("swarm validate unknown field", "/swarm/validate", `{"path":"m","pth":"x"}`, "invalid swarm validate body"),
+		Entry("swarm validate trailing data", "/swarm/validate", `{"path":"m"} []`, "invalid swarm validate body"),
+		Entry("swarm run unknown field", "/swarm/run", `{"parent":"p","path":"m","budget":1,"bugdet":2}`, "invalid swarm run body"),
+		Entry("swarm run trailing data", "/swarm/run", `{"parent":"p","path":"m","budget":1} 1`, "invalid swarm run body"),
+		Entry("receipt unknown field", "/receipt/validate", `{"path":"r","pth":"x"}`, "invalid receipt body"),
+		Entry("receipt trailing data", "/receipt/validate", `{"path":"r"} {`, "invalid receipt body"),
+	)
 })

@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"net/http"
 )
 
@@ -36,8 +35,7 @@ func swarmRunWire(r SwarmRun) swarmRunBody {
 // code table (the cmd closure wraps manifest failures into usage).
 func (s *Server) swarmValidateHandler(w http.ResponseWriter, r *http.Request) {
 	var req pathRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeErrorStatus(w, http.StatusBadRequest, "usage", "invalid swarm validate body")
+	if !s.decodeBody(w, r, &req, "invalid swarm validate body") {
 		return
 	}
 	if req.Path == "" {
@@ -64,8 +62,7 @@ func (s *Server) swarmValidateHandler(w http.ResponseWriter, r *http.Request) {
 // same outcome the CLI exit path takes.
 func (s *Server) swarmRunHandler(w http.ResponseWriter, r *http.Request) {
 	var req swarmRunRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeErrorStatus(w, http.StatusBadRequest, "usage", "invalid swarm run body")
+	if !s.decodeBody(w, r, &req, "invalid swarm run body") {
 		return
 	}
 	if req.Parent == "" {
