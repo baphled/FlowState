@@ -136,6 +136,14 @@ The turn loop (single-turn or exec loop with tool surface) runs with the resolve
   `turn.end` with terminal status. Event payloads are pinned by the payload SHA-256 recorded in the envelope; replay
   is byte-faithful.
 
+  A provider finish event is never recorded as an `assistant.delta`. When the provider reported a finish reason, the
+  completed `turn.end` payload carries it (`{"status":"completed","finish_reason":"length"}`); without one the
+  payload stays `{"status":"completed"}`. Neutral values are `stop`, `length` (cut off at the max-token limit) and
+  `tool_calls`; others pass through. A `length` turn is still `completed`, but the record shows it was truncated. In
+  a tool-surface run the terminal `turn.end` carries the reason of the final provider turn, so a run that ends at
+  `MaxTurns` while still requesting tools records `tool_calls` on a `completed` turn. A failure to persist
+  the provider error or a delta ends the turn with an error and never records `turn.end` or `completed`.
+
 ### Phase 5 — Terminal mapping
 
 The turn outcome maps to the exit-code contract:

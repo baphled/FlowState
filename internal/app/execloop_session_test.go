@@ -187,3 +187,44 @@ var _ = Describe("Child run budget binding", func() {
 		})
 	})
 })
+
+var _ = Describe("Loop completion finish reason", func() {
+	var (
+		st   *store.Store
+		sess *store.Session
+	)
+
+	BeforeEach(func() {
+		st, sess = execLoopSeed()
+		DeferCleanup(func() { _ = st.Close() })
+	})
+
+	DescribeTable("records the reason on the terminal turn.end", func(reason, want string) {
+		if err := completeExecLoopRun(context.Background(), st, sess.ID, reason); err != nil {
+			panic(err)
+		}
+		Expect(lastPayload(st, sess.ID)).To(MatchJSON(want))
+	},
+		Entry("a length finish", provider.FinishLength, `{"status":"completed","finish_reason":"length"}`),
+		Entry("no finish event", "", `{"status":"completed"}`),
+	)
+
+	Context("when RunSessionExecLoop ends on a length finish", func() {
+		BeforeEach(func() {
+			cut := provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: provider.FinishLength}
+			streamer := &execLoopStreamer{turns: [][]provider.StreamEvent{{provText("cut"), cut}}}
+			dbPath := filepath.Join(GinkgoT().TempDir(), "finish.db")
+			if _, err := RunSessionExecLoop(context.Background(), st, dbPath, sess, streamer, SessionExecLoopRequest{MaxTurns: 2}); err != nil {
+				panic(err)
+			}
+		})
+
+		It("carries the reason onto turn.end", func() {
+			Expect(lastPayload(st, sess.ID)).To(MatchJSON(`{"status":"completed","finish_reason":"length"}`))
+		})
+
+		It("keeps the session completed", func() {
+			Expect(statusOf(st, sess.ID)).To(Equal("completed"))
+		})
+	})
+})

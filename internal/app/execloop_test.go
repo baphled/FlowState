@@ -353,3 +353,60 @@ var _ = Describe("failExecTurn", func() {
 		})
 	})
 })
+
+var _ = Describe("Execution loop finish reason", func() {
+	var out execLoopOutcome
+
+	Context("when the final turn ends on a length finish", func() {
+		BeforeEach(func() {
+			cut := provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: provider.FinishLength}
+			out = runExec(context.Background(), execLoopFixture(&execLoopStreamer{turns: [][]provider.StreamEvent{{provText("cut"), cut}}}))
+		})
+
+		It("reports the reason on the loop result", func() {
+			Expect(out.Result.FinishReason).To(Equal(provider.FinishLength))
+		})
+
+		It("records no delta for the finish event", func() {
+			Expect(out.EventLog).To(Equal("turn.start,assistant.delta,assistant.message"))
+		})
+	})
+
+	Context("when a tool turn precedes a stop finish", func() {
+		BeforeEach(func() {
+			tools := provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: provider.FinishToolCalls}
+			turns := [][]provider.StreamEvent{{provCall(echoCall("c1")), tools}, {provText("done"), provFinish()}}
+			out = runExec(context.Background(), execLoopFixture(&execLoopStreamer{turns: turns}))
+		})
+
+		It("reports the reason of the final turn only", func() {
+			Expect(out.Result.FinishReason).To(Equal(provider.FinishStop))
+		})
+	})
+
+	// A run cut off at MaxTurns records the last turn's reason, which is
+	// tool_calls, on a completed turn.end.
+	Context("when the run ends at MaxTurns still asking for tools", func() {
+		BeforeEach(func() {
+			tools := provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: provider.FinishToolCalls}
+			turns := [][]provider.StreamEvent{{provCall(echoCall("c1")), tools}, {provCall(echoCall("c2")), tools}}
+			cfg := execLoopFixture(&execLoopStreamer{turns: turns})
+			cfg.MaxTurns = 2
+			out = runExec(context.Background(), cfg)
+		})
+
+		It("reports tool_calls as the reason", func() {
+			Expect(out.Result.FinishReason).To(Equal(provider.FinishToolCalls))
+		})
+	})
+
+	Context("when the provider sends no finish event", func() {
+		BeforeEach(func() {
+			out = runExec(context.Background(), execLoopFixture(&execLoopStreamer{turns: [][]provider.StreamEvent{{provText("plain")}}}))
+		})
+
+		It("leaves the reason empty", func() {
+			Expect(out.Result.FinishReason).To(BeEmpty())
+		})
+	})
+})
