@@ -59,6 +59,28 @@ python3 -B -m unittest discover -s scripts/tests -p test_required_build.py -v
 This rule cannot change server-side protection settings. Verify the
 effective GitHub ruleset and required context names independently.
 
+## Local CI preflight
+
+`make preflight BASE_SHA=<actual-next-base>` runs most of the blocking CI jobs
+on the committed `HEAD`: the build, `go vet` for Windows and macOS, the pinned
+`golangci-lint` (the full configuration, which includes formatting, and the contract one),
+the gosec regression gate, the documentation contract and the Go tests with
+the race detector. It refuses a working tree with uncommitted changes, because
+CI sees only what is committed. Everything runs on the Go toolchain named in
+`go.mod`; the linter and gosec are installed on first use into `bin/tools` at
+the versions CI pins. A newer system Go otherwise leaves the pinned linter
+reporting only typecheck errors.
+
+The pre-push hook runs it, so a push of the checked-out branch that would fail
+one of those checks fails before it reaches CI. A pushed tip that is not the
+checked-out `HEAD` is not covered: the hook warns and leaves it to CI. The hook
+therefore needs Go, a C compiler for the race detector, Python and, when
+`node_modules` or the pinned tools are absent, Node and network access.
+
+It does not replace CI. Not covered locally: the randomised Ginkgo run and the
+end-to-end suite of `make check`, `govulncheck`, and the test jobs on macOS
+and Windows.
+
 ## Local admission preflight
 
 From the checkout root, install `scripts/requirements-admission.txt` in your

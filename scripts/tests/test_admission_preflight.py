@@ -87,3 +87,21 @@ class PushHook(unittest.TestCase):
             result = subprocess.run(['/bin/sh', str(hook)], input=tips, text=True,
                                     env=dict(env, FAILURE='7'))
             self.assertEqual(result.returncode, 7)
+
+    def test_failing_ci_preflight_aborts_the_push(self):
+        hook = Path(__file__).resolve().parents[2] / '.githooks/pre-push'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            programs = {'git': '#!/bin/sh\ncase "$1" in rev-parse) echo ' + PARENT + ';; esac\n',
+                        'python3': '#!/bin/sh\nexit 0\n',
+                        'make': '#!/bin/sh\necho "$*" >> "$LOG"\n'
+                                'case "$1" in preflight) exit 9;; esac\nexit 0\n'}
+            for name, source in programs.items():
+                path = root / name
+                path.write_text(source)
+                path.chmod(0o755)
+            env = dict(os.environ, PATH=str(root) + ':' + os.environ['PATH'], LOG=str(root / 'log'))
+            tips = f'refs/heads/other {PARENT} refs/heads/other {HEAD}\n'
+            result = subprocess.run(['/bin/sh', str(hook)], input=tips, text=True, env=env)
+            self.assertEqual(result.returncode, 9)
+            self.assertIn('preflight BASE_SHA=' + PARENT, (root / 'log').read_text())

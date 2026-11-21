@@ -1,5 +1,5 @@
 #!/bin/sh
-# Fast local qualification; remote exact-head CI and reviews remain mandatory.
+# Local qualification; remote exact-head CI and reviews remain mandatory.
 set -eu
 
 branch=$(git symbolic-ref --quiet --short HEAD) || exit 1
@@ -42,11 +42,19 @@ done
 while read -r local_ref local_sha remote_ref remote_sha; do
     case "$local_ref" in refs/heads/*) ;; *) continue ;; esac
     case "$local_sha" in 0000000000000000000000000000000000000000) continue ;; esac
+    # The preflight below verifies only the checked-out HEAD. Another tip is
+    # still admission-checked here, but say plainly that it was not preflighted.
+    [ "$local_sha" = "$HEAD" ] || echo "pre-push: warning: $local_ref is not the checked-out HEAD; the local CI preflight does not cover it" >&2
     tip_title=$(git log --reverse --format=%s "$BASE..$local_sha" | sed -n 1p)
     budget=$(python3 -B "$selector" --policy "$policy" --title "$tip_title" --branch "$local_ref" 2>/dev/null) || budget="$FLOWSTATE_PR_MAX_LINES"
     files=$(python3 -B "$selector" --policy "$policy" --title "$tip_title" --branch "$local_ref" --files 2>/dev/null) || files="$FLOWSTATE_PR_MAX_FILES"
     FLOWSTATE_PR_MAX_LINES="$budget" FLOWSTATE_PR_MAX_FILES="$files" make check-admission-commits BASE_SHA="$BASE" HEAD_SHA="$local_sha"
 done
+# Most blocking CI jobs, on the committed, checked-out HEAD: a push that would
+# fail lint, the security gate, the docs contract, vet on another OS or the
+# tests fails here first. It refuses a dirty tree, since CI sees only what is
+# committed.
+make preflight BASE_SHA="$BASE"
 python3 -B -m unittest discover -s scripts/tests -p 'test_review_handoff.py'
 python3 -B -m unittest discover -s scripts/tests -p 'test_pr_review_budget.py'
 printf 'pre-push: qualified %s against %s (%s lines, %s files)\n' "$HEAD" "$BASE" "$FLOWSTATE_PR_MAX_LINES" "$FLOWSTATE_PR_MAX_FILES"
