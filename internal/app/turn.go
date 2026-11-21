@@ -101,19 +101,19 @@ func TurnWithOptions(ctx context.Context, st *store.Store, sess *store.Session, 
 	if ctx.Err() != nil {
 		return nil, cancelOnInterrupt(ctx, w, st, sess)
 	}
-	if s.streamErr {
-		return nil, fmt.Errorf("%w: %w", ErrProvider, s.err)
+	if ferr := turnFailure(s); ferr != nil {
+		return nil, ferr
 	}
 	if _, err := w.Append(ctx, session.ActorEngine, TypeAssistantMessage, map[string]any{"content": s.content}); err != nil {
 		return nil, err
 	}
-	if _, err := w.Append(ctx, session.ActorEngine, TypeTurnEnd, map[string]any{"status": "completed"}); err != nil {
+	if _, err := w.Append(ctx, session.ActorEngine, TypeTurnEnd, turnEndPayload(s.finishReason)); err != nil {
 		return nil, err
 	}
 	if err := st.UpdateSessionStatus(ctx, sess.ID, "completed"); err != nil {
 		return nil, fmt.Errorf("mark session completed: %w", err)
 	}
-	return &TurnResult{SessionID: sess.ID, FinalContent: s.content}, nil
+	return &TurnResult{SessionID: sess.ID, FinalContent: s.content, FinishReason: s.finishReason}, nil
 }
 
 // cancelOnInterrupt cancels the session cleanly on SIGINT so the CLI
@@ -149,21 +149,12 @@ func taskFromEvents(events []store.RecordedEvent) string {
 // s; it reports whether the stream loop should stop.
 func consumeStreamEvent(ctx context.Context, w *store.EventWriter, st *store.Store, sess *store.Session, opts TurnOptions, ev provider.StreamEvent, s *turnState) bool {
 	if ev.Err != nil {
-		if _, aerr := w.Append(ctx, session.ActorEngine, TypeProviderError, map[string]any{
-			"error":    ev.Err.Error(),
-			"terminal": true,
-		}); aerr != nil {
-			s.err = aerr
-			return true
-		}
-		if uerr := st.UpdateSessionStatus(ctx, sess.ID, "failed"); uerr != nil {
-			s.err = fmt.Errorf("mark session failed: %w", uerr)
-			return true
-		}
-		s.streamErr = true
-		s.content = ""
-		s.err = ev.Err
+		recordProviderFailure(ctx, w, st, sess, ev.Err, s)
 		return true
+	}
+	if ev.Kind == provider.StreamEventFinish {
+		s.finishReason = ev.FinishReason
+		return false
 	}
 	if _, derr := w.Append(ctx, session.ActorEngine, TypeAssistantDelta, map[string]any{"delta": ev.Content}); derr != nil {
 		s.err = derr
@@ -189,6 +180,52 @@ func pauseOnBudget(ctx context.Context, w *store.EventWriter, sess *store.Sessio
 		return nil, perr
 	}
 	return &TurnResult{SessionID: sess.ID, FinalContent: s.content, BudgetExceeded: true, ConsumedBudget: s.consumed}, nil
+}
+
+// recordProviderFailure appends the terminal provider.error event and
+// then marks the session failed, leaving the status untouched when the
+// append fails. The provider's cause is kept in s.cause; any
+// persistence failure is kept in s.err.
+func recordProviderFailure(ctx context.Context, w *store.EventWriter, st *store.Store, sess *store.Session, cause error, s *turnState) {
+	s.streamErr = true
+	s.content = ""
+	s.cause = cause
+	if _, aerr := w.Append(ctx, session.ActorEngine, TypeProviderError, map[string]any{
+		"error":    cause.Error(),
+		"terminal": true,
+	}); aerr != nil {
+		s.err = fmt.Errorf("record provider error: %w", aerr)
+		return
+	}
+	if uerr := st.UpdateSessionStatus(ctx, sess.ID, "failed"); uerr != nil {
+		s.err = fmt.Errorf("mark session failed: %w", uerr)
+	}
+}
+
+// turnFailure maps a finished stream's state onto the turn's error, or
+// nil when the stream ended cleanly. A provider failure always wraps
+// ErrProvider and the provider's cause, plus the persistence failure
+// when recording it failed; a bare persistence failure is returned as
+// is.
+func turnFailure(s *turnState) error {
+	switch {
+	case s.streamErr && s.err != nil:
+		return fmt.Errorf("%w: %w: %w", ErrProvider, s.cause, s.err)
+	case s.streamErr:
+		return fmt.Errorf("%w: %w", ErrProvider, s.cause)
+	default:
+		return s.err
+	}
+}
+
+// turnEndPayload builds the terminal turn.end payload; finish_reason
+// appears only when the provider reported one.
+func turnEndPayload(finishReason string) map[string]any {
+	payload := map[string]any{"status": "completed"}
+	if finishReason != "" {
+		payload["finish_reason"] = finishReason
+	}
+	return payload
 }
 
 // ErrProvider marks terminal provider failures surfaced by the turn

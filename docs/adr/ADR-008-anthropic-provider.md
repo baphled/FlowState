@@ -84,7 +84,8 @@ FlowState must be able to use a user's Claude subscription through the `anthropi
    turn is over: the child gets 5 s to exit and is then killed, so the wait is bounded. A `result` whose
    `subtype` is present and not `success` is an error even when `is_error` is false; the recorded signed-out result
    (`subtype` `success`, `is_error` true) stays an authentication error. A finish event always names a reason:
-   a missing or null `stop_reason` becomes `stop`.
+   a missing, null, `end_turn` or `stop_sequence` `stop_reason` becomes `stop`, `max_tokens` becomes `length`,
+   and any other value passes through, as on the API-key route.
    A context that is already cancelled starts no process, and `Chat` then returns `context.Canceled`. Cancelling
    during a turn, including while a held-back result waits for the reap, drops the result: `Chat` returns
    `context.Canceled` and `Stream` delivers nothing more. A `Launcher` that returns neither a process nor an

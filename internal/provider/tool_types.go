@@ -33,6 +33,17 @@ const (
 	StreamEventError StreamEventKind = "error"
 )
 
+// Provider-neutral finish reasons carried by StreamEventFinish; any other
+// value a provider reports passes through unchanged.
+const (
+	// FinishStop is a natural end of the answer.
+	FinishStop = "stop"
+	// FinishLength is an answer cut off at the maximum-token limit.
+	FinishLength = "length"
+	// FinishToolCalls is a turn that ended to request tool calls.
+	FinishToolCalls = "tool_calls"
+)
+
 // StreamValidator validates an ordered stream and rejects repeated call IDs or
 // events after finish/error. Its zero value is ready for one stream. It is owned
 // by one consumer and is not concurrency-safe. Failed Accept calls change no state.

@@ -22,6 +22,8 @@ import (
 	. "github.com/onsi/gomega"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
+
+	"github.com/baphled/flowstate/internal/config"
 )
 
 // This suite productises the CLI contract end-to-end matrix: every
@@ -62,18 +64,57 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	e2eBin = string(data)
 })
 
+// Every spec runs the in-process CLI against an empty provider
+// configuration directory and with no ambient provider keys. Without
+// this a developer's own providers.yaml (or exported key) turned specs
+// into live provider calls with a real credential, and their outcome
+// depended on the machine. A spec that needs a configuration or a key
+// sets its own afterwards.
+var _ = BeforeEach(func() {
+	GinkgoT().Setenv("FLOWSTATE_CONFIG_DIR", GinkgoT().TempDir())
+	GinkgoT().Setenv("ZAI_API_KEY", "")
+	GinkgoT().Setenv("ANTHROPIC_API_KEY", "")
+})
+
+var _ = Describe("provider configuration isolation", func() {
+	It("points the in-process CLI at a configuration outside the user's own", func() {
+		base, err := os.UserConfigDir()
+		if err != nil {
+			panic(err)
+		}
+		path, err := config.Path()
+		if err != nil {
+			panic(err)
+		}
+		Expect(path).NotTo(HavePrefix(base))
+	})
+
+	It("points every subprocess at the empty build directory", func() {
+		Expect(e2eEnv("http://127.0.0.1:0")).To(ContainElement("FLOWSTATE_CONFIG_DIR=" + filepath.Dir(e2eBin)))
+	})
+
+	It("drops ambient anthropic settings from the subprocess environment", func() {
+		GinkgoT().Setenv("ANTHROPIC_BASE_URL", "http://ambient.invalid")
+		Expect(e2eEnv("http://127.0.0.1:0")).NotTo(ContainElement(HavePrefix("ANTHROPIC_")))
+	})
+})
+
 // e2eEnv builds the subprocess environment: the ambient environment
-// minus ambient z.ai or FlowState live settings, plus the local fake
-// provider selection, so the binary never touches the live network.
+// minus ambient provider or FlowState live settings, plus the local
+// fake provider selection and an empty provider configuration
+// directory (the build directory holds only the binary), so the binary
+// never touches the live network or the developer's providers.yaml.
 func e2eEnv(baseURL string, extra ...string) []string {
 	env := []string{}
 	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "ZAI_") && !strings.HasPrefix(kv, "FLOWSTATE_") {
+		if !strings.HasPrefix(kv, "ZAI_") && !strings.HasPrefix(kv, "FLOWSTATE_") &&
+			!strings.HasPrefix(kv, "ANTHROPIC_") {
 			env = append(env, kv)
 		}
 	}
 	env = append(env, "ZAI_API_KEY=e2e-test-key", "ZAI_BASE_URL="+baseURL,
-		"ZAI_PLAN=coding", "ZAI_CODING_ROUTE=openai")
+		"ZAI_PLAN=coding", "ZAI_CODING_ROUTE=openai",
+		"FLOWSTATE_CONFIG_DIR="+filepath.Dir(e2eBin))
 	return append(env, extra...)
 }
 
@@ -585,14 +626,20 @@ var _ = Describe("CLI end-to-end contract matrix", Label("e2e"), func() {
 
 		runParent := func() int {
 			rr := runArgv([]string{"session", "run", "--db", db, parentID, "--budget", "100"})
-			// The anchor persists regardless of the turn outcome: the
-			// resolved budget is written before the provider is contacted,
-			// so live, budget-stop and provider-error exits all qualify.
-			if rr.exit != 0 && rr.exit != 3 && rr.exit != 5 {
-				panic("session run failed unexpectedly: " + rr.stderr)
+			// No provider key is configured, so the run stops at provider
+			// resolution with exit 3 and the session stays active. The
+			// anchor persists all the same: the resolved budget is written
+			// before the provider is resolved.
+			if rr.exit != 3 {
+				panic("session run did not stop at provider resolution: " + rr.stderr)
 			}
 			return rr.exit
 		}
+
+		It("stops at provider resolution without a configured key", func() {
+			rr := runArgv([]string{"session", "run", "--db", db, parentID, "--budget", "100"})
+			Expect(rr.stderr).To(ContainSubstring("ZAI_API_KEY is not set"))
+		})
 
 		It("reports the anchored pool with no reservations", func() {
 			runParent()

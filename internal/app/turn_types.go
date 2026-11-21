@@ -27,7 +27,12 @@ type turnState struct {
 	consumed       int64
 	streamErr      bool
 	budgetExceeded bool
-	err            error
+	// err is the persistence failure that ended the stream, if any.
+	err error
+	// cause is the provider's own error when the stream failed.
+	cause error
+	// finishReason is the provider-neutral reason of the finish event.
+	finishReason string
 }
 
 // TurnOptions configures one engine turn; the zero value preserves
@@ -54,6 +59,10 @@ type TurnResult struct {
 	// approximated 1:1 by the total length of streamed provider delta
 	// content (sum of len(ev.Content) over the streamed chunks).
 	ConsumedBudget int64
+	// FinishReason is the provider-neutral finish reason reported by
+	// the stream (for example "stop" or "length"); empty when the
+	// provider sent none. A "length" turn is complete but truncated.
+	FinishReason string
 }
 
 // Store aliases the session store so cmd depends only on app.

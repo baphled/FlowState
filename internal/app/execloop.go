@@ -75,18 +75,19 @@ func runExecTurns(ctx context.Context, cfg *ExecLoopConfig, token int64) (*ExecL
 		if err := cfg.Store.FenceLease(ctx, cfg.LeaseItem, cfg.LeaseAgent, token); err != nil {
 			return res, fmt.Errorf("%w: %v", ErrExecLoopFenced, err)
 		}
-		out, calls, terr := runExecTurn(ctx, *cfg, definitions, history)
+		turn, terr := runExecTurn(ctx, *cfg, definitions, history)
 		res.Turns++
-		res.FinalContent = out
+		res.FinalContent = turn.Content
+		res.FinishReason = turn.FinishReason
 		if terr != nil {
 			return res, terr
 		}
-		history = append(history, provider.Message{Role: "assistant", Content: out, ToolCalls: calls})
-		if len(calls) == 0 {
+		history = append(history, provider.Message{Role: "assistant", Content: turn.Content, ToolCalls: turn.Calls})
+		if len(turn.Calls) == 0 {
 			return res, nil
 		}
-		results, rerr := executeCalls(ctx, *cfg, calls)
-		res.ToolCalls += int64(len(calls))
+		results, rerr := executeCalls(ctx, *cfg, turn.Calls)
+		res.ToolCalls += int64(len(turn.Calls))
 		if rerr != nil {
 			return res, rerr
 		}
@@ -117,32 +118,33 @@ func failExecTurn(ctx context.Context, w EventWriter, st SessionRepo, sessionID 
 	return fmt.Errorf("%w: %w", ErrProvider, cause)
 }
 
-func runExecTurn(ctx context.Context, cfg ExecLoopConfig, definitions []provider.ToolDefinition, history []provider.Message) (string, []provider.ToolCall, error) {
+func runExecTurn(ctx context.Context, cfg ExecLoopConfig, definitions []provider.ToolDefinition, history []provider.Message) (execTurn, error) {
 	w, err := cfg.Store.NewEventWriter(ctx, cfg.Session.ID)
 	if err != nil {
-		return "", nil, err
+		return execTurn{}, err
 	}
 	defer func() { _ = w.Close() }()
-	var content string
-	var calls []provider.ToolCall
+	var turn execTurn
 	req := &provider.ChatRequest{Tools: definitions, Messages: history, Model: cfg.Session.ModelID, MaxTokens: cfg.MaxTokens}
 	for ev := range cfg.Streamer.Stream(ctx, req) {
 		switch {
 		case ev.Err != nil:
-			return "", nil, failExecTurn(ctx, w, cfg.Store, cfg.Session.ID, ev.Err)
+			return execTurn{}, failExecTurn(ctx, w, cfg.Store, cfg.Session.ID, ev.Err)
 		case ev.Kind == provider.StreamEventToolCall && ev.ToolCall != nil:
-			calls = append(calls, *ev.ToolCall)
+			turn.Calls = append(turn.Calls, *ev.ToolCall)
+		case ev.Kind == provider.StreamEventFinish:
+			turn.FinishReason = ev.FinishReason
 		case ev.Kind == provider.StreamEventText || ev.Kind == "":
 			if _, aerr := w.Append(ctx, session.ActorEngine, "assistant.delta", map[string]any{"delta": ev.Content}); aerr != nil {
-				return "", nil, aerr
+				return execTurn{}, aerr
 			}
-			content += ev.Content
+			turn.Content += ev.Content
 		}
 	}
-	if _, aerr := w.Append(ctx, session.ActorEngine, "assistant.message", map[string]any{"content": content}); aerr != nil {
-		return "", nil, aerr
+	if _, aerr := w.Append(ctx, session.ActorEngine, "assistant.message", map[string]any{"content": turn.Content}); aerr != nil {
+		return execTurn{}, aerr
 	}
-	return content, calls, nil
+	return turn, nil
 }
 func allowSet(names []string) map[string]bool {
 	set := make(map[string]bool, len(names))
