@@ -62,11 +62,23 @@ func (p *parser) assistant(l *wireLine) []provider.StreamEvent {
 	return out
 }
 
+// finishReason maps Claude Code's stop_reason to the provider-neutral finish reason, matching the API-key route:
+// a missing, end_turn or stop_sequence reason is a normal stop, max_tokens is truncation, anything else is kept.
+func finishReason(stopReason string) string {
+	switch stopReason {
+	case "", "end_turn", "stop_sequence":
+		return "stop"
+	case "max_tokens":
+		return "length"
+	}
+	return stopReason
+}
+
 func (p *parser) result(l *wireLine) []provider.StreamEvent {
 	p.done = true
 	if !l.IsError && (l.Subtype == "" || l.Subtype == "success") {
 		// A finish event must name a reason; Claude Code sends null for local commands.
-		return []provider.StreamEvent{{Kind: provider.StreamEventFinish, FinishReason: cmp.Or(l.StopReason, "stop")}}
+		return []provider.StreamEvent{{Kind: provider.StreamEventFinish, FinishReason: finishReason(l.StopReason)}}
 	}
 	if l.Subtype == "success" {
 		l.Subtype = "" // an is_error result is no success, whatever its subtype says
