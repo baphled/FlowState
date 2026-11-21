@@ -39,6 +39,12 @@ func cmdDoctor(ctx context.Context, st *app.Store, id string, stdout, stderr *os
 		out["budget_pool"] = nil
 		out["available"] = nil
 	}
+	if d.FinishReason != "" {
+		out["finish_reason"] = d.FinishReason
+	}
+	if d.Truncated {
+		out["truncated"] = true
+	}
 	if err := writeJSON(stdout, out); err != nil {
 		writeError(stderr, err)
 		return exitCodeFor(err)

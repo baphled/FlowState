@@ -79,7 +79,9 @@ type Event struct {
 }
 
 // Diagnosis is the doctor DTO mirroring the session-doctor wire shape
-// (schemas/cli.json): Pool and Available are nil without a budget pool.
+// (schemas/cli.json): Pool and Available are nil without a budget pool;
+// FinishReason is empty and Truncated false when no finish reason was
+// recorded, and both are then omitted from the wire body.
 type Diagnosis struct {
 	SessionID       string
 	Status          string
@@ -89,6 +91,8 @@ type Diagnosis struct {
 	Reserved        int64
 	Pool            *int64
 	Available       *int64
+	FinishReason    string
+	Truncated       bool
 }
 
 // Message is the steering-message DTO mirroring the CLI message
@@ -317,4 +321,6 @@ type diagnosisBody struct {
 	Reserved        int64  `json:"reserved"`
 	BudgetPool      *int64 `json:"budget_pool"`
 	Available       *int64 `json:"available"`
+	FinishReason    string `json:"finish_reason,omitempty"`
+	Truncated       bool   `json:"truncated,omitempty"`
 }

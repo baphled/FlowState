@@ -370,6 +370,12 @@
           "integer",
           "null"
         ]
+      },
+      "finish_reason": {
+        "type": "string"
+      },
+      "truncated": {
+        "type": "boolean"
       }
     }
   }

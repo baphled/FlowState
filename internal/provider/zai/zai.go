@@ -138,11 +138,15 @@ func ClampMaxTokens(n int64) int64 {
 // z.ai route is unchanged.
 func WithAnthropicSystem() Option { return func(p *Provider) { p.systemTopLevel = true } }
 
-// WithAnthropicFinish makes a completed anthropic-route stream end with one
-// finish event whose reason maps message_delta.stop_reason (end_turn and
-// stop_sequence: "stop"; max_tokens: "length"; other values unchanged; absent:
-// "stop"). It is off by default so the z.ai route emits no finish event.
-func WithAnthropicFinish() Option { return func(p *Provider) { p.anthropicFinish = true } }
+// WithFinishEvents makes a completed stream on every route end with one finish
+// event whose reason maps the wire reason: OpenAI finish_reason, or the
+// anthropic message_delta.stop_reason (end_turn and stop_sequence: "stop";
+// max_tokens: "length"; other values unchanged; absent: "stop"). It is off by
+// default so a plain provider emits no finish event.
+func WithFinishEvents() Option { return func(p *Provider) { p.anthropicFinish = true } }
+
+// WithAnthropicFinish is WithFinishEvents under its original name.
+func WithAnthropicFinish() Option { return WithFinishEvents() }
 
 // WithModel overrides the default model.
 func WithModel(m string) Option { return func(p *Provider) { p.model = m } }
@@ -210,10 +214,11 @@ func (p *Provider) Stream(ctx context.Context, req *provider.ChatRequest) <-chan
 		}
 		defer body.Close()
 		rd := bufio.NewReader(body)
+		finish := ""
 		for {
 			line, err := rd.ReadString('\n')
 			if line != "" {
-				if done := p.emitSSELine(ctx, out, line); done {
+				if done := p.emitSSELine(ctx, out, line, &finish); done {
 					return
 				}
 			}
@@ -231,15 +236,22 @@ func (p *Provider) Stream(ctx context.Context, req *provider.ChatRequest) <-chan
 	return out
 }
 
-// emitSSELine parses one SSE line and emits any content delta; it
+// emitSSELine parses one SSE line and emits any content delta, remembering the
+// wire finish_reason in *finish; at [DONE] it emits the one finish event. It
 // reports true when the stream is complete.
-func (p *Provider) emitSSELine(ctx context.Context, out chan<- provider.StreamEvent, line string) bool {
+func (p *Provider) emitSSELine(ctx context.Context, out chan<- provider.StreamEvent, line string, finish *string) bool {
 	trimmed := strings.TrimSpace(line)
 	if !strings.HasPrefix(trimmed, "data:") {
 		return false
 	}
 	payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
 	if payload == "[DONE]" {
+		if p.anthropicFinish {
+			select {
+			case out <- provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: wireFinishReason(*finish)}:
+			case <-ctx.Done():
+			}
+		}
 		return true
 	}
 	var chunk streamChunk
@@ -248,6 +260,9 @@ func (p *Provider) emitSSELine(ctx context.Context, out chan<- provider.StreamEv
 		return true
 	}
 	for _, c := range chunk.Choices {
+		if c.FinishReason != "" {
+			*finish = c.FinishReason
+		}
 		if c.Delta.Content != "" {
 			select {
 			case out <- provider.StreamEvent{Content: c.Delta.Content}:

@@ -339,6 +339,30 @@ var _ = Describe("Serve S1 transport", func() {
 				"/sessions/01a1f000-0000-4000-8000-000000000001/doctor", "").Body.String())).To(Succeed())
 		})
 
+		DescribeTable("carries a truncated diagnosis in the body",
+			func(want string) {
+				s, f := sampleServer()
+				f.diagnosis.FinishReason, f.diagnosis.Truncated = "length", true
+				Expect(doRequest(s, http.MethodGet, "/sessions/01a1f000-0000-4000-8000-000000000001/doctor", "").
+					Body.String()).To(ContainSubstring(want))
+			},
+			Entry("the finish reason", `"finish_reason":"length"`),
+			Entry("the truncated flag", `"truncated":true`),
+		)
+
+		It("validates a truncated diagnosis against schemas/cli.json session-doctor", func() {
+			s, f := sampleServer()
+			f.diagnosis.FinishReason, f.diagnosis.Truncated = "length", true
+			Expect(schemaError("session-doctor", doRequest(s, http.MethodGet,
+				"/sessions/01a1f000-0000-4000-8000-000000000001/doctor", "").Body.String())).To(Succeed())
+		})
+
+		It("omits finish_reason and truncated when none was recorded", func() {
+			s, _ := sampleServer()
+			body := doRequest(s, http.MethodGet, "/sessions/01a1f000-0000-4000-8000-000000000001/doctor", "").Body.String()
+			Expect(body).NotTo(Or(ContainSubstring("finish_reason"), ContainSubstring("truncated")))
+		})
+
 		It("maps an unknown session onto 404 session_not_found", func() {
 			s, f := sampleServer()
 			f.err = errFakeMissing
@@ -709,6 +733,97 @@ var _ = Describe("Serve S1 transport", func() {
 		New(p).Handler().ServeHTTP(httptest.NewRecorder(),
 			httptest.NewRequest(http.MethodGet, "/sessions", nil).WithContext(ctx))
 		Expect(seen).To(MatchError(context.Canceled))
+	})
+
+	// A read whose client has gone has nobody to answer: the error writer
+	// stays silent instead of reporting the cancellation as 500 internal.
+	DescribeTable("writes nothing for a read cancelled by a client disconnect",
+		func(method, target, body string) {
+			s, f := sampleServer()
+			f.err, f.streamErr = context.Canceled, context.Canceled
+			f.swarmErr, f.receiptErr = context.Canceled, context.Canceled
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			rec := httptest.NewRecorder()
+			s.Handler().ServeHTTP(rec,
+				httptest.NewRequest(method, target, strings.NewReader(body)).WithContext(ctx))
+			Expect(rec.Body.String()).To(BeEmpty())
+		},
+		Entry("session list", http.MethodGet, "/sessions", ""),
+		Entry("session get", http.MethodGet, "/sessions/s1", ""),
+		Entry("doctor", http.MethodGet, "/sessions/s1/doctor", ""),
+		Entry("budget", http.MethodGet, "/sessions/s1/budget", ""),
+		Entry("events", http.MethodGet, "/sessions/s1/events", ""),
+		Entry("swarm validate", http.MethodPost, "/swarm/validate", `{"path":"m.yaml"}`),
+		Entry("receipt validate", http.MethodPost, "/receipt/validate", `{"path":"r.json"}`),
+	)
+
+	It("still renders a read's own failure after the client has gone", func() {
+		s, f := sampleServer()
+		f.err = errFakeMissing
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sessions/s1", nil).WithContext(ctx))
+		Expect(rec.Code).To(Equal(http.StatusNotFound))
+	})
+
+	It("keeps answering 500 for a cancellation error on a live request", func() {
+		s, f := sampleServer()
+		f.err = context.Canceled
+		Expect(doRequest(s, http.MethodGet, "/sessions", "").Code).To(Equal(http.StatusInternalServerError))
+	})
+
+	It("answers 503 unavailable to a read cancelled by shutdown", func() {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		must(err)
+		entered := make(chan struct{})
+		p := (&fakePorts{}).ports()
+		p.ListSessions = func(ctx context.Context, _ string) ([]Session, error) {
+			close(entered)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		DeferCleanup(cancel)
+		done := make(chan error, 1)
+		go func() { done <- New(p).Serve(ctx, l) }()
+		got := make(chan reply, 1)
+		go func() {
+			req, rerr := http.NewRequestWithContext(context.Background(), http.MethodGet,
+				"http://"+l.Addr().String()+"/sessions", http.NoBody)
+			must(rerr)
+			res, derr := http.DefaultClient.Do(req)
+			if derr != nil {
+				got <- reply{}
+				return
+			}
+			defer func() { _ = res.Body.Close() }()
+			raw, _ := io.ReadAll(res.Body)
+			got <- reply{res.StatusCode, string(raw)}
+		}()
+		select {
+		case <-entered:
+		case <-time.After(2 * time.Second):
+			panic("the request never reached its handler")
+		}
+		cancel()
+		Eventually(got).WithTimeout(3 * time.Second).WithPolling(10 * time.Millisecond).
+			Should(Receive(Equal(reply{http.StatusServiceUnavailable,
+				`{"code":"unavailable","message":"server is shutting down"}`})))
+	})
+
+	// A write is detached from cancellation, so its own failure keeps its
+	// class even when the request context is done.
+	It("keeps a cancelled write's error as 500 internal", func() {
+		s, f := sampleServer()
+		f.writeErr = context.Canceled
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec,
+			httptest.NewRequest(http.MethodPost, "/sessions/s1/close", nil).WithContext(ctx))
+		Expect(rec.Code).To(Equal(http.StatusInternalServerError))
 	})
 
 	// A write must finish once started: its port never sees the request's

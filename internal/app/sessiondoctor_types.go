@@ -28,4 +28,12 @@ type SessionDiagnosis struct {
 	Pool *int64
 	// Available is pool minus reserved, nil without a pool.
 	Available *int64
+	// FinishReason is the finish_reason of the session's LAST turn.end
+	// event (PR #358), empty when none was recorded or the payload is
+	// unparseable. Informational: it is not gated on the row status.
+	FinishReason string
+	// Truncated is true exactly when the last turn.end finished with
+	// provider.FinishLength (answer cut off at the token limit) and the
+	// session is neither failed, cancelled, paused nor crashed.
+	Truncated bool
 }

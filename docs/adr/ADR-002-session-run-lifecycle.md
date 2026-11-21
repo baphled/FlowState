@@ -139,7 +139,8 @@ The turn loop (single-turn or exec loop with tool surface) runs with the resolve
   A provider finish event is never recorded as an `assistant.delta`. When the provider reported a finish reason, the
   completed `turn.end` payload carries it (`{"status":"completed","finish_reason":"length"}`); without one the
   payload stays `{"status":"completed"}`. Neutral values are `stop`, `length` (cut off at the max-token limit) and
-  `tool_calls`; others pass through. A `length` turn is still `completed`, but the record shows it was truncated. In
+  `tool_calls`; others pass through. A `length` turn is still `completed`, but the record shows it was truncated,
+  and `session doctor` (and `GET /sessions/{id}/doctor`) surfaces it as `finish_reason` plus `truncated: true`. In
   a tool-surface run the terminal `turn.end` carries the reason of the final provider turn, so a run that ends at
   `MaxTurns` while still requesting tools records `tool_calls` on a `completed` turn. A failure to persist
   the provider error or a delta ends the turn with an error and never records `turn.end` or `completed`.
@@ -157,6 +158,14 @@ The turn outcome maps to the exit-code contract:
 | unknown tool | 2 | no (pre-flight) |
 | config invalid | 4 | no (pre-flight) |
 | terminal rejection | 6 | — |
+| replay corruption found during a turn (`replay_mismatch`) | 7 | no |
+| unknown session | 1 | — |
+| internal failure (code `internal`; HTTP 500 on the serve run endpoint) | 1 | no |
+
+An unclassified error (for example a storage failure while recording the turn) is code `internal` and exits 1 — the
+same number as an unknown session; the stderr `code` tells them apart. Exit 1 is the CLI contract's number, not a
+new one. A `length` finish (answer truncated) does not change the exit: `session run` exits 0 and writes one
+warning line to stderr naming `session doctor <id>` and `--max-tokens`; stdout stays the event stream.
 
 ### Invariants
 

@@ -2,15 +2,22 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/baphled/flowstate/internal/app"
+	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/zai"
 	"github.com/baphled/flowstate/internal/store"
@@ -40,6 +47,104 @@ func withFakeZai(srv *httptest.Server) {
 		return zai.New("test-key", zai.WithBaseURL(srv.URL), zai.WithCoding()), nil
 	}
 	DeferCleanup(func() { providerResolver = old })
+}
+
+// scriptedStreamer is a fake streaming provider that emits its events
+// in order.
+type scriptedStreamer struct {
+	events []provider.StreamEvent
+}
+
+func (s *scriptedStreamer) Name() string     { return "scripted" }
+func (s *scriptedStreamer) Models() []string { return []string{"scripted-model"} }
+func (s *scriptedStreamer) Chat(context.Context, *provider.ChatRequest) (*provider.ChatResponse, error) {
+	return &provider.ChatResponse{}, nil
+}
+
+func (s *scriptedStreamer) Stream(context.Context, *provider.ChatRequest) <-chan provider.StreamEvent {
+	out := make(chan provider.StreamEvent, len(s.events))
+	for _, e := range s.events {
+		out <- e
+	}
+	close(out)
+	return out
+}
+
+// plainProvider satisfies provider.Provider without streaming support.
+type plainProvider struct{}
+
+func (plainProvider) Name() string     { return "plain" }
+func (plainProvider) Models() []string { return nil }
+func (plainProvider) Chat(context.Context, *provider.ChatRequest) (*provider.ChatResponse, error) {
+	return &provider.ChatResponse{}, nil
+}
+
+// withProvider swaps the resolver for one fixed provider.
+func withProvider(p provider.Provider) {
+	old := providerResolver
+	providerResolver = func(string) (provider.Provider, error) { return p, nil }
+	DeferCleanup(func() { providerResolver = old })
+}
+
+// failDeltaAppends injects a storage fault without a production seam:
+// a trigger on a second connection makes SQLite reject every
+// assistant.delta row, as a full disk would, while other rows still
+// insert. The streamer then drives the turn into that failed append.
+func failDeltaAppends(db string) *scriptedStreamer {
+	conn, err := sql.Open("sqlite", db)
+	if err != nil {
+		panic(err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.Exec(`CREATE TRIGGER fail_delta BEFORE INSERT ON events WHEN NEW.type = 'assistant.delta' ` +
+		`BEGIN SELECT RAISE(ABORT, 'disk full'); END`); err != nil {
+		panic(err)
+	}
+	return &scriptedStreamer{events: []provider.StreamEvent{{Content: "hello"}}}
+}
+
+// stderrMessage decodes the first stderr line's error message.
+func stderrMessage(out string) string {
+	var ec struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(firstLine(out)), &ec); err != nil {
+		panic(err)
+	}
+	return ec.Message
+}
+
+// isolatedProviderConfig points the config dir at a fresh directory
+// holding doc (none when empty) and clears the zai key, so no real
+// provider configuration or credential is reachable.
+func isolatedProviderConfig(doc string) {
+	dir := GinkgoT().TempDir()
+	GinkgoT().Setenv("FLOWSTATE_CONFIG_DIR", dir)
+	GinkgoT().Setenv("XDG_CONFIG_HOME", dir)
+	GinkgoT().Setenv("ZAI_API_KEY", "")
+	GinkgoT().Setenv("ANTHROPIC_API_KEY", "")
+	if doc == "" {
+		return
+	}
+	if err := os.WriteFile(filepath.Join(dir, config.FileName), []byte(doc), 0o600); err != nil {
+		panic(err)
+	}
+}
+
+// finishRunOutcome runs finishRun on err and returns its exit status
+// and the stderr JSON line.
+func finishRunOutcome(err error) (int, string) {
+	f, ferr := os.Create(filepath.Join(GinkgoT().TempDir(), "stderr"))
+	if ferr != nil {
+		panic(ferr)
+	}
+	defer func() { _ = f.Close() }()
+	exit := finishRun(err, nil, &flags{}, f)
+	data, rerr := os.ReadFile(f.Name())
+	if rerr != nil {
+		panic(rerr)
+	}
+	return exit, string(data)
 }
 
 // runCLIRun runs `session run` with the given id args against the
@@ -758,5 +863,224 @@ var _ = Describe("Session run tool-surface loop", func() {
 			observedSecondExit = runCLILoop(id, "--allow", "echo").exit
 		})
 		It("rejects the rerun with the terminal exit status", func() { Expect(observedSecondExit).To(Equal(6)) })
+	})
+})
+
+var _ = Describe("Session run failure classification", func() {
+	newSession := func(providerName string) string {
+		created := runCLINew("--provider", providerName, "--model", "glm-5.3", "--task", "greet")
+		if created.exit != 0 {
+			panic("session new failed")
+		}
+		return decodeNew(created.stdout).ID
+	}
+
+	Context("an unclassified error", func() {
+		It("exits 1", func() { Expect(exitCodeFor(errors.New("boom"))).To(Equal(1)) })
+		It("reports the internal code", func() {
+			Expect(asCliError(errors.New("boom")).Code).To(Equal("internal"))
+		})
+	})
+
+	Context("a storage failure while recording the turn", func() {
+		var run result
+		BeforeEach(func() {
+			id := newSession("z.ai")
+			withProvider(failDeltaAppends(dbFor()))
+			run = runCLIRun(id)
+		})
+		It("exits with the internal failure status", func() { Expect(run.exit).To(Equal(1)) })
+		It("reports the internal code", func() { Expect(stderrCode(run.stderr)).To(Equal("internal")) })
+		It("does not blame the provider", func() {
+			Expect(stderrMessage(run.stderr)).NotTo(ContainSubstring("provider_error"))
+		})
+		It("reports the storage cause", func() {
+			Expect(stderrMessage(run.stderr)).To(ContainSubstring("disk full"))
+		})
+	})
+
+	Context("a provider HTTP failure", func() {
+		var run result
+		BeforeEach(func() {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"error":{"code":"429","message":"slow down"}}`))
+			}))
+			DeferCleanup(srv.Close)
+			withFakeZai(srv)
+			run = runCLIRun(newSession("z.ai"))
+		})
+		It("exits 3", func() { Expect(run.exit).To(Equal(3)) })
+		It("reports provider_error", func() { Expect(stderrCode(run.stderr)).To(Equal("provider_error")) })
+		It("names provider_error once in the message", func() {
+			Expect(strings.Count(stderrMessage(run.stderr), "provider_error")).To(Equal(1))
+		})
+	})
+
+	Context("a provider tool-protocol failure", func() {
+		var run result
+		BeforeEach(func() {
+			withProvider(&scriptedStreamer{events: []provider.StreamEvent{
+				{Err: &zai.ToolProtocolError{Reason: "duplicate tool ID"}}}})
+			run = runCLIRun(newSession("z.ai"))
+		})
+		It("exits 3", func() { Expect(run.exit).To(Equal(3)) })
+		It("reports provider_error", func() { Expect(stderrCode(run.stderr)).To(Equal("provider_error")) })
+	})
+
+	Context("a provider without streaming support", func() {
+		var run result
+		BeforeEach(func() {
+			withProvider(plainProvider{})
+			run = runCLIRun(newSession("z.ai"))
+		})
+		It("exits 3", func() { Expect(run.exit).To(Equal(3)) })
+		It("reports provider_error", func() { Expect(stderrCode(run.stderr)).To(Equal("provider_error")) })
+	})
+
+	Context("a missing provider key", func() {
+		var run result
+		BeforeEach(func() {
+			id := newSession("z.ai")
+			isolatedProviderConfig("")
+			run = runCLIRun(id)
+		})
+		It("exits 3", func() { Expect(run.exit).To(Equal(3)) })
+		It("reports provider_error", func() { Expect(stderrCode(run.stderr)).To(Equal("provider_error")) })
+		It("names provider_error once in the message", func() {
+			Expect(strings.Count(stderrMessage(run.stderr), "provider_error")).To(Equal(1))
+		})
+	})
+
+	Context("a malformed providers.yaml on the anthropic route", func() {
+		var run result
+		BeforeEach(func() {
+			id := newSession("anthropic")
+			isolatedProviderConfig("providers: [unterminated\n")
+			run = runCLIRun(id)
+		})
+		It("exits 3", func() { Expect(run.exit).To(Equal(3)) })
+		It("reports provider_error", func() { Expect(stderrCode(run.stderr)).To(Equal("provider_error")) })
+	})
+
+	DescribeTable("finishRun exit status",
+		func(err error, want int) {
+			exit, _ := finishRunOutcome(err)
+			Expect(exit).To(Equal(want))
+		},
+		Entry("persistence failure", errors.New("append event seq 3: disk full"), 1),
+		Entry("lease fence", app.ErrExecLoopFenced, 1),
+		Entry("wrapped provider failure", fmt.Errorf("%w: %w", app.ErrProvider, errors.New("zai: api error 429")), 3),
+		Entry("budget", app.ErrBudgetExceeded, 5),
+		Entry("usage", app.ErrUsage, 2),
+		Entry("cancellation", app.ErrSessionCancelled, 130),
+	)
+
+	DescribeTable("finishRun error code",
+		func(err error, want string) {
+			_, stderr := finishRunOutcome(err)
+			Expect(stderrCode(stderr)).To(Equal(want))
+		},
+		Entry("persistence failure", errors.New("append event seq 3: disk full"), "internal"),
+		Entry("lease fence", app.ErrExecLoopFenced, "internal"),
+		Entry("wrapped provider failure", fmt.Errorf("%w: %w", app.ErrProvider, errors.New("zai: api error 429")),
+			"provider_error"),
+	)
+
+	It("does not wrap a provider failure a second time", func() {
+		_, stderr := finishRunOutcome(fmt.Errorf("%w: %w", app.ErrProvider, errors.New("zai: api error 429")))
+		Expect(stderrMessage(stderr)).To(Equal("provider_error: zai: api error 429"))
+	})
+})
+
+var _ = Describe("Session run truncation notice", func() {
+	const noticeText = "cut off at the token limit"
+	// runID creates a session and runs it against a scripted provider
+	// whose stream ends with the given finish reason (none when empty),
+	// on the single-turn path, or the loop path when loopFlags are given.
+	// The real adapter emits no finish event on the tool-less path.
+	runID := func(finish string, loopFlags ...string) (result, string) {
+		events := []provider.StreamEvent{{Content: "partial"}}
+		if finish != "" {
+			events = append(events, provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: finish})
+		}
+		withProvider(&scriptedStreamer{events: events})
+		id := newLoopSession()
+		if len(loopFlags) == 0 {
+			return runCLIRun(id), id
+		}
+		return runCLILoop(id, loopFlags...), id
+	}
+	run := func(finish string, loopFlags ...string) result {
+		r, _ := runID(finish, loopFlags...)
+		return r
+	}
+
+	DescribeTable("names the cut-off on stderr when the final turn ended at the limit",
+		func(loopFlags ...string) {
+			Expect(run("length", loopFlags...).stderr).To(ContainSubstring(noticeText))
+		},
+		Entry("single-turn path"),
+		Entry("loop path", "--allow", "echo"),
+	)
+
+	DescribeTable("points at session doctor for the session",
+		func(loopFlags ...string) {
+			r, id := runID("length", loopFlags...)
+			Expect(r.stderr).To(ContainSubstring("session doctor " + id))
+		},
+		Entry("single-turn path"),
+		Entry("loop path", "--allow", "echo"),
+	)
+
+	DescribeTable("points at --max-tokens",
+		func(loopFlags ...string) {
+			Expect(run("length", loopFlags...).stderr).To(ContainSubstring("--max-tokens"))
+		},
+		Entry("single-turn path"),
+		Entry("loop path", "--allow", "echo"),
+	)
+
+	DescribeTable("keeps exit 0 for a truncated answer",
+		func(loopFlags ...string) {
+			Expect(run("length", loopFlags...).exit).To(Equal(0))
+		},
+		Entry("single-turn path"),
+		Entry("loop path", "--allow", "echo"),
+	)
+
+	DescribeTable("keeps the event stream ending in turn.end for a truncated answer",
+		func(loopFlags ...string) {
+			types := stdoutEventTypes(run("length", loopFlags...).stdout)
+			Expect(types[len(types)-1]).To(Equal("turn.end"))
+		},
+		Entry("single-turn path"),
+		Entry("loop path", "--allow", "echo"),
+	)
+
+	DescribeTable("stays silent for a stop finish",
+		func(loopFlags ...string) {
+			Expect(run("stop", loopFlags...).stderr).To(BeEmpty())
+		},
+		Entry("single-turn path"),
+		Entry("loop path", "--allow", "echo"),
+	)
+
+	DescribeTable("stays silent when the provider reports no finish reason",
+		func(loopFlags ...string) {
+			Expect(run("", loopFlags...).stderr).To(BeEmpty())
+		},
+		Entry("single-turn path"),
+		Entry("loop path", "--allow", "echo"),
+	)
+
+	It("copies a loop result's finish reason onto the turn result", func() {
+		res := toTurnResult(&app.Session{ID: "s1"}, &app.ExecLoopResult{FinishReason: "length"})
+		Expect(res.FinishReason).To(Equal("length"))
+	})
+
+	It("keeps an empty loop finish reason empty on the turn result", func() {
+		res := toTurnResult(&app.Session{ID: "s1"}, &app.ExecLoopResult{})
+		Expect(res.FinishReason).To(BeEmpty())
 	})
 })

@@ -30,7 +30,9 @@ its presence is not permission to add another dependency or a new global.
 `GET /health`, `GET /sessions[?status=…]`, `GET /sessions/{id}` (session
 fields with embedded `events`), the write endpoints `POST /sessions/{id}/close`
 and `POST /sessions/{id}/cancel` (200 with the terminal session row; a terminal
-session answers 409 `session_terminal` — closing/cancelling is not idempotent),
+session answers 409 `session_terminal` — closing/cancelling is not idempotent; if the cancel commits but
+settling the session's budget reservation fails, the answer is 500 `internal` whose message says the session
+is cancelled, and the CLI prints the cancelled state before the error),
 and `GET /sessions/{id}/doctor` reusing the CLI `session-doctor` output shape,
 wired through narrow `server.Ports`; no store
 type crosses into transport and `cmd` only builds the closures and listener.
@@ -50,9 +52,15 @@ verdict mirroring the CLI's per-file line) — reusing the CLI `swarm-validate`,
 Errors render the shared `{code,message}` body with statuses from the
 closed error-code table — an empty or unknown `ErrCode` result maps explicitly
 to `internal`/500; the listener defaults to loopback `127.0.0.1:7600`
-(`--addr`), auth is an optional `FLOWSTATE_SERVE_TOKEN` bearer, and the
+(`--addr`), auth is an optional `FLOWSTATE_SERVE_TOKEN` bearer, and startup refuses (usage, exit 2) an
+address other than a literal loopback IP or `localhost` — including an empty host such as `:8080` — unless the
+token is set; the error names both remedies. The
 `http.Server` caps read headers at 5s and writes/idle at 30s. Shutdown cancels
-in-flight reads (requests inherit the serve context) and drains within 5s;
+in-flight reads (requests inherit the serve context) and drains within 5s. A read whose context is done and
+whose port failed with a context error is not an internal failure: if the serve context is done the client
+gets 503 `unavailable` ("server is shutting down"); otherwise the client has gone and nothing is written
+(classified once by the read-port wrapper and rendered by the shared error writer; writes and the run route are
+unchanged);
 writes are detached from request cancellation, so neither shutdown nor a client
 disconnect stops one half way; the run endpoint is the deliberate exception:
 its turn follows the request context, so a disconnect or shutdown mid-run
@@ -71,8 +79,10 @@ before events, terminal status frame, per-write deadline reset 15s ahead of the
 global 30s `WriteTimeout`). `POST /sessions/{id}/run` runs one
 synchronous turn behind the `session run` preamble and answers the projected
 event log; `{"budget","max_tokens"}` mirrors the CLI flags, provider failures
-502 `provider_error`, budget stops 409, and the route's deadline extends 10
-minutes; a client disconnect or shutdown mid-run cancels the session, as
+(errors wrapping `app.ErrProvider`, named once in the message) 502 `provider_error`, budget stops 409, any
+other failure keeps its own class (a storage error while recording the turn is 500 `internal`, and `session
+run` exits 1), and the route's deadline extends 10 minutes; a client disconnect or shutdown mid-run cancels
+the session, as
 SIGINT does for the CLI.
 `POST /sessions` creates via the `session new` composition (a write, so it is
 detached from cancellation): body fields override serve config, secret-looking

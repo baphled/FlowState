@@ -16,12 +16,18 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/app"
+	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/provider/zai"
 )
 
 // serveBoot boots `flowstate serve` on a fresh temp database seeded by
 // seed (may be nil) and returns the base URL and the stop func.
 func serveBoot(seed func(st *app.Store), extra ...string) (string, func() int) {
-	db := filepath.Join(GinkgoT().TempDir(), "serve.db")
+	return serveBootAt(filepath.Join(GinkgoT().TempDir(), "serve.db"), seed, extra...)
+}
+
+// serveBootAt is serveBoot on a caller-chosen database path.
+func serveBootAt(db string, seed func(st *app.Store), extra ...string) (string, func() int) {
 	st, err := app.OpenStore(db)
 	must(err)
 	if seed != nil {
@@ -75,14 +81,22 @@ func serveJSON(res *http.Response, v any) {
 
 // bootSeededSession boots serve with one active z.ai session.
 func bootSeededSession() (string, string, func() int) {
+	base, id, _, stop := bootSeededProviderSession("z.ai")
+	return base, id, stop
+}
+
+// bootSeededProviderSession boots serve with one active session on the
+// named provider and also returns the database path.
+func bootSeededProviderSession(providerName string) (string, string, string, func() int) {
 	var id string
-	base, stop := serveBoot(func(st *app.Store) {
-		sess, err := app.CreateSession(context.Background(), st, "z.ai", "glm-5.3",
+	db := filepath.Join(GinkgoT().TempDir(), "serve.db")
+	base, stop := serveBootAt(db, func(st *app.Store) {
+		sess, err := app.CreateSession(context.Background(), st, providerName, "glm-5.3",
 			app.DefaultHarness, "3f7a", "greet")
 		must(err)
 		id = sess.ID
 	})
-	return base, id, stop
+	return base, id, db, stop
 }
 
 var _ = Describe("Serve events and stream wiring", func() {
@@ -230,5 +244,98 @@ var _ = Describe("Serve creation wiring", func() {
 		var ec map[string]any
 		serveJSON(res, &ec)
 		Expect([]string{res.Status, ec["code"].(string)}).To(Equal([]string{"400 Bad Request", "usage"}))
+	})
+})
+
+var _ = Describe("Serve run failure classification", func() {
+	// post boots serve on a session of the named provider, lets setup
+	// adjust the environment (db is the served database), and returns
+	// the HTTP status, contract code and message of POST /run.
+	post := func(providerName string, setup func(id, db string)) (int, string, string) {
+		base, id, db, stop := bootSeededProviderSession(providerName)
+		defer func() { mustExit(stop()) }()
+		setup(id, db)
+		res := serveReq(http.MethodPost, base+"/sessions/"+id+"/run", "")
+		var ec map[string]string
+		serveJSON(res, &ec)
+		return res.StatusCode, ec["code"], ec["message"]
+	}
+
+	Context("a storage failure while recording the turn", func() {
+		var status int
+		var code, message string
+		BeforeEach(func() {
+			status, code, message = post("z.ai", func(_, db string) { withProvider(failDeltaAppends(db)) })
+		})
+		It("answers 500", func() { Expect(status).To(Equal(http.StatusInternalServerError)) })
+		It("reports the internal code", func() { Expect(code).To(Equal("internal")) })
+		It("does not blame the provider", func() { Expect(message).NotTo(ContainSubstring("provider_error")) })
+		It("reports the storage cause", func() { Expect(message).To(ContainSubstring("disk full")) })
+	})
+
+	Context("a provider HTTP failure", func() {
+		var status int
+		var code, message string
+		BeforeEach(func() {
+			bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"error":{"code":"429","message":"slow down"}}`))
+			}))
+			DeferCleanup(bad.Close)
+			status, code, message = post("z.ai", func(string, string) { withFakeZai(bad) })
+		})
+		It("answers 502", func() { Expect(status).To(Equal(http.StatusBadGateway)) })
+		It("reports provider_error", func() { Expect(code).To(Equal("provider_error")) })
+		It("names provider_error once in the message", func() {
+			Expect(strings.Count(message, "provider_error")).To(Equal(1))
+		})
+	})
+
+	Context("a provider tool-protocol failure", func() {
+		var status int
+		var code string
+		BeforeEach(func() {
+			status, code, _ = post("z.ai", func(string, string) {
+				withProvider(&scriptedStreamer{events: []provider.StreamEvent{
+					{Err: &zai.ToolProtocolError{Reason: "duplicate tool ID"}}}})
+			})
+		})
+		It("answers 502", func() { Expect(status).To(Equal(http.StatusBadGateway)) })
+		It("reports provider_error", func() { Expect(code).To(Equal("provider_error")) })
+	})
+
+	Context("a provider without streaming support", func() {
+		var status int
+		var code string
+		BeforeEach(func() {
+			status, code, _ = post("z.ai", func(string, string) { withProvider(plainProvider{}) })
+		})
+		It("answers 502", func() { Expect(status).To(Equal(http.StatusBadGateway)) })
+		It("reports provider_error", func() { Expect(code).To(Equal("provider_error")) })
+	})
+
+	Context("a missing provider key", func() {
+		var status int
+		var code, message string
+		BeforeEach(func() {
+			status, code, message = post("z.ai", func(string, string) { isolatedProviderConfig("") })
+		})
+		It("answers 502", func() { Expect(status).To(Equal(http.StatusBadGateway)) })
+		It("reports provider_error", func() { Expect(code).To(Equal("provider_error")) })
+		It("names provider_error once in the message", func() {
+			Expect(strings.Count(message, "provider_error")).To(Equal(1))
+		})
+	})
+
+	Context("a malformed providers.yaml on the anthropic route", func() {
+		var status int
+		var code string
+		BeforeEach(func() {
+			status, code, _ = post("anthropic", func(string, string) {
+				isolatedProviderConfig("providers: [unterminated\n")
+			})
+		})
+		It("answers 502", func() { Expect(status).To(Equal(http.StatusBadGateway)) })
+		It("reports provider_error", func() { Expect(code).To(Equal("provider_error")) })
 	})
 })

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -273,5 +274,197 @@ var _ = Describe("session doctor run activity", func() {
 		d, err := DiagnoseSession(ctx, st, sess.ID)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(d.RunActivity).To(BeTrue())
+	})
+})
+
+// mustTurnEnd appends a completed turn.end carrying reason (omitted
+// when empty), panicking on errors.
+func mustTurnEnd(ctx context.Context, st *store.Store, id, reason string) {
+	payload := map[string]any{"status": "completed"}
+	if reason != "" {
+		payload["finish_reason"] = reason
+	}
+	mustAppendEvent(ctx, st, id, "engine", "turn.end", payload)
+}
+
+// mustAppendRawTurnEnd appends a completed turn.end whose finish_reason
+// is the given raw JSON value, panicking on errors.
+func mustAppendRawTurnEnd(ctx context.Context, st *store.Store, id, raw string) {
+	mustAppendEvent(ctx, st, id, "engine", "turn.end", map[string]any{
+		"status":        "completed",
+		"finish_reason": json.RawMessage(raw),
+	})
+}
+
+var _ = Describe("session doctor truncated turn", func() {
+	var ctx context.Context
+	var st *store.Store
+	var sess *store.Session
+	BeforeEach(func() {
+		ctx = context.Background()
+		st = mustOpenCrashStore()
+		DeferCleanup(func() { _ = st.Close() })
+		sess = mustCreateCrashSession(ctx, st)
+		mustAppendEvent(ctx, st, sess.ID, "engine", "provider.request", map[string]any{})
+	})
+
+	diagnose := func() SessionDiagnosis {
+		d, err := DiagnoseSession(ctx, st, sess.ID)
+		if err != nil {
+			panic(err)
+		}
+		return d
+	}
+
+	It("reports the finish reason of the last turn.end", func() {
+		mustTurnEnd(ctx, st, sess.ID, "length")
+		Expect(diagnose().FinishReason).To(Equal("length"))
+	})
+
+	It("flags a length-terminated final turn as truncated", func() {
+		mustTurnEnd(ctx, st, sess.ID, "length")
+		Expect(diagnose().Truncated).To(BeTrue())
+	})
+
+	It("does not flag a stop-terminated turn as truncated", func() {
+		mustTurnEnd(ctx, st, sess.ID, "stop")
+		Expect(diagnose().Truncated).To(BeFalse())
+	})
+
+	It("does not flag a tool_calls-terminated turn as truncated", func() {
+		mustTurnEnd(ctx, st, sess.ID, "tool_calls")
+		Expect(diagnose().Truncated).To(BeFalse())
+	})
+
+	It("clears truncation when a later turn ends with stop", func() {
+		mustTurnEnd(ctx, st, sess.ID, "length")
+		mustTurnEnd(ctx, st, sess.ID, "stop")
+		Expect(diagnose().Truncated).To(BeFalse())
+	})
+
+	It("reports the later finish reason when a later turn ends with stop", func() {
+		mustTurnEnd(ctx, st, sess.ID, "length")
+		mustTurnEnd(ctx, st, sess.ID, "stop")
+		Expect(diagnose().FinishReason).To(Equal("stop"))
+	})
+
+	It("flags truncation from the last turn.end when an earlier one was stop", func() {
+		mustTurnEnd(ctx, st, sess.ID, "stop")
+		mustTurnEnd(ctx, st, sess.ID, "length")
+		Expect(diagnose().Truncated).To(BeTrue())
+	})
+
+	It("clears truncation when a later turn.end carries no finish reason", func() {
+		mustTurnEnd(ctx, st, sess.ID, "length")
+		mustTurnEnd(ctx, st, sess.ID, "")
+		Expect(diagnose().Truncated).To(BeFalse())
+	})
+
+	It("reports no finish reason without a turn.end", func() {
+		Expect(diagnose().FinishReason).To(BeEmpty())
+	})
+
+	It("reports no finish reason for a turn.end without one", func() {
+		mustTurnEnd(ctx, st, sess.ID, "")
+		Expect(diagnose().FinishReason).To(BeEmpty())
+	})
+
+	It("ignores a non-object turn.end payload", func() {
+		mustTurnEnd(ctx, st, sess.ID, "length")
+		w, err := st.NewEventWriter(ctx, sess.ID)
+		if err != nil {
+			panic(err)
+		}
+		defer w.Close()
+		if _, aerr := w.Append(ctx, "engine", "turn.end", "not-an-object"); aerr != nil {
+			panic(aerr)
+		}
+		Expect(diagnose().Truncated).To(BeFalse())
+	})
+
+	It("does not fail on a non-object turn.end payload", func() {
+		w, err := st.NewEventWriter(ctx, sess.ID)
+		if err != nil {
+			panic(err)
+		}
+		defer w.Close()
+		if _, aerr := w.Append(ctx, "engine", "turn.end", []string{"x"}); aerr != nil {
+			panic(aerr)
+		}
+		_, derr := DiagnoseSession(ctx, st, sess.ID)
+		Expect(derr).NotTo(HaveOccurred())
+	})
+
+	DescribeTable("ignores a turn.end whose finish_reason is not a string",
+		func(raw string) {
+			mustAppendRawTurnEnd(ctx, st, sess.ID, raw)
+			d, err := DiagnoseSession(ctx, st, sess.ID)
+			if err != nil {
+				panic(err)
+			}
+			Expect(d.FinishReason).To(BeEmpty())
+		},
+		Entry("number", "42"),
+		Entry("null", "null"),
+		Entry("object", `{"x":"length"}`),
+	)
+
+	DescribeTable("does not flag truncation for a turn.end whose finish_reason is not a string",
+		func(raw string) {
+			mustAppendRawTurnEnd(ctx, st, sess.ID, raw)
+			Expect(diagnose().Truncated).To(BeFalse())
+		},
+		Entry("number", "42"),
+		Entry("null", "null"),
+		Entry("object", `{"x":"length"}`),
+	)
+
+	DescribeTable("does not fail on a turn.end whose finish_reason is not a string",
+		func(raw string) {
+			mustAppendRawTurnEnd(ctx, st, sess.ID, raw)
+			_, derr := DiagnoseSession(ctx, st, sess.ID)
+			Expect(derr).NotTo(HaveOccurred())
+		},
+		Entry("number", "42"),
+		Entry("null", "null"),
+		Entry("object", `{"x":"length"}`),
+	)
+
+	It("does not flag a budget_exhausted loop stop as truncated", func() {
+		mustTurnEnd(ctx, st, sess.ID, "length")
+		mustAppendEvent(ctx, st, sess.ID, "engine", "turn.end", map[string]any{"status": "budget_exhausted"})
+		Expect(diagnose().Truncated).To(BeFalse())
+	})
+
+	It("reports no finish reason for a budget_exhausted loop stop", func() {
+		mustAppendEvent(ctx, st, sess.ID, "engine", "turn.end", map[string]any{"status": "budget_exhausted"})
+		Expect(diagnose().FinishReason).To(BeEmpty())
+	})
+
+	DescribeTable("does not flag a session whose row status is not resumable-or-done",
+		func(status string) {
+			mustTurnEnd(ctx, st, sess.ID, "length")
+			if err := st.UpdateSessionStatus(ctx, sess.ID, status); err != nil {
+				panic(err)
+			}
+			Expect(diagnose().Truncated).To(BeFalse())
+		},
+		Entry("failed", "failed"),
+		Entry("cancelled", "cancelled"),
+		Entry("paused", "paused"),
+	)
+
+	It("does not flag a session that crashed after a truncated turn", func() {
+		mustTurnEnd(ctx, st, sess.ID, "length")
+		mustAppendEvent(ctx, st, sess.ID, "user", "turn.start", map[string]any{"task": "again"})
+		Expect(diagnose().Truncated).To(BeFalse())
+	})
+
+	It("flags a completed row status with a length turn as truncated", func() {
+		mustTurnEnd(ctx, st, sess.ID, "length")
+		if err := st.UpdateSessionStatus(ctx, sess.ID, "completed"); err != nil {
+			panic(err)
+		}
+		Expect(diagnose().Truncated).To(BeTrue())
 	})
 })

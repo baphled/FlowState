@@ -31,8 +31,8 @@ type Provider struct {
 	// systemTopLevel hoists system-role messages into the Messages API
 	// "system" field on the anthropic route (WithAnthropicSystem).
 	systemTopLevel bool
-	// anthropicFinish ends an anthropic-route stream with a finish event
-	// carrying the mapped stop_reason (WithAnthropicFinish).
+	// anthropicFinish, historically anthropic-route only, now ends a completed
+	// stream on every route with a finish event (WithFinishEvents); off by default.
 	anthropicFinish bool
 }
 
@@ -62,5 +62,6 @@ type streamChunk struct {
 		Delta struct {
 			Content string `json:"content"`
 		} `json:"delta"`
+		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 }

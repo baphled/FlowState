@@ -34,13 +34,9 @@ func Resolve(name string) (provider.Provider, error) {
 // file that exists but cannot be read or parsed is an error, never a silent
 // fallback to the subscription route; an absent file is the default config.
 func resolveAnthropic() (provider.Provider, error) {
-	var cfg *config.ProviderConfig
-	if path, err := config.Path(); err == nil { // no config dir means no file
-		doc, err := config.Load(path)
-		if err != nil {
-			return nil, fmt.Errorf("registry: anthropic: %w", err)
-		}
-		cfg = doc.GetProvider("anthropic")
+	cfg, err := providerConfig("anthropic")
+	if err != nil {
+		return nil, err
 	}
 	authType := ""
 	if cfg != nil {
@@ -54,6 +50,22 @@ func resolveAnthropic() (provider.Provider, error) {
 	default:
 		return nil, fmt.Errorf("registry: unknown anthropic auth_type %q (supported: oauth, api_key)", authType)
 	}
+}
+
+// providerConfig returns the providers.<name> section of providers.yaml, or
+// nil when there is none. A file that exists but cannot be read or parsed is an
+// error wrapping config.ErrInvalid, never a silent fall back to defaults; with
+// no config directory or no file the default configuration applies.
+func providerConfig(name string) (*config.ProviderConfig, error) {
+	path, err := config.Path()
+	if err != nil { // no config dir means no file
+		return nil, nil
+	}
+	doc, err := config.Load(path)
+	if err != nil {
+		return nil, fmt.Errorf("registry: %s: %w", name, err)
+	}
+	return doc.GetProvider(name), nil
 }
 
 // resolveAnthropicKey builds the API-key route. The key comes from
@@ -84,11 +96,12 @@ func resolveAnthropicKey(cfg *config.ProviderConfig) (provider.Provider, error) 
 // config values. Precedence for the coding-plan host: explicit
 // config host / ZAI_BASE_URL > plan-tag default (openai coding
 // endpoint, selectable "anthropic" via providers.zai.route).
-// An unset plan defaults to coding (see zaiPlan).
+// An unset plan defaults to coding (see zaiPlan). A providers.yaml that
+// exists but does not parse is an error; an absent file is the default config.
 func resolveZai() (provider.Provider, error) {
-	var cfg *config.ProviderConfig
-	if doc, err := config.LoadDefault(); err == nil {
-		cfg = doc.GetProvider("zai")
+	cfg, err := providerConfig("zai")
+	if err != nil {
+		return nil, err
 	}
 	opts := []zai.Option{}
 	if host := os.Getenv("ZAI_BASE_URL"); host != "" {
@@ -109,5 +122,7 @@ func resolveZai() (provider.Provider, error) {
 	if key == "" {
 		return nil, errors.New("zai: ZAI_API_KEY is not set")
 	}
+	// Every resolved provider reports finish reasons so truncation is visible.
+	opts = append(opts, zai.WithFinishEvents())
 	return zai.New(key, opts...), nil
 }

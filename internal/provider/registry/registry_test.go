@@ -66,8 +66,9 @@ var _ = Describe("Registry", func() {
 	})
 
 	It("errors when z.ai is resolved without an api key", func() {
+		GinkgoT().Setenv("ZAI_API_KEY", "")
 		_, err := registry.Resolve("z.ai")
-		Expect(err).To(HaveOccurred())
+		Expect(err).To(MatchError(ContainSubstring("ZAI_API_KEY is not set")))
 	})
 })
 
@@ -85,6 +86,27 @@ var _ = Describe("zai config wiring", func() {
 			panic(err)
 		}
 	}
+	It("reports a providers.yaml that does not parse instead of ignoring it", func() {
+		writeConfig("providers: [unclosed\n")
+		_, err := registry.Resolve("z.ai")
+		Expect(err).To(MatchError(config.ErrInvalid))
+	})
+
+	It("reports the unparsable providers.yaml even when ZAI_API_KEY is set", func() {
+		GinkgoT().Setenv("ZAI_API_KEY", "env-key")
+		writeConfig("providers: [unclosed\n")
+		_, err := registry.Resolve("zai")
+		Expect(err).To(MatchError(ContainSubstring("registry: zai")))
+	})
+
+	It("keeps the default configuration when providers.yaml is absent", func() {
+		p, err := registry.Resolve("z.ai")
+		if err != nil {
+			panic(err)
+		}
+		Expect(p.Name()).To(Equal("z.ai"))
+	})
+
 	resolveCoding := func() bool {
 		p, err := registry.Resolve("z.ai")
 		if err != nil {
@@ -121,7 +143,7 @@ var _ = Describe("zai config wiring", func() {
 		var observedCoding bool
 		BeforeEach(func() {
 			GinkgoT().Setenv("ZAI_API_KEY", "env-key")
-			writeConfig("providers:\n  default: zai\n")
+			writeConfig("providers:\n  anthropic:\n    auth_type: oauth\n")
 			observedCoding = resolveCoding()
 		})
 		It("defaults to the coding plan", func() { Expect(observedCoding).To(BeTrue()) })
@@ -405,5 +427,51 @@ var _ = Describe("anthropic resolution", func() {
 		writeConfig("providers: [unclosed\n")
 		_, err := registry.Resolve("anthropic")
 		Expect(err).To(MatchError(config.ErrInvalid))
+	})
+})
+
+var _ = Describe("resolved z.ai finish events", func() {
+	// finishOf streams one turn from a fake z.ai server through the registry
+	// and returns the last event.
+	finishOf := func(route, body string) provider.StreamEvent {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, body)
+		}))
+		DeferCleanup(srv.Close)
+		GinkgoT().Setenv("FLOWSTATE_CONFIG_DIR", GinkgoT().TempDir())
+		GinkgoT().Setenv("ZAI_API_KEY", "k")
+		GinkgoT().Setenv("ZAI_PLAN", "coding")
+		GinkgoT().Setenv("ZAI_CODING_ROUTE", route)
+		GinkgoT().Setenv("ZAI_BASE_URL", srv.URL)
+		p, err := registry.Resolve("z.ai")
+		if err != nil {
+			panic(err)
+		}
+		streamer, ok := p.(provider.Streamer)
+		if !ok {
+			panic("resolved z.ai provider is not a Streamer")
+		}
+		var last provider.StreamEvent
+		for ev := range streamer.Stream(context.Background(), &provider.ChatRequest{}) {
+			last = ev
+		}
+		return last
+	}
+
+	It("ends a completed default coding stream with a finish event", func() {
+		last := finishOf("", "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\ndata: [DONE]\n")
+		Expect(last.Kind).To(Equal(provider.StreamEventFinish))
+	})
+
+	It("ends a truncated default coding stream with the length reason", func() {
+		last := finishOf("", "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"length\"}]}\ndata: [DONE]\n")
+		Expect(last.FinishReason).To(Equal("length"))
+	})
+
+	It("ends a completed anthropic stream with a finish event", func() {
+		last := finishOf("anthropic", "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"}}\n\n"+
+			"data: {\"type\":\"message_stop\"}\n\n")
+		Expect(last).To(Equal(provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: "length"}))
 	})
 })

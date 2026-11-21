@@ -26,6 +26,7 @@ class LocalEvidence(unittest.TestCase):
         self.git('init', '-q')
         self.git('config', 'user.name', 'Synthetic test fixture')
         self.git('config', 'user.email', 'fixture@example.invalid')
+        self.git('config', 'commit.gpgsign', 'false')
         self.git('commit', '--allow-empty', '-qm', 'chore: synthetic base')
         self.base = self.git('rev-parse', 'HEAD').strip()
         Path('demo').write_bytes(b'demo')

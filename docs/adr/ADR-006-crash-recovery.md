@@ -239,5 +239,9 @@ The run-activity gate was added *after* the first implementation broke the suite
 - *Noted follow-up:* read-path surfacing of interrupted state (`session doctor`-style), deliberately deferred.
 - *Delivered:* the deferred read-path follow-up — read-only `session doctor` diagnosis aggregates
   existing primitives only; recovery remains in the run preamble.
+- *Follow-up:* the doctor also reports the last `turn.end` `finish_reason` (omitted when none) and `truncated: true`
+  when it is `length` on a session that is not failed, cancelled, paused or crashed (ADR-002 Phase 4).
+- *Follow-up:* the doctor replays the verified log once and derives the crash, run-activity and finish-reason facts
+  from the same events (`DetectCrashedSession` keeps its signature and shares the predicate).
 - *Follow-up (2026-11-20):* content deltas count as run-activity evidence — the gate was widened to match the
   decision text above after the #330 session-doctor review found tool-less runs (delta-only logs) undetectable.

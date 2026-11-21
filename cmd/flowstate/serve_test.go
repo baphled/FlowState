@@ -79,6 +79,16 @@ var _ = Describe("Serve write port wiring", func() {
 		Expect(cancelled.ID).To(Equal(sess.ID))
 	})
 
+	It("reports a failed budget settle on cancel as an error naming the cancelled session", func() {
+		db := filepath.Join(GinkgoT().TempDir(), "settle.db")
+		id := seedUnsettleableChild(db)
+		st, err := app.OpenStore(db)
+		must(err)
+		DeferCleanup(func() { must(st.Close()) })
+		_, err = servePorts(st, &flags{}).CancelSession(context.Background(), id)
+		Expect(err).To(MatchError(ContainSubstring("is cancelled")))
+	})
+
 	It("rejects a terminal close through the shared error table", func() {
 		st, sess := seedStore()
 		_, err := servePorts(st, &flags{}).CloseSession(context.Background(), sess.ID)
@@ -92,6 +102,29 @@ var _ = Describe("Serve write port wiring", func() {
 		d, err := servePorts(st, &flags{}).DiagnoseSession(context.Background(), sess.ID)
 		must(err)
 		Expect(d.Status).To(Equal("active"))
+	})
+
+	// truncatedDiagnosis diagnoses, through the store-backed port, a
+	// session whose last turn.end was cut off at the token limit.
+	truncatedDiagnosis := func() server.Diagnosis {
+		st, sess := seedStore()
+		w, werr := st.NewEventWriter(context.Background(), sess.ID)
+		must(werr)
+		_, aerr := w.Append(context.Background(), "engine", "turn.end",
+			map[string]any{"status": "completed", "finish_reason": "length"})
+		must(aerr)
+		must(w.Close())
+		d, err := servePorts(st, &flags{}).DiagnoseSession(context.Background(), sess.ID)
+		must(err)
+		return d
+	}
+
+	It("carries a truncated final turn through the store-backed doctor port", func() {
+		Expect(truncatedDiagnosis().Truncated).To(BeTrue())
+	})
+
+	It("carries the finish reason through the store-backed doctor port", func() {
+		Expect(truncatedDiagnosis().FinishReason).To(Equal("length"))
 	})
 
 	It("reports the budget overview through the store-backed port", func() {
@@ -305,5 +338,62 @@ var _ = Describe("Serve command wiring", Label("e2e"), func() {
 	It("exits 4 config_invalid without serving when the database cannot open", func() {
 		r := runArgv([]string{"serve", "--db", GinkgoT().TempDir()})
 		Expect(runOutcome{r.exit, r.stdout}).To(Equal(runOutcome{exitConfigInvalid, ""}))
+	})
+})
+
+var _ = DescribeTable("serve exposure check",
+	func(addr, token string, wantRefused bool) {
+		Expect(checkServeExposure(addr, token) != nil).To(Equal(wantRefused))
+	},
+	Entry("default loopback address without a token", "127.0.0.1:7600", "", false),
+	Entry("IPv4 loopback range without a token", "127.9.9.9:1", "", false),
+	Entry("IPv6 loopback without a token", "[::1]:7600", "", false),
+	Entry("the name localhost without a token", "localhost:7600", "", false),
+	Entry("the name LOCALHOST without a token", "LOCALHOST:7600", "", false),
+	Entry("all interfaces by empty host without a token", ":8080", "", true),
+	Entry("IPv4 wildcard without a token", "0.0.0.0:8080", "", true),
+	Entry("IPv6 wildcard without a token", "[::]:8080", "", true),
+	Entry("a private address without a token", "192.168.1.5:8080", "", true),
+	Entry("a hostname other than localhost without a token", "example.com:8080", "", true),
+	Entry("a name that only starts with localhost", "localhost.example.com:8080", "", true),
+	Entry("all interfaces with a token", ":8080", "s3cret", false),
+	Entry("a private address with a token", "192.168.1.5:8080", "s3cret", false),
+	Entry("loopback with a token", "127.0.0.1:7600", "s3cret", false),
+)
+
+var _ = Describe("serve startup refusal", func() {
+	// refusal runs `serve` on the given address with the given token and
+	// returns its exit code and stderr. The port is out of range, so even a
+	// regression that skipped the check could not bind an exposed address.
+	refusal := func(addr, token string) (int, string) {
+		GinkgoT().Setenv(server.TokenEnv, token)
+		errFile, err := os.Create(filepath.Join(GinkgoT().TempDir(), "stderr"))
+		must(err)
+		DeferCleanup(func() { must(errFile.Close()) })
+		code := dispatchContexted(context.Background(), []string{"serve", "--addr", addr,
+			"--db", filepath.Join(GinkgoT().TempDir(), "refused.db")}, errFile, errFile)
+		raw, err := os.ReadFile(errFile.Name())
+		must(err)
+		return code, string(raw)
+	}
+
+	It("exits usage for an exposed address without a token", func() {
+		code, _ := refusal(":99999", "")
+		Expect(code).To(Equal(2))
+	})
+
+	It("names the refusal", func() {
+		_, msg := refusal(":99999", "")
+		Expect(msg).To(ContainSubstring("refusing to serve"))
+	})
+
+	It("names the loopback remedy", func() {
+		_, msg := refusal(":99999", "")
+		Expect(msg).To(ContainSubstring("bind a loopback address"))
+	})
+
+	It("names the token remedy", func() {
+		_, msg := refusal(":99999", "")
+		Expect(msg).To(ContainSubstring(server.TokenEnv))
 	})
 })

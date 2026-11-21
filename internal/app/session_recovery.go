@@ -23,6 +23,12 @@ func DetectCrashedSession(ctx context.Context, st *store.Store, sessionID string
 	if err != nil {
 		return false, fmt.Errorf("crash detection replay: %w", err)
 	}
+	return crashedFromEvents(events), nil
+}
+
+// crashedFromEvents applies the crash predicate to an already
+// replayed event log so callers that need several facts replay once.
+func crashedFromEvents(events []store.RecordedEvent) bool {
 	// A freshly created session has only the initial turn.start from
 	// session.Create — it has not been run yet. Crash recovery requires
 	// evidence that a run was actually in progress: at least one
@@ -36,17 +42,17 @@ func DetectCrashedSession(ctx context.Context, st *store.Store, sessionID string
 		}
 	}
 	if !hasRunActivity {
-		return false, nil
+		return false
 	}
 	for i := len(events) - 1; i >= 0; i-- {
 		switch events[i].Type {
 		case "turn.start":
-			return true, nil
+			return true
 		case "turn.end", "session.cancelled", "session.paused", "session.interrupted":
-			return false, nil
+			return false
 		}
 	}
-	return false, nil
+	return false
 }
 
 // RecoverCrashedSession appends a session.interrupted event (actor

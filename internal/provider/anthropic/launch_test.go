@@ -44,6 +44,9 @@ func init() {
 		in, _ := io.ReadAll(os.Stdin)
 		say(helperDelta(string(in)))
 		say(okEnd)
+	case "env":
+		say(helperDelta(envReport()))
+		say(okEnd)
 	case "cwd":
 		wd, _ := os.Getwd()
 		say(helperDelta(wd))
@@ -85,6 +88,17 @@ func init() {
 		<-time.After(time.Minute)
 	}
 	os.Exit(0)
+}
+
+// envReport tells which of the probe variables the child can see.
+func envReport() string {
+	var seen []string
+	for _, n := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "FLOWSTATE_SPEC_ORDINARY"} {
+		if _, ok := os.LookupEnv(n); ok {
+			seen = append(seen, n)
+		}
+	}
+	return "seen:" + strings.Join(seen, ",")
 }
 
 func helperDelta(s string) string {
@@ -184,6 +198,21 @@ var _ = Describe("the real launcher", func() {
 
 	It("delivers the transcript on stdin", func() {
 		Expect(content("echo", "/usage")).To(Equal("User:\n/usage"))
+	})
+
+	Describe("the child's environment", func() {
+		var seen string
+
+		BeforeEach(func() {
+			GinkgoT().Setenv("ANTHROPIC_API_KEY", "sk-spec")
+			GinkgoT().Setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:1")
+			GinkgoT().Setenv("FLOWSTATE_SPEC_ORDINARY", "kept")
+			seen = content("env", "hi")
+		})
+
+		It("has no ANTHROPIC_API_KEY", func() { Expect(seen).NotTo(ContainSubstring("ANTHROPIC_API_KEY")) })
+		It("has no ANTHROPIC_BASE_URL", func() { Expect(seen).NotTo(ContainSubstring("ANTHROPIC_BASE_URL")) })
+		It("keeps an ordinary variable", func() { Expect(seen).To(ContainSubstring("FLOWSTATE_SPEC_ORDINARY")) })
 	})
 
 	It("runs the child in the private working directory", func() {

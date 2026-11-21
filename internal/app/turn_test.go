@@ -130,6 +130,18 @@ func (c *closingStreamer) Stream(ctx context.Context, req *provider.ChatRequest)
 	return c.fakeStreamer.Stream(ctx, req)
 }
 
+// backlogStreamer is a closingStreamer that keeps its channel so a
+// spec can see how many events the turn left unconsumed.
+type backlogStreamer struct {
+	closingStreamer
+	out <-chan provider.StreamEvent
+}
+
+func (b *backlogStreamer) Stream(ctx context.Context, req *provider.ChatRequest) <-chan provider.StreamEvent {
+	b.out = b.closingStreamer.Stream(ctx, req)
+	return b.out
+}
+
 // failOnceCtx fails the first store call made after arm: Done reports
 // closed while armed and the next Err call reports cancellation and disarms.
 type failOnceCtx struct {
@@ -139,7 +151,7 @@ type failOnceCtx struct {
 
 func (c *failOnceCtx) Done() <-chan struct{} {
 	if c.armed.Load() {
-		return closedChan
+		return closedDone()
 	}
 	return c.Context.Done()
 }
@@ -151,7 +163,12 @@ func (c *failOnceCtx) Err() error {
 	return c.Context.Err()
 }
 
-var closedChan = func() chan struct{} { c := make(chan struct{}); close(c); return c }()
+// closedDone returns an already-closed done channel.
+func closedDone() <-chan struct{} {
+	c := make(chan struct{})
+	close(c)
+	return c
+}
 
 // armingStreamer arms its failOnceCtx as the stream starts, so the
 // turn's first append fails.
@@ -203,15 +220,22 @@ var _ = Describe("TurnWithOptions persistence failures", func() {
 		var (
 			res *TurnResult
 			err error
+			s   *backlogStreamer
 		)
 
 		BeforeEach(func() {
-			s := &closingStreamer{st: st, fakeStreamer: fakeStreamer{events: []provider.StreamEvent{{Content: "hello"}, {Content: " world"}}}}
+			s = &backlogStreamer{closingStreamer: closingStreamer{st: st, fakeStreamer: fakeStreamer{events: []provider.StreamEvent{{Content: "hello"}, {Content: " world"}}}}}
 			res, err = TurnWithOptions(context.Background(), st, sess, s, TurnOptions{})
 		})
 
 		It("returns the append failure", func() {
-			Expect(err).To(HaveOccurred())
+			Expect(err).To(MatchError(store.ErrClosed))
+		})
+
+		// A later append fails on the closed store as well, so only the
+		// unread backlog shows the failed delta stopped the stream.
+		It("stops consuming the stream at the failed delta", func() {
+			Expect(s.out).To(HaveLen(1))
 		})
 
 		It("is not reported as a provider failure", func() {

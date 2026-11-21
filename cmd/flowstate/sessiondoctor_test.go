@@ -40,6 +40,44 @@ func crashedDoctorSession() string {
 	return id
 }
 
+// turnEndDoctorSession creates a session whose log holds a provider
+// request and one completed turn.end carrying reason (omitted when
+// empty), panicking on setup errors.
+func turnEndDoctorSession(reason string) string {
+	created := runCLINew("--provider", "z.ai", "--model", "glm-5.3", "--task", "truncation probe")
+	if created.exit != 0 {
+		panic("session new failed: " + created.stderr)
+	}
+	id := decodeNew(created.stdout).ID
+	st, oerr := app.OpenStore(dbFor())
+	if oerr != nil {
+		panic(oerr)
+	}
+	w, werr := st.NewEventWriter(context.Background(), id)
+	if werr != nil {
+		panic(werr)
+	}
+	payload := map[string]any{"status": "completed"}
+	if reason != "" {
+		payload["finish_reason"] = reason
+	}
+	for _, ev := range []struct {
+		typ string
+		pl  map[string]any
+	}{{"provider.request", map[string]any{}}, {"turn.end", payload}} {
+		if _, aerr := w.Append(context.Background(), "engine", ev.typ, ev.pl); aerr != nil {
+			panic(aerr)
+		}
+	}
+	if cerr := w.Close(); cerr != nil {
+		panic(cerr)
+	}
+	if serr := st.Close(); serr != nil {
+		panic(serr)
+	}
+	return id
+}
+
 // doctorRecord runs `session doctor` for id against the per-spec DB
 // and decodes the first stdout line as JSON.
 func doctorRecord(id string) (result, map[string]any) {
@@ -139,5 +177,40 @@ var _ = Describe("Session doctor CLI", func() {
 	It("exits 2 when the session id is missing", func() {
 		r := runArgv([]string{"session", "doctor", "--db", dbFor()})
 		Expect(r.exit).To(Equal(2))
+	})
+
+	It("reports truncated true for a length-terminated final turn", func() {
+		_, rec := doctorRecord(turnEndDoctorSession("length"))
+		Expect(rec["truncated"]).To(BeTrue())
+	})
+
+	It("reports the finish reason of a length-terminated final turn", func() {
+		_, rec := doctorRecord(turnEndDoctorSession("length"))
+		Expect(rec["finish_reason"]).To(Equal("length"))
+	})
+
+	It("validates a truncated diagnosis against the session-doctor schema", func() {
+		r, _ := doctorRecord(turnEndDoctorSession("length"))
+		Expect(validateAgainst("session-doctor", firstLine(r.stdout))).To(Succeed())
+	})
+
+	It("omits truncated for a stop-terminated final turn", func() {
+		_, rec := doctorRecord(turnEndDoctorSession("stop"))
+		Expect(rec).NotTo(HaveKey("truncated"))
+	})
+
+	It("reports the stop finish reason", func() {
+		_, rec := doctorRecord(turnEndDoctorSession("stop"))
+		Expect(rec["finish_reason"]).To(Equal("stop"))
+	})
+
+	It("keeps today's record for a turn.end without a finish reason", func() {
+		id := turnEndDoctorSession("")
+		_, rec := doctorRecord(id)
+		Expect(rec).To(Equal(map[string]any{
+			"session_id": id, "status": "active", "crashed": false,
+			"run_activity": true, "pending_messages": float64(0),
+			"reserved": float64(0), "budget_pool": nil, "available": nil,
+		}))
 	})
 })

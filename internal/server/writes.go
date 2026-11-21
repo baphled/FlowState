@@ -2,7 +2,6 @@ package server
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -32,8 +31,8 @@ func (s *Server) createHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var raw any
-	if uerr := json.Unmarshal(data, &raw); uerr != nil {
-		s.writeErrorStatus(w, http.StatusBadRequest, "usage", "invalid create body")
+	if uerr := decodeStrict(bytes.NewReader(data), &raw); uerr != nil {
+		s.badBody(w, uerr, "invalid create body")
 		return
 	}
 	if serr := rejectSecretBodyKeys(raw); serr != nil {
@@ -129,7 +128,7 @@ func (s *Server) doctorHandler(id string) http.HandlerFunc {
 func diagnosisWire(d Diagnosis) diagnosisBody {
 	return diagnosisBody{SessionID: d.SessionID, Status: d.Status, Crashed: d.Crashed,
 		RunActivity: d.RunActivity, PendingMessages: d.PendingMessages, Reserved: d.Reserved,
-		BudgetPool: d.Pool, Available: d.Available}
+		BudgetPool: d.Pool, Available: d.Available, FinishReason: d.FinishReason, Truncated: d.Truncated}
 }
 
 // runWriteWindow extends the run route's write deadline for one
