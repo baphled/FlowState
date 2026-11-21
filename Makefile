@@ -4,7 +4,7 @@
 export FLOWSTATE_PR_MAX_LINES
 
 .PHONY: all build run test test-e2e fmt lint check clean help ai-commit check-ai-attribution list-ai-commits install-tools check-pr-size check-size-live install-hooks check-python-contract
-.PHONY: check-admission-commits check-admission merge-pr
+.PHONY: check-admission-commits check-admission merge-pr preflight preflight-guard
 .PHONY: package-admission-runner install-admission-runner admission-runner-start admission-runner-stop admission-runner-status
 
 package-admission-runner: ## Package committed admission runner and its pinned dependency manifest
@@ -107,6 +107,43 @@ lint: ## Run linters
 	@if command -v deadcode >/dev/null 2>&1 && go list -f '{{if eq .Name "main"}}{{.ImportPath}}{{end}}' ./... 2>/dev/null | grep -q .; then deadcode ./...; fi
 
 check: fmt lint test test-e2e ## Run all checks
+
+# Local mirror of most blocking CI jobs, run on the committed HEAD. The tools
+# are pinned to the versions CI uses and everything runs on the Go toolchain
+# go.mod names: the pinned linter cannot read export data from a newer Go,
+# which is how a machine with a newer system Go ends up with a linter that
+# reports nothing but typecheck errors.
+GOLANGCI_LINT_VERSION := v2.11.3
+GOSEC_VERSION := v2.30.0
+REPO_GOTOOLCHAIN := go$(shell sed -n 's/^go //p' go.mod)
+TOOLS_BIN := $(CURDIR)/bin/tools
+GOLANGCI_LINT := $(TOOLS_BIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
+GOSEC := $(TOOLS_BIN)/gosec-$(GOSEC_VERSION)
+
+$(GOLANGCI_LINT):
+	GOBIN=$(TOOLS_BIN) GOTOOLCHAIN=$(REPO_GOTOOLCHAIN) $(GOCMD) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	mv $(TOOLS_BIN)/golangci-lint $@
+
+$(GOSEC):
+	GOBIN=$(TOOLS_BIN) GOTOOLCHAIN=$(REPO_GOTOOLCHAIN) $(GOCMD) install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
+	mv $(TOOLS_BIN)/gosec $@
+
+# CI sees the committed tree, so uncommitted edits must not decide the result.
+preflight-guard:
+	@test -n "$(BASE_SHA)" || { echo 'preflight: BASE_SHA=<PR base sha> is required' >&2; exit 2; }
+	@test -z "$$(git status --porcelain)" || { echo 'preflight: it verifies the committed HEAD; commit or discard local changes first' >&2; exit 2; }
+
+preflight: export GOTOOLCHAIN := $(REPO_GOTOOLCHAIN)
+preflight: preflight-guard $(GOLANGCI_LINT) $(GOSEC) ## Run most blocking CI checks on the committed HEAD (BASE_SHA=PR base)
+	$(GOBUILD) ./...
+	GOOS=windows $(GOVET) ./...
+	GOOS=darwin $(GOVET) ./...
+	$(GOLANGCI_LINT) run
+	$(GOLANGCI_LINT) run --config .golangci-contract.yml --new-from-rev="$(BASE_SHA)" --whole-files
+	out=$$(mktemp -d) && { python3 -B scripts/security_gate.py --base "$(BASE_SHA)" --scanner "$(GOSEC)" --output "$$out/reports"; rc=$$?; rm -rf "$$out"; exit $$rc; }
+	@test -d node_modules || npm ci --no-audit --no-fund
+	$(MAKE) check-documentation BASE_SHA="$(BASE_SHA)"
+	$(GOTEST) -race -count=1 ./...
 
 check-code-contract: ## Check committed changed Go structure (BASE_SHA=PR base)
 	python3 -B -m unittest discover -s scripts/tests -p 'test_*code_contract*.py'

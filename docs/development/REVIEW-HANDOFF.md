@@ -60,5 +60,6 @@ writer, GitHub comment publisher, durable lease or hosted coordinator.
 Run `make install-hooks` in each worktree. The tracked `.githooks/pre-push` hook
 refreshes `origin/next`, rejects protected branches and non-descendant commits,
 reads the trusted target `.env.ci` budget, then runs size and changed-source
-contract checks before remote CI. This is not a substitute for required exact-head
+contract checks and the local CI preflight (`make preflight`, see
+`rules/CI_QUALITY.md`) before remote CI. This is not a substitute for required exact-head
 checks or independent review, and no automated check may waive those gates.
