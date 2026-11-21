@@ -10,6 +10,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/provider/anthropic"
 	"github.com/baphled/flowstate/internal/provider/zai"
 )
 
@@ -20,8 +21,38 @@ func Resolve(name string) (provider.Provider, error) {
 	switch name {
 	case "z.ai", "zai":
 		return resolveZai()
+	case "anthropic":
+		return resolveAnthropic()
 	default:
 		return nil, fmt.Errorf("registry: unknown provider %q", name)
+	}
+}
+
+// ErrAPIKeyUnavailable marks providers.anthropic.auth_type: api_key, whose
+// route is not built yet.
+var ErrAPIKeyUnavailable = errors.New(
+	"registry: API-key authentication for anthropic is not available yet; use auth_type oauth")
+
+// resolveAnthropic builds the anthropic adapter from providers.anthropic. An
+// empty or `oauth` auth_type selects the subscription route: the user's own
+// `claude` binary (FLOWSTATE_CLAUDE_BIN, default `claude`). Resolving never
+// runs the binary or checks sign-in; both happen on the first turn.
+func resolveAnthropic() (provider.Provider, error) {
+	var cfg *config.ProviderConfig
+	if doc, err := config.LoadDefault(); err == nil {
+		cfg = doc.GetProvider("anthropic")
+	}
+	authType := ""
+	if cfg != nil {
+		authType = string(cfg.AuthType)
+	}
+	switch authType {
+	case "", "oauth":
+		return anthropic.NewSubscription(os.Getenv("FLOWSTATE_CLAUDE_BIN"), anthropic.ExecLauncher), nil
+	case "api_key":
+		return nil, ErrAPIKeyUnavailable
+	default:
+		return nil, fmt.Errorf("registry: unknown anthropic auth_type %q (supported: oauth)", authType)
 	}
 }
 

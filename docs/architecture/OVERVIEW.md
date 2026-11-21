@@ -114,6 +114,22 @@ With the Go toolchain and module dependencies installed, run from repository roo
 go run github.com/onsi/ginkgo/v2/ginkgo --procs=2 --randomize-all --randomize-suites --race --fail-on-pending --fail-on-empty --timeout=3m ./internal/provider ./internal/provider/zai
 ```
 
+## Anthropic provider
+
+`internal/provider/anthropic` (registry name `anthropic`) is selected by
+`providers.anthropic.auth_type`: `oauth` (the default) or `api_key` (not yet available).
+The OAuth route reaches a user's Claude subscription through their own Claude Code sign-in,
+only by running the user's own unmodified `claude` binary in headless
+print mode, prompt on stdin, and parsing its stream-json output. FlowState never reads,
+stores or forwards a Claude credential and sends nothing to Anthropic itself; the user
+signs in with `claude` and `/login`. `FLOWSTATE_CLAUDE_BIN` overrides the binary. The
+provider refuses structured tool calls, always sends a lossy `User:` / `Assistant:` transcript
+(so a prompt can never start with `/`) and ignores `MaxTokens`. FlowState does not pool or
+resell a subscription but does not enforce single-user use: `flowstate serve` runs a session
+for anyone who can reach it, so keep the loopback bind and set `FLOWSTATE_SERVE_TOKEN`; letting
+others reach it would route their requests through the owner's plan, which the policy forbids.
+See ADR-008.
+
 ## Session tool catalog
 
 `internal/app.NewSessionToolRegistry(workdir)` composes a fresh registry of `echo`,
