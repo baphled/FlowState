@@ -23,10 +23,13 @@ var secretBodyKeyPattern = regexp.MustCompile(`(?i)key|token|secret|password`)
 // missing task is usage, and secret-looking body keys are rejected
 // with 400 (the body is client input, unlike the config document).
 func (s *Server) createHandler(w http.ResponseWriter, r *http.Request) {
-	data, rerr := io.ReadAll(r.Body)
-	if rerr != nil {
-		s.badBody(w, rerr, "invalid create body")
-		return
+	var data []byte
+	if r.Body != nil { // absent only on a request built without one; then the body is empty
+		var rerr error
+		if data, rerr = io.ReadAll(r.Body); rerr != nil {
+			s.badBody(w, rerr, "invalid create body")
+			return
+		}
 	}
 	var raw any
 	if uerr := json.Unmarshal(data, &raw); uerr != nil {
@@ -138,8 +141,9 @@ const runWriteWindow = 10 * time.Minute
 // including the detect-crash → recover → resume-pause preamble, with
 // the projected event log answered as the session-events array. The
 // optional body {"budget":N,"max_tokens":N} mirrors the CLI flags
-// (an empty body means no options; unknown fields are usage); negative values are usage. Failure classes ride the shared code
-// table (provider 502, budget stop 409, terminal 409). The run's
+// (an empty body means no options; unknown fields are usage); negative
+// values are usage. Failure classes ride the shared code table
+// (provider 502, budget stop 409, terminal 409). The run's
 // EventWriter holds no connection across the turn, so polls proceed.
 func (s *Server) runHandler(id string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

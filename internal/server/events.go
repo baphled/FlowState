@@ -27,9 +27,9 @@ var streamTerminalStatuses = map[string]bool{
 // The cursor defaults to 0; seqs are 0-based, so seq 0 needs cursor -1.
 func (s *Server) eventsHandler(id string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		after, ok := parseAfterCursor(r)
-		if !ok {
-			s.writeErrorStatus(w, http.StatusBadRequest, "usage", "after must be an integer")
+		after, problem := parseAfterCursor(r)
+		if problem != "" {
+			s.writeErrorStatus(w, http.StatusBadRequest, "usage", problem)
 			return
 		}
 		events, err := s.ports.EventsAfter(r.Context(), id, after)
@@ -53,9 +53,9 @@ func (s *Server) eventsHandler(id string) http.HandlerFunc {
 // poll ends the stream; the pre-header probe keeps unknown ids on 404.
 func (s *Server) streamHandler(id string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		after, ok := parseAfterCursor(r)
-		if !ok {
-			s.writeErrorStatus(w, http.StatusBadRequest, "usage", "after must be an integer")
+		after, problem := parseAfterCursor(r)
+		if problem != "" {
+			s.writeErrorStatus(w, http.StatusBadRequest, "usage", problem)
 			return
 		}
 		if _, err := s.ports.SessionStatus(r.Context(), id); err != nil {
@@ -111,16 +111,25 @@ func (s *Server) writeFrame(rc *http.ResponseController, w http.ResponseWriter, 
 	return true
 }
 
-// parseAfterCursor parses the optional cursor: absent is 0, malformed usage.
-func parseAfterCursor(r *http.Request) (int64, bool) {
-	vals, _ := url.ParseQuery(r.URL.RawQuery) // not URL.Query: sql-guard selector scan
-	raw := vals.Get("after")
-	if raw == "" {
-		return 0, true
+// parseAfterCursor parses the optional cursor: only an absent key is 0. It
+// returns a usage message for a query string that does not parse (whichever
+// key is at fault), a cursor given more than once, an empty value and a
+// non-integer; "" means the cursor is valid.
+func parseAfterCursor(r *http.Request) (after int64, problem string) {
+	vals, qerr := url.ParseQuery(r.URL.RawQuery) // not URL.Query: sql-guard selector scan
+	if qerr != nil {
+		return 0, "invalid query string"
 	}
-	n, err := strconv.ParseInt(raw, 10, 64)
+	given := vals["after"]
+	if len(given) == 0 {
+		return 0, ""
+	}
+	if len(given) > 1 {
+		return 0, "after must be given once"
+	}
+	n, err := strconv.ParseInt(given[0], 10, 64)
 	if err != nil {
-		return 0, false
+		return 0, "after must be an integer"
 	}
-	return n, true
+	return n, ""
 }

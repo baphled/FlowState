@@ -56,8 +56,12 @@ in-flight reads (requests inherit the serve context) and drains within 5s;
 writes are detached from request cancellation, so neither shutdown nor a client
 disconnect stops one half way; the run endpoint is the deliberate exception:
 its turn follows the request context, so a disconnect or shutdown mid-run
-cancels the session, as SIGINT does for the CLI. Every POST body is capped at
-1 MiB and decoded strictly (unknown fields and trailing data are 400 usage).
+cancels the session, as SIGINT does for the CLI. Every request body is capped at
+1 MiB (a larger one is 400 `usage` naming the limit, and the connection is
+closed) and every POST body is decoded strictly (unknown fields and trailing
+data are 400 `usage`). The `after` cursor of the events endpoints must be one
+integer: a query string that does not parse, a repeated cursor, an empty value
+or a non-integer is 400 `usage`, and only an absent cursor means 0.
 A swarm run that outlives the grace period still ends the process with an error.
 
 S5 completes the surface. `GET /sessions/{id}/events?after=N` answers events

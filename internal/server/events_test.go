@@ -134,7 +134,12 @@ var _ = Describe("Events SSE stream", func() {
 
 	It("stops when the request context is cancelled mid-stream", func() {
 		shrinkPoll()
-		s, _ := streamServer()
+		s, f := streamServer()
+		inLoop := make(chan struct{})
+		f.onEvents = func() { // runs under the fake's lock after the first poll read
+			f.onEvents = nil
+			close(inLoop)
+		}
 		ctx, cancel := context.WithCancel(context.Background())
 		req := httptest.NewRequest(http.MethodGet, "/sessions/"+streamID+"/events/stream", nil).WithContext(ctx)
 		rec := httptest.NewRecorder()
@@ -143,7 +148,68 @@ var _ = Describe("Events SSE stream", func() {
 			defer close(done)
 			s.Handler().ServeHTTP(rec, req)
 		}()
+		select { // setup guard: the handler has completed its first poll
+		case <-inLoop:
+		case <-time.After(2 * time.Second):
+			panic("stream handler never reached its poll loop")
+		}
 		cancel()
 		Eventually(done).WithTimeout(2 * time.Second).WithPolling(20 * time.Millisecond).Should(BeClosed())
 	})
 })
+
+// openIdleStream starts the follow handler over a real listener with a log
+// that never produces a frame, so a returned response proves the headers
+// were flushed before any frame; the stream is closed on cleanup.
+func openIdleStream() *http.Response {
+	shrinkPoll()
+	s, f := streamServer()
+	f.streamEvents = nil
+	ts := httptest.NewServer(s.Handler())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	DeferCleanup(func() {
+		cancel()
+		ts.CloseClientConnections() // a handler that ignored the cancel must not block Close
+		ts.Close()
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/sessions/"+streamID+"/events/stream", nil)
+	if err != nil {
+		panic(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		panic(err)
+	}
+	DeferCleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
+var _ = Describe("Events SSE headers", func() {
+	It("sets the event-stream content type before any frame", func() {
+		Expect(openIdleStream().Header.Get("Content-Type")).To(Equal("text/event-stream"))
+	})
+
+	It("disables caching before any frame", func() {
+		Expect(openIdleStream().Header.Get("Cache-Control")).To(Equal("no-cache"))
+	})
+})
+
+// The session is completed, so a stream that wrongly accepted the cursor would
+// end and fail the assertion at once instead of polling until the suite timeout.
+var _ = DescribeTable("Events after cursor",
+	func(path, message string) {
+		s, f := streamServer()
+		f.setStatus("completed")
+		rec := doRequest(s, http.MethodGet, "/sessions/"+streamID+path, "")
+		Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusBadRequest,
+			`{"code":"usage","message":"` + message + `"}`}))
+	},
+	Entry("events unparseable cursor", "/events?after=%zz", "invalid query string"),
+	Entry("events unparseable other key", "/events?after=1&x=%zz", "invalid query string"),
+	Entry("events empty value", "/events?after=", "after must be an integer"),
+	Entry("events non-integer", "/events?after=abc", "after must be an integer"),
+	Entry("events repeated cursor", "/events?after=1&after=2", "after must be given once"),
+	Entry("stream unparseable cursor", "/events/stream?after=%zz", "invalid query string"),
+	Entry("stream empty value", "/events/stream?after=", "after must be an integer"),
+	Entry("stream repeated cursor", "/events/stream?after=1&after=2", "after must be given once"),
+)

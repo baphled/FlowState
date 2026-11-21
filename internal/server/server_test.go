@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -769,6 +770,52 @@ var _ = Describe("Serve S1 transport", func() {
 		Entry("swarm run", "/swarm/run", `{"parent":"s1","path":"`),
 		Entry("receipt validate", "/receipt/validate", `{"path":"`),
 	)
+
+	// The limit is inclusive: a body of exactly the limit reaches its port.
+	DescribeTable("applies the body limit at exactly one mebibyte",
+		func(size, want int) {
+			s, _ := sampleServer()
+			body := `{"path":"` + strings.Repeat("a", size-len(`{"path":""}`)) + `"}`
+			Expect(doBody(s, http.MethodPost, "/swarm/validate", body).Code).To(Equal(want))
+		},
+		Entry("a body of exactly the limit is accepted", 1<<20, http.StatusOK),
+		Entry("one byte more is refused", 1<<20+1, http.StatusBadRequest),
+	)
+
+	It("limits a body sent without a content length", func() {
+		s, _ := sampleServer()
+		rec := httptest.NewRecorder()
+		chunked := io.MultiReader(strings.NewReader(`{"path":"` + strings.Repeat("a", 2<<20) + `"}`))
+		s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/swarm/validate", chunked))
+		Expect(rec.Body.String()).To(ContainSubstring("exceeds the 1048576 byte limit"))
+	})
+
+	It("answers an unauthenticated over-limit body as unauthorized", func() {
+		s, _ := sampleServer()
+		guarded := *New(s.ports)
+		guarded.token = "s3cret"
+		rec := doBody(&guarded, http.MethodPost, "/swarm/validate", `{"path":"`+strings.Repeat("a", 2<<20)+`"}`)
+		Expect(rec.Code).To(Equal(http.StatusUnauthorized))
+	})
+
+	It("treats a request built without a body as an empty run body", func() {
+		s, _ := sampleServer()
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/sessions/s1/run", nil)
+		req.Body = nil
+		s.Handler().ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusOK))
+	})
+
+	It("answers a create request built without a body as an invalid body", func() {
+		s, _ := sampleServer()
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/sessions", nil)
+		req.Body = nil
+		s.Handler().ServeHTTP(rec, req)
+		Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusBadRequest,
+			`{"code":"usage","message":"invalid create body"}`}))
+	})
 
 	DescribeTable("rejects unknown fields and trailing data as usage",
 		func(target, body, message string) {
