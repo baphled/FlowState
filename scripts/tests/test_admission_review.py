@@ -1,12 +1,37 @@
 """Negative control for claimed reviewer provenance."""
 import unittest
-from scripts.admission_review import AdmissionError, validate_agent_review
+from scripts.admission_review import AdmissionError, agent_review_reference, validate_agent_review
+from scripts.admission_metadata import AdmissionPending, refusal_state
 
 class ReviewClaims(unittest.TestCase):
     def test_missing_or_forged_claim_fails(self):
         with self.assertRaises(AdmissionError):
             validate_agent_review({"record_type": "flowstate-agent-review-v1",
                                    "metadata_ref": "forged"}, "real", "1"*40, 227)
+
+class ReviewReference(unittest.TestCase):
+    REF = "dropbox:/FlowState/Metadata/attempts/a/r.json"
+
+    def test_body_without_any_review_line_is_a_waiting_state(self):
+        for body in ("", "text only", None):
+            with self.subTest(body=body), self.assertRaisesRegex(
+                    AdmissionPending, "^Awaiting an independent exact-head agent review$"):
+                agent_review_reference(body)
+
+    def test_duplicate_review_lines_remain_a_failure(self):
+        with self.assertRaises(AdmissionError) as caught:
+            agent_review_reference("Agent-Review: " + self.REF + "\nAgent-Review: " + self.REF)
+        self.assertNotIsInstance(caught.exception, AdmissionPending)
+
+    def test_malformed_review_lines_remain_a_failure(self):
+        for body in ("Agent-Review: not-a-reference", "Agent-Review:", "Agent-Review:" + self.REF):
+            with self.subTest(body=body), self.assertRaises(AdmissionError) as caught:
+                agent_review_reference(body)
+            self.assertNotIsInstance(caught.exception, AdmissionPending)
+
+    def test_single_valid_line_is_returned(self):
+        self.assertEqual(agent_review_reference("x\nAgent-Review: " + self.REF), self.REF)
+
 
 class AuthenticatedReview(unittest.TestCase):
     def setUp(self):
@@ -62,3 +87,12 @@ class AuthenticatedReview(unittest.TestCase):
             raise AdmissionError("execution authority unavailable")
         with self.assertRaisesRegex(AdmissionError, "authority unavailable"):
             self.authenticate(unavailable)
+
+
+class WaitingState(unittest.TestCase):
+    def test_pending_is_an_admission_error(self):
+        self.assertTrue(issubclass(AdmissionPending, AdmissionError))
+
+    def test_only_a_pending_refusal_is_published_as_pending(self):
+        self.assertEqual([refusal_state(AdmissionPending('w')), refusal_state(AdmissionError('f')),
+                          refusal_state(ValueError('x'))], ['pending', 'failure', 'failure'])

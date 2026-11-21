@@ -7,7 +7,7 @@ import re
 from urllib.error import HTTPError, URLError
 from urllib.request import Request
 from scripts.admission_metadata import (AdmissionError, IN_PROGRESS, REFERENCE, SHA, metadata_reference,
-                                        validate_record, event_pr_number)
+                                        refusal_state, validate_record, event_pr_number)
 from scripts.admission_review import agent_review_reference, validate_agent_review
 from scripts.admission_candidate import verify_candidate, verify_files, candidate_snapshot, verify_required_checks
 from scripts.admission_checks import check_runs_page
@@ -161,7 +161,7 @@ def execute(event, github, dropbox_token, publisher, review_key, execution_key, 
         verify_required_checks(head, github, required_checks)
         validate_review_scope(review, candidate, int(clock()))
     except AdmissionError as error:
-        publisher.status(head, "failure", str(error))
+        publisher.status(head, refusal_state(error), str(error))
         raise
     publisher.status(head, "success", "Verified evidence and independent exact-head agent review")
 

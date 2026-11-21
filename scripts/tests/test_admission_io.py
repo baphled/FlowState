@@ -14,6 +14,7 @@ from scripts.admission_io import (  # noqa: E402
     AdmissionError, Dropbox, GitHub, execute as admission_execute, validate_agent_review,
     metadata_reference, validate_record, verify_candidate,
 )
+from scripts.admission_metadata import AdmissionPending  # noqa: E402
 HEAD = "2" * 40
 PARENT = "1" * 40
 AUTHOR = "author"
@@ -150,7 +151,7 @@ class OfflineAdmission(unittest.TestCase):
             "result": "SKIPPED", "evidence": "quota"}), REVIEW_REF, HEAD, 225))
         self.assertRejected("exact candidate", lambda: validate_agent_review(agent_review(metadata_ref=REF), REVIEW_REF, HEAD, 225))
     def test_missing_review_trailer_fails(self):
-        self.assertRejected("agent-review record", lambda: verify_candidate(pr(body=""), agent_review(), [commit()], lambda _: record(), HEAD, FakeGitHub()))
+        self.assertRejected("Awaiting an independent exact-head agent review", lambda: verify_candidate(pr(body=""), agent_review(), [commit()], lambda _: record(), HEAD, FakeGitHub()))
     def test_draft_or_wrong_base_fails(self):
         self.assertRejected("not an open", lambda: verify_candidate(pr(draft=True), agent_review(), [commit()], lambda _: record(), HEAD, FakeGitHub()))
         self.assertRejected("not an open", lambda: verify_candidate(pr(base={"ref": "main"}), agent_review(), [commit()], lambda _: record(), HEAD, FakeGitHub()))
@@ -318,7 +319,6 @@ class PublishedStatus(unittest.TestCase):
     def test_skipped_or_failed_required_check_cannot_publish_success(self):
         for run in (check_run("Build", conclusion="skipped", sha=HEAD),
                     check_run("Build", conclusion="failure", sha=HEAD),
-                    check_run("Build", status="queued", conclusion=None, sha=HEAD),
                     check_run("Build", sha="3" * 40)):
             with self.subTest(run=run):
                 gh = FakeGitHub()
@@ -326,6 +326,30 @@ class PublishedStatus(unittest.TestCase):
                 with self.assertRaises(AdmissionError):
                     execute({"pull_request": {"number": 225}}, gh, FakeDropbox())
                 self.assertEqual(gh.statuses[-1][1], "failure")
+
+    def test_unfinished_required_check_publishes_pending_not_failure(self):
+        gh = FakeGitHub()
+        gh.checks = [check_run("Build", status="queued", conclusion=None, sha=HEAD),
+                     check_run("Test (ubuntu-latest)", sha=HEAD)]
+        with self.assertRaises(AdmissionPending):
+            execute({"pull_request": {"number": 225}}, gh, FakeDropbox())
+        self.assertEqual(gh.statuses[-1], (HEAD, "pending", "Waiting for required check Build"))
+
+    def test_missing_review_line_publishes_pending_not_failure(self):
+        gh = FakeGitHub()
+        original = gh.pr
+        gh.pr = lambda number: dict(original(number), body="no review yet")
+        with self.assertRaises(AdmissionPending):
+            execute({"pull_request": {"number": 225}}, gh, FakeDropbox())
+        self.assertEqual(gh.statuses[-1], (HEAD, "pending", "Awaiting an independent exact-head agent review"))
+
+    def test_duplicate_review_lines_still_publish_failure(self):
+        gh = FakeGitHub()
+        original = gh.pr
+        gh.pr = lambda number: dict(original(number), body="Agent-Review: " + REVIEW_REF + "\nAgent-Review: " + REVIEW_REF)
+        with self.assertRaises(AdmissionError):
+            execute({"pull_request": {"number": 225}}, gh, FakeDropbox())
+        self.assertEqual(gh.statuses[-1][1], "failure")
 
     def test_missing_required_checks_configuration_fails_closed(self):
         gh = FakeGitHub()

@@ -1,5 +1,6 @@
 """Fail-closed verification of required CI checks on the exact candidate head."""
 import unittest
+from scripts.admission_metadata import AdmissionPending
 from scripts.admission_checks import (
     AdmissionError, check_runs_page, required_check_names, verify_required_checks,
 )
@@ -84,15 +85,33 @@ class VerifyRequiredChecks(unittest.TestCase):
         with self.assertRaisesRegex(AdmissionError, "Build"):
             verify_required_checks(HEAD, github, ("Build",))
 
-    def test_incomplete_required_check_fails(self):
-        github = ChecksGitHub([check_run("Build", status="in_progress", conclusion=None)])
-        with self.assertRaisesRegex(AdmissionError, "Build"):
+    def test_unfinished_required_check_is_a_waiting_state(self):
+        for status in ("in_progress", "queued"):
+            github = ChecksGitHub([check_run("Build", status=status, conclusion=None)])
+            with self.subTest(status=status), self.assertRaisesRegex(
+                    AdmissionPending, "^Waiting for required check Build$"):
+                verify_required_checks(HEAD, github, ("Build",))
+
+    def test_unreported_required_check_is_a_waiting_state(self):
+        github = ChecksGitHub([check_run("Lint & Format", sha=HEAD)])
+        with self.assertRaisesRegex(AdmissionPending, "^Waiting for required check Build$"):
             verify_required_checks(HEAD, github, ("Build",))
 
-    def test_missing_required_check_fails(self):
-        github = ChecksGitHub([check_run("Lint & Format", sha=HEAD)])
-        with self.assertRaisesRegex(AdmissionError, "Build"):
-            verify_required_checks(HEAD, github, ("Build",))
+    def test_finished_unsuccessful_checks_are_never_a_waiting_state(self):
+        for run in (check_run("Build", conclusion="failure", sha=HEAD),
+                    check_run("Build", conclusion="cancelled", sha=HEAD),
+                    check_run("Build", conclusion="skipped", sha=HEAD),
+                    check_run("Build", sha=OTHER)):
+            with self.subTest(run=run), self.assertRaises(AdmissionError) as caught:
+                verify_required_checks(HEAD, ChecksGitHub([run]), ("Build",))
+            self.assertNotIsInstance(caught.exception, AdmissionPending)
+
+    def test_a_finished_failure_is_not_hidden_behind_an_earlier_unfinished_check(self):
+        github = ChecksGitHub([check_run("Build", status="queued", conclusion=None),
+                               check_run("Test", conclusion="failure", sha=HEAD)])
+        with self.assertRaises(AdmissionError) as caught:
+            verify_required_checks(HEAD, github, ("Build", "Test"))
+        self.assertNotIsInstance(caught.exception, AdmissionPending)
 
     def test_check_for_different_sha_fails(self):
         github = ChecksGitHub([check_run("Build", sha=OTHER)])

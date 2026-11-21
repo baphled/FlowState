@@ -19,6 +19,16 @@ IN_PROGRESS = "Checking external evidence and independent review"
 
 class AdmissionError(Exception): pass
 
+
+class AdmissionPending(AdmissionError):
+    """Nothing to judge yet (review or CI still unfinished); never an admission."""
+
+
+def refusal_state(error):
+    """Publish only a waiting refusal as pending; every other error is a failure."""
+    return "pending" if isinstance(error, AdmissionPending) else "failure"
+
+
 def metadata_reference(message):
     """Extract the single neutral trailer, refusing duplicates or malformed paths."""
     refs = re.findall(r"^Project-Metadata: (.+)$", message, flags=re.M)
