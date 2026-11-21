@@ -9,11 +9,24 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/anthropic"
 	"github.com/baphled/flowstate/internal/provider/registry"
 	"github.com/baphled/flowstate/internal/provider/zai"
 )
+
+// markerEnv switches the test binary into a fake claude that only leaves a
+// marker file; it runs before flag parsing so the binary can stand in for
+// FLOWSTATE_CLAUDE_BIN on every OS.
+const markerEnv = "FLOWSTATE_REGISTRY_MARKER"
+
+func init() {
+	if f := os.Getenv(markerEnv); f != "" {
+		_ = os.WriteFile(f, []byte("ran"), 0o600)
+		os.Exit(0)
+	}
+}
 
 func TestRegistry(t *testing.T) {
 	RegisterFailHandler(Fail)
@@ -223,5 +236,25 @@ var _ = Describe("anthropic resolution", func() {
 			panic(err)
 		}
 		Expect(p).NotTo(BeNil())
+	})
+
+	It("never runs the configured binary at resolve time", func() {
+		self, err := os.Executable()
+		if err != nil {
+			panic(err)
+		}
+		marker := filepath.Join(GinkgoT().TempDir(), "ran")
+		GinkgoT().Setenv("FLOWSTATE_CLAUDE_BIN", self)
+		GinkgoT().Setenv(markerEnv, marker)
+		if _, err = registry.Resolve("anthropic"); err != nil {
+			panic(err)
+		}
+		Expect(marker).NotTo(BeAnExistingFile())
+	})
+
+	It("reports a malformed config file instead of falling back to the subscription route", func() {
+		writeConfig("providers: [unclosed\n")
+		_, err := registry.Resolve("anthropic")
+		Expect(err).To(MatchError(config.ErrInvalid))
 	})
 })

@@ -44,7 +44,9 @@ type Command struct {
 // Process is one started Claude Code invocation.
 type Process interface {
 	// Stdout is the line-delimited stream-json output. Close must unblock a
-	// pending read: the provider closes it when the turn is cancelled.
+	// pending read: the provider closes it when the turn is cancelled. The
+	// reader must tolerate Close being called more than once, concurrently
+	// with Read, and after Wait.
 	Stdout() io.ReadCloser
 	// Stderr returns a bounded tail of the process's standard error; call after Wait.
 	Stderr() string

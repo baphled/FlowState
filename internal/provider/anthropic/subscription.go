@@ -48,6 +48,8 @@ var (
 	ErrNoLauncher = errors.New("anthropic: no launcher configured")
 	// ErrInvalidWorkDir marks a working-directory factory result that is empty, relative or not clean.
 	ErrInvalidWorkDir = errors.New("anthropic: invalid working directory")
+	// ErrNoProcess marks a Launcher that returned neither a process nor an error.
+	ErrNoProcess = errors.New("anthropic: launcher returned no process")
 	// ErrLineTooLong marks a stdout line over the line cap.
 	ErrLineTooLong = errors.New("anthropic: stdout line too long")
 )
@@ -78,14 +80,23 @@ func WithWorkDir(f WorkDirFactory) Option {
 }
 
 // WithResultGrace sets how long the child may linger after its result line
-// before it is killed.
+// before it is killed. A non-positive d keeps DefaultResultGrace.
 func WithResultGrace(d time.Duration) Option {
-	return func(p *Subscription) { p.grace = d }
+	return func(p *Subscription) {
+		if d > 0 {
+			p.grace = d
+		}
+	}
 }
 
-// WithMaxLine sets the cap in bytes on one stdout line.
+// WithMaxLine sets the cap in bytes on one stdout line. A non-positive n
+// keeps MaxLineBytes.
 func WithMaxLine(n int) Option {
-	return func(p *Subscription) { p.maxLine = n }
+	return func(p *Subscription) {
+		if n > 0 {
+			p.maxLine = n
+		}
+	}
 }
 
 // Name implements provider.Provider.
@@ -130,8 +141,15 @@ func (p *Subscription) Stream(ctx context.Context, req *provider.ChatRequest) <-
 // turn is over, so the child gets the grace period to exit and is then killed;
 // the wait is therefore bounded. Reaping inline keeps the cleanup from being lost.
 func (p *Subscription) run(ctx context.Context, out chan<- provider.StreamEvent, cmd Command, cleanup func()) {
+	if ctx.Err() != nil { // nothing to run for a turn nobody waits for
+		cleanup()
+		return
+	}
 	pctx, cancel := context.WithCancel(ctx)
 	proc, err := p.launch(pctx, cmd)
+	if err == nil && proc == nil {
+		err = ErrNoProcess
+	}
 	if err != nil {
 		cancel()
 		cleanup()

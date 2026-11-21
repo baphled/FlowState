@@ -15,8 +15,9 @@ import (
 // ErrBinaryNotFound marks a missing Claude Code executable; the launcher wraps it.
 var ErrBinaryNotFound = errors.New("anthropic: Claude Code executable not found")
 
-// waitDelay bounds how long Wait lingers on pipes held by orphaned children after a kill.
-const waitDelay = 5 * time.Second
+// DefaultWaitDelay bounds how long Wait lingers on pipes held by orphaned
+// children (for example one that keeps stderr open) once the child has exited or been killed.
+const DefaultWaitDelay = 5 * time.Second
 
 // ExecLauncher is the production Launcher, running the real `claude` process.
 // A missing executable is reported as an error wrapping ErrBinaryNotFound.
@@ -29,17 +30,36 @@ const waitDelay = 5 * time.Second
 // gate flags exec.Command with variable arguments and takes no waivers, so do
 // not simplify it back.
 func ExecLauncher(ctx context.Context, c Command) (Process, error) {
+	return launch(ctx, c, DefaultWaitDelay)
+}
+
+// NewExecLauncher returns ExecLauncher with a different WaitDelay, the bound on
+// how long reaping the child waits for a descendant that holds its stderr
+// open. A non-positive delay keeps DefaultWaitDelay.
+func NewExecLauncher(delay time.Duration) Launcher {
+	if delay <= 0 {
+		delay = DefaultWaitDelay
+	}
+	return func(ctx context.Context, c Command) (Process, error) { return launch(ctx, c, delay) }
+}
+
+// quoteArg wraps s in double quotes, escaping only embedded quotes, so a path
+// with spaces is unambiguous and backslashes (Windows paths) stay as written.
+func quoteArg(s string) string { return `"` + strings.ReplaceAll(s, `"`, `\"`) + `"` }
+
+// launch is ExecLauncher with an explicit WaitDelay.
+func launch(ctx context.Context, c Command, delay time.Duration) (Process, error) {
 	path, err := lookPathAbs(c.Bin)
 	if err != nil {
 		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("%w: %s (install Claude Code, run `claude` and sign in with /login, "+
-				"or set FLOWSTATE_CLAUDE_BIN): %w", ErrBinaryNotFound, c.Bin, err)
+				"or set FLOWSTATE_CLAUDE_BIN): %w", ErrBinaryNotFound, quoteArg(c.Bin), err)
 		}
 		return nil, fmt.Errorf("anthropic: resolve %s: %w", c.Bin, err)
 	}
 	errBuf := &tailBuffer{}
 	cmd := &exec.Cmd{Path: path, Args: append([]string{path}, c.Args...), Dir: c.Dir,
-		Stdin: strings.NewReader(c.Stdin), Stderr: errBuf, WaitDelay: waitDelay}
+		Stdin: strings.NewReader(c.Stdin), Stderr: errBuf, WaitDelay: delay}
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: stdout pipe: %w", err)
