@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -37,12 +38,6 @@ func (p *Subscription) command(req *provider.ChatRequest) (cmd Command, cleanup 
 		"-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
 		"--no-session-persistence", "--tools", "", "--strict-mcp-config", "--setting-sources", "",
 		"--model", model,
-		// Always sent, empty when the request has no system message: without
-		// it the child runs under Claude Code's own agent prompt, which
-		// describes tools this route has switched off. The = form binds the
-		// text to the flag, so a system prompt that starts with a dash
-		// cannot be read as another option.
-		"--system-prompt=" + system,
 	}
 	// A fresh private directory, never the shared temp dir itself, so a
 	// planted CLAUDE.md there cannot reach the model. Created last, so a
@@ -51,7 +46,49 @@ func (p *Subscription) command(req *provider.ChatRequest) (cmd Command, cleanup 
 	if err != nil {
 		return Command{}, nil, err
 	}
-	return Command{Bin: p.bin, Args: args, Dir: dir, Stdin: prompt}, cleanup, nil
+	args, cleanup, err = withSystemPrompt(args, system, dir, cleanup)
+	if err != nil {
+		return Command{}, nil, err
+	}
+	return Command{Bin: p.bin, Args: args, Dir: dir, Stdin: prompt, Env: childEnv(os.Environ())}, cleanup, nil
+}
+
+// withSystemPrompt appends the system prompt flag. With no system message the
+// empty --system-prompt= is always sent: without it the child runs under
+// Claude Code's own agent prompt, which describes tools this route has switched
+// off. The = form binds the text to the flag. A non-empty prompt is written to
+// SystemPromptFile inside dir (mode 0600, created exclusively so nothing
+// planted there is followed) and passed with --system-prompt-file, keeping it
+// out of the process list and the command-line length limit. The returned
+// cleanup also removes that file, so a caller-owned directory is left as found.
+func withSystemPrompt(args []string, system, dir string, cleanup func()) ([]string, func(), error) {
+	if system == "" {
+		return append(args, "--system-prompt="), cleanup, nil
+	}
+	// The file is opened through a root confined to dir with a constant
+	// name, so it can only ever be created inside the request's directory.
+	path := filepath.Join(dir, SystemPromptFile)
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("anthropic: system prompt file: %w", err)
+	}
+	f, err := root.OpenFile(SystemPromptFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	_ = root.Close()
+	if err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("anthropic: system prompt file: %w", err)
+	}
+	remove := func() { _ = os.Remove(path); cleanup() }
+	_, werr := f.WriteString(system)
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		remove()
+		return nil, nil, fmt.Errorf("anthropic: write system prompt file: %w", werr)
+	}
+	return append(args, "--system-prompt-file", path), remove, nil
 }
 
 // newWorkDir returns a usable working directory and the function that removes

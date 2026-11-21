@@ -15,16 +15,20 @@ const DefaultBin = "claude"
 // the default factory creates; only such directories are ever removed.
 const WorkDirPrefix = "flowstate-claude-"
 
+// SystemPromptFile is the name, inside the request's working directory, of the
+// file that carries a non-empty system prompt.
+const SystemPromptFile = "system-prompt.txt"
+
 // DefaultModel is the Claude Code alias used when a request names no model.
 const DefaultModel = "sonnet"
 
 const (
 	// MaxLineBytes is the default cap on one stdout line (16 MiB).
 	MaxLineBytes = 16 << 20
-	// MaxSystemPromptBytes caps the system prompt, which travels in argv. The
-	// Windows command line holds 32,767 UTF-16 units; quoting can double every
-	// byte, so 12 KiB leaves room for the rest of the argv.
-	MaxSystemPromptBytes = 12 << 10
+	// MaxSystemPromptBytes caps the system prompt (256 KiB). It travels in a
+	// file inside the request's private working directory, not in argv, so
+	// the command-line length limit does not apply.
+	MaxSystemPromptBytes = 256 << 10
 	// DefaultResultGrace is how long a child may linger after its result line before it is killed.
 	DefaultResultGrace = 5 * time.Second
 )
@@ -37,6 +41,9 @@ type Command struct {
 	Args []string
 	// Dir is the process working directory.
 	Dir string
+	// Env is the complete child environment: the caller's environment without
+	// the variables that would redirect Claude Code away from the user's sign-in.
+	Env []string
 	// Stdin is the full prompt text written to the process's standard input.
 	Stdin string
 }

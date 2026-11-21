@@ -14,7 +14,8 @@
 // token; never reads ~/.claude; never sends a request to Anthropic itself
 // (the API-key route does, but with an API key, never a Claude credential);
 // never imitates Claude Code identity headers. Sign-in happens in Claude Code
-// (`claude`, then /login) and the child inherits the environment unchanged.
+// (`claude`, then /login) and the child inherits the environment minus the variables that redirect it
+// away from that sign-in (see childEnv).
 //
 // Known limits (OAuth route): structured tool calls are refused before any
 // process starts; the prompt is a "User:" / "Assistant:" transcript, so stdin never starts

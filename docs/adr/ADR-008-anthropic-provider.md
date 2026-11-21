@@ -53,14 +53,20 @@ FlowState must be able to use a user's Claude subscription through the `anthropi
 
 1. One process per request: `claude -p --output-format stream-json --verbose --include-partial-messages
    --no-session-persistence --tools "" --strict-mcp-config --setting-sources "" --model <model>`, plus
-   `--system-prompt=<text>`, which is always sent and is empty when the request has no system message, so the
-   child never runs under Claude Code's own agent prompt. The prompt goes to stdin, never argv. The working
+   a system prompt flag that is always sent. With no system message it is `--system-prompt=` (empty), so the
+   child never runs under Claude Code's own agent prompt. A non-empty system prompt is written to
+   `system-prompt.txt` in the request's private working directory (created exclusively, mode 0600, removed with
+   the turn, also when the directory is the caller's) and passed as `--system-prompt-file <path>`, so it is not in
+   the process list. Verified live with a signed-in Claude Code 2.1.330: the file
+   form gives the same answer and the same prompt size as the inline form.
+   The prompt goes to stdin, never argv. The working
    directory is a fresh private directory (`os.MkdirTemp`, mode 0700) per request, removed when the turn ends, never
    the shared temp directory itself, so a planted `CLAUDE.md` there cannot reach the model. Only a directory the
    default factory created in that same call is removed (and only if it is still a direct child of the system temp
    directory named `flowstate-claude-*`); a directory supplied by an injected factory belongs to its caller and is
    never removed, and one that is empty, relative or not clean is refused before launch. The environment is
-   inherited unchanged. `--bare` is not passed because it skips the keychain read that sign-in relies on.
+   inherited minus the variables listed in item 9. `--bare` is not passed because it skips the keychain read
+   that sign-in relies on.
 2. The binary is `claude` on PATH, overridable with `FLOWSTATE_CLAUDE_BIN`. Resolving the provider never runs the
    binary or checks sign-in. A `providers.yaml` that exists but cannot be read or parsed fails resolution with that
    error instead of silently selecting the subscription route; an absent file is the default configuration. The
@@ -94,10 +100,21 @@ FlowState must be able to use a user's Claude subscription through the `anthropi
    concurrently with `Read` and after `Wait`.
 8. Launching follows the `exec.run` tool: the executable is resolved to an absolute path first and the command is
    built directly, with no shell. The model name must start with a letter or digit and use only letters, digits and
-   `._:[]-`, and the system prompt is passed as `--system-prompt=<text>`, so neither can be read as another flag.
+   `._:[]-`, and the system prompt is either `--system-prompt=` (empty) or a file path under the private
+   working directory, so neither can be read as another flag.
    The trust basis is those argv guards and an operator-controlled binary, not the path resolution. The launcher
    builds `exec.Cmd` as a literal because the security gate reports any `exec.Command` call with variable
    arguments and accepts no waivers; it must not be simplified back to `exec.Command`.
+
+9. Environment: the child gets FlowState's environment minus the variables that would redirect Claude Code away
+   from the user's sign-in, so a key set for another purpose cannot silently bill the API or send requests
+   elsewhere on the route chosen to use the subscription. Removed, each a documented Claude Code override:
+   `ANTHROPIC_API_KEY` (an API key is used instead of the sign-in, with API billing), `ANTHROPIC_AUTH_TOKEN` (a
+   bearer token is sent instead), `ANTHROPIC_BASE_URL` (requests go to another host), and
+   `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_USE_FOUNDRY` (switch Claude Code to a cloud
+   provider's own credentials and billing). Names match without regard to case. Everything else is inherited
+   unchanged because sign-in depends on it. This only removes the caller's own API settings; FlowState adds and
+   reads no credential, and the binary stays unmodified. The API-key route is not affected.
 
 ## API-key route
 
@@ -143,20 +160,20 @@ content headers, to `<base>/v1/messages`.
    single-user use either: `flowstate serve` runs an anthropic session for any caller who can reach it. The
    operator must keep the default loopback bind and set `FLOWSTATE_SERVE_TOKEN`; letting other people reach it
    would route their requests through the owner's plan, which the policy does not permit.
-6. **The system prompt is visible in the process list** while the turn runs, and is limited to 12 KiB (the Windows
-   command line holds 32,767 UTF-16 units and quoting can double each byte; a spec builds the worst-case argv and
-   fails if the limit is raised past that); a larger one is rejected before launch. The user's prompt goes to stdin.
-   Follow-up: switch to `--system-prompt-file` once it is confirmed to be honoured by a signed-in Claude Code.
+6. **The system prompt is limited to 256 KiB** and a larger one is rejected before launch. It travels in a file in
+   the private working directory (readable by the user only while the turn runs), not in argv. The user's prompt
+   goes to stdin. Follow-up: confirm in a live, signed-in run that `--system-prompt-file` replaces Claude Code's
+   default prompt as `--system-prompt=` does.
 7. **Accepted limits.** Only the direct child is killed, not its process group, so its descendants survive.
    A descendant that holds stdout open does not delay the call, because stdout is closed on cancellation; one
    that holds stderr open delays the reap, and with it delivery of the result, by up to the launcher's 5 s
    `WaitDelay` (`DefaultWaitDelay`; `NewExecLauncher` takes another bound, which the specs use). The
-   child inherits the whole environment, secrets included, because sign-in depends on it. A relative
+   child inherits the rest of the environment, secrets included, because sign-in depends on it. A relative
    `FLOWSTATE_CLAUDE_BIN` is resolved against the working directory of FlowState. `tool_use` blocks are ignored.
    A request with no system message runs with an empty system prompt. It first ran under Claude Code's default
    agent prompt; the first signed-in turns showed the model writing tool-call markup as text for tools this route
-   switches off, and a prompt about five times larger.
-   A real `claude` may use an inherited `ANTHROPIC_API_KEY` and bill the API instead of the subscription.
+   switches off, and a prompt about five times larger. About 1,000 tokens of Claude Code overhead remain with an
+   empty system prompt (measured live: about 1,080 prompt tokens against about 5,430 with the default prompt).
 
 ### Negative (API-key route)
 

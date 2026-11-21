@@ -86,6 +86,27 @@ var _ = Describe("zai config wiring", func() {
 			panic(err)
 		}
 	}
+	It("reports a providers.yaml that does not parse instead of ignoring it", func() {
+		writeConfig("providers: [unclosed\n")
+		_, err := registry.Resolve("z.ai")
+		Expect(err).To(MatchError(config.ErrInvalid))
+	})
+
+	It("reports the unparsable providers.yaml even when ZAI_API_KEY is set", func() {
+		GinkgoT().Setenv("ZAI_API_KEY", "env-key")
+		writeConfig("providers: [unclosed\n")
+		_, err := registry.Resolve("zai")
+		Expect(err).To(MatchError(ContainSubstring("registry: zai")))
+	})
+
+	It("keeps the default configuration when providers.yaml is absent", func() {
+		p, err := registry.Resolve("z.ai")
+		if err != nil {
+			panic(err)
+		}
+		Expect(p.Name()).To(Equal("z.ai"))
+	})
+
 	resolveCoding := func() bool {
 		p, err := registry.Resolve("z.ai")
 		if err != nil {
@@ -122,7 +143,7 @@ var _ = Describe("zai config wiring", func() {
 		var observedCoding bool
 		BeforeEach(func() {
 			GinkgoT().Setenv("ZAI_API_KEY", "env-key")
-			writeConfig("providers:\n  default: zai\n")
+			writeConfig("providers:\n  anthropic:\n    auth_type: oauth\n")
 			observedCoding = resolveCoding()
 		})
 		It("defaults to the coding plan", func() { Expect(observedCoding).To(BeTrue()) })
