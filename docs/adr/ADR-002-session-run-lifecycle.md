@@ -158,6 +158,14 @@ The turn outcome maps to the exit-code contract:
 | unknown tool | 2 | no (pre-flight) |
 | config invalid | 4 | no (pre-flight) |
 | terminal rejection | 6 | — |
+| replay corruption found during a turn (`replay_mismatch`) | 7 | no |
+| unknown session | 1 | — |
+| internal failure (code `internal`; HTTP 500 on the serve run endpoint) | 1 | no |
+
+An unclassified error (for example a storage failure while recording the turn) is code `internal` and exits 1 — the
+same number as an unknown session; the stderr `code` tells them apart. Exit 1 is the CLI contract's number, not a
+new one. A `length` finish (answer truncated) does not change the exit: `session run` exits 0 and writes one
+warning line to stderr naming `session doctor <id>` and `--max-tokens`; stdout stays the event stream.
 
 ### Invariants
 

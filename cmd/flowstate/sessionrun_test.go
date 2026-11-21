@@ -875,6 +875,13 @@ var _ = Describe("Session run failure classification", func() {
 		return decodeNew(created.stdout).ID
 	}
 
+	Context("an unclassified error", func() {
+		It("exits 1", func() { Expect(exitCodeFor(errors.New("boom"))).To(Equal(1)) })
+		It("reports the internal code", func() {
+			Expect(asCliError(errors.New("boom")).Code).To(Equal("internal"))
+		})
+	})
+
 	Context("a storage failure while recording the turn", func() {
 		var run result
 		BeforeEach(func() {
@@ -886,6 +893,9 @@ var _ = Describe("Session run failure classification", func() {
 		It("reports the internal code", func() { Expect(stderrCode(run.stderr)).To(Equal("internal")) })
 		It("does not blame the provider", func() {
 			Expect(stderrMessage(run.stderr)).NotTo(ContainSubstring("provider_error"))
+		})
+		It("reports the storage cause", func() {
+			Expect(stderrMessage(run.stderr)).To(ContainSubstring("disk full"))
 		})
 	})
 
@@ -980,5 +990,97 @@ var _ = Describe("Session run failure classification", func() {
 	It("does not wrap a provider failure a second time", func() {
 		_, stderr := finishRunOutcome(fmt.Errorf("%w: %w", app.ErrProvider, errors.New("zai: api error 429")))
 		Expect(stderrMessage(stderr)).To(Equal("provider_error: zai: api error 429"))
+	})
+})
+
+var _ = Describe("Session run truncation notice", func() {
+	const noticeText = "cut off at the token limit"
+	// runID creates a session and runs it against a scripted provider
+	// whose stream ends with the given finish reason (none when empty),
+	// on the single-turn path, or the loop path when loopFlags are given.
+	// The real adapter emits no finish event on the tool-less path.
+	runID := func(finish string, loopFlags ...string) (result, string) {
+		events := []provider.StreamEvent{{Content: "partial"}}
+		if finish != "" {
+			events = append(events, provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: finish})
+		}
+		withProvider(&scriptedStreamer{events: events})
+		id := newLoopSession()
+		if len(loopFlags) == 0 {
+			return runCLIRun(id), id
+		}
+		return runCLILoop(id, loopFlags...), id
+	}
+	run := func(finish string, loopFlags ...string) result {
+		r, _ := runID(finish, loopFlags...)
+		return r
+	}
+
+	DescribeTable("names the cut-off on stderr when the final turn ended at the limit",
+		func(loopFlags ...string) {
+			Expect(run("length", loopFlags...).stderr).To(ContainSubstring(noticeText))
+		},
+		Entry("single-turn path"),
+		Entry("loop path", "--allow", "echo"),
+	)
+
+	DescribeTable("points at session doctor for the session",
+		func(loopFlags ...string) {
+			r, id := runID("length", loopFlags...)
+			Expect(r.stderr).To(ContainSubstring("session doctor " + id))
+		},
+		Entry("single-turn path"),
+		Entry("loop path", "--allow", "echo"),
+	)
+
+	DescribeTable("points at --max-tokens",
+		func(loopFlags ...string) {
+			Expect(run("length", loopFlags...).stderr).To(ContainSubstring("--max-tokens"))
+		},
+		Entry("single-turn path"),
+		Entry("loop path", "--allow", "echo"),
+	)
+
+	DescribeTable("keeps exit 0 for a truncated answer",
+		func(loopFlags ...string) {
+			Expect(run("length", loopFlags...).exit).To(Equal(0))
+		},
+		Entry("single-turn path"),
+		Entry("loop path", "--allow", "echo"),
+	)
+
+	DescribeTable("keeps the event stream ending in turn.end for a truncated answer",
+		func(loopFlags ...string) {
+			types := stdoutEventTypes(run("length", loopFlags...).stdout)
+			Expect(types[len(types)-1]).To(Equal("turn.end"))
+		},
+		Entry("single-turn path"),
+		Entry("loop path", "--allow", "echo"),
+	)
+
+	DescribeTable("stays silent for a stop finish",
+		func(loopFlags ...string) {
+			Expect(run("stop", loopFlags...).stderr).To(BeEmpty())
+		},
+		Entry("single-turn path"),
+		Entry("loop path", "--allow", "echo"),
+	)
+
+	DescribeTable("stays silent when the provider reports no finish reason",
+		func(loopFlags ...string) {
+			Expect(run("", loopFlags...).stderr).To(BeEmpty())
+		},
+		Entry("single-turn path"),
+		Entry("loop path", "--allow", "echo"),
+	)
+
+	It("copies a loop result's finish reason onto the turn result", func() {
+		res := toTurnResult(&app.Session{ID: "s1"}, &app.ExecLoopResult{FinishReason: "length"})
+		Expect(res.FinishReason).To(Equal("length"))
+	})
+
+	It("keeps an empty loop finish reason empty on the turn result", func() {
+		res := toTurnResult(&app.Session{ID: "s1"}, &app.ExecLoopResult{})
+		Expect(res.FinishReason).To(BeEmpty())
 	})
 })
