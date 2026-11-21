@@ -66,8 +66,9 @@ var _ = Describe("Registry", func() {
 	})
 
 	It("errors when z.ai is resolved without an api key", func() {
+		GinkgoT().Setenv("ZAI_API_KEY", "")
 		_, err := registry.Resolve("z.ai")
-		Expect(err).To(HaveOccurred())
+		Expect(err).To(MatchError(ContainSubstring("ZAI_API_KEY is not set")))
 	})
 })
 
