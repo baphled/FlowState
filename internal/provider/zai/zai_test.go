@@ -60,6 +60,7 @@ func chat(p *zai.Provider) (*provider.ChatResponse, error) {
 
 var _ = Describe("Zai provider", func() {
 	It("rejects construction from env when the api key is missing", func() {
+		GinkgoT().Setenv("ZAI_API_KEY", "")
 		_, err := zai.NewFromEnv()
 		Expect(err).To(HaveOccurred())
 	})
