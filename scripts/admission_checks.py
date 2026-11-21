@@ -1,7 +1,9 @@
 """Verify required CI checks succeeded on the exact candidate head."""
-from scripts.admission_metadata import AdmissionError, SHA
+from scripts.admission_metadata import AdmissionError, AdmissionPending, SHA
 
 MAX_CHECK_PAGES = 10
+# Verdicts meaning "not finished yet": not reported, queued or in progress.
+UNFINISHED = ("missing", "incomplete")
 
 
 def required_check_names(required):
@@ -57,9 +59,12 @@ def verify_required_checks(pr_head, github, required):
     """Fail closed unless every required check is green on this exact head SHA."""
     names = required_check_names(required)
     observed = collect_check_verdicts(github, pr_head, names)
-    for name in names:
-        verdict = observed.get(name, "missing")
-        if verdict != "success":
+    verdicts = [(name, observed.get(name, "missing")) for name in names]
+    for name, verdict in verdicts:
+        if verdict not in ("success", *UNFINISHED):
             raise AdmissionError(
                 f"required check {name} did not succeed on the candidate head: {verdict}")
+    for name, verdict in verdicts:
+        if verdict in UNFINISHED:
+            raise AdmissionPending(f"Waiting for required check {name}")
     return True

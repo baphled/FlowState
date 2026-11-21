@@ -1,11 +1,14 @@
 """Validate claimed agent review; signed attestation is a separate qualification."""
 import re
-from scripts.admission_metadata import AdmissionError, REFERENCE
+from scripts.admission_metadata import AdmissionError, AdmissionPending, REFERENCE
 from scripts.review_signature import verify_signature
 from scripts.review_execution import validate_review_scope, validate_execution
 
 def agent_review_reference(body):
-    refs = re.findall(r"^Agent-Review: (.+)$", body if isinstance(body, str) else "", flags=re.M)
+    body = body if isinstance(body, str) else ""
+    if not re.search(r"^Agent-Review:", body, flags=re.M):
+        raise AdmissionPending("Awaiting an independent exact-head agent review")
+    refs = re.findall(r"^Agent-Review: (.+)$", body, flags=re.M)
     if len(refs) != 1 or not REFERENCE.fullmatch(refs[0]):
         raise AdmissionError("one external agent-review record required in PR description")
     return refs[0]

@@ -77,7 +77,7 @@ shows as `activating (auto-restart)` and never as `failed`: `make admission-runn
 prints ActiveState, SubState, NRestarts and Result; also check
 `journalctl --user -u flowstate-admission.service`. Installing does not restart a running
 publisher; stop and start it to run newly installed code.
-Every 15 seconds all ready next PRs are evaluated in full, including missing-review failures.
+Every 15 seconds all ready next PRs are evaluated in full, including PRs without a review.
 Unexpected exceptions and SIGTERM attempt exact-head failure publication and token
 cleanup. Per-PR errors are logged/retried while other PRs continue; single-shot
 `--once`/`--pr` errors and startup failures exit nonzero. Inspect journald.
@@ -113,6 +113,14 @@ ends each cycle on the verdict of the PR scanned last. The base branch behaves t
 (four statuses per cycle), so a PR that is not admitted can ride on the other PR's `success`
 for part of a cycle exactly as before; the review record binds the PR number, so only one of
 them can be admitted.
+
+Waiting is `pending`, a defect is `failure`. `pending: Awaiting an independent exact-head
+agent review` means the PR description has no `Agent-Review:` line at all.
+`pending: Waiting for required check <name>` means a required check is not reported, queued
+or in progress on the head. More than one line, a malformed reference, or a required check
+that finished without success is a `failure`. A waiting `pending` is a non-success record: the
+marker is skipped while it stands and it is published once per change. A pending candidate is
+not admitted: `--once`/`--pr` still exit nonzero.
 
 In service mode an `AdmissionError` raised by a scan (for example a transient GitHub
 API error while listing pull requests) is logged to stderr as

@@ -11,7 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from scripts.admission_metadata import AdmissionError, IN_PROGRESS
+from scripts.admission_metadata import AdmissionError, AdmissionPending, IN_PROGRESS
 from scripts.admission_publish import ChangedStatusPublisher
 from scripts.admission_runner import (
     CandidatePublisher, SCAN_FAILURE_LIMIT, main, process, report, run_candidate, scan, serve, watch,
@@ -26,6 +26,8 @@ CONFIG = {'repository': 'baphled/FlowState', 'repository_id': 1191083392,
           'app_id': 5728089, 'installation_id': 181235940, 'private_key': b'synthetic',
           'github_read_token': 'synthetic', 'dropbox_read_token': 'synthetic',
           'review_public_key': 'a' * 64, 'execution_public_key': 'b' * 64}
+
+WAITING = 'Awaiting an independent exact-head agent review'
 
 
 def issuing(policy):
@@ -78,6 +80,13 @@ class Runner(unittest.TestCase):
             self.assertFalse(scan(CONFIG))
             self.assertEqual([c.args[0] for c in run.call_args_list], [265, 267])
 
+    def test_waiting_refusal_is_published_as_pending_and_other_errors_as_failure(self):
+        for error, state in ((AdmissionPending('Awaiting x'), 'pending'), (AdmissionError('bad'), 'failure')):
+            github = FakeGitHub()
+            with self.subTest(state=state), patch('scripts.admission_runner.execute', side_effect=error):
+                self.assertFalse(run_candidate(225, github, FakePublisher(github), CONFIG))
+                self.assertEqual(github.statuses[-1], (HEAD, state, str(error)))
+
     def cycle(self, github, issuer, published):
         config = dict(CONFIG, dropbox_read_token=FakeDropbox(), review_public_key=public(REVIEW_PRIVATE),
                       execution_public_key=public(EXECUTION_PRIVATE))
@@ -111,11 +120,11 @@ class Runner(unittest.TestCase):
         self.assertEqual(self.drifted(lambda g, p: p['required_status_checks'].update(checks=[])),
                          ['pending', 'failure'])
 
-    def test_review_line_removed_gives_pending_then_failure_in_the_same_cycle(self):
+    def test_review_line_removed_gives_pending_then_waiting_pending_in_the_same_cycle(self):
         def remove(github, policy):
             original = github.pr
             github.pr = lambda number: dict(original(number), body='')
-        self.assertEqual(self.drifted(remove), ['pending', 'failure'])
+        self.assertEqual(self.drifted(remove), ['pending', 'pending'])
 
     def test_required_check_turning_red_gives_pending_then_failure_in_the_same_cycle(self):
         self.assertEqual(self.drifted(lambda g, p: g.checks[0].update(conclusion='failure')),
@@ -133,8 +142,7 @@ class Runner(unittest.TestCase):
         github, published = self.unreviewed(), {}
         for _ in range(5):
             self.assertFalse(self.cycle(github, issuer, published))
-        self.assertEqual(posted, [('pending', IN_PROGRESS),
-                                  ('failure', 'one external agent-review record required in PR description')])
+        self.assertEqual(posted, [('pending', IN_PROGRESS), ('pending', WAITING)])
 
     def test_two_prs_on_one_head_publish_three_statuses_per_steady_cycle_and_the_last_wins(self):
         issuer, posted = issuing(protection())
@@ -144,7 +152,7 @@ class Runner(unittest.TestCase):
             self.cycle(admitted, issuer, published)
             self.cycle(refused, issuer, published)
             counts.append(len(posted))
-        self.assertEqual(([b - a for a, b in zip(counts, counts[1:])], posted[-1][0]), ([3, 3, 3], 'failure'))
+        self.assertEqual(([b - a for a, b in zip(counts, counts[1:])], posted[-1][0]), ([3, 3, 3], 'pending'))
 
     def raising_issuer(self):
         """A StatusIssuer-like fake: records every POST, then raises on `success` (applied, then error)."""
@@ -177,13 +185,12 @@ class Runner(unittest.TestCase):
 
     def test_process_publishes_one_verdict_for_an_unreviewed_pr_across_two_calls(self):
         posted = self.process_twice({})
-        self.assertEqual([state for state, _ in posted], ['pending', 'failure'])
+        self.assertEqual(posted, [('pending', IN_PROGRESS), ('pending', WAITING)])
 
     def test_process_routes_through_the_wrapper_and_fills_the_shared_record(self):
         published = {}
         self.process_twice(published)
-        self.assertEqual(published[HEAD][:2],
-                         ('failure', 'one external agent-review record required in PR description'))
+        self.assertEqual(published[HEAD][:2], ('pending', WAITING))
 
     def test_scan_hands_the_shared_record_to_process(self):
         reader = Mock()

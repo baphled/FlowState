@@ -9,7 +9,7 @@ from pathlib import Path
 from scripts.admission_config import configuration
 from scripts.admission_io import GitHub, execute
 from scripts.admission_local_dropbox import LocalDropbox
-from scripts.admission_metadata import AdmissionError, SHA
+from scripts.admission_metadata import AdmissionError, SHA, refusal_state
 from scripts.admission_publish import ChangedStatusPublisher, retain_heads
 from scripts.admission_service import ready
 from scripts.app_credentials import AppCredentials
@@ -61,7 +61,7 @@ def run_candidate(number, reader, publisher, config, clock=time.time):
                 config['execution_public_key'], clock, ('Build',))
         return True
     except BaseException as error:
-        publisher.status(head, 'failure', reason(error))
+        publisher.status(head, refusal_state(error), reason(error))
         if not isinstance(error, Exception):
             raise
         print(f'PR #{number} {head}: {reason(error)}', file=sys.stderr, flush=True)
