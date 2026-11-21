@@ -68,6 +68,16 @@ func init() {
 		_ = os.WriteFile(os.Getenv(pidEnv)+".gc", []byte(strconv.Itoa(gc.Process.Pid)), 0o600)
 		say(deltaA)
 		<-time.After(time.Minute)
+	case "stderr-orphan":
+		// A descendant inherits only stderr and outlives the child; the child exits cleanly.
+		gc := exec.Command(os.Args[0])
+		gc.Env = append(os.Environ(), helperEnv+"=quiet", pidEnv+"=")
+		gc.Stderr = os.Stderr
+		if err := gc.Start(); err != nil {
+			os.Exit(4)
+		}
+		_ = os.WriteFile(os.Getenv(pidEnv)+".gc", []byte(strconv.Itoa(gc.Process.Pid)), 0o600)
+		say(okEnd)
 	case "quiet":
 		<-time.After(time.Minute)
 	case "flood":
@@ -111,9 +121,30 @@ var _ = Describe("the real launcher", func() {
 		p = anthropic.NewSubscription(self, anthropic.ExecLauncher, anthropic.WithResultGrace(200*time.Millisecond), anthropic.WithMaxLine(1024))
 	})
 
+	// bounded is a context that ends the turn, and with it the child, after
+	// within, so a regression that hangs the child fails the spec quickly.
+	bounded := func() context.Context {
+		ctx, cancel := context.WithTimeout(context.Background(), within)
+		DeferCleanup(cancel)
+		return ctx
+	}
 	chat := func(mode, prompt string) (*provider.ChatResponse, error) {
 		GinkgoT().Setenv(helperEnv, mode)
-		return p.Chat(context.Background(), userReq(prompt))
+		return p.Chat(bounded(), userReq(prompt))
+	}
+	// killDescendant kills the grandchild a helper recorded in pidFile.gc.
+	killDescendant := func() {
+		b, err := os.ReadFile(pidFile + ".gc")
+		if err != nil {
+			panic(err)
+		}
+		pid, err := strconv.Atoi(string(b))
+		if err != nil {
+			panic(err)
+		}
+		if proc, err := os.FindProcess(pid); err == nil {
+			_ = proc.Kill()
+		}
 	}
 	content := func(mode, prompt string) string {
 		resp, err := chat(mode, prompt)
@@ -142,7 +173,7 @@ var _ = Describe("the real launcher", func() {
 		ch := p.Stream(ctx, userReq("hi"))
 		select {
 		case <-ch:
-		case <-time.After(10 * time.Second):
+		case <-time.After(within):
 			panic("child never started")
 		}
 		closed = make(chan struct{})
@@ -179,19 +210,7 @@ var _ = Describe("the real launcher", func() {
 
 	It("ends the stream on cancellation although a descendant holds stdout open", func() {
 		_, cancel, closed := startHang("orphan")
-		DeferCleanup(func() {
-			b, err := os.ReadFile(pidFile + ".gc")
-			if err != nil {
-				panic(err)
-			}
-			pid, err := strconv.Atoi(string(b))
-			if err != nil {
-				panic(err)
-			}
-			if proc, err := os.FindProcess(pid); err == nil {
-				_ = proc.Kill()
-			}
-		})
+		DeferCleanup(killDescendant)
 		cancel()
 		Eventually(closed).WithTimeout(10 * time.Second).WithPolling(10 * time.Millisecond).Should(BeClosed())
 	})
@@ -201,8 +220,9 @@ var _ = Describe("the real launcher", func() {
 	It("returns once the grace period has ended a child that lingers after its result line", func() {
 		GinkgoT().Setenv(helperEnv, "result-hang")
 		done := make(chan error, 1)
+		ctx := bounded()
 		go func() {
-			_, err := p.Chat(context.Background(), userReq("hi"))
+			_, err := p.Chat(ctx, userReq("hi"))
 			done <- err
 		}()
 		Eventually(done).WithTimeout(10 * time.Second).WithPolling(20 * time.Millisecond).Should(Receive(BeNil()))
@@ -216,7 +236,8 @@ var _ = Describe("the real launcher", func() {
 		p = anthropic.NewSubscription(self, anthropic.ExecLauncher, anthropic.WithResultGrace(time.Hour), anthropic.WithMaxLine(1024))
 		GinkgoT().Setenv(helperEnv, "flood")
 		done := make(chan error, 1)
-		go func() { _, err := p.Chat(context.Background(), userReq("hi")); done <- err }()
+		ctx := bounded()
+		go func() { _, err := p.Chat(ctx, userReq("hi")); done <- err }()
 		Eventually(done).WithTimeout(10 * time.Second).WithPolling(10 * time.Millisecond).
 			Should(Receive(MatchError(ContainSubstring("1024-byte limit"))))
 	})
@@ -235,12 +256,71 @@ var _ = Describe("the real launcher", func() {
 		})
 	})
 
-	Describe("a missing binary", func() {
-		var err error
+	Describe("a descendant holding stderr open after the child exits", func() {
+		const delay = 600 * time.Millisecond
+		var elapsed time.Duration
 
 		BeforeEach(func() {
-			_, err = anthropic.NewSubscription(filepath.Join(GinkgoT().TempDir(), "no-such-claude"), anthropic.ExecLauncher).
+			self, err := os.Executable()
+			if err != nil {
+				panic(err)
+			}
+			p = anthropic.NewSubscription(self, anthropic.NewExecLauncher(delay),
+				anthropic.WithResultGrace(time.Hour), anthropic.WithMaxLine(1024))
+			GinkgoT().Setenv(helperEnv, "stderr-orphan")
+			DeferCleanup(killDescendant)
+			done := make(chan error, 1)
+			ctx := bounded()
+			start := time.Now()
+			go func() { _, err := p.Chat(ctx, userReq("hi")); done <- err }()
+			select {
+			case <-done:
+				elapsed = time.Since(start)
+			case <-time.After(within):
+				panic("the call did not return within the shortened WaitDelay")
+			}
+		})
+
+		It("returns within the shortened bound, far under the default", func() {
+			Expect(elapsed).To(BeNumerically("<", anthropic.DefaultWaitDelay/2))
+		})
+
+		It("does not return before the child is reaped", func() {
+			Expect(elapsed).To(BeNumerically(">=", delay-100*time.Millisecond))
+		})
+	})
+
+	It("keeps DefaultWaitDelay at five seconds", func() {
+		Expect(anthropic.DefaultWaitDelay).To(Equal(5 * time.Second))
+	})
+
+	It("bounds the stderr it retains from a child that floods it", func() {
+		self, err := os.Executable()
+		if err != nil {
+			panic(err)
+		}
+		GinkgoT().Setenv(helperEnv, "stderr")
+		proc, err := anthropic.ExecLauncher(bounded(), anthropic.Command{Bin: self, Dir: GinkgoT().TempDir()})
+		if err != nil {
+			panic(err)
+		}
+		_, _ = io.Copy(io.Discard, proc.Stdout())
+		_ = proc.Wait()
+		Expect(len(proc.Stderr())).To(BeNumerically("<=", 4096))
+	})
+
+	Describe("a missing binary", func() {
+		var err error
+		var missing string
+
+		BeforeEach(func() {
+			missing = filepath.Join(GinkgoT().TempDir(), "with space", "back") + `\slash-no-such-claude`
+			_, err = anthropic.NewSubscription(missing, anthropic.ExecLauncher).
 				Chat(context.Background(), userReq("hi"))
+		})
+
+		It("is quoted in the message without doubling backslashes", func() {
+			Expect(err).To(MatchError(ContainSubstring(`"` + missing + `"`)))
 		})
 
 		It("is marked with ErrBinaryNotFound", func() {

@@ -36,10 +36,16 @@ var ErrAPIKeyUnavailable = errors.New(
 // resolveAnthropic builds the anthropic adapter from providers.anthropic. An
 // empty or `oauth` auth_type selects the subscription route: the user's own
 // `claude` binary (FLOWSTATE_CLAUDE_BIN, default `claude`). Resolving never
-// runs the binary or checks sign-in; both happen on the first turn.
+// runs the binary or checks sign-in; both happen on the first turn. A config
+// file that exists but cannot be read or parsed is an error, never a silent
+// fallback to the subscription route; an absent file is the default config.
 func resolveAnthropic() (provider.Provider, error) {
 	var cfg *config.ProviderConfig
-	if doc, err := config.LoadDefault(); err == nil {
+	if path, err := config.Path(); err == nil { // no config dir means no file
+		doc, err := config.Load(path)
+		if err != nil {
+			return nil, fmt.Errorf("registry: anthropic: %w", err)
+		}
 		cfg = doc.GetProvider("anthropic")
 	}
 	authType := ""

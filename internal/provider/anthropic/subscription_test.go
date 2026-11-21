@@ -284,6 +284,120 @@ var _ = Describe("Subscription", func() {
 		})
 	})
 
+	Describe("a context that is already cancelled", func() {
+		var ctx context.Context
+
+		BeforeEach(func() {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithCancel(context.Background())
+			cancel()
+		})
+
+		It("launches no process", func() {
+			drain(p.Stream(ctx, userReq("hi")))
+			Expect(fake.cmds).To(BeEmpty())
+		})
+		It("makes Chat return context.Canceled", func() {
+			_, err := p.Chat(ctx, userReq("hi"))
+			Expect(err).To(MatchError(context.Canceled))
+		})
+	})
+
+	It("returns context.Canceled, not partial content, when Chat is cancelled mid-stream", func() {
+		pr, pw := io.Pipe()
+		DeferCleanup(pw.Close)
+		probe := &probeReader{ReadCloser: pr, started: make(chan struct{})}
+		fake.proc = func(ctx context.Context) *fakeProc {
+			return &fakeProc{out: probe, wait: func() error { <-ctx.Done(); return nil }}
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		DeferCleanup(cancel)
+		done := make(chan error, 1)
+		go func() { _, err := p.Chat(ctx, userReq("hi")); done <- err }()
+		go func() { _, _ = pw.Write([]byte(deltaA + "\n")) }()
+		select {
+		case <-probe.started:
+		case <-time.After(within):
+			panic("provider never read the pipe")
+		}
+		cancel()
+		Eventually(done).WithTimeout(within).WithPolling(poll).Should(Receive(MatchError(context.Canceled)))
+	})
+
+	// With the context cancelled and a consumer waiting, a send that merely
+	// raced the cancellation would win about half the time, so the turn is
+	// repeated: any delivery in any round counts.
+	It("drops a result held back during the reap when the context is cancelled", func() {
+		delivered := 0
+		for round := 0; round < 24; round++ {
+			gate, reaping := make(chan struct{}), make(chan struct{})
+			fake.proc = func(context.Context) *fakeProc {
+				return &fakeProc{out: io.NopCloser(strings.NewReader(okEnd + "\n")),
+					wait: func() error { close(reaping); <-gate; return nil }}
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			got := make(chan []provider.StreamEvent, 1)
+			ch := p.Stream(ctx, userReq("hi"))
+			go func() { got <- drain(ch) }()
+			select {
+			case <-reaping: // the result is now held back behind the reap
+			case <-time.After(within):
+				panic("provider never reached the reap")
+			}
+			cancel()
+			close(gate)
+			select {
+			case evs := <-got:
+				delivered += len(evs)
+			case <-time.After(within):
+				panic("stream never closed")
+			}
+		}
+		Expect(delivered).To(BeZero())
+	})
+
+	It("ends in a terminal error when the launcher returns no process and no error", func() {
+		q := anthropic.NewSubscription("c", func(context.Context, anthropic.Command) (anthropic.Process, error) {
+			return nil, nil
+		})
+		_, err := q.Chat(context.Background(), userReq("hi"))
+		Expect(err).To(MatchError(anthropic.ErrNoProcess))
+	})
+
+	DescribeTable("keeps the default line cap when WithMaxLine is not positive",
+		func(n int) {
+			fake.stdout = `{"type":"result","pad":"` + strings.Repeat("x", 1<<20) + `"}` + "\n"
+			_, err := anthropic.NewSubscription("c", fake.launcher(), anthropic.WithMaxLine(n)).
+				Chat(context.Background(), userReq("hi"))
+			Expect(err).To(Succeed())
+		},
+		Entry("zero", 0),
+		Entry("negative", -1),
+	)
+
+	DescribeTable("keeps the default grace period when WithResultGrace is not positive",
+		func(grace time.Duration) {
+			var killed atomic.Bool
+			q := anthropic.NewSubscription("c", func(ctx context.Context, _ anthropic.Command) (anthropic.Process, error) {
+				return &fakeProc{out: io.NopCloser(strings.NewReader(okEnd + "\n")), wait: func() error {
+					select {
+					case <-ctx.Done():
+						killed.Store(true)
+					case <-time.After(150 * time.Millisecond): // the child exits on its own
+					}
+					return nil
+				}}, nil
+			}, anthropic.WithResultGrace(grace))
+			_, err := q.Chat(context.Background(), userReq("hi"))
+			if err != nil {
+				panic(err)
+			}
+			Expect(killed.Load()).To(BeFalse())
+		},
+		Entry("zero", time.Duration(0)),
+		Entry("negative", -time.Second),
+	)
+
 	Describe("holding back the result", func() {
 		var (
 			ch      <-chan provider.StreamEvent

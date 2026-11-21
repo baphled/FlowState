@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"unicode/utf16"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -18,6 +19,35 @@ func msgs(pairs ...string) *provider.ChatRequest {
 		req.Messages = append(req.Messages, provider.Message{Role: pairs[i], Content: pairs[i+1]})
 	}
 	return req
+}
+
+// windowsUnits is the length in UTF-16 units of the Windows command line for
+// argv. It is an upper bound: every argument is quoted, a quote is escaped
+// with a backslash and the backslashes before it are doubled.
+func windowsUnits(argv []string) int {
+	var b strings.Builder
+	for i, a := range argv {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteByte('"')
+		slashes := 0
+		for _, c := range a {
+			switch c {
+			case '\\':
+				slashes++
+				continue
+			case '"':
+				b.WriteString(strings.Repeat(`\`, 2*slashes+1))
+			default:
+				b.WriteString(strings.Repeat(`\`, slashes))
+			}
+			slashes = 0
+			b.WriteRune(c)
+		}
+		b.WriteString(strings.Repeat(`\`, 2*slashes) + `"`)
+	}
+	return len(utf16.Encode([]rune(b.String())))
 }
 
 var _ = Describe("Subscription request mapping", func() {
@@ -43,6 +73,13 @@ var _ = Describe("Subscription request mapping", func() {
 		req.Model = model
 		return req
 	}
+
+	It("keeps the worst-case system prompt within the Windows command line", func() {
+		worst := msgs("system", strings.Repeat(`"`, anthropic.MaxSystemPromptBytes), "user", "hi")
+		cmd := run(worst)
+		argv := append([]string{strings.Repeat("b", 260)}, cmd.Args...) // a maximal binary path
+		Expect(windowsUnits(argv)).To(BeNumerically("<=", 32767))
+	})
 
 	It("builds the headless argv with the default model", func() {
 		Expect(run(userReq("hi")).Args).To(Equal([]string{
