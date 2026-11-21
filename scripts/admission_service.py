@@ -96,6 +96,10 @@ def main(argv=None):
                 private_file(args.config)
                 command(str(root / 'venv/bin/python'), '-B', str(root / 'runner.pyz'),
                         '--config', str(args.config), '--check-config')
+            # show first: `systemctl status` exits nonzero for a stopped unit.
+            if args.action == 'status':
+                print(command('systemctl', '--user', 'show', '-p', 'ActiveState,SubState,NRestarts,Result',
+                              'flowstate-admission.service').decode())
             print(command('systemctl', '--user', args.action, 'flowstate-admission.service').decode())
             if args.action == 'start':
                 command('systemctl', '--user', 'is-active', '--quiet', 'flowstate-admission.service')

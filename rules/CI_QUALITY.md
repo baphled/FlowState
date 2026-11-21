@@ -85,7 +85,10 @@ and Windows.
 
 From the checkout root, install `scripts/requirements-admission.txt` in your
 Python environment and run `make install-hooks` once per clone. The pre-push hook
-fetches `origin/next` and checks every pushed branch tip, including non-HEAD refs.
+fetches `origin/next` and admission-checks every pushed `refs/heads/*` tip, including non-HEAD
+branches. A tip pushed by raw refspec (`HEAD~1:refs/heads/x`, `<sha>:refs/heads/x`) has a
+local name outside `refs/heads/`, so it is not admission-checked, but the hook warns for it, as
+for every pushed non-HEAD tip other than deletions and tags.
 It validates every new commit's external metadata against that commit's immediate
 parent and complete blob manifest using the same validators as live admission.
 Missing records, credentials and mismatched parents fail the push.
