@@ -23,7 +23,7 @@ const (
 	think  = `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"x"}}}`
 )
 
-var finish = provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: "end_turn"}
+var finish = provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: "stop"}
 
 var stop = provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: "stop"}
 
@@ -62,6 +62,20 @@ var _ = Describe("stream parsing", func() {
 			`{"type":"result","is_error":false}`),
 		Entry("a finish for subtype success", []provider.StreamEvent{finish},
 			`{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn"}`),
+	)
+
+	DescribeTable("the finish reason follows the result stop_reason",
+		func(result, want string) {
+			Expect(last(stream(result)).FinishReason).To(Equal(want))
+		},
+		Entry("end_turn becomes stop", `{"type":"result","is_error":false,"stop_reason":"end_turn"}`, "stop"),
+		Entry("stop_sequence becomes stop", `{"type":"result","is_error":false,"stop_reason":"stop_sequence"}`, "stop"),
+		Entry("null becomes stop", `{"type":"result","is_error":false,"stop_reason":null}`, "stop"),
+		Entry("absent becomes stop", `{"type":"result","is_error":false}`, "stop"),
+		Entry("max_tokens becomes length", `{"type":"result","is_error":false,"stop_reason":"max_tokens"}`, "length"),
+		Entry("refusal passes through", `{"type":"result","is_error":false,"stop_reason":"refusal"}`, "refusal"),
+		Entry("pause_turn passes through", `{"type":"result","is_error":false,"stop_reason":"pause_turn"}`, "pause_turn"),
+		Entry("tool_use passes through", `{"type":"result","is_error":false,"stop_reason":"tool_use"}`, "tool_use"),
 	)
 
 	DescribeTable("turns a failed result into a terminal error",
