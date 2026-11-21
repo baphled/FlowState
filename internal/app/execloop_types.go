@@ -29,6 +29,20 @@ type ExecLoopResult struct {
 	FinalContent    string
 	ToolCalls       int64
 	BudgetExhausted bool
+	// FinishReason is the finish reason of the final provider turn;
+	// empty when the provider reported none.
+	FinishReason string
+}
+
+// execTurn is one provider turn's streamed outcome inside the loop.
+type execTurn struct {
+	// Content is the concatenated assistant text.
+	Content string
+	// Calls are the complete tool calls the turn requested.
+	Calls []provider.ToolCall
+	// FinishReason is the neutral reason of the turn's finish event;
+	// empty when the provider sent none.
+	FinishReason string
 }
 
 // SessionExecLoopRequest carries the CLI-parsed arguments for one

@@ -79,7 +79,7 @@ func RunSessionExecLoop(ctx context.Context, st *store.Store, dbPath string, ses
 	if err != nil {
 		return res, finishExecLoopState(ctx, st, sess, err)
 	}
-	if err := completeExecLoopRun(ctx, st, sess.ID); err != nil {
+	if err := completeExecLoopRun(ctx, st, sess.ID, res.FinishReason); err != nil {
 		return res, err
 	}
 	return res, nil
@@ -121,14 +121,15 @@ func pauseExecLoopRun(ctx context.Context, st *store.Store, sessionID string) er
 }
 
 // completeExecLoopRun appends the terminal turn.end event and marks
-// the session completed exactly once after a successful loop run.
-func completeExecLoopRun(ctx context.Context, st *store.Store, sessionID string) error {
+// the session completed exactly once after a successful loop run;
+// finishReason is the final provider turn's reason, empty if none.
+func completeExecLoopRun(ctx context.Context, st *store.Store, sessionID, finishReason string) error {
 	w, err := st.NewEventWriter(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("loop completion writer: %w", err)
 	}
 	defer func() { _ = w.Close() }()
-	if _, err := w.Append(ctx, session.ActorEngine, TypeTurnEnd, map[string]any{"status": "completed"}); err != nil {
+	if _, err := w.Append(ctx, session.ActorEngine, TypeTurnEnd, turnEndPayload(finishReason)); err != nil {
 		return fmt.Errorf("record loop completion: %w", err)
 	}
 	settleReservation(ctx, st, sessionID)
