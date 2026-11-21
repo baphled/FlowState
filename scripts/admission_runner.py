@@ -10,9 +10,12 @@ from scripts.admission_config import configuration
 from scripts.admission_io import GitHub, execute
 from scripts.admission_local_dropbox import LocalDropbox
 from scripts.admission_metadata import AdmissionError, SHA
+from scripts.admission_publish import ChangedStatusPublisher, retain_heads
 from scripts.admission_service import ready
 from scripts.app_credentials import AppCredentials
 from scripts.status_issuer import STATUS_CONTEXT, StatusIssuer, verify_status_source
+
+SCAN_FAILURE_LIMIT = 20
 
 
 class CandidatePublisher:
@@ -65,14 +68,18 @@ def run_candidate(number, reader, publisher, config, clock=time.time):
         return False
 
 
-def process(number, reader, config):
-    """Mint/revoke a status-only App token for each candidate, including failures."""
+def process(number, reader, config, published=None):
+    """Mint/revoke a status-only App token for each candidate, including failures.
+
+    `published` is the process-lived record of the last status published per head.
+    """
     credentials = AppCredentials(config['repository'], config['repository_id'], config['app_id'],
                                  config['installation_id'], config['private_key'])
     publisher = None
     try:
         head = reader.pr(number).get('head', {}).get('sha')
-        publisher = CandidatePublisher(StatusIssuer(config['repository'], credentials, reader), head)
+        issuer = StatusIssuer(config['repository'], credentials, reader)
+        publisher = CandidatePublisher(ChangedStatusPublisher(issuer, published), head)
         return run_candidate(number, reader, publisher, config)
     finally:
         try:
@@ -83,10 +90,11 @@ def process(number, reader, config):
             raise AdmissionError('issuer credential cleanup failed') from error
 
 
-def scan(config, number=None):
+def scan(config, number=None, published=None):
     """Evaluate every ready next PR, including those missing review references."""
     reader = GitHub(config['repository'], config['github_read_token'])
     candidates = [reader.pr(number)] if number else reader.pages('/pulls?state=open&base=next')
+    retain_heads(published, candidates)
     passed = True
     for pr in candidates:
         if pr.get('state') != 'open' or pr.get('draft') or pr.get('base', {}).get('ref') != 'next':
@@ -94,7 +102,7 @@ def scan(config, number=None):
                 raise AdmissionError('requested PR is not open, ready and targeting next')
             continue
         try:
-            passed = process(pr['number'], reader, config) and passed
+            passed = process(pr['number'], reader, config, published) and passed
         except Exception as error:
             print(f"PR #{pr.get('number')}: {reason(error)}", file=sys.stderr, flush=True)
             passed = False
@@ -148,6 +156,25 @@ def report(status):
             'context, not this job, decides the merge.\n')
 
 
+def serve(config):
+    """Scan for ever; a scan AdmissionError is logged and retried, but SCAN_FAILURE_LIMIT in a row ends it.
+
+    Raising lets main() exit non-zero, so systemd restarts the unit, `startup()` verifies
+    the App again and a persistent failure shows in the restart counter.
+    """
+    published, failures = {}, 0
+    while True:
+        try:
+            scan(config, None, published)
+            failures = 0
+        except AdmissionError as error:
+            failures += 1
+            print(f'scan failed ({failures} consecutive): {reason(error)}', file=sys.stderr, flush=True)
+            if failures >= SCAN_FAILURE_LIMIT:
+                raise AdmissionError(f'{failures} consecutive scan failures') from error
+        time.sleep(15)
+
+
 def dropbox_reader(config):
     """Select the Dropbox read adapter: local sync tree when configured, else API token."""
     if 'dropbox_local_path' in config:
@@ -176,11 +203,9 @@ def main(argv=None):
         if args.check_config:
             return 0
         ready()
-        while True:
-            passed = scan(config, args.pr)
-            if args.once or args.pr:
-                return int(not passed)
-            time.sleep(15)
+        if args.once or args.pr:
+            return int(not scan(config, args.pr))
+        return serve(config)
     except (Exception, KeyboardInterrupt) as error:
         if os.environ.get('GITHUB_STEP_SUMMARY'):
             Path(os.environ['GITHUB_STEP_SUMMARY']).write_text('Merge admission failed: ' + reason(error) + '\n')
