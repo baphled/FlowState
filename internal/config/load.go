@@ -8,13 +8,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// FileName is the FlowState configuration document name.
-const FileName = "config.yaml"
+// FileName is the provider configuration document name. It is this CLI's
+// own file: config.yaml in the same directory belongs to the older FlowState
+// harness, has a different schema, and is never read.
+const FileName = "providers.yaml"
 
 // ErrInvalid marks configuration documents that fail to parse.
 var ErrInvalid = fmt.Errorf("config_invalid")
 
-// Path returns the user configuration path under
+// Path returns the provider configuration path: FileName under
 // $FLOWSTATE_CONFIG_DIR or os.UserConfigDir()/flowstate.
 func Path() (string, error) {
 	if dir := os.Getenv("FLOWSTATE_CONFIG_DIR"); dir != "" {

@@ -11,6 +11,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/registry"
 	"github.com/baphled/flowstate/internal/provider/zai"
@@ -81,7 +82,7 @@ var _ = Describe("zai coding route precedence", func() {
 		defer srv.Close()
 		zai.TestHookSetCodingBaseURL("https://zai-invalid.example.invalid")
 		dir := GinkgoT().TempDir()
-		if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
+		if err := os.WriteFile(filepath.Join(dir, config.FileName), []byte(
 			"providers:\n  zai:\n    plan: coding\n    host: "+srv.URL+"/api/anthropic\n"), 0o600); err != nil {
 			panic(err)
 		}

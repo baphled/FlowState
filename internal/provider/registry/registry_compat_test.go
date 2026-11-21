@@ -10,6 +10,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/registry"
 	"github.com/baphled/flowstate/internal/provider/zai"
@@ -18,7 +19,10 @@ import (
 // Old-shape config regression (owner policy 2026-11-03): any config
 // schema/format change must ship with a consumer update or stay
 // backward-compatible — two configs side by side until cutover.
-// These specs pin that a config.yaml written BEFORE the
+// The 2026-11-21 owner decision supersedes that for the file NAME
+// only: the CLI reads providers.yaml and never the harness's
+// config.yaml; the schema compatibility below still holds.
+// These specs pin that a provider config written BEFORE the
 // providers.zai.route key existed (plan only, no route, no host)
 // loads cleanly on the current binary and resolves to the
 // defaults-filled provider (coding plan -> openai coding endpoint
@@ -47,7 +51,7 @@ var _ = Describe("old config shape compatibility", func() {
 	// spec writes it directly so behavioural expectations stay
 	// inside the specs per the changed-test contract.
 	writeOldConfig := func() {
-		if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(oldShapeConfig), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(configDir, config.FileName), []byte(oldShapeConfig), 0o600); err != nil {
 			panic(err)
 		}
 	}

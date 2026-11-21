@@ -38,7 +38,7 @@ func TestRegistry(t *testing.T) {
 }
 
 var _ = Describe("Registry", func() {
-	// The resolver reads config.yaml (providers.zai.api_key), so
+	// The resolver reads providers.yaml (providers.zai.api_key), so
 	// specs that assume env-only state must pin an empty config
 	// dir; otherwise a developer machine's real key leaks in and
 	// flips the no-key expectations.
@@ -81,7 +81,7 @@ var _ = Describe("zai config wiring", func() {
 	})
 
 	writeConfig := func(yaml string) {
-		if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(yaml), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(configDir, config.FileName), []byte(yaml), 0o600); err != nil {
 			panic(err)
 		}
 	}
@@ -167,7 +167,7 @@ var _ = Describe("anthropic resolution", func() {
 	})
 
 	writeConfig := func(yaml string) {
-		if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(yaml), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(configDir, config.FileName), []byte(yaml), 0o600); err != nil {
 			panic(err)
 		}
 	}
@@ -387,6 +387,18 @@ var _ = Describe("anthropic resolution", func() {
 			panic(err)
 		}
 		Expect(marker).NotTo(BeAnExistingFile())
+	})
+
+	It("resolves the subscription route beside the older harness's config.yaml", func() {
+		harness := "providers:\n  default: zai\n  anthropic:\n    auth_type: api_key\n    api_key: harness-key\n"
+		if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(harness), 0o600); err != nil {
+			panic(err)
+		}
+		p, err := registry.Resolve("anthropic")
+		if err != nil {
+			panic(err)
+		}
+		Expect(p).To(BeAssignableToTypeOf(&anthropic.Subscription{}))
 	})
 
 	It("reports a malformed config file instead of falling back to the subscription route", func() {
