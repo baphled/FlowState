@@ -2,6 +2,30 @@
 
 All notable changes to the FlowState project will be documented in this file.
 
+## [1.6.0](https://github.com/baphled/FlowState/compare/v1.5.0...v1.6.0) (2026-11-21)
+
+### Features
+
+* **build:** add a local preflight mirroring the blocking ci jobs ([#348](https://github.com/baphled/FlowState/issues/348)) ([511932d](https://github.com/baphled/FlowState/commit/511932d44fcc01b6eddd3ea0fcd2d6050ebcb099))
+* **provider:** add anthropic subscription provider ([#345](https://github.com/baphled/FlowState/issues/345)) ([c1d6f49](https://github.com/baphled/FlowState/commit/c1d6f49edc9d3797432e04d8ec9cb94189a4e6b5))
+* **provider:** add api key authentication to the anthropic provider ([#354](https://github.com/baphled/FlowState/issues/354)) ([8cd2207](https://github.com/baphled/FlowState/commit/8cd2207810b00cb4fd93a5644e518c9969938c8f))
+* **provider:** run anthropic through the claude code binary ([#347](https://github.com/baphled/FlowState/issues/347)) ([6627bcb](https://github.com/baphled/FlowState/commit/6627bcb7938c439655630be99b1c3f934d318a09))
+* **server:** add budget and steering endpoints ([#338](https://github.com/baphled/FlowState/issues/338)) ([4fbcbd9](https://github.com/baphled/FlowState/commit/4fbcbd941aa0a5eb3603e4af5aff05d30ef155f5))
+* **server:** add events stream run and session creation endpoints ([#340](https://github.com/baphled/FlowState/issues/340)) ([131b1d3](https://github.com/baphled/FlowState/commit/131b1d33e4d3588353f8647030f7ee979f4db9fd))
+* **server:** add swarm and receipt endpoints ([#339](https://github.com/baphled/FlowState/issues/339)) ([4d86c3c](https://github.com/baphled/FlowState/commit/4d86c3c459975d129c9bcdb71b0cecb97ab24ed9))
+
+### Bug Fixes
+
+* **app:** append session.cancelled before the cancelled status ([#342](https://github.com/baphled/FlowState/issues/342)) ([226149e](https://github.com/baphled/FlowState/commit/226149ed13c58706cadbb476ddc12d6160a5af6c))
+* **app:** record the provider error before marking a loop run failed ([#352](https://github.com/baphled/FlowState/issues/352)) ([8446e43](https://github.com/baphled/FlowState/commit/8446e4321deab31f99be0a63617500d4694fac00))
+* **ci:** size pr labels against the kind-aware review budget ([#341](https://github.com/baphled/FlowState/issues/341)) ([c337adc](https://github.com/baphled/FlowState/commit/c337adce0a1e9087781bd2ccc78732c69b8d3252))
+* **provider:** close review findings on the anthropic provider ([#350](https://github.com/baphled/FlowState/issues/350)) ([c0e4ec7](https://github.com/baphled/FlowState/commit/c0e4ec7b609a60a534a5e8c7406cd000d40eb728))
+* **server:** bound and strictly decode request bodies ([#351](https://github.com/baphled/FlowState/issues/351)) ([8d4e57f](https://github.com/baphled/FlowState/commit/8d4e57f76c1ab39dc72a2ff1514ef64f04b2e4fc))
+* **server:** cancel reads and finish writes on shutdown ([#343](https://github.com/baphled/FlowState/issues/343)) ([dca3721](https://github.com/baphled/FlowState/commit/dca37216635b09485250aa13a1e353342ad60322))
+* **server:** validate the events cursor and pin stream behaviour ([#353](https://github.com/baphled/FlowState/issues/353)) ([46e7313](https://github.com/baphled/FlowState/commit/46e7313766aad4ca77cd2a3c4522553aa15c2928))
+* **workflow:** keep the admission publisher alive through skew and restarts ([#346](https://github.com/baphled/FlowState/issues/346)) ([7795ae0](https://github.com/baphled/FlowState/commit/7795ae06db97144737b2a737a2eb387d099fe74e))
+* **workflow:** make the merge admission job a publisher liveness monitor ([#349](https://github.com/baphled/FlowState/issues/349)) ([98f859b](https://github.com/baphled/FlowState/commit/98f859b38eb80fa7fabbf5328576a90c425859ae))
+
 ## [1.5.0](https://github.com/baphled/FlowState/compare/v1.4.0...v1.5.0) (2026-11-20)
 
 ### Features
