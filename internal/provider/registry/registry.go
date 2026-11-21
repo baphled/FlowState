@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/provider"
@@ -74,18 +73,18 @@ func resolveAnthropicKey(cfg *config.ProviderConfig) (provider.Provider, error) 
 	}
 	if key == "" {
 		return nil, errors.New("registry: anthropic auth_type api_key needs a key: " +
-			"set ANTHROPIC_API_KEY or providers.anthropic.api_key in config.yaml")
+			"set ANTHROPIC_API_KEY or providers.anthropic.api_key in " + config.FileName)
 	}
 	return anthropic.NewAPIKey(key, host, nil), nil
 }
 
-// resolveZai builds the z.ai adapter from config.yaml
+// resolveZai builds the z.ai adapter from providers.yaml
 // (providers.zai.plan / host / route), with env vars still overriding:
 // ZAI_API_KEY, ZAI_BASE_URL, ZAI_PLAN and ZAI_CODING_ROUTE win over
 // config values. Precedence for the coding-plan host: explicit
 // config host / ZAI_BASE_URL > plan-tag default (openai coding
 // endpoint, selectable "anthropic" via providers.zai.route).
-// An unset plan defaults to coding (see the note in the body).
+// An unset plan defaults to coding (see zaiPlan).
 func resolveZai() (provider.Provider, error) {
 	var cfg *config.ProviderConfig
 	if doc, err := config.LoadDefault(); err == nil {
@@ -97,22 +96,7 @@ func resolveZai() (provider.Provider, error) {
 	} else if cfg != nil && cfg.Host != "" {
 		opts = append(opts, zai.WithBaseURL(cfg.Host))
 	}
-	plan := os.Getenv("ZAI_PLAN")
-	if plan == "" && cfg != nil {
-		plan = cfg.Plan
-	}
-	if plan == "" {
-		// Live evidence 2026-11-04 (chain meta-70faf6fe0e1f): a
-		// coding-plan subscription key 429s (code 1113) on every
-		// call to the general pay-per-token endpoint, while the
-		// coding endpoint serves it 200. An unset plan must
-		// therefore default to the coding route — the silent
-		// general-endpoint fallback breaks every coding-plan key.
-		// Operators on pay-per-token keys opt out explicitly with
-		// plan: general.
-		plan = "coding"
-	}
-	if plan == "coding" {
+	if zaiPlan(cfg) == "coding" {
 		opts = append(opts, zai.WithCoding())
 		if route := codingRouteFor(cfg); route != "" {
 			opts = append(opts, zai.WithCodingRoute(route))
@@ -126,32 +110,4 @@ func resolveZai() (provider.Provider, error) {
 		return nil, errors.New("zai: ZAI_API_KEY is not set")
 	}
 	return zai.New(key, opts...), nil
-}
-
-// codingRouteFor resolves the coding-plan wire format: explicit
-// ZAI_CODING_ROUTE / providers.zai.route wins; otherwise a config
-// host that names the anthropic surface means the operator's host
-// only speaks the anthropic wire format, so infer route=anthropic
-// rather than posting the openai shape there.
-func codingRouteFor(cfg *config.ProviderConfig) string {
-	route := os.Getenv("ZAI_CODING_ROUTE")
-	if route == "" && cfg != nil {
-		route = cfg.Route
-	}
-	if route == "" && strings.Contains(hostForRouteInference(cfg), "/api/anthropic") {
-		return "anthropic"
-	}
-	return route
-}
-
-// hostForRouteInference returns the resolved host in precedence
-// order for route inference: ZAI_BASE_URL, then config host.
-func hostForRouteInference(cfg *config.ProviderConfig) string {
-	if h := os.Getenv("ZAI_BASE_URL"); h != "" {
-		return h
-	}
-	if cfg != nil {
-		return cfg.Host
-	}
-	return ""
 }

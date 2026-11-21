@@ -62,8 +62,10 @@ FlowState must be able to use a user's Claude subscription through the `anthropi
    never removed, and one that is empty, relative or not clean is refused before launch. The environment is
    inherited unchanged. `--bare` is not passed because it skips the keychain read that sign-in relies on.
 2. The binary is `claude` on PATH, overridable with `FLOWSTATE_CLAUDE_BIN`. Resolving the provider never runs the
-   binary or checks sign-in. A `config.yaml` that exists but cannot be read or parsed fails resolution with that
-   error instead of silently selecting the subscription route; an absent file is the default configuration. A
+   binary or checks sign-in. A `providers.yaml` that exists but cannot be read or parsed fails resolution with that
+   error instead of silently selecting the subscription route; an absent file is the default configuration. The
+   file is this CLI's own: `config.yaml` in the same directory belongs to the older FlowState harness, has a
+   different schema, and is never read (it made every `anthropic` session fail on a machine with both). A
    missing binary is reported with its path in double quotes (backslashes unchanged), so a path with spaces is
    unambiguous.
 3. Hard rules (OAuth route): FlowState never reads, stores, refreshes or forwards any Claude credential or token;

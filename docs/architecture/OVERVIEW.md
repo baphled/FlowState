@@ -121,6 +121,19 @@ With the Go toolchain and module dependencies installed, run from repository roo
 go run github.com/onsi/ginkgo/v2/ginkgo --procs=2 --randomize-all --randomize-suites --race --fail-on-pending --fail-on-empty --timeout=3m ./internal/provider ./internal/provider/zai
 ```
 
+## Provider configuration
+
+Provider settings (`providers.<name>.host`, `api_key`, `plan`, `route`, `auth_type`) are read from
+`providers.yaml` in `$FLOWSTATE_CONFIG_DIR`, else in the user configuration directory's `flowstate`
+folder (`~/.config/flowstate` on Linux). Environment variables win over the file, and an absent file is
+the default configuration. The file is this CLI's own. `config.yaml` belongs to the older FlowState
+harness (on Linux it sits in the same directory), has a different schema, and is never read. A CLI
+configuration previously kept in `config.yaml` must be moved to `providers.yaml`: settings left behind are
+ignored without a warning, which can change the `anthropic` route (an `api_key` selection reverts to the
+subscription default) and the z.ai plan, host and so endpoint (they revert to the coding-plan defaults); only
+a missing z.ai key fails loudly. Session composition is separate: it comes from `flowstate.json` (ADR-005),
+which never holds credentials.
+
 ## Anthropic provider
 
 `internal/provider/anthropic` (registry name `anthropic`) is selected by
