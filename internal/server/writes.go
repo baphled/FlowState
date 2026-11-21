@@ -2,7 +2,6 @@ package server
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -32,8 +31,8 @@ func (s *Server) createHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var raw any
-	if uerr := json.Unmarshal(data, &raw); uerr != nil {
-		s.writeErrorStatus(w, http.StatusBadRequest, "usage", "invalid create body")
+	if uerr := decodeStrict(bytes.NewReader(data), &raw); uerr != nil {
+		s.badBody(w, uerr, "invalid create body")
 		return
 	}
 	if serr := rejectSecretBodyKeys(raw); serr != nil {
