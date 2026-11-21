@@ -64,6 +64,13 @@ var _ = Describe("Events snapshot", func() {
 		Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusOK, `[` + streamEvent2JSON + `]`}))
 	})
 
+	It("answers 200 with the whole log for after=-1, since the log starts at seq 1", func() {
+		s, _ := streamServer()
+		rec := doRequest(s, http.MethodGet, "/sessions/"+streamID+"/events?after=-1", "")
+		Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusOK,
+			`[` + streamEvent1JSON + `,` + streamEvent2JSON + `]`}))
+	})
+
 	It("answers 404 session_not_found for an unknown session", func() {
 		s, f := streamServer()
 		f.streamErr = errFakeMissing
@@ -86,6 +93,14 @@ var _ = Describe("Events SSE stream", func() {
 		f.setStatus("completed")
 		rec := doRequest(s, http.MethodGet, "/sessions/"+streamID+"/events/stream", "")
 		Expect([]string{rec.Header().Get("Content-Type"), rec.Body.String()}).To(Equal([]string{"text/event-stream",
+			"data: " + streamEvent1JSON + "\n\ndata: " + streamEvent2JSON + "\n\n" + streamTerminalJSON}))
+	})
+
+	It("streams the whole log for after=-1, since the log starts at seq 1", func() {
+		s, f := streamServer()
+		f.setStatus("completed")
+		rec := doRequest(s, http.MethodGet, "/sessions/"+streamID+"/events/stream?after=-1", "")
+		Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusOK,
 			"data: " + streamEvent1JSON + "\n\ndata: " + streamEvent2JSON + "\n\n" + streamTerminalJSON}))
 	})
 
@@ -165,12 +180,24 @@ func openIdleStream() *http.Response {
 	shrinkPoll()
 	s, f := streamServer()
 	f.streamEvents = nil
-	ts := httptest.NewServer(s.Handler())
+	handler := s.Handler()
+	returned := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(returned)
+		handler.ServeHTTP(w, r)
+	}))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	DeferCleanup(func() {
 		cancel()
-		ts.CloseClientConnections() // a handler that ignored the cancel must not block Close
-		ts.Close()
+		// Close waits for the handler, so a handler that ignores the cancel
+		// would hang the suite: require it returned, and only then close (a
+		// failure skips Close, leaking the handler but not hanging).
+		select {
+		case <-returned:
+			ts.Close()
+		case <-time.After(2 * time.Second):
+			panic("stream handler ignored the request cancellation")
+		}
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/sessions/"+streamID+"/events/stream", nil)
 	if err != nil {
