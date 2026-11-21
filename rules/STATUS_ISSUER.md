@@ -77,10 +77,51 @@ shows as `activating (auto-restart)` and never as `failed`: `make admission-runn
 prints ActiveState, SubState, NRestarts and Result; also check
 `journalctl --user -u flowstate-admission.service`. Installing does not restart a running
 publisher; stop and start it to run newly installed code.
-Every 15 seconds all ready next PRs are evaluated, including missing-review failures.
+Every 15 seconds all ready next PRs are evaluated in full, including missing-review failures.
 Unexpected exceptions and SIGTERM attempt exact-head failure publication and token
 cleanup. Per-PR errors are logged/retried while other PRs continue; single-shot
-`--once`/`--pr` errors and startup/list failures exit nonzero. Inspect journald.
+`--once`/`--pr` errors and startup failures exit nonzero. Inspect journald.
+
+Publish on change, for heads that are not admitted only. The publisher keeps, for the life
+of the process, a record per candidate head of the last (state, description) it published and
+when. A `success` is never deduplicated and is always withdrawn first: an evaluation begins
+with the in-progress `pending` marker whenever the head has no record or its record is a
+`success`, exactly as before, so a stale `success` never stands longer than it did. Only a head
+whose record is a non-success verdict (`failure`, or a waiting `pending`) is quiet: the marker
+is skipped and an unchanged verdict is not repeated, so a head that is not admitted publishes
+once per change.
+
+An admitted head is re-published every cycle as before: `pending` then `success`, two statuses
+every 15 seconds plus the evaluation time. The merge-time `pending` flap therefore remains. GitHub
+keeps at most 1000 statuses per commit and context, which a head left admitted and unmerged
+reaches after about 500 cycles, a little over two hours; merge or push it before then.
+
+The record is invalidated before every publication and written only after it returned. Any
+exception, including one raised after GitHub applied the POST and KeyboardInterrupt, leaves no
+record, so the next cycle publishes the marker and the verdict unconditionally; a revoking
+`failure` is never skipped because of a publication that failed locally. A record older than
+ten minutes (`RECORD_TTL`) counts as absent, so the publisher re-asserts its status at least
+that often and reconciles with anything another writer posted to the context. Heads that are no
+longer the head of an open candidate PR are dropped at each scan, and a restart starts empty.
+Every `success` still passes the live branch-protection check inside the issuer.
+
+The record is keyed by head because GitHub keeps one status per head and context, while
+verdicts are per PR. Two open PRs on one head share the record, which always mirrors the newest
+status posted, so one PR's `success` never counts as published for the other. After the first
+cycle they publish three statuses per cycle (`success`, `pending`, `failure`) and the context
+ends each cycle on the verdict of the PR scanned last. The base branch behaves the same way
+(four statuses per cycle), so a PR that is not admitted can ride on the other PR's `success`
+for part of a cycle exactly as before; the review record binds the PR number, so only one of
+them can be admitted.
+
+In service mode an `AdmissionError` raised by a scan (for example a transient GitHub
+API error while listing pull requests) is logged to stderr as
+`scan failed (<n> consecutive): <reason>`; the loop sleeps and tries again and the count
+resets after a scan completes. After 20 consecutive failed scans (`SCAN_FAILURE_LIMIT`, about
+five minutes) the service exits non-zero, so systemd restarts it, startup verification runs
+again and a persistent failure shows in the restart counter. Unexpected exceptions, SIGTERM
+and KeyboardInterrupt stop the service at once, and `--once`, `--pr`, `--check-config` and
+`--watch` are unchanged.
 
 The separate CI `Merge Admission Result` job is a publisher liveness monitor. It runs only for
 non-draft pull requests into `next`, the only ones the publisher reports on. After

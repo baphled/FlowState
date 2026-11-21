@@ -11,8 +11,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from scripts.admission_metadata import AdmissionError
-from scripts.admission_runner import main, process, report, run_candidate, scan, watch
+from scripts.admission_metadata import AdmissionError, IN_PROGRESS
+from scripts.admission_publish import ChangedStatusPublisher
+from scripts.admission_runner import (
+    CandidatePublisher, SCAN_FAILURE_LIMIT, main, process, report, run_candidate, scan, serve, watch,
+)
+from scripts.status_issuer import StatusIssuer
+from scripts.tests.test_status_issuer import CONTEXT, protection
 from scripts.tests.test_admission_io import (
     HEAD, FakeGitHub, FakePublisher, FakeDropbox, REVIEW_PRIVATE, EXECUTION_PRIVATE, public,
 )
@@ -21,6 +26,19 @@ CONFIG = {'repository': 'baphled/FlowState', 'repository_id': 1191083392,
           'app_id': 5728089, 'installation_id': 181235940, 'private_key': b'synthetic',
           'github_read_token': 'synthetic', 'dropbox_read_token': 'synthetic',
           'review_public_key': 'a' * 64, 'execution_public_key': 'b' * 64}
+
+
+def issuing(policy):
+    """A real StatusIssuer over synthetic credentials; the list records every POST."""
+    posted = []
+
+    def post(method, path, token, body):
+        posted.append((body['state'], body['description']))
+        return {'state': body['state'], 'context': CONTEXT,
+                'creator': {'login': 'trusted[bot]', 'type': 'Bot'}}
+    credentials = SimpleNamespace(token='t', app_id=10, bot_login='trusted[bot]',
+                                  clock=lambda: 1, expires_at=9, request=post)
+    return StatusIssuer('owner/repo', credentials, SimpleNamespace(request=lambda *a: policy)), posted
 
 
 class Runner(unittest.TestCase):
@@ -59,6 +77,189 @@ class Runner(unittest.TestCase):
                 patch('scripts.admission_runner.process', side_effect=[RuntimeError(), False]) as run:
             self.assertFalse(scan(CONFIG))
             self.assertEqual([c.args[0] for c in run.call_args_list], [265, 267])
+
+    def cycle(self, github, issuer, published):
+        config = dict(CONFIG, dropbox_read_token=FakeDropbox(), review_public_key=public(REVIEW_PRIVATE),
+                      execution_public_key=public(EXECUTION_PRIVATE))
+        publisher = CandidatePublisher(ChangedStatusPublisher(issuer, published), HEAD)
+        return run_candidate(225, github, publisher, config, lambda: 150)
+
+    def unreviewed(self):
+        github = FakeGitHub()
+        original = github.pr
+        github.pr = lambda number: dict(original(number), body='')
+        return github
+
+    def test_admitted_candidate_publishes_the_marker_then_success_every_cycle(self):
+        issuer, posted = issuing(protection())
+        github, published = FakeGitHub(), {}
+        results = [self.cycle(github, issuer, published) for _ in range(3)]
+        self.assertEqual((results, [state for state, _ in posted]), ([True] * 3, ['pending', 'success'] * 3))
+
+    def drifted(self, mutate):
+        """Admit a head, apply the drift, run one more cycle; return the statuses of that cycle."""
+        policy = protection()
+        issuer, posted = issuing(policy)
+        github, published = FakeGitHub(), {}
+        self.cycle(github, issuer, published)
+        before = len(posted)
+        mutate(github, policy)
+        self.assertFalse(self.cycle(github, issuer, published))
+        return [state for state, _ in posted[before:]]
+
+    def test_protection_unpinned_gives_pending_then_failure_in_the_same_cycle(self):
+        self.assertEqual(self.drifted(lambda g, p: p['required_status_checks'].update(checks=[])),
+                         ['pending', 'failure'])
+
+    def test_review_line_removed_gives_pending_then_failure_in_the_same_cycle(self):
+        def remove(github, policy):
+            original = github.pr
+            github.pr = lambda number: dict(original(number), body='')
+        self.assertEqual(self.drifted(remove), ['pending', 'failure'])
+
+    def test_required_check_turning_red_gives_pending_then_failure_in_the_same_cycle(self):
+        self.assertEqual(self.drifted(lambda g, p: g.checks[0].update(conclusion='failure')),
+                         ['pending', 'failure'])
+
+    def test_duplicate_review_lines_give_pending_then_failure_in_the_same_cycle(self):
+        def duplicate(github, policy):
+            original = github.pr
+            body = original(225)['body']
+            github.pr = lambda number: dict(original(number), body=body + '\n' + body)
+        self.assertEqual(self.drifted(duplicate), ['pending', 'failure'])
+
+    def test_unreviewed_candidate_publishes_a_constant_number_of_statuses(self):
+        issuer, posted = issuing(protection())
+        github, published = self.unreviewed(), {}
+        for _ in range(5):
+            self.assertFalse(self.cycle(github, issuer, published))
+        self.assertEqual(posted, [('pending', IN_PROGRESS),
+                                  ('failure', 'one external agent-review record required in PR description')])
+
+    def test_two_prs_on_one_head_publish_three_statuses_per_steady_cycle_and_the_last_wins(self):
+        issuer, posted = issuing(protection())
+        admitted, refused, published = FakeGitHub(), self.unreviewed(), {}
+        counts = []
+        for _ in range(4):
+            self.cycle(admitted, issuer, published)
+            self.cycle(refused, issuer, published)
+            counts.append(len(posted))
+        self.assertEqual(([b - a for a, b in zip(counts, counts[1:])], posted[-1][0]), ([3, 3, 3], 'failure'))
+
+    def raising_issuer(self):
+        """A StatusIssuer-like fake: records every POST, then raises on `success` (applied, then error)."""
+        posted = []
+
+        def status(sha, state, description):
+            posted.append((state, description))
+            if state == 'success':
+                raise AdmissionError('creator mismatch after the POST landed')
+        return SimpleNamespace(status=status), posted
+
+    def test_a_success_applied_then_raising_is_followed_by_a_failure_every_cycle(self):
+        issuer, posted = self.raising_issuer()
+        github, published = FakeGitHub(), {}
+        for _ in range(3):
+            self.assertFalse(self.cycle(github, issuer, published))
+            self.assertEqual(posted[-1][0], 'failure')
+
+    def serving_config(self):
+        return dict(CONFIG, dropbox_read_token=FakeDropbox(), review_public_key=public(REVIEW_PRIVATE),
+                    execution_public_key=public(EXECUTION_PRIVATE))
+
+    def process_twice(self, published):
+        issuer, posted = issuing(protection())
+        with patch('scripts.admission_runner.AppCredentials', return_value=Mock()), \
+                patch('scripts.admission_runner.StatusIssuer', return_value=issuer):
+            for _ in range(2):
+                process(225, self.unreviewed(), self.serving_config(), published)
+        return posted
+
+    def test_process_publishes_one_verdict_for_an_unreviewed_pr_across_two_calls(self):
+        posted = self.process_twice({})
+        self.assertEqual([state for state, _ in posted], ['pending', 'failure'])
+
+    def test_process_routes_through_the_wrapper_and_fills_the_shared_record(self):
+        published = {}
+        self.process_twice(published)
+        self.assertEqual(published[HEAD][:2],
+                         ('failure', 'one external agent-review record required in PR description'))
+
+    def test_scan_hands_the_shared_record_to_process(self):
+        reader = Mock()
+        reader.pages.return_value = [{'number': 1, 'state': 'open', 'draft': False, 'base': {'ref': 'next'},
+                                      'head': {'sha': HEAD}}]
+        published = {}
+        with patch('scripts.admission_runner.GitHub', return_value=reader), \
+                patch('scripts.admission_runner.process', return_value=True) as processed:
+            scan(CONFIG, None, published)
+        self.assertIs(processed.call_args.args[3], published)
+
+    def test_scan_forgets_heads_that_are_no_longer_open_candidates(self):
+        reader = Mock()
+        reader.pages.return_value = [{'number': 1, 'state': 'open', 'draft': False, 'base': {'ref': 'next'},
+                                      'head': {'sha': HEAD}}]
+        published = {HEAD: ('failure', 'x'), '9' * 40: ('success', 'y')}
+        with patch('scripts.admission_runner.GitHub', return_value=reader), \
+                patch('scripts.admission_runner.process', return_value=True):
+            scan(CONFIG, None, published)
+        self.assertEqual(list(published), [HEAD])
+
+    def serve(self, scan_effects, sleeps):
+        errors = io.StringIO()
+        with patch('scripts.admission_runner.configuration', return_value=dict(CONFIG)), \
+                patch('scripts.admission_runner.startup'), patch('scripts.admission_runner.ready'), \
+                patch('scripts.admission_runner.scan', side_effect=scan_effects) as scanned, \
+                patch('scripts.admission_runner.time.sleep', side_effect=sleeps) as slept, \
+                patch('sys.stderr', errors):
+            code = main([])
+        return code, scanned.call_count, slept.call_count, errors.getvalue()
+
+    def test_service_loop_survives_scan_admission_errors_and_counts_them(self):
+        code, scans, slept, errors = self.serve(
+            [AdmissionError('GitHub API unavailable'), AdmissionError('GitHub API unavailable'), True],
+            [None, None, KeyboardInterrupt()])
+        self.assertEqual((scans, slept), (3, 3))
+        self.assertIn('scan failed (2 consecutive): GitHub API unavailable', errors)
+
+    def test_service_survives_nineteen_consecutive_scan_failures(self):
+        code, scans, slept, _ = self.serve([AdmissionError('x')] * 19, [None] * 18 + [KeyboardInterrupt()])
+        self.assertEqual((scans, slept), (19, 19))
+
+    def test_service_exits_nonzero_on_the_twentieth_consecutive_scan_failure(self):
+        code, scans, slept, errors = self.serve([AdmissionError('x')] * 25, [None] * 25)
+        self.assertEqual((code, scans, slept), (1, SCAN_FAILURE_LIMIT, SCAN_FAILURE_LIMIT - 1))
+        self.assertIn('FAIL: 20 consecutive scan failures', errors)
+
+    def test_a_good_scan_resets_the_failure_count_below_the_limit(self):
+        effects = [AdmissionError('x')] * 19 + [True] + [AdmissionError('x')] * 19
+        code, scans, _, _ = self.serve(effects, [None] * 38 + [KeyboardInterrupt()])
+        self.assertEqual(scans, 39)
+
+    def test_scan_failure_count_resets_after_a_good_scan(self):
+        _, _, _, errors = self.serve([AdmissionError('x'), True, AdmissionError('x')],
+                                     [None, None, KeyboardInterrupt()])
+        self.assertEqual(errors.count('(1 consecutive)'), 2)
+
+    def test_serve_gives_every_scan_the_same_record_object(self):
+        records = []
+        with patch('scripts.admission_runner.scan', side_effect=lambda c, n, p: records.append(p) or True), \
+                patch('scripts.admission_runner.time.sleep', side_effect=[None, KeyboardInterrupt()]):
+            with self.assertRaises(KeyboardInterrupt):
+                serve(CONFIG)
+        self.assertEqual((len(records), records[0] is records[1], records[0]), (2, True, {}))
+
+    def test_unexpected_scan_exception_still_stops_the_service(self):
+        code, scans, slept, errors = self.serve([RuntimeError('boom')], [])
+        self.assertEqual((code, scans, slept), (1, 1, 0))
+
+    def test_single_shot_scan_admission_error_still_exits_nonzero(self):
+        with patch('scripts.admission_runner.configuration', return_value=dict(CONFIG)), \
+                patch('scripts.admission_runner.startup'), patch('scripts.admission_runner.ready'), \
+                patch('scripts.admission_runner.scan', side_effect=AdmissionError('x')) as scanned, \
+                patch('sys.stderr', io.StringIO()):
+            self.assertEqual(main(['--once']), 1)
+        self.assertEqual(scanned.call_count, 1)
 
     def test_credentials_are_closed_and_cleanup_failure_revokes_success(self):
         credentials = Mock()

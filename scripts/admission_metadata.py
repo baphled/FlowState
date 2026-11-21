@@ -14,7 +14,11 @@ REQUIRED_READS = {
     "/FlowState/Metadata/ACTIVE.json",
 }
 
+IN_PROGRESS = "Checking external evidence and independent review"
+
+
 class AdmissionError(Exception): pass
+
 def metadata_reference(message):
     """Extract the single neutral trailer, refusing duplicates or malformed paths."""
     refs = re.findall(r"^Project-Metadata: (.+)$", message, flags=re.M)
