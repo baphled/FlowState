@@ -2,6 +2,24 @@
 
 All notable changes to the FlowState project will be documented in this file.
 
+## [1.8.0](https://github.com/baphled/FlowState/compare/v1.7.1...v1.8.0) (2026-11-21)
+
+### Features
+
+* **session:** report a truncated final turn in session doctor ([#362](https://github.com/baphled/FlowState/issues/362)) ([6fcf6b6](https://github.com/baphled/FlowState/commit/6fcf6b6241c5e51460e16218183f877d6819d93c))
+
+### Bug Fixes
+
+* **build:** harden the local preflight and pin ci against drift ([#371](https://github.com/baphled/FlowState/issues/371)) ([ad0ce86](https://github.com/baphled/FlowState/commit/ad0ce86fdde7fdd51f8e1a5683a14729e2445ce7))
+* **provider:** keep the anthropic subscription child on the subscription ([#365](https://github.com/baphled/FlowState/issues/365)) ([acd422d](https://github.com/baphled/FlowState/commit/acd422d30a89ba405d0ec7273786e9a4c440e713))
+* **provider:** report the finish reason on every z.ai route ([#370](https://github.com/baphled/FlowState/issues/370)) ([027d628](https://github.com/baphled/FlowState/commit/027d628ecd5a236d707115c03870cc85a20409c4))
+* **server:** answer cancelled reads correctly and refuse an exposed bind ([#367](https://github.com/baphled/FlowState/issues/367)) ([e0b9424](https://github.com/baphled/FlowState/commit/e0b9424b432c33665628698b33cb5a8e7873decb))
+* **server:** decode the create body once and make stream specs fail fast ([#368](https://github.com/baphled/FlowState/issues/368)) ([8ff70ba](https://github.com/baphled/FlowState/commit/8ff70ba459bec256111765b499c7ec4a26fd2825))
+* **session:** report only provider failures as provider errors ([#361](https://github.com/baphled/FlowState/issues/361)) ([3e6c55b](https://github.com/baphled/FlowState/commit/3e6c55bfda2e34b11141b9872457ecdb2fe7df4e))
+* **session:** surface truncation and classify internal failures clearly ([#366](https://github.com/baphled/FlowState/issues/366)) ([a707c0e](https://github.com/baphled/FlowState/commit/a707c0ecc3dacaa0a026a6f8ea697c0afcf1ee23))
+* **workflow:** publish a waiting admission as pending, not failure ([#369](https://github.com/baphled/FlowState/issues/369)) ([54ebd6d](https://github.com/baphled/FlowState/commit/54ebd6d9e99138f46af33cefce51c95e5a186884))
+* **workflow:** stop re-publishing admission statuses for unadmitted heads ([#364](https://github.com/baphled/FlowState/issues/364)) ([032e772](https://github.com/baphled/FlowState/commit/032e772198b7969aefb011861475b7147948ef97))
+
 ## [1.7.1](https://github.com/baphled/FlowState/compare/v1.7.0...v1.7.1) (2026-11-21)
 
 ### Bug Fixes
