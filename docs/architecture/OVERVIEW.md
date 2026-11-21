@@ -124,7 +124,7 @@ go run github.com/onsi/ginkgo/v2/ginkgo --procs=2 --randomize-all --randomize-su
 ## Anthropic provider
 
 `internal/provider/anthropic` (registry name `anthropic`) is selected by
-`providers.anthropic.auth_type`: `oauth` (the default) or `api_key` (not yet available).
+`providers.anthropic.auth_type`: `oauth` (the default) or `api_key`.
 The OAuth route reaches a user's Claude subscription through their own Claude Code sign-in,
 only by running the user's own unmodified `claude` binary in headless
 print mode, prompt on stdin, and parsing its stream-json output. FlowState never reads,
@@ -135,6 +135,13 @@ provider refuses structured tool calls, always sends a lossy `User:` / `Assistan
 resell a subscription but does not enforce single-user use: `flowstate serve` runs a session
 for anyone who can reach it, so keep the loopback bind and set `FLOWSTATE_SERVE_TOKEN`; letting
 others reach it would route their requests through the owner's plan, which the policy forbids.
+
+The `api_key` route (`anthropic.APIKey`) is ordinary Anthropic API billing, independent of the
+subscription route. It sends the key (`ANTHROPIC_API_KEY`, else `providers.anthropic.api_key`) as
+`x-api-key` to `<base>/v1/messages` (`ANTHROPIC_BASE_URL`, else `providers.anthropic.host`, else
+`https://api.anthropic.com`), reusing the Messages wire client in `internal/provider/zai`. It never reads
+the Claude Code sign-in or runs `claude`. It supports text chat and streaming, system messages and
+`MaxTokens`; structured tools are refused, a truncated stream is an error, and nothing is retried.
 See ADR-008.
 
 ## Session tool catalog

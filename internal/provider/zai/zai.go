@@ -132,6 +132,18 @@ func ClampMaxTokens(n int64) int64 {
 	return n
 }
 
+// WithAnthropicSystem makes the anthropic coding route send system-role
+// messages as the top-level Messages API "system" field instead of as
+// messages, which api.anthropic.com rejects. It is off by default so the
+// z.ai route is unchanged.
+func WithAnthropicSystem() Option { return func(p *Provider) { p.systemTopLevel = true } }
+
+// WithAnthropicFinish makes a completed anthropic-route stream end with one
+// finish event whose reason maps message_delta.stop_reason (end_turn and
+// stop_sequence: "stop"; max_tokens: "length"; other values unchanged; absent:
+// "stop"). It is off by default so the z.ai route emits no finish event.
+func WithAnthropicFinish() Option { return func(p *Provider) { p.anthropicFinish = true } }
+
 // WithModel overrides the default model.
 func WithModel(m string) Option { return func(p *Provider) { p.model = m } }
 

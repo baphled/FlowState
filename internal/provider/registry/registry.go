@@ -28,11 +28,6 @@ func Resolve(name string) (provider.Provider, error) {
 	}
 }
 
-// ErrAPIKeyUnavailable marks providers.anthropic.auth_type: api_key, whose
-// route is not built yet.
-var ErrAPIKeyUnavailable = errors.New(
-	"registry: API-key authentication for anthropic is not available yet; use auth_type oauth")
-
 // resolveAnthropic builds the anthropic adapter from providers.anthropic. An
 // empty or `oauth` auth_type selects the subscription route: the user's own
 // `claude` binary (FLOWSTATE_CLAUDE_BIN, default `claude`). Resolving never
@@ -56,10 +51,32 @@ func resolveAnthropic() (provider.Provider, error) {
 	case "", "oauth":
 		return anthropic.NewSubscription(os.Getenv("FLOWSTATE_CLAUDE_BIN"), anthropic.ExecLauncher), nil
 	case "api_key":
-		return nil, ErrAPIKeyUnavailable
+		return resolveAnthropicKey(cfg)
 	default:
-		return nil, fmt.Errorf("registry: unknown anthropic auth_type %q (supported: oauth)", authType)
+		return nil, fmt.Errorf("registry: unknown anthropic auth_type %q (supported: oauth, api_key)", authType)
 	}
+}
+
+// resolveAnthropicKey builds the API-key route. The key comes from
+// ANTHROPIC_API_KEY, else providers.anthropic.api_key; the base URL from
+// ANTHROPIC_BASE_URL, else providers.anthropic.host, else the Anthropic API.
+// The key is never included in an error.
+func resolveAnthropicKey(cfg *config.ProviderConfig) (provider.Provider, error) {
+	key := os.Getenv("ANTHROPIC_API_KEY")
+	host := os.Getenv("ANTHROPIC_BASE_URL")
+	if cfg != nil {
+		if key == "" {
+			key = cfg.APIKey
+		}
+		if host == "" {
+			host = cfg.Host
+		}
+	}
+	if key == "" {
+		return nil, errors.New("registry: anthropic auth_type api_key needs a key: " +
+			"set ANTHROPIC_API_KEY or providers.anthropic.api_key in config.yaml")
+	}
+	return anthropic.NewAPIKey(key, host, nil), nil
 }
 
 // resolveZai builds the z.ai adapter from config.yaml
