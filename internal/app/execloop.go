@@ -101,6 +101,22 @@ func reserveExecBudget(ctx context.Context, cfg *ExecLoopConfig) (stop bool, err
 	return true, stopBudgetExhausted(ctx, cfg.Store, cfg.Session.ID)
 }
 
+// failExecTurn records a terminal provider failure: the provider.error
+// event is appended before the session is marked failed, as on every
+// other terminal path, so a reader that observes the terminal status
+// always finds its final event already committed. A failed append
+// leaves the status untouched. The result always wraps ErrProvider
+// and cause, plus the persistence failure when there is one.
+func failExecTurn(ctx context.Context, w EventWriter, st SessionRepo, sessionID string, cause error) error {
+	if _, aerr := w.Append(ctx, session.ActorEngine, "provider.error", map[string]any{"error": cause.Error(), "terminal": true}); aerr != nil {
+		return fmt.Errorf("%w: %w: record provider error: %w", ErrProvider, cause, aerr)
+	}
+	if uerr := st.UpdateSessionStatus(ctx, sessionID, "failed"); uerr != nil {
+		return fmt.Errorf("%w: %w: mark session failed: %w", ErrProvider, cause, uerr)
+	}
+	return fmt.Errorf("%w: %w", ErrProvider, cause)
+}
+
 func runExecTurn(ctx context.Context, cfg ExecLoopConfig, definitions []provider.ToolDefinition, history []provider.Message) (string, []provider.ToolCall, error) {
 	w, err := cfg.Store.NewEventWriter(ctx, cfg.Session.ID)
 	if err != nil {
@@ -113,9 +129,7 @@ func runExecTurn(ctx context.Context, cfg ExecLoopConfig, definitions []provider
 	for ev := range cfg.Streamer.Stream(ctx, req) {
 		switch {
 		case ev.Err != nil:
-			_, _ = w.Append(ctx, session.ActorEngine, "provider.error", map[string]any{"error": ev.Err.Error(), "terminal": true})
-			_ = cfg.Store.UpdateSessionStatus(ctx, cfg.Session.ID, "failed")
-			return "", nil, fmt.Errorf("%w: %w", ErrProvider, ev.Err)
+			return "", nil, failExecTurn(ctx, w, cfg.Store, cfg.Session.ID, ev.Err)
 		case ev.Kind == provider.StreamEventToolCall && ev.ToolCall != nil:
 			calls = append(calls, *ev.ToolCall)
 		case ev.Kind == provider.StreamEventText || ev.Kind == "":

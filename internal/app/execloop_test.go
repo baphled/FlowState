@@ -271,3 +271,85 @@ func provFinish() provider.StreamEvent {
 func provError(msg string) provider.StreamEvent {
 	return provider.StreamEvent{Kind: provider.StreamEventError, Err: errors.New(msg)}
 }
+
+var _ = Describe("failExecTurn", func() {
+	var (
+		st    *store.Store
+		sess  *store.Session
+		w     *store.EventWriter
+		cause error
+	)
+
+	BeforeEach(func() {
+		st, sess = execLoopSeed()
+		DeferCleanup(func() { _ = st.Close() })
+		var werr error
+		w, werr = st.NewEventWriter(context.Background(), sess.ID)
+		if werr != nil {
+			panic(werr)
+		}
+		DeferCleanup(func() { _ = w.Close() })
+		cause = errors.New("boom")
+	})
+
+	Context("when both writes succeed", func() {
+		var err error
+
+		BeforeEach(func() {
+			err = failExecTurn(context.Background(), w, st, sess.ID, cause)
+		})
+
+		It("returns the provider error unchanged", func() {
+			Expect(err).To(MatchError(ErrProvider.Error() + ": boom"))
+		})
+
+		It("marks the session failed", func() {
+			Expect(statusOf(st, sess.ID)).To(Equal("failed"))
+		})
+
+		It("ends the log with the provider error event", func() {
+			Expect(lastType(st, sess.ID)).To(Equal("provider.error"))
+		})
+	})
+
+	// The event commits before the status: were the order reversed, a
+	// failed append would leave a terminal status with no final event.
+	Context("when the event cannot be recorded", func() {
+		var err error
+
+		BeforeEach(func() {
+			if cerr := w.Close(); cerr != nil {
+				panic(cerr)
+			}
+			err = failExecTurn(context.Background(), w, st, sess.ID, cause)
+		})
+
+		It("still reports the provider failure", func() {
+			Expect(err).To(MatchError(ErrProvider))
+		})
+
+		It("reports the append failure", func() {
+			Expect(err).To(MatchError(store.ErrClosed))
+		})
+
+		It("leaves the session non-terminal", func() {
+			Expect(statusOf(st, sess.ID)).To(Equal("active"))
+		})
+	})
+
+	Context("when the status cannot be updated", func() {
+		var err error
+
+		BeforeEach(func() {
+			err = failExecTurn(context.Background(), w, st, "missing-session", cause)
+		})
+
+		It("still reports the provider failure", func() {
+			Expect(err).To(MatchError(ErrProvider))
+		})
+
+		It("reports the status failure", func() {
+			Expect(err).To(MatchError(store.ErrUnknownSession))
+		})
+	})
+})
