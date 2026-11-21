@@ -58,3 +58,62 @@ var _ = Describe("coding structured SSE", func() {
 	})
 
 })
+
+var _ = Describe("coding plain stream finish reason", func() {
+	const textChunk = `data: {"choices":[{"delta":{"content":"hi"}}]}` + "\n"
+	plain := func(sse string) []provider.StreamEvent {
+		p := toolFixture(sse)
+		WithFinishEvents()(p)
+		return toolEvents(p, &provider.ChatRequest{})
+	}
+	finishes := func(events []provider.StreamEvent) []provider.StreamEvent {
+		var out []provider.StreamEvent
+		for _, ev := range events {
+			if ev.Kind == provider.StreamEventFinish {
+				out = append(out, ev)
+			}
+		}
+		return out
+	}
+	DescribeTable("maps the wire finish_reason",
+		func(wire, want string) {
+			sse := textChunk + `data: {"choices":[{"delta":{},"finish_reason":"` + wire + `"}]}` + "\n" + done
+			events := plain(sse)
+			Expect(events[len(events)-1]).To(Equal(provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: want}))
+		},
+		Entry("stop", "stop", "stop"),
+		Entry("length", "length", "length"),
+		Entry("another value", "content_filter", "content_filter"),
+	)
+	It("finishes with stop when [DONE] arrives without a finish_reason", func() {
+		events := plain(textChunk + done)
+		Expect(events[len(events)-1].FinishReason).To(Equal("stop"))
+	})
+	It("leaves the text events unchanged before the finish", func() {
+		events := plain(textChunk + done)
+		Expect(events[0]).To(Equal(provider.StreamEvent{Kind: provider.StreamEventText, Content: "hi"}))
+	})
+	It("emits exactly one finish event", func() {
+		events := plain(textChunk + `data: {"choices":[{"delta":{},"finish_reason":"length"}]}` + "\n" + done)
+		Expect(finishes(events)).To(HaveLen(1))
+	})
+	It("emits no finish event by default", func() {
+		Expect(finishes(toolEvents(toolFixture(textChunk+done), &provider.ChatRequest{}))).To(BeEmpty())
+	})
+	It("emits no finish event after an error event", func() {
+		Expect(finishes(plain(textChunk + "data: {oops}\n" + done))).To(BeEmpty())
+	})
+	It("emits no finish event when the stream ends without [DONE]", func() {
+		Expect(finishes(plain(textChunk))).To(BeEmpty())
+	})
+	It("passes the provider stream validator", func() {
+		validator := &provider.StreamValidator{}
+		var rejected error
+		for _, ev := range plain(textChunk + `data: {"choices":[{"delta":{},"finish_reason":"length"}]}` + "\n" + done) {
+			if err := validator.Accept(ev); err != nil {
+				rejected = err
+			}
+		}
+		Expect(rejected).NotTo(HaveOccurred())
+	})
+})

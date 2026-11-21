@@ -122,5 +122,7 @@ func resolveZai() (provider.Provider, error) {
 	if key == "" {
 		return nil, errors.New("zai: ZAI_API_KEY is not set")
 	}
+	// Every resolved provider reports finish reasons so truncation is visible.
+	opts = append(opts, zai.WithFinishEvents())
 	return zai.New(key, opts...), nil
 }

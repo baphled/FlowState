@@ -87,7 +87,7 @@ func (p *Provider) codingStreamOpenAI(ctx context.Context, req *provider.ChatReq
 		body, err := p.codingDo(ctx, req, true)
 		if err == nil {
 			defer body.Close()
-			err = codingRead(ctx, body, out, codingStructured(req))
+			err = codingRead(ctx, body, out, codingStructured(req), p.anthropicFinish)
 		}
 		if err != nil {
 			codingSend(ctx, out, provider.StreamEvent{Kind: provider.StreamEventError, Err: err})

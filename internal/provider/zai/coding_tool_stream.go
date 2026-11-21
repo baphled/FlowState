@@ -63,6 +63,7 @@ func (state *codingAssembly) chunk(ctx context.Context, out chan<- provider.Stre
 }
 func (state *codingAssembly) complete(ctx context.Context, out chan<- provider.StreamEvent) error {
 	if !state.strict {
+		codingSend(ctx, out, provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: wireFinishReason(state.finish)})
 		return nil
 	}
 	if state.finish == "" {
@@ -87,7 +88,17 @@ func (state *codingAssembly) complete(ctx context.Context, out chan<- provider.S
 	codingSend(ctx, out, provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: state.finish})
 	return nil
 }
-func codingRead(ctx context.Context, body io.Reader, out chan<- provider.StreamEvent, strict bool) error {
+
+// wireFinishReason maps an OpenAI-wire finish_reason to the neutral reason:
+// "stop" and "length" are already neutral, other values pass through and an
+// absent reason on a completed stream means "stop".
+func wireFinishReason(reason string) string {
+	if reason == "" {
+		return provider.FinishStop
+	}
+	return reason
+}
+func codingRead(ctx context.Context, body io.Reader, out chan<- provider.StreamEvent, strict, finishEvents bool) error {
 	state := codingAssembly{strict: strict}
 	rd := bufio.NewReader(body)
 	for {
@@ -95,6 +106,9 @@ func codingRead(ctx context.Context, body io.Reader, out chan<- provider.StreamE
 		if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "data:") {
 			payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
 			if payload == "[DONE]" {
+				if !strict && !finishEvents {
+					return nil
+				}
 				return state.complete(ctx, out)
 			}
 			if parseErr := state.chunk(ctx, out, payload); parseErr != nil {

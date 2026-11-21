@@ -429,3 +429,49 @@ var _ = Describe("anthropic resolution", func() {
 		Expect(err).To(MatchError(config.ErrInvalid))
 	})
 })
+
+var _ = Describe("resolved z.ai finish events", func() {
+	// finishOf streams one turn from a fake z.ai server through the registry
+	// and returns the last event.
+	finishOf := func(route, body string) provider.StreamEvent {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, body)
+		}))
+		DeferCleanup(srv.Close)
+		GinkgoT().Setenv("FLOWSTATE_CONFIG_DIR", GinkgoT().TempDir())
+		GinkgoT().Setenv("ZAI_API_KEY", "k")
+		GinkgoT().Setenv("ZAI_PLAN", "coding")
+		GinkgoT().Setenv("ZAI_CODING_ROUTE", route)
+		GinkgoT().Setenv("ZAI_BASE_URL", srv.URL)
+		p, err := registry.Resolve("z.ai")
+		if err != nil {
+			panic(err)
+		}
+		streamer, ok := p.(provider.Streamer)
+		if !ok {
+			panic("resolved z.ai provider is not a Streamer")
+		}
+		var last provider.StreamEvent
+		for ev := range streamer.Stream(context.Background(), &provider.ChatRequest{}) {
+			last = ev
+		}
+		return last
+	}
+
+	It("ends a completed default coding stream with a finish event", func() {
+		last := finishOf("", "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\ndata: [DONE]\n")
+		Expect(last.Kind).To(Equal(provider.StreamEventFinish))
+	})
+
+	It("ends a truncated default coding stream with the length reason", func() {
+		last := finishOf("", "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"length\"}]}\ndata: [DONE]\n")
+		Expect(last.FinishReason).To(Equal("length"))
+	})
+
+	It("ends a completed anthropic stream with a finish event", func() {
+		last := finishOf("anthropic", "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"}}\n\n"+
+			"data: {\"type\":\"message_stop\"}\n\n")
+		Expect(last).To(Equal(provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: "length"}))
+	})
+})
