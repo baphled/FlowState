@@ -1,8 +1,9 @@
-// Package anthropic implements the Anthropic provider. This file is its
-// OAuth (subscription) route: it reaches a user's Claude subscription ONLY by
-// running the user's own, unmodified `claude` binary in headless print mode and
-// reading its stream-json output. The process launcher, the registry wiring
-// and the auth_type choice between routes arrive in the next packet.
+// Package anthropic implements the Anthropic provider: two independent routes
+// chosen by providers.anthropic.auth_type. This file is the OAuth (subscription)
+// route: it reaches a user's Claude subscription ONLY by running the user's own,
+// unmodified `claude` binary in headless print mode and reading its stream-json
+// output. The API-key route (apikey.go) sends the user's API key to the Messages
+// API and shares none of the rules below, which describe the OAuth route only.
 //
 // Policy basis (https://code.claude.com/docs/en/legal-and-compliance,
 // "Authentication and credential use"): third-party developers may not offer
@@ -10,12 +11,13 @@
 // or session tokens"; an end user may still sign in to the unmodified Claude
 // Code binary with their own subscription. Hard rules that follow: this
 // package never reads, stores, refreshes or forwards any Claude credential or
-// token; never reads ~/.claude; never sends a request to Anthropic itself;
+// token; never reads ~/.claude; never sends a request to Anthropic itself
+// (the API-key route does, but with an API key, never a Claude credential);
 // never imitates Claude Code identity headers. Sign-in happens in Claude Code
 // (`claude`, then /login) and the child inherits the environment unchanged.
 //
-// Known limits: structured tool calls are refused before any process starts;
-// the prompt is a "User:" / "Assistant:" transcript, so stdin never starts
+// Known limits (OAuth route): structured tool calls are refused before any
+// process starts; the prompt is a "User:" / "Assistant:" transcript, so stdin never starts
 // with "/" and cannot run as a local slash command; MaxTokens is ignored.
 package anthropic
 

@@ -2,9 +2,13 @@ package registry_test
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -196,14 +200,147 @@ var _ = Describe("anthropic resolution", func() {
 		Expect(p).To(BeAssignableToTypeOf(&anthropic.Subscription{}))
 	})
 
-	It("reports that api_key authentication is not available yet", func() {
-		_, err := resolveWith("api_key")
-		Expect(err).To(MatchError(registry.ErrAPIKeyUnavailable))
+	Describe("auth_type api_key", func() {
+		const envKey = "sk-ant-synthetic-env-key"
+		const cfgKey = "sk-ant-synthetic-config-key"
+		var served chan http.Header
+
+		BeforeEach(func() {
+			GinkgoT().Setenv("ANTHROPIC_API_KEY", "")
+			GinkgoT().Setenv("ANTHROPIC_BASE_URL", "")
+			served = make(chan http.Header, 4)
+		})
+
+		// anthropicServer plays the Anthropic API and records request headers.
+		anthropicServer := func() *httptest.Server {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				served <- r.Header.Clone()
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"content":[{"type":"text","text":"ok"}]}`)
+			}))
+			DeferCleanup(srv.Close)
+			return srv
+		}
+		keyOf := func(p provider.Provider) string {
+			if _, err := p.Chat(context.Background(), &provider.ChatRequest{}); err != nil {
+				panic(err)
+			}
+			return (<-served).Get("x-api-key")
+		}
+
+		It("keeps the oauth route on the subscription provider when ANTHROPIC_API_KEY is set", func() {
+			GinkgoT().Setenv("ANTHROPIC_API_KEY", envKey)
+			p, err := resolveWith("oauth")
+			if err != nil {
+				panic(err)
+			}
+			Expect(p).To(BeAssignableToTypeOf(&anthropic.Subscription{}))
+		})
+
+		It("resolves to an anthropic-named provider using the environment key", func() {
+			GinkgoT().Setenv("ANTHROPIC_API_KEY", envKey)
+			p, err := resolveWith("api_key")
+			if err != nil {
+				panic(err)
+			}
+			Expect(p.Name()).To(Equal("anthropic"))
+		})
+
+		It("resolves to the API-key type, not the subscription type", func() {
+			GinkgoT().Setenv("ANTHROPIC_API_KEY", envKey)
+			p, err := resolveWith("api_key")
+			if err != nil {
+				panic(err)
+			}
+			Expect(p).To(BeAssignableToTypeOf(&anthropic.APIKey{}))
+		})
+
+		It("sends the environment key", func() {
+			GinkgoT().Setenv("ANTHROPIC_API_KEY", envKey)
+			GinkgoT().Setenv("ANTHROPIC_BASE_URL", anthropicServer().URL)
+			p, err := resolveWith("api_key")
+			if err != nil {
+				panic(err)
+			}
+			Expect(keyOf(p)).To(Equal(envKey))
+		})
+
+		It("sends the config key when the environment has none", func() {
+			srv := anthropicServer()
+			writeConfig("providers:\n  anthropic:\n    auth_type: api_key\n    api_key: " + cfgKey +
+				"\n    host: " + srv.URL + "\n")
+			p, err := registry.Resolve("anthropic")
+			if err != nil {
+				panic(err)
+			}
+			Expect(keyOf(p)).To(Equal(cfgKey))
+		})
+
+		It("prefers the environment key over the config key", func() {
+			srv := anthropicServer()
+			GinkgoT().Setenv("ANTHROPIC_API_KEY", envKey)
+			writeConfig("providers:\n  anthropic:\n    auth_type: api_key\n    api_key: " + cfgKey +
+				"\n    host: " + srv.URL + "\n")
+			p, err := registry.Resolve("anthropic")
+			if err != nil {
+				panic(err)
+			}
+			Expect(keyOf(p)).To(Equal(envKey))
+		})
+
+		It("fails without a key, naming the environment variable", func() {
+			_, err := resolveWith("api_key")
+			Expect(err).To(MatchError(ContainSubstring("ANTHROPIC_API_KEY")))
+		})
+
+		It("fails without a key, naming the config field", func() {
+			_, err := resolveWith("api_key")
+			Expect(err).To(MatchError(ContainSubstring("providers.anthropic.api_key")))
+		})
+
+		It("lets ANTHROPIC_BASE_URL win over the config host", func() {
+			srv := anthropicServer()
+			GinkgoT().Setenv("ANTHROPIC_API_KEY", envKey)
+			GinkgoT().Setenv("ANTHROPIC_BASE_URL", srv.URL)
+			writeConfig("providers:\n  anthropic:\n    auth_type: api_key\n    host: http://127.0.0.1:1\n")
+			p, err := registry.Resolve("anthropic")
+			if err != nil {
+				panic(err)
+			}
+			Expect(keyOf(p)).To(Equal(envKey))
+		})
+
+		It("uses the config host when no base-URL variable is set", func() {
+			srv := anthropicServer()
+			GinkgoT().Setenv("ANTHROPIC_API_KEY", envKey)
+			writeConfig("providers:\n  anthropic:\n    auth_type: api_key\n    host: " + srv.URL + "\n")
+			p, err := registry.Resolve("anthropic")
+			if err != nil {
+				panic(err)
+			}
+			Expect(keyOf(p)).To(Equal(envKey))
+		})
+
+		It("makes no network request while resolving", func() {
+			srv := anthropicServer()
+			GinkgoT().Setenv("ANTHROPIC_API_KEY", envKey)
+			GinkgoT().Setenv("ANTHROPIC_BASE_URL", srv.URL)
+			if _, err := resolveWith("api_key"); err != nil {
+				panic(err)
+			}
+			Consistently(served).WithTimeout(100 * time.Millisecond).WithPolling(10 * time.Millisecond).ShouldNot(Receive())
+		})
+
+		It("does not leak the key into the missing-key error", func() {
+			GinkgoT().Setenv("ANTHROPIC_API_KEY", "")
+			_, err := resolveWith("api_key")
+			Expect(err).To(MatchError(Not(ContainSubstring("sk-ant"))))
+		})
 	})
 
-	It("names oauth as the supported route for api_key", func() {
-		_, err := resolveWith("api_key")
-		Expect(err).To(MatchError(ContainSubstring("use auth_type oauth")))
+	It("names both supported values for an unknown auth_type", func() {
+		_, err := resolveWith("magic")
+		Expect(err).To(MatchError(ContainSubstring("supported: oauth, api_key")))
 	})
 
 	It("rejects an unknown auth_type", func() {

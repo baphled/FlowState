@@ -48,8 +48,8 @@ FlowState must be able to use a user's Claude subscription through the `anthropi
   print mode.** The `anthropic` provider's OAuth route (`anthropic.Subscription`,
   `internal/provider/anthropic`) implements
   `provider.Streamer`. The sign-in is the user's own OAuth sign-in inside the unmodified `claude` binary. Selection is
-  by `providers.anthropic.auth_type`: `oauth` (the default) or `api_key` (not yet available: the registry returns a
-  clear error naming `oauth` as the supported route). There is no `claude-code` provider name.
+  by `providers.anthropic.auth_type`: `oauth` (the default) or `api_key` (the API-key route below).
+  There is no `claude-code` provider name.
 
 1. One process per request: `claude -p --output-format stream-json --verbose --include-partial-messages
    --no-session-persistence --tools "" --strict-mcp-config --setting-sources "" --model <model>`, plus
@@ -65,9 +65,9 @@ FlowState must be able to use a user's Claude subscription through the `anthropi
    error instead of silently selecting the subscription route; an absent file is the default configuration. A
    missing binary is reported with its path in double quotes (backslashes unchanged), so a path with spaces is
    unambiguous.
-3. Hard rules: FlowState never reads, stores, refreshes or forwards any Claude credential or token; never reads
-   `~/.claude`; never sends a request to Anthropic itself from this provider; never sets or imitates Claude Code
-   identity headers.
+3. Hard rules (OAuth route): FlowState never reads, stores, refreshes or forwards any Claude credential or token;
+   never reads `~/.claude`; never sends a request to Anthropic itself from this provider; never sets or imitates
+   Claude Code identity headers.
 4. Models are the Claude Code aliases `sonnet`, `opus`, `haiku`; the request model is passed through unchanged
    (a full model id works) and defaults to `sonnet`.
 5. A signed-out Claude Code (`api_error_status` 401 or `authentication_failed`) yields an error telling the user to
@@ -95,11 +95,38 @@ FlowState must be able to use a user's Claude subscription through the `anthropi
    builds `exec.Cmd` as a literal because the security gate reports any `exec.Command` call with variable
    arguments and accepts no waivers; it must not be simplified back to `exec.Command`.
 
-The API-key route (`APIKey`, selected by `auth_type: api_key`) is a separate, later packet and is out of scope here.
+## API-key route
+
+`auth_type: api_key` selects `anthropic.APIKey`, a second and fully independent route: ordinary Anthropic API
+billing with a key the user created, not the Claude subscription. The hard rules of the OAuth route do not apply to
+it and it shares nothing with it: it never reads the Claude Code sign-in or `~/.claude`, never runs `claude`, and
+sends no OAuth, `Authorization` or `anthropic-beta` header, only `x-api-key`, `anthropic-version: 2023-06-01` and
+content headers, to `<base>/v1/messages`.
+
+1. Key: `ANTHROPIC_API_KEY`, else `providers.anthropic.api_key`. A missing key fails at resolve time with an error
+   naming both sources. The key is never written to a log line or event. In an error, every exact occurrence of
+   the key in the API error type and message, a transport error or a stream error is replaced by `[redacted]`; an
+   altered form of the key (partial, encoded) is not detected. Resolving makes no network request.
+2. Base URL: `ANTHROPIC_BASE_URL`, else `providers.anthropic.host`, else `https://api.anthropic.com` (the override
+   serves tests and proxies).
+3. Design: `APIKey` composes the existing Messages wire client in `internal/provider/zai` (anthropic coding route).
+   Two opt-in options, off by default so the z.ai route is unchanged apart from item 5: `WithAnthropicSystem` (system
+   messages go in the top-level `system` field; a request of only system messages is refused before any request)
+   and `WithAnthropicFinish` (a completed stream ends with a finish event carrying the stop reason). `APIKey` adds
+   the default model and `anthropic`-named errors (`anthropic: api error <status> <type>: <message>`). With no
+   injected client it does not follow redirects, so a 3xx is an API error and `x-api-key` is never re-sent to
+   another host. Tool refusal is `ErrUnsupportedTools`, as on the OAuth route.
+4. Models: `claude-sonnet-5-5`, `claude-haiku-5-5`, `claude-opus-5-5` are advisory and never validated.
+5. Stream failures: the shared client turns an SSE `error` event, a body read error, an EOF before `message_stop`
+   and an empty or non-event-stream 200 body into one terminal error event and no finish event. This also applies to
+   the z.ai anthropic route, which previously reported those cases as a completed turn. `stop_reason` maps to the
+   finish reason: `end_turn`, `stop_sequence` or absent: `stop`; `max_tokens`: `length`; others unchanged.
+6. Unsupported: structured tools and tool-role history (refused before any request); non-text blocks are ignored;
+   token usage is not reported; `max_tokens` is clamped to 8192..131072; no retries.
 
 ## Consequences
 
-### Negative
+### Negative (OAuth route)
 
 1. **No tools yet.** Any request with `Tools`, tool calls or tool-role messages fails closed before a process starts;
    Claude Code's own tools are disabled (`--tools ""`).
@@ -123,6 +150,12 @@ The API-key route (`APIKey`, selected by `auth_type: api_key`) is a separate, la
    child inherits the whole environment, secrets included, because sign-in depends on it. A relative
    `FLOWSTATE_CLAUDE_BIN` is resolved against the working directory of FlowState. `tool_use` blocks are ignored.
    A request with no system message runs under Claude Code's own default system prompt.
+   A real `claude` may use an inherited `ANTHROPIC_API_KEY` and bill the API instead of the subscription.
+
+### Negative (API-key route)
+
+1. Text only: no structured tools, no usage reporting, no retries, redirects not followed.
+2. A truncated stream is an error; truncation at `max_tokens` is finish reason `length`.
 
 ### Follow-ups
 

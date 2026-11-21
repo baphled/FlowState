@@ -28,6 +28,12 @@ type Provider struct {
 	// baseURLSet marks an explicit base-URL override (config host /
 	// env); the coding routes then use it as the host.
 	baseURLSet bool
+	// systemTopLevel hoists system-role messages into the Messages API
+	// "system" field on the anthropic route (WithAnthropicSystem).
+	systemTopLevel bool
+	// anthropicFinish ends an anthropic-route stream with a finish event
+	// carrying the mapped stop_reason (WithAnthropicFinish).
+	anthropicFinish bool
 }
 
 // Option customises the adapter.
