@@ -25,6 +25,7 @@ class MetadataCLI(unittest.TestCase):
         self.run_git('init', '-q')
         self.run_git('config', 'user.name', 'Native Author')
         self.run_git('config', 'user.email', 'fixture@example.invalid')
+        self.run_git('config', 'commit.gpgsign', 'false')
         self.run_git('commit', '--allow-empty', '-qm', 'chore: fixture base')
         self.base = self.run_git('rev-parse', 'HEAD').stdout.strip()
         self.msg = self.home / 'message with space.txt'

@@ -21,6 +21,7 @@ class PRSize(unittest.TestCase):
         self.git('init', '-q')
         self.git('config', 'user.name', 'Synthetic Fixture')
         self.git('config', 'user.email', 'fixture@example.invalid')
+        self.git('config', 'commit.gpgsign', 'false')
         self.git('commit', '--allow-empty', '-qm', 'fixture base')
         self.base = self.git('rev-parse', 'HEAD').strip()
 
