@@ -25,6 +25,15 @@ import (
 // selectable anthropic coding route; overridable in tests.
 var codingBaseURL = "https://api.z.ai/api/anthropic"
 
+var (
+	// ErrStreamEnded marks an anthropic-route stream that ended (EOF, or an
+	// empty or non-event-stream body) before message_stop.
+	ErrStreamEnded = errors.New("zai: stream ended early, before message_stop")
+	// ErrSystemOnly marks a WithAnthropicSystem request that holds system
+	// messages and nothing else; it is refused before any request is sent.
+	ErrSystemOnly = errors.New("zai: request has only system messages; the Messages API needs a user message")
+)
+
 // TestHookSetAnthropicBaseURL redirects the anthropic coding default
 // for httptest-backed specs outside this package.
 func TestHookSetAnthropicBaseURL(u string) { codingBaseURL = u }
@@ -50,6 +59,7 @@ func (p *Provider) codingChatAnthropic(ctx context.Context, req *provider.ChatRe
 }
 
 // codingStreamAnthropic streams text deltas from content_block_delta events.
+// A stream that fails or ends before message_stop ends with one error event.
 func (p *Provider) codingStreamAnthropic(ctx context.Context, req *provider.ChatRequest) <-chan provider.StreamEvent {
 	out := make(chan provider.StreamEvent)
 	go func() {
@@ -60,31 +70,90 @@ func (p *Provider) codingStreamAnthropic(ctx context.Context, req *provider.Chat
 			return
 		}
 		defer body.Close()
-		rd := bufio.NewReader(body)
-		for {
-			line, err := rd.ReadString('\n')
-			if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "data:") {
-				payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
-				var ev anthropicEvent
-				if jerr := json.Unmarshal([]byte(payload), &ev); jerr == nil {
-					if ev.Type == "content_block_delta" && ev.Delta.Text != "" {
-						select {
-						case out <- provider.StreamEvent{Content: ev.Delta.Text}:
-						case <-ctx.Done():
-							return
-						}
-					}
-					if ev.Type == "message_stop" {
-						return
-					}
-				}
-			}
-			if err != nil {
-				return
-			}
+		if err := p.readAnthropicStream(ctx, body, out); err != nil && ctx.Err() == nil {
+			out <- provider.StreamEvent{Kind: provider.StreamEventError, Err: err}
 		}
 	}()
 	return out
+}
+
+// readAnthropicStream returns nil at message_stop, else the first failure.
+func (p *Provider) readAnthropicStream(ctx context.Context, body io.Reader, out chan<- provider.StreamEvent) error {
+	rd := bufio.NewReader(body)
+	stop := ""
+	for {
+		line, rerr := rd.ReadString('\n')
+		if ev, ok := parseAnthropicEvent(line); ok {
+			done, err := p.handleAnthropicEvent(ctx, ev, &stop, out)
+			if err != nil || done {
+				return err
+			}
+		}
+		if rerr == io.EOF {
+			return ErrStreamEnded
+		}
+		if rerr != nil {
+			return fmt.Errorf("zai: read stream: %w", rerr)
+		}
+	}
+}
+
+// parseAnthropicEvent decodes one SSE data line; ok is false for any other line.
+func parseAnthropicEvent(line string) (anthropicEvent, bool) {
+	trimmed := strings.TrimSpace(line)
+	var ev anthropicEvent
+	if !strings.HasPrefix(trimmed, "data:") {
+		return ev, false
+	}
+	payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+	return ev, json.Unmarshal([]byte(payload), &ev) == nil
+}
+
+// handleAnthropicEvent forwards text, remembers the stop reason, fails on an
+// error event and finishes on message_stop (done is true).
+func (p *Provider) handleAnthropicEvent(ctx context.Context, ev anthropicEvent, stop *string, out chan<- provider.StreamEvent) (bool, error) {
+	switch ev.Type {
+	case "content_block_delta":
+		if ev.Delta.Text == "" {
+			return false, nil
+		}
+		return false, sendAnthropic(ctx, out, provider.StreamEvent{Content: ev.Delta.Text})
+	case "message_delta":
+		if ev.Delta.StopReason != "" {
+			*stop = ev.Delta.StopReason
+		}
+	case "error":
+		return false, fmt.Errorf("zai: stream error %s: %s", ev.Error.Type, ev.Error.Message)
+	case "message_stop":
+		if !p.anthropicFinish {
+			return true, nil
+		}
+		fin := provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: finishReason(*stop)}
+		return true, sendAnthropic(ctx, out, fin)
+	}
+	return false, nil
+}
+
+// sendAnthropic delivers ev unless ctx ends first.
+func sendAnthropic(ctx context.Context, out chan<- provider.StreamEvent, ev provider.StreamEvent) error {
+	select {
+	case out <- ev:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// finishReason maps a stop_reason: end_turn, stop_sequence and absent are
+// "stop", max_tokens is "length", anything else passes through.
+func finishReason(stopReason string) string {
+	switch stopReason {
+	case "", "end_turn", "stop_sequence":
+		return "stop"
+	case "max_tokens":
+		return "length"
+	}
+	return stopReason
 }
 
 // codingPost sends one request to the Anthropic-compatible endpoint; the host honours codingBase() so explicit config hosts still win.
@@ -96,7 +165,14 @@ func (p *Provider) codingPost(ctx context.Context, req *provider.ChatRequest, st
 	if model == "" {
 		model = p.model
 	}
-	buf, err := json.Marshal(anthropicRequest{Model: model, MaxTokens: ClampMaxTokens(req.MaxTokens), Stream: stream, Messages: req.Messages})
+	wire := anthropicRequest{Model: model, MaxTokens: ClampMaxTokens(req.MaxTokens), Stream: stream, Messages: req.Messages}
+	if p.systemTopLevel {
+		wire.System, wire.Messages = splitSystem(req.Messages)
+		if wire.System != "" && len(wire.Messages) == 0 {
+			return nil, ErrSystemOnly
+		}
+	}
+	buf, err := json.Marshal(wire)
 	if err != nil {
 		return nil, err
 	}
@@ -132,4 +208,19 @@ func (p *Provider) codingPost(ctx context.Context, req *provider.ChatRequest, st
 		return nil, apiErr
 	}
 	return resp.Body, nil
+}
+
+// splitSystem separates system-role messages (joined by a blank line) from
+// the conversation, preserving the order of the remaining messages.
+func splitSystem(msgs []provider.Message) (string, []provider.Message) {
+	var system []string
+	rest := make([]provider.Message, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Role == "system" {
+			system = append(system, m.Content)
+			continue
+		}
+		rest = append(rest, m)
+	}
+	return strings.Join(system, "\n\n"), rest
 }

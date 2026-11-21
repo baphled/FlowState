@@ -54,6 +54,13 @@ def app_jwt(app_id, private_key, now):
         raise AdmissionError('GitHub App signing key unavailable or invalid') from error
 
 
+# GitHub issues installation tokens for exactly one hour, and the local clock
+# is read after the response arrives. An exact one-hour bound therefore leaves
+# only the request latency as slack: a clock a fraction of a second behind
+# GitHub's rejects every token and the publisher cannot start. Allow a minute.
+EXPIRY_SKEW_SECONDS = 60
+
+
 def validate_token(record, repository, repository_id, now):
     """Reject excess authority, absent repository binding and unsafe expiry."""
     if not isinstance(record, dict) or not isinstance(record.get('token'), str) or not record['token']:
@@ -72,7 +79,7 @@ def validate_token(record, repository, repository_id, now):
     try:
         expiry = datetime.fromisoformat(record['expires_at'].replace('Z', '+00:00'))
         lifetime = expiry.timestamp() - now
-        if expiry.tzinfo is None or not 60 < lifetime <= 3600:
+        if expiry.tzinfo is None or not 60 < lifetime <= 3600 + EXPIRY_SKEW_SECONDS:
             raise ValueError('unsafe expiry')
     except (KeyError, ValueError, TypeError, AttributeError) as error:
         raise AdmissionError('installation credential expiry invalid') from error

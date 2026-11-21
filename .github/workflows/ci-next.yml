@@ -16,7 +16,10 @@ jobs:
   admission-result:
     name: Merge Admission Result
     needs: [build]
-    if: ${{ always() && github.event_name == 'pull_request' }}
+    # The publisher reports only on open, non-draft pull requests into next.
+    if: >-
+      ${{ always() && github.event_name == 'pull_request' &&
+      !github.event.pull_request.draft && github.event.pull_request.base.ref == 'next' }}
     runs-on: ubuntu-latest
     timeout-minutes: 4
     permissions:
@@ -26,7 +29,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install pinned verifier dependency
         run: python3 -m pip install -r scripts/requirements-admission.txt
-      - name: Require a terminal result from the trusted publisher
+      - name: Report publisher liveness (the required status decides the merge)
         env:
           GITHUB_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}

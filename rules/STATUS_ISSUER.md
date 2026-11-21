@@ -71,15 +71,26 @@ make admission-runner-stop
 
 Installation validates config, installs pinned dependencies in a venv and registers
 the user unit. Startup authenticates the App/protected source before notifying
-systemd readiness; failure/timeout returns nonzero. Crashes have bounded restarts.
+systemd readiness; failure/timeout returns nonzero. A crashed or failed runner is
+restarted for ever, every 30 seconds, with no start limit, so a persistent fault
+shows as `activating (auto-restart)` and never as `failed`: `make admission-runner-status`
+prints ActiveState, SubState, NRestarts and Result; also check
+`journalctl --user -u flowstate-admission.service`. Installing does not restart a running
+publisher; stop and start it to run newly installed code.
 Every 15 seconds all ready next PRs are evaluated, including missing-review failures.
 Unexpected exceptions and SIGTERM attempt exact-head failure publication and token
 cleanup. Per-PR errors are logged/retried while other PRs continue; single-shot
 `--once`/`--pr` errors and startup/list failures exit nonzero. Inspect journald.
 
-The separate CI `Merge Admission Result` check waits at most 120 seconds after
-Build for a terminal App-issued result. Missing, stuck, failed or wrong-publisher
-results fail CI visibly. It is diagnostic: it cannot satisfy or replace the
+The separate CI `Merge Admission Result` job is a publisher liveness monitor. It runs only for
+non-draft pull requests into `next`, the only ones the publisher reports on. After
+Build it waits at most 120 seconds for any `flowstate/merge-admission` status
+from the App for the exact head. A status in any state (success, pending, failure
+or error) passes the job and is written to the step summary: the required status
+context, not this job, decides the merge, so the job is expected to be green
+before a review is attested. No status from the publisher by the deadline fails the
+job with a pointer to `systemctl --user status flowstate-admission.service`, as
+does a status from any other creator. It cannot satisfy or replace the
 App-pinned required status. It follows Build to avoid an admission/Build cycle.
 This polling service does not provide exclusive atomic merge authority. Stop an
 older admission daemon before adopting it; do not run competing publishers.

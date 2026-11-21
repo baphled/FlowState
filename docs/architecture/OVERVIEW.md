@@ -24,7 +24,7 @@ See [the enforced code structure contract](../../rules/ARCHITECTURE.md) for exac
 ownership and import rules. Existing concrete-store coupling is refactoring debt;
 its presence is not permission to add another dependency or a new global.
 
-## Serve transport (S1/S2)
+## Serve transport (S1–S4)
 
 `flowstate serve` exposes the session surface over HTTP from `internal/server`:
 `GET /health`, `GET /sessions[?status=…]`, `GET /sessions/{id}` (session
@@ -34,13 +34,49 @@ session answers 409 `session_terminal` — closing/cancelling is not idempotent)
 and `GET /sessions/{id}/doctor` reusing the CLI `session-doctor` output shape,
 wired through narrow `server.Ports`; no store
 type crosses into transport and `cmd` only builds the closures and listener.
-Session creation stays out of scope (its config composition is a separate
-packet). Errors render the shared `{code,message}` body with statuses from the
+S3 adds the budget and steering resources: `GET /sessions/{id}/budget`
+(session-budget shape), `POST /sessions/{id}/budget` `{"pool":N}` anchoring
+the shared pool through the run budget seam (positive pool only; the
+response is the updated overview), and `POST /sessions/{id}/message`
+`{"from","body"}` (session-message shape) — steering failures, including
+unknown sessions, answer 400 `usage` because the app layer wraps them into
+`ErrUsage` before the shared code table.
+S4 adds the path-based swarm and receipt endpoints — `POST /swarm/validate`
+`{"path"}`, `POST /swarm/run` `{"parent","path","budget"}` (unknown parent 404,
+budget stops 409, gate-not-accepted surfaces the app's unwrapped error → 500) and
+`POST /receipt/validate` `{"path"}` (an invalid receipt is a 200 `"invalid"`
+verdict mirroring the CLI's per-file line) — reusing the CLI `swarm-validate`,
+`swarm-run` and `receipt-validate` schema keys.
+Errors render the shared `{code,message}` body with statuses from the
 closed error-code table — an empty or unknown `ErrCode` result maps explicitly
 to `internal`/500; the listener defaults to loopback `127.0.0.1:7600`
 (`--addr`), auth is an optional `FLOWSTATE_SERVE_TOKEN` bearer, and the
-`http.Server` caps read headers at 5s and writes/idle at 30s; shutdown drains
-within 5s. Run endpoints stay out of scope for now.
+`http.Server` caps read headers at 5s and writes/idle at 30s. Shutdown cancels
+in-flight reads (requests inherit the serve context) and drains within 5s;
+writes are detached from request cancellation, so neither shutdown nor a client
+disconnect stops one half way; the run endpoint is the deliberate exception:
+its turn follows the request context, so a disconnect or shutdown mid-run
+cancels the session, as SIGINT does for the CLI. Every request body is capped at
+1 MiB (a larger one is 400 `usage` naming the limit, and the connection is
+closed) and every POST body is decoded strictly (unknown fields and trailing
+data are 400 `usage`). The `after` cursor of the events endpoints must be one
+integer: a query string that does not parse, a repeated cursor, an empty value
+or a non-integer is 400 `usage`, and only an absent cursor means 0.
+A swarm run that outlives the grace period still ends the process with an error.
+
+S5 completes the surface. `GET /sessions/{id}/events?after=N` answers events
+past the strictly-greater cursor (absent is 0; `after=-1` replays seq 0);
+`.../events/stream?after=N` follows the log over SSE (200ms poll reading status
+before events, terminal status frame, per-write deadline reset 15s ahead of the
+global 30s `WriteTimeout`). `POST /sessions/{id}/run` runs one
+synchronous turn behind the `session run` preamble and answers the projected
+event log; `{"budget","max_tokens"}` mirrors the CLI flags, provider failures
+502 `provider_error`, budget stops 409, and the route's deadline extends 10
+minutes; a client disconnect or shutdown mid-run cancels the session, as
+SIGINT does for the CLI.
+`POST /sessions` creates via the `session new` composition (a write, so it is
+detached from cancellation): body fields override serve config, secret-looking
+keys are 400 `usage` (client input, unlike the config's `config_invalid`).
 
 ## Structured provider tools
 
@@ -84,6 +120,29 @@ With the Go toolchain and module dependencies installed, run from repository roo
 ```sh
 go run github.com/onsi/ginkgo/v2/ginkgo --procs=2 --randomize-all --randomize-suites --race --fail-on-pending --fail-on-empty --timeout=3m ./internal/provider ./internal/provider/zai
 ```
+
+## Anthropic provider
+
+`internal/provider/anthropic` (registry name `anthropic`) is selected by
+`providers.anthropic.auth_type`: `oauth` (the default) or `api_key`.
+The OAuth route reaches a user's Claude subscription through their own Claude Code sign-in,
+only by running the user's own unmodified `claude` binary in headless
+print mode, prompt on stdin, and parsing its stream-json output. FlowState never reads,
+stores or forwards a Claude credential and sends nothing to Anthropic itself; the user
+signs in with `claude` and `/login`. `FLOWSTATE_CLAUDE_BIN` overrides the binary. The
+provider refuses structured tool calls, always sends a lossy `User:` / `Assistant:` transcript
+(so a prompt can never start with `/`) and ignores `MaxTokens`. FlowState does not pool or
+resell a subscription but does not enforce single-user use: `flowstate serve` runs a session
+for anyone who can reach it, so keep the loopback bind and set `FLOWSTATE_SERVE_TOKEN`; letting
+others reach it would route their requests through the owner's plan, which the policy forbids.
+
+The `api_key` route (`anthropic.APIKey`) is ordinary Anthropic API billing, independent of the
+subscription route. It sends the key (`ANTHROPIC_API_KEY`, else `providers.anthropic.api_key`) as
+`x-api-key` to `<base>/v1/messages` (`ANTHROPIC_BASE_URL`, else `providers.anthropic.host`, else
+`https://api.anthropic.com`), reusing the Messages wire client in `internal/provider/zai`. It never reads
+the Claude Code sign-in or runs `claude`. It supports text chat and streaming, system messages and
+`MaxTokens`; structured tools are refused, a truncated stream is an error, and nothing is retried.
+See ADR-008.
 
 ## Session tool catalog
 

@@ -119,15 +119,17 @@ func TurnWithOptions(ctx context.Context, st *store.Store, sess *store.Session, 
 // cancelOnInterrupt cancels the session cleanly on SIGINT so the CLI
 // can exit 130 without partial silent writes; a detached context
 // completes the cancellation writes even though the parent is
-// cancelled.
+// cancelled. The event is appended before the status, as on every
+// other terminal path, so a reader that observes the terminal status
+// always finds its final event already committed.
 func cancelOnInterrupt(ctx context.Context, w *store.EventWriter, st *store.Store, sess *store.Session) error {
 	cctx := context.WithoutCancel(ctx)
-	if serr := st.UpdateSessionStatus(cctx, sess.ID, "cancelled"); serr != nil {
-		return fmt.Errorf("mark session cancelled: %w", serr)
-	}
 	if _, aerr := w.Append(cctx, session.ActorEngine, session.TypeSessionCancelled,
 		map[string]any{"status": "cancelled", "reason": "sigint"}); aerr != nil {
 		return aerr
+	}
+	if serr := st.UpdateSessionStatus(cctx, sess.ID, "cancelled"); serr != nil {
+		return fmt.Errorf("mark session cancelled: %w", serr)
 	}
 	return ErrSessionCancelled
 }
