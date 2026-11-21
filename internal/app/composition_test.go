@@ -2,8 +2,10 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -212,5 +214,98 @@ var _ = Describe("Wire", func() {
 		events, err := c.EventLog().Replay(ctx, "sid-port")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(events).To(HaveLen(1))
+	})
+})
+
+// failingSettleStore returns a file store holding a pooled parent and a
+// cancellable child whose reservation cannot be settled: a trigger on a
+// second connection aborts every reservation update.
+func failingSettleStore() (st *store.Store, parentID, childID string) {
+	ctx := context.Background()
+	path := filepath.Join(GinkgoT().TempDir(), "settle.db")
+	st, err := store.Open(path)
+	if err != nil {
+		panic(err)
+	}
+	DeferCleanup(func() { _ = st.Close() })
+	parent, err := CreateSession(ctx, st, "p", "m", DefaultHarness, "sha", "parent task")
+	if err != nil {
+		panic(err)
+	}
+	if err = st.SetBudgetPool(ctx, parent.ID, 100); err != nil {
+		panic(err)
+	}
+	child, err := CreateChildSession(ctx, st, parent.ID, "p", "m", DefaultHarness, "sha", "child task")
+	if err != nil {
+		panic(err)
+	}
+	if err = ReserveChildBudget(ctx, st, parent.ID, child.ID, 40); err != nil {
+		panic(err)
+	}
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		panic(err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err = db.Exec(`CREATE TRIGGER no_settle BEFORE UPDATE ON budget_reservations ` +
+		`BEGIN SELECT RAISE(ABORT, 'settle blocked'); END`); err != nil {
+		panic(err)
+	}
+	return st, parent.ID, child.ID
+}
+
+var _ = Describe("CancelSession", func() {
+	It("cancels a session without error when nothing blocks the settle", func() {
+		st := mustStore()
+		root, cerr := CreateSession(context.Background(), st, "p", "m", DefaultHarness, "sha", "task")
+		if cerr != nil {
+			panic(cerr)
+		}
+		Expect(CancelSession(context.Background(), st, root.ID)).Error().ToNot(HaveOccurred())
+	})
+
+	It("reports a failed settle as ErrReservationSettle", func() {
+		st, _, childID := failingSettleStore()
+		_, err := CancelSession(context.Background(), st, childID)
+		Expect(err).To(MatchError(ErrReservationSettle))
+	})
+
+	It("still returns the cancelled session when the settle fails", func() {
+		st, _, childID := failingSettleStore()
+		sess, _ := CancelSession(context.Background(), st, childID)
+		Expect(sess.Status).To(Equal("cancelled"))
+	})
+
+	It("persists the cancelled status when the settle fails", func() {
+		st, _, childID := failingSettleStore()
+		if _, err := CancelSession(context.Background(), st, childID); !errors.Is(err, ErrReservationSettle) {
+			panic("the settle did not fail")
+		}
+		got, err := st.GetSession(context.Background(), childID)
+		if err != nil {
+			panic(err)
+		}
+		Expect(got.Status).To(Equal("cancelled"))
+	})
+
+	It("records the cancelled event before the settle is attempted", func() {
+		st, _, childID := failingSettleStore()
+		if _, err := CancelSession(context.Background(), st, childID); !errors.Is(err, ErrReservationSettle) {
+			panic("the settle did not fail")
+		}
+		events, err := st.Replay(context.Background(), childID)
+		if err != nil {
+			panic(err)
+		}
+		Expect(events[len(events)-1].Type).To(Equal("session.cancelled"))
+	})
+
+	It("keeps a terminal session's own error", func() {
+		st, _, childID := failingSettleStore()
+		if _, err := CancelSession(context.Background(), st, childID); !errors.Is(err, ErrReservationSettle) {
+			panic("the settle did not fail")
+		}
+		_, err := CancelSession(context.Background(), st, childID)
+		Expect(ErrorCode(err)).To(Equal(CodeSessionTerminal))
 	})
 })

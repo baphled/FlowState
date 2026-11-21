@@ -26,7 +26,7 @@ const TokenEnv = "FLOWSTATE_SERVE_TOKEN"
 
 // New wires a Server; a non-empty FLOWSTATE_SERVE_TOKEN enables bearer auth.
 func New(p Ports) *Server {
-	return &Server{ports: p, token: os.Getenv(TokenEnv)}
+	return &Server{ports: cancelAware(p), token: os.Getenv(TokenEnv)}
 }
 
 // Handler routes /health, /sessions, the /sessions/{id}[/action]
@@ -34,13 +34,13 @@ func New(p Ports) *Server {
 // token middleware.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health", s.getOnly(s.handleHealth))
+	mux.HandleFunc("/health", s.methodOnly(http.MethodGet, s.handleHealth))
 	mux.HandleFunc("/sessions", s.handleSessionsRoot)
 	mux.HandleFunc("/sessions/", s.handleSessions)
 	mux.HandleFunc("/swarm/validate", s.methodOnly(http.MethodPost, s.swarmValidateHandler))
 	mux.HandleFunc("/swarm/run", s.methodOnly(http.MethodPost, s.swarmRunHandler))
 	mux.HandleFunc("/receipt/validate", s.methodOnly(http.MethodPost, s.receiptValidateHandler))
-	mux.HandleFunc("/", s.getOnly(func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/", s.methodOnly(http.MethodGet, func(w http.ResponseWriter, _ *http.Request) {
 		s.writeErrorStatus(w, http.StatusNotFound, "usage", "unknown route")
 	}))
 	return s.withToken(s.withBodyLimit(mux))
@@ -115,7 +115,13 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 	// Requests inherit the serve context, so shutdown cancels in-flight
 	// reads instead of waiting the whole grace period on them; writes
 	// opt out through writeContext and are drained by Shutdown.
-	srv.BaseContext = func(net.Listener) context.Context { return ctx }
+	// A request's context is cancelled with errShuttingDown as its cause when
+	// ctx ends, whereas a client disconnect carries no cause.
+	baseCtx, cancelBase := context.WithCancelCause(context.WithoutCancel(ctx))
+	defer cancelBase(nil)
+	stop := context.AfterFunc(ctx, func() { cancelBase(errShuttingDown) })
+	defer stop()
+	srv.BaseContext = func(net.Listener) context.Context { return baseCtx }
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(l) }()
 	select {
@@ -151,14 +157,4 @@ func (s *Server) withToken(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
-}
-
-func (s *Server) getOnly(h http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			s.writeErrorStatus(w, http.StatusMethodNotAllowed, "usage", "method not allowed")
-			return
-		}
-		h(w, r)
-	}
 }
