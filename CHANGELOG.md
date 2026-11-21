@@ -2,6 +2,12 @@
 
 All notable changes to the FlowState project will be documented in this file.
 
+## [1.7.0](https://github.com/baphled/FlowState/compare/v1.6.1...v1.7.0) (2026-11-21)
+
+### Features
+
+* **config:** give the cli its own providers.yaml ([#356](https://github.com/baphled/FlowState/issues/356)) ([6ec9f49](https://github.com/baphled/FlowState/commit/6ec9f49804c8ba56a9301aec0a65942a2e0b60de))
+
 ## [1.6.1](https://github.com/baphled/FlowState/compare/v1.6.0...v1.6.1) (2026-11-21)
 
 ### Bug Fixes
