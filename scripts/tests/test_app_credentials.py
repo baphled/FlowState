@@ -89,6 +89,18 @@ class AppCredentialTests(unittest.TestCase):
             with self.subTest(path=path), self.assertRaises(AdmissionError):
                 self.credentials()
 
+    def test_token_issued_while_the_local_clock_is_behind_is_accepted(self):
+        for behind in (0.5, 30, 60):
+            with self.subTest(behind=behind):
+                self.token_response['expires_at'] = datetime.fromtimestamp(
+                    NOW + 3600 + behind, timezone.utc).isoformat()
+                self.assertEqual(self.credentials().token, 'synthetic-installation-token')
+
+    def test_token_outliving_the_skew_allowance_is_rejected(self):
+        self.token_response['expires_at'] = datetime.fromtimestamp(NOW + 3661, timezone.utc).isoformat()
+        with self.assertRaises(AdmissionError):
+            self.credentials()
+
     def test_wrong_repository_expiry_and_excess_permissions_fail(self):
         changes = [ {'repositories': [{'id': 43, 'full_name': 'owner/other'}]},
                     {'permissions': {'statuses': 'write', 'contents': 'write'}},

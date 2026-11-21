@@ -71,7 +71,12 @@ make admission-runner-stop
 
 Installation validates config, installs pinned dependencies in a venv and registers
 the user unit. Startup authenticates the App/protected source before notifying
-systemd readiness; failure/timeout returns nonzero. Crashes have bounded restarts.
+systemd readiness; failure/timeout returns nonzero. A crashed or failed runner is
+restarted for ever, every 30 seconds, with no start limit, so a persistent fault
+shows as `activating (auto-restart)` and never as `failed`: check
+`systemctl --user show -p ActiveState,SubState,NRestarts flowstate-admission.service`
+and `journalctl --user -u flowstate-admission.service`. Installing does not restart
+a running publisher; stop and start it to run newly installed code.
 Every 15 seconds all ready next PRs are evaluated, including missing-review failures.
 Unexpected exceptions and SIGTERM attempt exact-head failure publication and token
 cleanup. Per-PR errors are logged/retried while other PRs continue; single-shot

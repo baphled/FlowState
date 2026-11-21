@@ -45,12 +45,17 @@ def package(output):
 
 
 def unit(root, config):
-    """Keep credentials outside the package and restart crashed runners visibly."""
+    """Keep credentials outside the package and never stop restarting the runner.
+
+    A start limit turns a few quick failures (a GitHub outage, a clock a moment
+    out of step) into a publisher that stays dead until someone notices, which
+    blocks every merge; restart for ever instead, with a pause between tries.
+    """
     args = [root / 'venv/bin/python', '-B', root / 'runner.pyz', '--config', config]
     start = ' '.join(json.dumps(str(arg), ensure_ascii=False).replace('%', '%%') for arg in args)
-    return ('[Unit]\nDescription=FlowState merge admission\nStartLimitIntervalSec=300\nStartLimitBurst=3\n'
+    return ('[Unit]\nDescription=FlowState merge admission\nStartLimitIntervalSec=0\n'
             '[Service]\nType=notify\nTimeoutStartSec=120\nExecStart=' + start +
-            '\nRestart=on-failure\nRestartSec=10\nTimeoutStopSec=30\n'
+            '\nRestart=always\nRestartSec=30\nTimeoutStopSec=30\n'
             '[Install]\nWantedBy=default.target\n')
 
 

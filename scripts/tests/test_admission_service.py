@@ -41,8 +41,14 @@ class Service(unittest.TestCase):
             self.assertIn('--check-config', command.call_args_list[0].args)
             self.assertEqual(command.call_args_list[-1].args[:4],
                              ('systemctl', '--user', 'is-active', '--quiet'))
-        self.assertIn('Restart=on-failure', unit(Path('/safe'), Path('/config')))
+        self.assertIn('Restart=always', unit(Path('/safe'), Path('/config')))
         self.assertIn('Type=notify', unit(Path('/safe'), Path('/config')))
+
+    def test_unit_never_stops_restarting_the_publisher(self):
+        text = unit(Path('/safe'), Path('/config'))
+        self.assertIn('StartLimitIntervalSec=0', text)
+        self.assertNotIn('StartLimitBurst', text)
+        self.assertIn('RestartSec=30', text)
 
     def test_monitor_follows_build_without_creating_a_dependency_cycle(self):
         root = Path(__file__).resolve().parents[2]
