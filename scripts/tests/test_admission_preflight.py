@@ -1,6 +1,7 @@
 """Preflight rejects real admission failure classes without publishing a status."""
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -118,6 +119,26 @@ class PushHook(unittest.TestCase):
             # Both branch tips are admission-checked, including the one pushed to a tag name.
             self.assertEqual((root / 'log').read_text().count('check-admission-commits'), 2)
 
+    def test_non_head_tip_warns_without_a_preflight_and_head_tip_does_not_warn(self):
+        hook = Path(__file__).resolve().parents[2] / '.githooks/pre-push'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            programs = {'git': '#!/bin/sh\ncase "$1" in rev-parse) echo ' + PARENT + ';; esac\n',
+                        'python3': '#!/bin/sh\nexit 0\n',
+                        'make': '#!/bin/sh\necho "$*" >> "$LOG"\n'}
+            for name, source in programs.items():
+                (root / name).write_text(source)
+                (root / name).chmod(0o755)
+            env = dict(os.environ, PATH=str(root) + ':' + os.environ['PATH'], LOG=str(root / 'log'))
+            run = lambda tip: subprocess.run(['/bin/sh', str(hook)], input=tip, text=True, env=env,
+                                             capture_output=True)
+            other = run(f'refs/heads/other {HEAD} refs/heads/other {PARENT}\n')
+            self.assertIn('refs/heads/other is not the checked-out HEAD', other.stderr)
+            calls = (root / 'log').read_text().splitlines()
+            self.assertEqual([c for c in calls if c.startswith('preflight')], ['preflight BASE_SHA=' + PARENT])
+            self.assertNotIn(HEAD, [c for c in calls if c.startswith('preflight')][0])
+            self.assertNotIn('warning', run(f'refs/heads/me {PARENT} refs/heads/me {HEAD}\n').stderr)
+
     def test_failing_ci_preflight_aborts_the_push(self):
         hook = Path(__file__).resolve().parents[2] / '.githooks/pre-push'
         with tempfile.TemporaryDirectory() as directory:
@@ -140,31 +161,141 @@ class PushHook(unittest.TestCase):
 class ToolPins(unittest.TestCase):
     """Makefile `make preflight` tool pins must match the versions CI installs."""
     root = Path(__file__).resolve().parents[2]
-    pattern = {'golangci-lint': r'golangci-lint[^\n]*?(v\d+\.\d+\.\d+)|^\s*version: (v2\.\d+\.\d+)',
-               'gosec': r'GOSEC_VERSION:?=? ?"?(v\d+\.\d+\.\d+)|gosec/v2/cmd/gosec@(v\d+\.\d+\.\d+)'}
 
-    def versions(self, name, tool):
-        text = (self.root / name).read_text()
-        found = {m for groups in re.findall(self.pattern[tool], text, re.M) for m in groups if m}
+    def pins(self, tool):
+        """Return (location, version) for every pin of the tool in any workflow."""
+        found = []
+        for path in sorted((self.root / '.github/workflows').glob('*.yml')):
+            lines = path.read_text().splitlines()
+            env = {m.group(1): m.group(2) for m in
+                   (re.match(r'\s*(\w+_VERSION): "?(v[\d.]+)"?\s*$', line) for line in lines) if m}
+            for number, line in enumerate(lines, 1):
+                where = f'{path.relative_to(self.root)}:{number}'
+                if tool == 'gosec':
+                    m = re.search(r'gosec/v2/cmd/gosec@(\$\{\{ \w+\.\w+ \}\}|\S+)', line)
+                    if m:
+                        ref = re.match(r'\$\{\{ env\.(\w+) \}\}', m.group(1))
+                        found.append((where, env.get(ref.group(1), m.group(1)) if ref else m.group(1)))
+                elif 'golangci-lint-action' in line:
+                    window = ' '.join(lines[number:number + 6])
+                    m = re.search(r'version: (\S+)', window)
+                    found.append((where, m.group(1) if m else 'unpinned'))
+                elif re.search(r'golangci-lint/HEAD/install\.sh', line):
+                    found.append((where, line.split()[-1]))
         return found
 
-    def test_makefile_pins_match_every_workflow_pin(self):
-        makefile = {'golangci-lint': re.search(r'^GOLANGCI_LINT_VERSION := (\S+)', (self.root / 'Makefile').read_text(), re.M),
-                    'gosec': re.search(r'^GOSEC_VERSION := (\S+)', (self.root / 'Makefile').read_text(), re.M)}
-        for tool, match in makefile.items():
-            self.assertIsNotNone(match, tool)
-            pinned = set()
-            for workflow in ('ci-next.yml', 'ci.yml', 'release.yml'):
-                found = self.versions('.github/workflows/' + workflow, tool)
-                pinned |= found
-                with self.subTest(tool=tool, workflow=workflow):
-                    self.assertLessEqual(found, {match.group(1)})
-                    self.assertFalse(self.floating(workflow, tool), 'unpinned ' + tool + ' in ' + workflow)
-            self.assertEqual(pinned, {match.group(1)}, tool + ' pin not found in any workflow')
+    def test_every_workflow_takes_its_go_version_from_go_mod(self):
+        """A workflow that names its own Go version drifts from go.mod (release.yml did)."""
+        offenders = []
+        for workflow in sorted((self.root / '.github/workflows').glob('*.yml')):
+            for number, line in enumerate(workflow.read_text().splitlines(), 1):
+                if re.match(r'\s*go-version:', line) or re.match(r'\s*GO_VERSION:', line):
+                    offenders.append(f'{workflow.name}:{number}')
+        self.assertEqual(offenders, [], 'use `go-version-file: go.mod`: ' + ', '.join(offenders))
 
-    def floating(self, workflow, tool):
-        """Lines that install the tool at a moving version such as latest or master."""
-        text = (self.root / '.github/workflows' / workflow).read_text()
-        loose = r'(@|bin |version: |VERSION: ?"?)(latest|master|main)\b'
-        return [line for line in text.splitlines()
-                if re.search(loose, line) and (tool in line or 'version:' in line or tool.upper().replace('-', '_') in line)]
+    def test_makefile_pins_match_every_workflow_pin(self):
+        makefile = (self.root / 'Makefile').read_text()
+        for tool, variable in (('golangci-lint', 'GOLANGCI_LINT_VERSION'), ('gosec', 'GOSEC_VERSION')):
+            match = re.search(rf'^{variable} := (\S+)', makefile, re.M)
+            self.assertIsNotNone(match, tool)
+            pins = self.pins(tool)
+            self.assertTrue(pins, tool + ' is not installed by any workflow')
+            for where, version in pins:
+                with self.subTest(tool=tool, where=where):
+                    self.assertEqual(version, match.group(1),
+                                     f'{tool}: Makefile:{variable} pins {match.group(1)} '
+                                     f'but {where} pins {version}')
+
+
+class ToolInstall(unittest.TestCase):
+    """The install rule and the node_modules stamp, run against fakes in a path with a space."""
+    root = Path(__file__).resolve().parents[2]
+
+    def scratch(self, directory, files, fakes):
+        work = Path(directory) / 'a repo'
+        (work / 'scripts').mkdir(parents=True)
+        for name in files:
+            shutil.copy(self.root / name, work / name)
+        bins = Path(directory) / 'fake bin'
+        bins.mkdir()
+        for name, source in fakes.items():
+            (bins / name).write_text('#!/bin/sh\n' + source)
+            (bins / name).chmod(0o755)
+        env = dict(os.environ, PATH=str(bins) + ':' + os.environ['PATH'])
+        return work, env
+
+    def test_makefile_rule_installs_atomically_in_a_path_with_a_space(self):
+        fake_go = 'echo "$GOTOOLCHAIN $GOBIN $*" >> "$LOG"\nname=${2##*/}\nprintf built > "$GOBIN/${name%@*}"\n'
+        with tempfile.TemporaryDirectory() as directory:
+            work, env = self.scratch(directory, ['Makefile', 'go.mod', 'scripts/install_go_tool.sh'],
+                                     {'go': fake_go})
+            env['LOG'] = str(Path(directory) / 'log')
+            target = 'bin/tools/gosec-' + re.search(r'^GOSEC_VERSION := (\S+)',
+                                                    (work / 'Makefile').read_text(), re.M).group(1)
+            done = subprocess.run(['make', '-s', target], cwd=work, env=env, text=True, capture_output=True)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual((work / target).read_text(), 'built')
+            self.assertEqual(sorted(p.name for p in (work / 'bin/tools').iterdir()), [Path(target).name])
+            self.assertIn('go1.', (Path(directory) / 'log').read_text())
+            self.assertIn('a repo/bin/tools/.install.', (Path(directory) / 'log').read_text())
+
+    def test_failed_install_leaves_no_file_at_the_versioned_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work, env = self.scratch(directory, ['scripts/install_go_tool.sh'],
+                                     {'go': 'printf partial > "$GOBIN/gosec"\nexit 3\n'})
+            final = work / 'bin/tools/gosec-v1'
+            done = subprocess.run(['sh', 'scripts/install_go_tool.sh', 'x/gosec@v1', 'gosec', str(final)],
+                                  cwd=work, env=env, capture_output=True)
+            self.assertEqual(done.returncode, 3)
+            self.assertEqual(list((work / 'bin/tools').iterdir()), [])
+
+    def ensure(self, work, env):
+        return subprocess.run(['sh', 'scripts/ensure_node_modules.sh'], cwd=work, env=env,
+                              capture_output=True, text=True)
+
+    def test_node_modules_is_reinstalled_only_when_the_lock_changed(self):
+        fake_npm = 'echo "$*" >> "$LOG"\nmkdir -p node_modules\n'
+        with tempfile.TemporaryDirectory() as directory:
+            work, env = self.scratch(directory, ['scripts/ensure_node_modules.sh'], {'npm': fake_npm})
+            env['LOG'] = str(Path(directory) / 'log')
+            (work / 'package-lock.json').write_text('one')
+            runs = lambda: (Path(directory) / 'log').read_text().count('ci') if (Path(directory) / 'log').exists() else 0
+            (work / 'node_modules').mkdir()           # present but never stamped
+            self.assertEqual(self.ensure(work, env).returncode, 0)
+            self.assertEqual(runs(), 1)
+            self.ensure(work, env)                    # unchanged lock
+            self.assertEqual(runs(), 1)
+            (work / 'package-lock.json').write_text('two')
+            self.ensure(work, env)                    # changed lock
+            self.assertEqual(runs(), 2)
+
+    def test_failed_npm_ci_leaves_no_stamp(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work, env = self.scratch(directory, ['scripts/ensure_node_modules.sh'],
+                                     {'npm': 'mkdir -p node_modules\nexit 4\n'})
+            (work / 'package-lock.json').write_text('one')
+            self.assertEqual(self.ensure(work, env).returncode, 4)
+            self.assertFalse((work / 'node_modules/.package-lock.sha256').exists())
+
+
+class WorkflowPins(unittest.TestCase):
+    """Workflow text that nothing else pins (kept here: the contract needs an owning module)."""
+    workflows = Path(__file__).resolve().parents[2] / '.github/workflows'
+
+    def test_size_label_bound_is_the_selected_budget_plus_one(self):
+        block = (self.workflows / 'pr-validation.yml').read_text().split('  size-label:', 1)[1]
+        step = block.split('id: review_budget', 1)[1].split('pr-size-labeler', 1)[0]
+        self.assertIn('--policy "$RUNNER_TEMP/env_ci_base" --title "$pr_title"', step)
+        self.assertIn('budget="$(python3 -B "$RUNNER_TEMP/pr_review_budget_base.py"', step)
+        self.assertIn('echo "limit=$((budget + 1))" >> "$GITHUB_OUTPUT"', step)
+        self.assertIn('l_max_size: ${{ steps.review_budget.outputs.limit }}', block)
+        self.assertNotRegex(block, r'l_max_size: \d')
+
+    def test_admission_liveness_runs_always_for_non_draft_prs_into_next(self):
+        ci = (self.workflows / 'ci-next.yml').read_text()
+        head = ci.split('  admission-result:', 1)[1].split('    runs-on:', 1)[0]
+        condition = ' '.join(head.split('if: >-', 1)[1].split())
+        self.assertIn('always()', condition)
+        self.assertIn("github.event_name == 'pull_request'", condition)
+        self.assertIn('!github.event.pull_request.draft', condition)
+        self.assertIn("github.event.pull_request.base.ref == 'next'", condition)

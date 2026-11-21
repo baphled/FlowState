@@ -116,17 +116,16 @@ check: fmt lint test test-e2e ## Run all checks
 GOLANGCI_LINT_VERSION := v2.11.3
 GOSEC_VERSION := v2.30.0
 REPO_GOTOOLCHAIN := go$(shell sed -n 's/^go //p' go.mod)
-TOOLS_BIN := $(CURDIR)/bin/tools
+# Targets stay relative: make cannot use a prerequisite path containing a space.
+TOOLS_BIN := bin/tools
 GOLANGCI_LINT := $(TOOLS_BIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
 GOSEC := $(TOOLS_BIN)/gosec-$(GOSEC_VERSION)
 
 $(GOLANGCI_LINT):
-	GOBIN=$(TOOLS_BIN) GOTOOLCHAIN=$(REPO_GOTOOLCHAIN) $(GOCMD) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
-	mv $(TOOLS_BIN)/golangci-lint $@
+	GOTOOLCHAIN='$(REPO_GOTOOLCHAIN)' GOCMD='$(GOCMD)' sh scripts/install_go_tool.sh github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) golangci-lint "$@"
 
 $(GOSEC):
-	GOBIN=$(TOOLS_BIN) GOTOOLCHAIN=$(REPO_GOTOOLCHAIN) $(GOCMD) install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
-	mv $(TOOLS_BIN)/gosec $@
+	GOTOOLCHAIN='$(REPO_GOTOOLCHAIN)' GOCMD='$(GOCMD)' sh scripts/install_go_tool.sh github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION) gosec "$@"
 
 # CI sees the committed tree, so uncommitted edits must not decide the result.
 preflight-guard:
@@ -138,10 +137,10 @@ preflight: preflight-guard $(GOLANGCI_LINT) $(GOSEC) ## Run most blocking CI che
 	$(GOBUILD) ./...
 	GOOS=windows $(GOVET) ./...
 	GOOS=darwin $(GOVET) ./...
-	$(GOLANGCI_LINT) run
-	$(GOLANGCI_LINT) run --config .golangci-contract.yml --new-from-rev="$(BASE_SHA)" --whole-files
-	out=$$(mktemp -d) && { python3 -B scripts/security_gate.py --base "$(BASE_SHA)" --scanner "$(GOSEC)" --output "$$out/reports"; rc=$$?; rm -rf "$$out"; exit $$rc; }
-	@test -d node_modules || npm ci --no-audit --no-fund
+	"$(CURDIR)/$(GOLANGCI_LINT)" run
+	"$(CURDIR)/$(GOLANGCI_LINT)" run --config .golangci-contract.yml --new-from-rev="$(BASE_SHA)" --whole-files
+	out=$$(mktemp -d) && { python3 -B scripts/security_gate.py --base "$(BASE_SHA)" --scanner "$(CURDIR)/$(GOSEC)" --output "$$out/reports"; rc=$$?; rm -rf "$$out"; exit $$rc; }
+	@sh scripts/ensure_node_modules.sh
 	$(MAKE) check-documentation BASE_SHA="$(BASE_SHA)"
 	$(GOTEST) -race -count=1 ./...
 
