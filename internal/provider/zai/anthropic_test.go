@@ -242,6 +242,11 @@ var _ = Describe("anthropic route stream termination", func() {
 		Expect(last().Kind).NotTo(Equal(provider.StreamEventFinish))
 	})
 
+	It("emits a finish event when WithFinishEvents is set", func() {
+		events = anthropicEvents(sseBody(textPar+"data: {\"type\":\"message_stop\"}\n\n"), WithFinishEvents())
+		Expect(last().Kind).To(Equal(provider.StreamEventFinish))
+	})
+
 	It("emits no finish event for a truncated stream when finish events are on", func() {
 		events = anthropicEvents(sseBody(textPar), WithAnthropicFinish())
 		Expect(last().Kind).To(Equal(provider.StreamEventError))

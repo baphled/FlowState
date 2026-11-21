@@ -25,8 +25,6 @@ const (
 
 var finish = provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: "stop"}
 
-var stop = provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: "stop"}
-
 func text(s string) provider.StreamEvent { return provider.StreamEvent{Content: s} }
 
 var _ = Describe("stream parsing", func() {
@@ -56,9 +54,9 @@ var _ = Describe("stream parsing", func() {
 		Entry("nothing for unknown types and non-JSON lines", []provider.StreamEvent{text("A"), finish},
 			"not json", `{"type":"mystery"}`, `{"type":"system","subtype":"init"}`, deltaA, okEnd),
 		Entry("nothing for non-text deltas", []provider.StreamEvent{finish}, think, okEnd),
-		Entry("a stop finish for a null stop_reason", []provider.StreamEvent{stop},
+		Entry("a stop finish for a null stop_reason", []provider.StreamEvent{finish},
 			`{"type":"result","is_error":false,"stop_reason":null}`),
-		Entry("a stop finish for a missing stop_reason", []provider.StreamEvent{stop},
+		Entry("a stop finish for a missing stop_reason", []provider.StreamEvent{finish},
 			`{"type":"result","is_error":false}`),
 		Entry("a finish for subtype success", []provider.StreamEvent{finish},
 			`{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn"}`),
@@ -112,6 +110,8 @@ var _ = Describe("stream parsing", func() {
 		},
 		Entry("with a named stop_reason", okEnd),
 		Entry("with a missing stop_reason", `{"type":"result","is_error":false}`),
+		Entry("with max_tokens, finishing length", `{"type":"result","is_error":false,"stop_reason":"max_tokens"}`),
+		Entry("with a passthrough stop_reason", `{"type":"result","is_error":false,"stop_reason":"refusal"}`),
 	)
 
 	Describe("the recorded signed-out session (subtype success, is_error true)", func() {

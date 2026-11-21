@@ -62,7 +62,7 @@ var _ = Describe("Zai provider", func() {
 	It("rejects construction from env when the api key is missing", func() {
 		GinkgoT().Setenv("ZAI_API_KEY", "")
 		_, err := zai.NewFromEnv()
-		Expect(err).To(HaveOccurred())
+		Expect(err).To(MatchError("zai: ZAI_API_KEY is not set"))
 	})
 
 	It("constructs from env and reports no error, satisfying the provider port", func() {
@@ -277,5 +277,71 @@ var _ = Describe("max_tokens passthrough", func() {
 		for range p.Stream(context.Background(), &provider.ChatRequest{Model: "glm-5.3"}) {
 		}
 		Expect(raw).NotTo(ContainSubstring("max_tokens"))
+	})
+})
+
+var _ = Describe("general route stream finish reason", func() {
+	const text = `data: {"choices":[{"delta":{"content":"hi"}}]}` + "\n"
+	stream := func(sse string, opts ...zai.Option) []provider.StreamEvent {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, sse)
+		}))
+		DeferCleanup(srv.Close)
+		p := zai.New("test-key", append([]zai.Option{zai.WithBaseURL(srv.URL), zai.WithFinishEvents()}, opts...)...)
+		var events []provider.StreamEvent
+		for ev := range p.Stream(context.Background(), &provider.ChatRequest{}) {
+			events = append(events, ev)
+		}
+		return events
+	}
+	finishes := func(events []provider.StreamEvent) []provider.StreamEvent {
+		var out []provider.StreamEvent
+		for _, ev := range events {
+			if ev.Kind == provider.StreamEventFinish {
+				out = append(out, ev)
+			}
+		}
+		return out
+	}
+	DescribeTable("maps the wire finish_reason",
+		func(wire, want string) {
+			events := stream(text + `data: {"choices":[{"delta":{},"finish_reason":"` + wire + `"}]}` + "\ndata: [DONE]\n")
+			Expect(events[len(events)-1]).To(Equal(provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: want}))
+		},
+		Entry("stop", "stop", "stop"),
+		Entry("length", "length", "length"),
+		Entry("another value", "content_filter", "content_filter"),
+	)
+	It("finishes with stop when [DONE] arrives without a finish_reason", func() {
+		events := stream(text + "data: [DONE]\n")
+		Expect(events[len(events)-1].FinishReason).To(Equal("stop"))
+	})
+	It("emits no finish event by default", func() {
+		_, p := newTestServer(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = io.WriteString(w, text+"data: [DONE]\n")
+		})
+		var kinds []provider.StreamEventKind
+		for ev := range p.Stream(context.Background(), &provider.ChatRequest{}) {
+			kinds = append(kinds, ev.Kind)
+		}
+		Expect(kinds).NotTo(ContainElement(provider.StreamEventFinish))
+	})
+	It("emits exactly one finish event", func() {
+		events := stream(text + `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}` + "\ndata: [DONE]\n")
+		Expect(finishes(events)).To(HaveLen(1))
+	})
+	It("emits no finish event after an error event", func() {
+		Expect(finishes(stream(text + "data: {oops}\ndata: [DONE]\n"))).To(BeEmpty())
+	})
+	It("passes the provider stream validator", func() {
+		validator := &provider.StreamValidator{}
+		var rejected error
+		for _, ev := range stream(text + `data: {"choices":[{"delta":{},"finish_reason":"length"}]}` + "\ndata: [DONE]\n") {
+			if err := validator.Accept(ev); err != nil {
+				rejected = err
+			}
+		}
+		Expect(rejected).NotTo(HaveOccurred())
 	})
 })
