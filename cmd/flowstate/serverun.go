@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -83,11 +82,11 @@ func serveRun(ctx context.Context, st *app.Store, fl *flags, id string, opts ser
 func serveRunTurn(ctx context.Context, st *app.Store, sess *app.Session, runFl *flags) ([]server.Event, error) {
 	p, perr := providerResolver(sess.Provider)
 	if perr != nil {
-		return nil, fmt.Errorf("%w: %v", app.ErrProvider, perr)
+		return nil, providerFailure(perr)
 	}
 	s, ok := p.(app.Streamer)
 	if !ok {
-		return nil, fmt.Errorf("%w: provider %s does not support streaming turns", app.ErrProvider, sess.Provider)
+		return nil, providerFailure(fmt.Errorf("provider %s does not support streaming turns", sess.Provider))
 	}
 	res, terr := runTurnOrLoop(ctx, st, sess, s, runFl)
 	if terr == nil && res != nil && res.BudgetExceeded {
@@ -95,11 +94,9 @@ func serveRunTurn(ctx context.Context, st *app.Store, sess *app.Session, runFl *
 			app.ErrBudgetExceeded, runFl.budget, res.ConsumedBudget)
 	}
 	if terr != nil {
-		if errors.Is(terr, app.ErrSessionCancelled) || errors.Is(terr, app.ErrUsage) ||
-			errors.Is(terr, app.ErrBudgetExceeded) {
-			return nil, terr
-		}
-		return nil, fmt.Errorf("%w: %v", app.ErrProvider, terr)
+		// The engine already wraps provider failures in app.ErrProvider;
+		// every other error keeps the class app.ErrorCode gives it.
+		return nil, terr
 	}
 	evts, rerr := st.Replay(context.WithoutCancel(ctx), sess.ID)
 	if rerr != nil {
