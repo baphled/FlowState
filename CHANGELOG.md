@@ -2,6 +2,12 @@
 
 All notable changes to the FlowState project will be documented in this file.
 
+## [1.6.1](https://github.com/baphled/FlowState/compare/v1.6.0...v1.6.1) (2026-11-21)
+
+### Bug Fixes
+
+* **provider:** send an empty system prompt on the anthropic subscription route ([#355](https://github.com/baphled/FlowState/issues/355)) ([30941c8](https://github.com/baphled/FlowState/commit/30941c8075673a185e605f1f553dab8e1ad54cd8))
+
 ## [1.6.0](https://github.com/baphled/FlowState/compare/v1.5.0...v1.6.0) (2026-11-21)
 
 ### Features
