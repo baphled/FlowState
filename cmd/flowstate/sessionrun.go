@@ -262,12 +262,12 @@ func runSessionTurn(ctx context.Context, st *app.Store, sess *app.Session, fl *f
 			writeError(stderr, fmt.Errorf("%w: interrupted; session cancelled", app.ErrSessionCancelled))
 			return exitSigint
 		}
-		writeError(stderr, fmt.Errorf("%w: %v", app.ErrProvider, perr))
+		writeError(stderr, providerFailure(perr))
 		return exitProviderError
 	}
 	s, ok := p.(app.Streamer)
 	if !ok {
-		writeError(stderr, fmt.Errorf("%w: provider %s does not support streaming turns", app.ErrProvider, sess.Provider))
+		writeError(stderr, providerFailure(fmt.Errorf("provider %s does not support streaming turns", sess.Provider)))
 		return exitProviderError
 	}
 	res, terr := runTurnOrLoop(ctx, st, sess, s, fl)
@@ -303,9 +303,22 @@ func runSessionTurn(ctx context.Context, st *app.Store, sess *app.Session, fl *f
 	return finishRun(terr, res, fl, stderr)
 }
 
+// providerFailure labels an error from provider resolution as the
+// provider's failure, exactly once: the engine already wraps the
+// failures of a running turn in app.ErrProvider.
+func providerFailure(err error) error {
+	if errors.Is(err, app.ErrProvider) {
+		return err
+	}
+	return fmt.Errorf("%w: %v", app.ErrProvider, err)
+}
+
 // finishRun maps the turn outcome onto its exit code: SIGINT
 // cancellation exits 130, budget stops 5, tool-surface usage
-// failures 2, provider failures 3. The
+// failures 2, and only errors that satisfy errors.Is(err,
+// app.ErrProvider) exit 3. Any other error (a storage failure while
+// recording the turn, a lease fence) keeps its own classification
+// through exitCodeFor, so an unclassified one is `internal`. The
 // loop path surfaces budget stops as an ErrBudgetExceeded error (and
 // drops the result's budget flag), so the error arm carries it.
 func finishRun(err error, res *app.TurnResult, fl *flags, stderr *os.File) int {
@@ -322,8 +335,11 @@ func finishRun(err error, res *app.TurnResult, fl *flags, stderr *os.File) int {
 			writeError(stderr, err)
 			return exitUsage
 		}
-		writeError(stderr, fmt.Errorf("%w: %v", app.ErrProvider, err))
-		return exitProviderError
+		writeError(stderr, err)
+		if errors.Is(err, app.ErrProvider) {
+			return exitProviderError
+		}
+		return exitCodeFor(err)
 	}
 	if res != nil && res.BudgetExceeded {
 		writeError(stderr, fmt.Errorf("%w: budget of %d exceeded after %d tokens; session paused", app.ErrBudgetExceeded, fl.budget, res.ConsumedBudget))
