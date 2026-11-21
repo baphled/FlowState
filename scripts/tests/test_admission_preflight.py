@@ -1,5 +1,6 @@
 """Preflight rejects real admission failure classes without publishing a status."""
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -88,6 +89,35 @@ class PushHook(unittest.TestCase):
                                     env=dict(env, FAILURE='7'))
             self.assertEqual(result.returncode, 7)
 
+    def test_warns_for_every_pushed_tip_that_is_not_head_but_checks_only_branches(self):
+        hook = Path(__file__).resolve().parents[2] / '.githooks/pre-push'
+        zero = '0' * 40
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            programs = {'git': '#!/bin/sh\ncase "$1" in rev-parse) echo ' + PARENT + ';; esac\n',
+                        'python3': '#!/bin/sh\nexit 0\n',
+                        'make': '#!/bin/sh\necho "$*" >> "$LOG"\n'}
+            for name, source in programs.items():
+                path = root / name
+                path.write_text(source)
+                path.chmod(0o755)
+            env = dict(os.environ, PATH=str(root) + ':' + os.environ['PATH'], LOG=str(root / 'log'))
+            tips = (f'HEAD~1 {HEAD} refs/heads/raw {zero}\n'
+                    f'{HEAD} {HEAD} refs/heads/sha {zero}\n'
+                    f'refs/tags/v1 {HEAD} refs/tags/v1 {zero}\n'
+                    f'(delete) {zero} refs/heads/gone {HEAD}\n'
+                    f'refs/heads/head {PARENT} refs/heads/head {zero}\n'
+                    f'refs/heads/other {HEAD} refs/tags/viaother {zero}\n')
+            result = subprocess.run(['/bin/sh', str(hook)], input=tips, text=True, env=env,
+                                    capture_output=True)
+            self.assertEqual(result.returncode, 0)
+            warnings = [line for line in result.stderr.splitlines() if 'warning' in line]
+            self.assertEqual(len(warnings), 2)
+            self.assertIn('pre-push: warning: HEAD~1 is not the checked-out HEAD; '
+                          'the local CI preflight does not cover it', warnings)
+            # Both branch tips are admission-checked, including the one pushed to a tag name.
+            self.assertEqual((root / 'log').read_text().count('check-admission-commits'), 2)
+
     def test_failing_ci_preflight_aborts_the_push(self):
         hook = Path(__file__).resolve().parents[2] / '.githooks/pre-push'
         with tempfile.TemporaryDirectory() as directory:
@@ -105,3 +135,36 @@ class PushHook(unittest.TestCase):
             result = subprocess.run(['/bin/sh', str(hook)], input=tips, text=True, env=env)
             self.assertEqual(result.returncode, 9)
             self.assertIn('preflight BASE_SHA=' + PARENT, (root / 'log').read_text())
+
+
+class ToolPins(unittest.TestCase):
+    """Makefile `make preflight` tool pins must match the versions CI installs."""
+    root = Path(__file__).resolve().parents[2]
+    pattern = {'golangci-lint': r'golangci-lint[^\n]*?(v\d+\.\d+\.\d+)|^\s*version: (v2\.\d+\.\d+)',
+               'gosec': r'GOSEC_VERSION:?=? ?"?(v\d+\.\d+\.\d+)|gosec/v2/cmd/gosec@(v\d+\.\d+\.\d+)'}
+
+    def versions(self, name, tool):
+        text = (self.root / name).read_text()
+        found = {m for groups in re.findall(self.pattern[tool], text, re.M) for m in groups if m}
+        return found
+
+    def test_makefile_pins_match_every_workflow_pin(self):
+        makefile = {'golangci-lint': re.search(r'^GOLANGCI_LINT_VERSION := (\S+)', (self.root / 'Makefile').read_text(), re.M),
+                    'gosec': re.search(r'^GOSEC_VERSION := (\S+)', (self.root / 'Makefile').read_text(), re.M)}
+        for tool, match in makefile.items():
+            self.assertIsNotNone(match, tool)
+            pinned = set()
+            for workflow in ('ci-next.yml', 'ci.yml', 'release.yml'):
+                found = self.versions('.github/workflows/' + workflow, tool)
+                pinned |= found
+                with self.subTest(tool=tool, workflow=workflow):
+                    self.assertLessEqual(found, {match.group(1)})
+                    self.assertFalse(self.floating(workflow, tool), 'unpinned ' + tool + ' in ' + workflow)
+            self.assertEqual(pinned, {match.group(1)}, tool + ' pin not found in any workflow')
+
+    def floating(self, workflow, tool):
+        """Lines that install the tool at a moving version such as latest or master."""
+        text = (self.root / '.github/workflows' / workflow).read_text()
+        loose = r'(@|bin |version: |VERSION: ?"?)(latest|master|main)\b'
+        return [line for line in text.splitlines()
+                if re.search(loose, line) and (tool in line or 'version:' in line or tool.upper().replace('-', '_') in line)]

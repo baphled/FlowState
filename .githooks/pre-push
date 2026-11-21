@@ -40,11 +40,19 @@ git log --format=%s "$BASE..$HEAD" | while IFS= read -r subject; do
   }
 done
 while read -r local_ref local_sha remote_ref remote_sha; do
-    case "$local_ref" in refs/heads/*) ;; *) continue ;; esac
     case "$local_sha" in 0000000000000000000000000000000000000000) continue ;; esac
-    # The preflight below verifies only the checked-out HEAD. Another tip is
-    # still admission-checked here, but say plainly that it was not preflighted.
-    [ "$local_sha" = "$HEAD" ] || echo "pre-push: warning: $local_ref is not the checked-out HEAD; the local CI preflight does not cover it" >&2
+    # The preflight below verifies only the checked-out HEAD. Warn for every
+    # pushed tip that is not HEAD, including a raw refspec such as HEAD~1:refs/heads/x
+    # whose local name is not a branch; tags are not warned about. The tag filter
+    # applies to the warning only: every refs/heads/* tip is still admission-checked,
+    # whatever name it is pushed to.
+    if [ "$local_sha" != "$HEAD" ]; then
+        case "$local_ref:$remote_ref" in
+            refs/tags/*|*:refs/tags/*) ;;
+            *) echo "pre-push: warning: $local_ref is not the checked-out HEAD; the local CI preflight does not cover it" >&2 ;;
+        esac
+    fi
+    case "$local_ref" in refs/heads/*) ;; *) continue ;; esac
     tip_title=$(git log --reverse --format=%s "$BASE..$local_sha" | sed -n 1p)
     budget=$(python3 -B "$selector" --policy "$policy" --title "$tip_title" --branch "$local_ref" 2>/dev/null) || budget="$FLOWSTATE_PR_MAX_LINES"
     files=$(python3 -B "$selector" --policy "$policy" --title "$tip_title" --branch "$local_ref" --files 2>/dev/null) || files="$FLOWSTATE_PR_MAX_FILES"

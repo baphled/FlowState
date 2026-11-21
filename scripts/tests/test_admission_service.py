@@ -44,6 +44,27 @@ class Service(unittest.TestCase):
         self.assertIn('Restart=always', unit(Path('/safe'), Path('/config')))
         self.assertIn('Type=notify', unit(Path('/safe'), Path('/config')))
 
+    def test_status_also_reports_restart_state_even_when_the_unit_is_not_active(self):
+        calls = []
+
+        def systemctl(*args):
+            calls.append(args)
+            if args[2] == 'status':
+                raise subprocess.CalledProcessError(3, args)
+            return b'ActiveState=activating\nSubState=auto-restart\nNRestarts=9\nResult=exit-code\n'
+        with patch('scripts.admission_service.command', side_effect=systemctl), \
+                patch('builtins.print') as printed:
+            self.assertEqual(main(['status']), 1)
+        show = ('systemctl', '--user', 'show', '-p', 'ActiveState,SubState,NRestarts,Result',
+                'flowstate-admission.service')
+        self.assertEqual(calls[0], show)
+        self.assertIn('NRestarts=9', printed.call_args_list[0].args[0])
+
+    def test_status_runs_show_and_status_when_active(self):
+        with patch('scripts.admission_service.command', return_value=b'ok') as command:
+            self.assertEqual(main(['status']), 0)
+        self.assertEqual([c.args[2] for c in command.call_args_list], ['show', 'status'])
+
     def test_unit_never_stops_restarting_the_publisher(self):
         text = unit(Path('/safe'), Path('/config'))
         self.assertIn('StartLimitIntervalSec=0', text)
@@ -55,6 +76,7 @@ class Service(unittest.TestCase):
         workflow = (root / '.github/workflows/ci-next.yml').read_text()
         monitor = workflow.split('  admission-result:', 1)[1].split('  scope:', 1)[0]
         self.assertIn('needs: [build]', monitor)
+        self.assertIn("!github.event.pull_request.draft && github.event.pull_request.base.ref == 'next'", monitor)
         self.assertIn('timeout-minutes: 4', monitor)
         self.assertIn('scripts.admission_runner --watch', monitor)
         self.assertIn('session-start: admission-runner-start', (root / 'Makefile').read_text())
