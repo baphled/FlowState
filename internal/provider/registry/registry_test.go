@@ -1,6 +1,7 @@
 package registry_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -8,6 +9,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/provider/anthropic"
 	"github.com/baphled/flowstate/internal/provider/registry"
 	"github.com/baphled/flowstate/internal/provider/zai"
 )
@@ -134,5 +137,91 @@ var _ = Describe("zai config wiring", func() {
 			observedCoding = resolveCoding()
 		})
 		It("lets env override config away from coding", func() { Expect(observedCoding).To(BeFalse()) })
+	})
+})
+
+var _ = Describe("anthropic resolution", func() {
+	var configDir string
+
+	BeforeEach(func() {
+		configDir = GinkgoT().TempDir()
+		GinkgoT().Setenv("FLOWSTATE_CONFIG_DIR", configDir)
+		GinkgoT().Setenv("FLOWSTATE_CLAUDE_BIN", "")
+	})
+
+	writeConfig := func(yaml string) {
+		if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(yaml), 0o600); err != nil {
+			panic(err)
+		}
+	}
+	resolveWith := func(authType string) (provider.Provider, error) {
+		writeConfig("providers:\n  anthropic:\n    auth_type: " + authType + "\n")
+		return registry.Resolve("anthropic")
+	}
+
+	It("resolves anthropic to the subscription type by default", func() {
+		p, err := registry.Resolve("anthropic")
+		if err != nil {
+			panic(err)
+		}
+		Expect(p).To(BeAssignableToTypeOf(&anthropic.Subscription{}))
+	})
+
+	It("reports the anthropic provider name", func() {
+		p, err := registry.Resolve("anthropic")
+		if err != nil {
+			panic(err)
+		}
+		Expect(p.Name()).To(Equal("anthropic"))
+	})
+
+	It("resolves auth_type oauth to the subscription type", func() {
+		p, err := resolveWith("oauth")
+		if err != nil {
+			panic(err)
+		}
+		Expect(p).To(BeAssignableToTypeOf(&anthropic.Subscription{}))
+	})
+
+	It("reports that api_key authentication is not available yet", func() {
+		_, err := resolveWith("api_key")
+		Expect(err).To(MatchError(registry.ErrAPIKeyUnavailable))
+	})
+
+	It("names oauth as the supported route for api_key", func() {
+		_, err := resolveWith("api_key")
+		Expect(err).To(MatchError(ContainSubstring("use auth_type oauth")))
+	})
+
+	It("rejects an unknown auth_type", func() {
+		_, err := resolveWith("magic")
+		Expect(err).To(MatchError(ContainSubstring(`unknown anthropic auth_type "magic"`)))
+	})
+
+	It("does not resolve claude-code", func() {
+		_, err := registry.Resolve("claude-code")
+		Expect(err).To(MatchError(ContainSubstring("unknown provider")))
+	})
+
+	It("honours FLOWSTATE_CLAUDE_BIN as the binary to run", func() {
+		missing := filepath.Join(GinkgoT().TempDir(), "custom-claude")
+		GinkgoT().Setenv("FLOWSTATE_CLAUDE_BIN", missing)
+		p, err := registry.Resolve("anthropic")
+		if err != nil {
+			panic(err)
+		}
+		_, err = p.Chat(context.Background(), &provider.ChatRequest{
+			Messages: []provider.Message{{Role: "user", Content: "hi"}},
+		})
+		Expect(err).To(MatchError(ContainSubstring(missing)))
+	})
+
+	It("does not run or require the binary at resolve time", func() {
+		GinkgoT().Setenv("FLOWSTATE_CLAUDE_BIN", filepath.Join(GinkgoT().TempDir(), "absent-claude"))
+		p, err := registry.Resolve("anthropic")
+		if err != nil {
+			panic(err)
+		}
+		Expect(p).NotTo(BeNil())
 	})
 })
