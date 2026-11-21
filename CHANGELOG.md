@@ -2,6 +2,13 @@
 
 All notable changes to the FlowState project will be documented in this file.
 
+## [1.7.1](https://github.com/baphled/FlowState/compare/v1.7.0...v1.7.1) (2026-11-21)
+
+### Bug Fixes
+
+* **app:** fail a turn on persistence errors and record its finish reason ([#358](https://github.com/baphled/FlowState/issues/358)) ([41903a0](https://github.com/baphled/FlowState/commit/41903a08b5fc1a40d5577c5c1a35ba9b58a7784e))
+* **provider:** report neutral finish reasons on the anthropic subscription route ([#357](https://github.com/baphled/FlowState/issues/357)) ([36f80bb](https://github.com/baphled/FlowState/commit/36f80bbaddb039ba6f14b33fa7b843f1186fabde))
+
 ## [1.7.0](https://github.com/baphled/FlowState/compare/v1.6.1...v1.7.0) (2026-11-21)
 
 ### Features
