@@ -129,7 +129,7 @@ func (s *Server) doctorHandler(id string) http.HandlerFunc {
 func diagnosisWire(d Diagnosis) diagnosisBody {
 	return diagnosisBody{SessionID: d.SessionID, Status: d.Status, Crashed: d.Crashed,
 		RunActivity: d.RunActivity, PendingMessages: d.PendingMessages, Reserved: d.Reserved,
-		BudgetPool: d.Pool, Available: d.Available}
+		BudgetPool: d.Pool, Available: d.Available, FinishReason: d.FinishReason, Truncated: d.Truncated}
 }
 
 // runWriteWindow extends the run route's write deadline for one

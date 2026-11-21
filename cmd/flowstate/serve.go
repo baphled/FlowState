@@ -161,7 +161,8 @@ func serveDiagnose(ctx context.Context, st *app.Store, id string) (server.Diagno
 	}
 	return server.Diagnosis{SessionID: d.SessionID, Status: d.Status, Crashed: d.Crashed,
 		RunActivity: d.RunActivity, PendingMessages: d.PendingMessages,
-		Reserved: d.Reserved, Pool: d.Pool, Available: d.Available}, nil
+		Reserved: d.Reserved, Pool: d.Pool, Available: d.Available,
+		FinishReason: d.FinishReason, Truncated: d.Truncated}, nil
 }
 
 // serveBudget wires GET /sessions/{id}/budget onto
