@@ -8,6 +8,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/store"
@@ -58,14 +59,27 @@ func (c *Composition) Registry() *tool.Registry { return c.registry }
 // Allowed reports whether name is wired into the allowlist.
 func (c *Composition) Allowed(name string) bool { return c.allow[name] }
 
+// ErrReservationSettle marks a failure to settle a cancelled session's
+// budget reservation; the session itself is already cancelled (code
+// internal).
+var ErrReservationSettle = errors.New("reservation_settle_failed")
+
 // CancelSession transitions an active or paused session to
-// cancelled (session.cancelled event) so cmd stays app-only.
+// cancelled (session.cancelled event) so cmd stays app-only. The
+// cancel is committed before the session's budget reservation is
+// settled; if settling fails the cancelled session is still returned
+// together with an error wrapping ErrReservationSettle, so a caller
+// can report the failure without treating the session as uncancelled
+// (a second cancel would only answer session_terminal).
 func CancelSession(ctx context.Context, st *store.Store, id string) (*store.Session, error) {
 	sess, err := session.Close(ctx, st, id)
-	if err == nil {
-		settleReservation(ctx, st, id)
+	if err != nil {
+		return sess, err
 	}
-	return sess, err
+	if serr := st.SetReservationCharged(ctx, id); serr != nil {
+		return sess, fmt.Errorf("%w: session %s is cancelled: %v", ErrReservationSettle, id, serr)
+	}
+	return sess, nil
 }
 
 // Close releases the loop's event-writer registration.

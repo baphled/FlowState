@@ -45,11 +45,37 @@ func routeServe(ctx context.Context, args []string, stdout, stderr *os.File) int
 	return cmdServe(ctx, fl, addr, stdout, stderr)
 }
 
+// checkServeExposure refuses an address that is reachable from other
+// hosts when no bearer token protects it (ADR-008: keep the loopback
+// bind or set FLOWSTATE_SERVE_TOKEN). Loopback means a literal loopback
+// IP or the name localhost, judged without any lookup; an empty host
+// such as ":8080" binds every interface and a host that does not parse
+// as an IP is not loopback. A malformed address passes here so the
+// listen step reports it.
+func checkServeExposure(addr, token string) error {
+	if token != "" {
+		return nil
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil
+	}
+	if ip := net.ParseIP(host); strings.EqualFold(host, "localhost") || (ip != nil && ip.IsLoopback()) {
+		return nil
+	}
+	return fmt.Errorf("%w: refusing to serve on non-loopback address %q without a token: "+
+		"bind a loopback address such as %s, or set %s", app.ErrUsage, addr, defaultServeAddr, server.TokenEnv)
+}
+
 // cmdServe implements `flowstate serve`: one shared store, one listener,
 // graceful shutdown on ctx cancellation. The store opens before any listener,
 // so a database failure exits 4 config_invalid without serving; the address
 // is emitted as one JSON line.
 func cmdServe(ctx context.Context, fl *flags, addr string, stdout, stderr *os.File) int {
+	if xerr := checkServeExposure(addr, os.Getenv(server.TokenEnv)); xerr != nil {
+		writeError(stderr, xerr)
+		return exitUsage
+	}
 	st, err := openStore(fl.db)
 	if err != nil {
 		writeError(stderr, fmt.Errorf("%w: cannot open database %q: %v", app.ErrConfigInvalid, fl.db, err))
