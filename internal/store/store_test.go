@@ -366,7 +366,15 @@ var _ = Describe("EventWriter", func() {
 		wg.Wait()
 		evs, err := s.Replay(context.Background(), sid)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(evs).To(HaveLen(n))
+		seqs := make([]int64, 0, len(evs))
+		for _, ev := range evs {
+			seqs = append(seqs, ev.Seq)
+		}
+		want := make([]int64, n)
+		for i := range want {
+			want[i] = int64(i)
+		}
+		Expect(seqs).To(Equal(want))
 	})
 
 	It("pause flips the session status to paused", func() {
