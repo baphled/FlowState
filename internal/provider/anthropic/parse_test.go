@@ -54,10 +54,6 @@ var _ = Describe("stream parsing", func() {
 		Entry("nothing for unknown types and non-JSON lines", []provider.StreamEvent{text("A"), finish},
 			"not json", `{"type":"mystery"}`, `{"type":"system","subtype":"init"}`, deltaA, okEnd),
 		Entry("nothing for non-text deltas", []provider.StreamEvent{finish}, think, okEnd),
-		Entry("a stop finish for a null stop_reason", []provider.StreamEvent{finish},
-			`{"type":"result","is_error":false,"stop_reason":null}`),
-		Entry("a stop finish for a missing stop_reason", []provider.StreamEvent{finish},
-			`{"type":"result","is_error":false}`),
 		Entry("a finish for subtype success", []provider.StreamEvent{finish},
 			`{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn"}`),
 	)

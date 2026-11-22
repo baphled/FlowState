@@ -303,6 +303,10 @@ var _ = Describe("failExecTurn", func() {
 			Expect(err).To(MatchError(ErrProvider.Error() + ": boom"))
 		})
 
+		It("keeps the provider's cause matchable", func() {
+			Expect(err).To(MatchError(cause))
+		})
+
 		It("marks the session failed", func() {
 			Expect(statusOf(st, sess.ID)).To(Equal("failed"))
 		})
@@ -332,6 +336,10 @@ var _ = Describe("failExecTurn", func() {
 			Expect(err).To(MatchError(store.ErrClosed))
 		})
 
+		It("keeps the provider's cause matchable", func() {
+			Expect(err).To(MatchError(cause))
+		})
+
 		It("leaves the session non-terminal", func() {
 			Expect(statusOf(st, sess.ID)).To(Equal("active"))
 		})
@@ -351,6 +359,31 @@ var _ = Describe("failExecTurn", func() {
 		It("reports the status failure", func() {
 			Expect(err).To(MatchError(store.ErrUnknownSession))
 		})
+
+		It("keeps the provider's cause matchable", func() {
+			Expect(err).To(MatchError(cause))
+		})
+	})
+})
+
+var _ = Describe("Execution loop provider failure", func() {
+	var (
+		cause error
+		err   error
+	)
+
+	BeforeEach(func() {
+		cause = errors.New("upstream refused")
+		failure := provider.StreamEvent{Kind: provider.StreamEventError, Err: cause}
+		_, err = RunExecLoop(context.Background(), execLoopFixture(&execLoopStreamer{turns: [][]provider.StreamEvent{{failure}}}))
+	})
+
+	It("reports the provider error class", func() {
+		Expect(err).To(MatchError(ErrProvider))
+	})
+
+	It("keeps the provider's own cause matchable through the loop", func() {
+		Expect(err).To(MatchError(cause))
 	})
 })
 
