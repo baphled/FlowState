@@ -280,6 +280,15 @@ var _ = Describe("Legacy v3 database upgrade", func() {
 			Equal(f.before["events"]), ContainSubstring("WITHOUT ROWID")))
 	})
 
+	// A database created by an earlier release keeps the events foreign key it was created with, while a
+	// freshly created store declares none (see the store specs): the two now differ.
+	It("keeps the foreign key on events that the earlier release created", func() {
+		var n int
+		err := store.db.QueryRow(`SELECT count(*) FROM pragma_foreign_key_list('events')`).Scan(&n)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(1))
+	})
+
 	It("keeps the leases DDL untouched and WITHOUT ROWID", func() {
 		Expect([2]string{tableDDL(store.db, "leases"), tableDDL(store.db, "lease_history")}).
 			To(Equal([2]string{f.before["leases"], f.before["lease_history"]}))
