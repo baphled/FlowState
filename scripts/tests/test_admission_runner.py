@@ -12,9 +12,11 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from scripts.admission_metadata import AdmissionError, AdmissionPending, IN_PROGRESS
+from scripts.admission_budget import EXHAUSTED, STATUS_BUDGET, STATUS_LIMIT, UNCOUNTED
 from scripts.admission_publish import ChangedStatusPublisher, PublishedRecords
 from scripts.admission_runner import (
-    CandidatePublisher, SCAN_FAILURE_LIMIT, main, process, report, run_candidate, scan, serve, watch,
+    CandidatePublisher, REASON_LIMIT, SCAN_FAILURE_LIMIT, main, process, reason, run_candidate, scan,
+    serve,
 )
 from scripts.status_issuer import StatusIssuer
 from scripts.tests.test_status_issuer import CONTEXT, protection
@@ -27,6 +29,8 @@ CONFIG = {'repository': 'baphled/FlowState', 'repository_id': 1191083392,
           'github_read_token': 'synthetic', 'dropbox_read_token': 'synthetic',
           'review_public_key': 'a' * 64, 'execution_public_key': 'b' * 64}
 
+REFERENCE = '/FlowState/Metadata/reviews/x.json'
+SPELLING = "review line must be spelled exactly 'Agent-Review: <reference>' at the line start"
 WAITING = 'Awaiting an independent exact-head agent review'
 
 
@@ -63,6 +67,68 @@ class Runner(unittest.TestCase):
             self.assertEqual(github.statuses[-1][:2], (HEAD, 'failure'))
             self.assertNotIn('secret', github.statuses[-1][2])
 
+    def test_an_interrupt_always_escapes_run_candidate_even_when_its_failure_cannot_be_published(self):
+        for interrupt in (KeyboardInterrupt(), SystemExit(1)):
+            github = FakeGitHub()
+            publisher = Mock(status=Mock(side_effect=AdmissionError('publication down')))
+            with self.subTest(interrupt=type(interrupt).__name__), \
+                    patch('scripts.admission_runner.execute', side_effect=interrupt), \
+                    patch('sys.stderr', io.StringIO()), self.assertRaises(type(interrupt)):
+                run_candidate(225, github, publisher, CONFIG)
+
+    def test_an_interrupt_escapes_process_even_when_credential_cleanup_fails(self):
+        for interrupt in (KeyboardInterrupt(), SystemExit(1)):
+            credentials = Mock(close=Mock(side_effect=OSError()))
+            reader = FakeGitHub()
+            reader.request = lambda method, path: []
+            with self.subTest(interrupt=type(interrupt).__name__), \
+                    patch('scripts.admission_runner.AppCredentials', return_value=credentials), \
+                    patch('scripts.admission_runner.StatusIssuer', return_value=Mock()), \
+                    patch('scripts.admission_runner.run_candidate', side_effect=interrupt), \
+                    self.assertRaises(type(interrupt)):
+                process(225, reader, CONFIG)
+
+    def test_a_credential_cleanup_fault_during_an_interrupt_is_logged(self):
+        credentials = Mock(close=Mock(side_effect=OSError()))
+        reader = FakeGitHub()
+        reader.request = lambda method, path: []
+        with patch('scripts.admission_runner.AppCredentials', return_value=credentials), \
+                patch('scripts.admission_runner.StatusIssuer', return_value=Mock()), \
+                patch('scripts.admission_runner.run_candidate', side_effect=KeyboardInterrupt()), \
+                patch('sys.stderr', new_callable=io.StringIO) as err, self.assertRaises(KeyboardInterrupt):
+            process(225, reader, CONFIG)
+        self.assertIn('cleanup failed during an interrupt', err.getvalue())
+
+    def test_an_interrupt_inside_a_scan_escapes_the_scan(self):
+        for interrupt in (KeyboardInterrupt(), SystemExit(1)):
+            reader = Mock()
+            reader.pages.return_value = [{'number': 1, 'state': 'open', 'draft': False, 'base': {'ref': 'next'},
+                                          'head': {'sha': HEAD}}]
+            with self.subTest(interrupt=type(interrupt).__name__), \
+                    patch('scripts.admission_runner.GitHub', return_value=reader), \
+                    patch('scripts.admission_runner.process', side_effect=interrupt), \
+                    self.assertRaises(type(interrupt)):
+                scan(CONFIG, None, PublishedRecords())
+
+    def test_an_interrupt_inside_a_scan_stops_serve_without_sleeping_or_retrying(self):
+        for interrupt in (KeyboardInterrupt(), SystemExit(1)):
+            with self.subTest(interrupt=type(interrupt).__name__), \
+                    patch('scripts.admission_runner.scan', side_effect=interrupt) as scanned, \
+                    patch('scripts.admission_runner.time.sleep') as slept, self.assertRaises(type(interrupt)):
+                serve(CONFIG)
+            self.assertEqual((scanned.call_count, slept.call_count), (1, 0))
+
+    def test_the_reason_is_one_bounded_line_without_control_characters(self):
+        text = reason(AdmissionError('bad\n::error::x\x1b[31m\u2028y\t' + 'z' * 500))
+        self.assertEqual((text.isprintable(), len(text) <= REASON_LIMIT), (True, True))
+
+    def test_the_logged_reason_for_a_failed_candidate_is_one_line(self):
+        errors = io.StringIO()
+        with patch('scripts.admission_runner.execute', side_effect=AdmissionError('bad\n::error::forged')), \
+                patch('sys.stderr', errors):
+            run_candidate(225, FakeGitHub(), Mock(), CONFIG)
+        self.assertEqual(errors.getvalue().count('\n'), 1)
+
     def test_head_drift_cannot_publish_success_for_a_new_head(self):
         github = FakeGitHub(change_head=True)
         def changed(event, reader, token, publisher, *args):
@@ -86,6 +152,97 @@ class Runner(unittest.TestCase):
             with self.subTest(state=state), patch('scripts.admission_runner.execute', side_effect=error):
                 self.assertFalse(run_candidate(225, github, FakePublisher(github), CONFIG))
                 self.assertEqual(github.statuses[-1], (HEAD, state, str(error)))
+
+    def candidate_with_budget(self, read):
+        """run_candidate over the real ChangedStatusPublisher with `read` as the status-count read."""
+        github, issuer = FakeGitHub(), Mock()
+        config = dict(CONFIG, dropbox_read_token=FakeDropbox(), review_public_key=public(REVIEW_PRIVATE),
+                      execution_public_key=public(EXECUTION_PRIVATE))
+        publisher = ChangedStatusPublisher(issuer, PublishedRecords(), github)
+        with patch('scripts.admission_publish.read_spent', side_effect=read):
+            return run_candidate(225, github, publisher, config, lambda: 150), issuer
+
+    def test_an_evaluated_success_that_was_published_is_a_success(self):
+        admitted, issuer = self.candidate_with_budget([(0, False)])
+        self.assertEqual((admitted, issuer.status.call_args.args[1]), (True, 'success'))
+
+    def test_a_success_replaced_by_the_exhaustion_failure_is_not_admitted(self):
+        admitted, issuer = self.candidate_with_budget([(STATUS_BUDGET, False)])
+        self.assertEqual((admitted, issuer.status.call_args.args[1:]), (False, ('failure', EXHAUSTED)))
+
+    def test_a_success_on_a_terminal_head_publishes_nothing_and_is_not_admitted(self):
+        admitted, issuer = self.candidate_with_budget([(STATUS_LIMIT, True)])
+        self.assertEqual((admitted, issuer.status.call_count), (False, 0))
+
+    def test_a_success_replaced_by_the_unknown_count_failure_is_not_admitted(self):
+        admitted, issuer = self.candidate_with_budget([AdmissionError('GitHub down')])
+        self.assertEqual((admitted, issuer.status.call_args.args[1:]), (False, ('failure', UNCOUNTED)))
+
+    def test_a_publisher_that_reports_nothing_never_counts_as_a_success(self):
+        github = FakeGitHub()
+        publisher = Mock(status=Mock(return_value=None))
+        config = dict(CONFIG, dropbox_read_token=FakeDropbox(), review_public_key=public(REVIEW_PRIVATE),
+                      execution_public_key=public(EXECUTION_PRIVATE))
+        self.assertFalse(run_candidate(225, github, publisher, config, lambda: 150))
+
+    def test_once_exits_nonzero_when_the_publisher_substituted_a_failure(self):
+        with patch('scripts.admission_runner.configuration', return_value=dict(CONFIG)), \
+                patch('scripts.admission_runner.startup'), patch('scripts.admission_runner.ready'), \
+                patch('scripts.admission_runner.GitHub', return_value=Mock(pr=lambda n: {
+                    'number': n, 'state': 'open', 'draft': False, 'base': {'ref': 'next'}, 'head': {'sha': HEAD}})), \
+                patch('scripts.admission_runner.process', return_value=False):
+            self.assertEqual(main(['--once', '--pr', '225']), 1)
+
+    def test_once_exits_zero_when_the_success_was_published(self):
+        with patch('scripts.admission_runner.configuration', return_value=dict(CONFIG)), \
+                patch('scripts.admission_runner.startup'), patch('scripts.admission_runner.ready'), \
+                patch('scripts.admission_runner.GitHub', return_value=Mock(pr=lambda n: {
+                    'number': n, 'state': 'open', 'draft': False, 'base': {'ref': 'next'}, 'head': {'sha': HEAD}})), \
+                patch('scripts.admission_runner.process', return_value=True):
+            self.assertEqual(main(['--once', '--pr', '225']), 0)
+
+    def misspelled(self, line):
+        """Run one cycle for a PR whose description carries `line`; return the statuses posted."""
+        issuer, posted = issuing(protection())
+        github = FakeGitHub()
+        original = github.pr
+        github.pr = lambda number: dict(original(number), body='Summary\n' + line + '\n')
+        self.assertFalse(self.cycle(github, issuer, PublishedRecords()))
+        return posted
+
+    def test_a_misspelled_review_line_publishes_a_failure_through_the_runner(self):
+        for line in ('agent-review: ' + REFERENCE, 'Agent Review: ' + REFERENCE, 'Agent_Review: ' + REFERENCE,
+                     'Agent\u2011Review: ' + REFERENCE, 'Agent\u2013Review: ' + REFERENCE):
+            with self.subTest(line=line):
+                self.assertEqual(self.misspelled(line), [('pending', IN_PROGRESS), ('failure', SPELLING)])
+
+    def failing_cycles(self, message, cycles=3):
+        """Run cycles for a PR whose evaluation fails with `message`; return the statuses posted."""
+        issuer, posted = issuing(protection())
+        github, published = FakeGitHub(), PublishedRecords()
+
+        def refuse(path):
+            raise AdmissionError(message)
+        github.pages = refuse
+        for _ in range(cycles):
+            self.assertFalse(self.cycle(github, issuer, published))
+        return posted
+
+    def test_a_long_finding_is_published_once_not_every_cycle(self):
+        self.assertEqual(len(self.failing_cycles('Dropbox record missing from external cache: ' + 'x' * 300)), 2)
+
+    def test_a_multi_line_finding_is_published_once_not_every_cycle(self):
+        self.assertEqual(len(self.failing_cycles('first line\nsecond line\n\tthird')), 2)
+
+    def test_a_finding_with_control_characters_is_published_once_not_every_cycle(self):
+        self.assertEqual(len(self.failing_cycles('bad\x1b[31m text \x00 here')), 2)
+
+    def test_a_short_finding_is_published_once_not_every_cycle(self):
+        self.assertEqual(len(self.failing_cycles('record missing')), 2)
+
+    def test_a_published_finding_is_one_printable_line_of_at_most_140_characters(self):
+        text = self.failing_cycles('a\nb ' + 'y' * 300, 1)[-1][1]
+        self.assertTrue(text.isprintable() and len(text) <= 140)
 
     def cycle(self, github, issuer, published):
         config = dict(CONFIG, dropbox_read_token=FakeDropbox(), review_public_key=public(REVIEW_PRIVATE),
@@ -335,56 +492,9 @@ class Runner(unittest.TestCase):
         issuer.status.assert_called_once_with(HEAD, 'failure', 'issuer credential cleanup failed')
         credentials.close.assert_called_once()
 
-    def publisher_status(self, state, login='flowstate-merge-admission[bot]'):
-        return {'context': 'flowstate/merge-admission', 'state': state, 'description': 'd-' + state,
-                'creator': {'login': login}}
-
-    def test_monitor_passes_for_every_state_the_trusted_publisher_reported(self):
-        for state in ('success', 'pending', 'failure', 'error'):
-            status = self.publisher_status(state)
-            with self.subTest(state=state):
-                self.assertEqual(watch(SimpleNamespace(request=lambda *args: [status]), HEAD, timeout=0), status)
-
-    def test_monitor_fails_naming_the_service_when_the_publisher_never_reported(self):
-        ticks = iter(range(0, 1000, 60))
-        reader = SimpleNamespace(request=lambda *args: [])
-        with self.assertRaisesRegex(AdmissionError, 'systemctl --user status flowstate-admission.service'):
-            watch(reader, HEAD, timeout=120, clock=lambda: next(ticks), sleep=lambda _: None)
-
-    def test_monitor_ignores_other_contexts_when_the_publisher_never_reported(self):
-        other = dict(self.publisher_status('success'), context='ci/build')
-        with self.assertRaisesRegex(AdmissionError, 'not reported'):
-            watch(SimpleNamespace(request=lambda *args: [other]), HEAD, timeout=0)
-
-    def test_monitor_rejects_a_status_from_any_other_creator(self):
-        for state in ('success', 'pending', 'failure'):
-            reader = SimpleNamespace(request=lambda *args: [self.publisher_status(state, 'other')])
-            with self.subTest(state=state), self.assertRaisesRegex(AdmissionError, 'wrong publisher'):
-                watch(reader, HEAD, timeout=0)
-
-    def test_monitor_judges_the_newest_status_which_github_lists_first(self):
-        trusted, other = self.publisher_status('pending'), self.publisher_status('success', 'other')
-        self.assertEqual(watch(SimpleNamespace(request=lambda *args: [trusted, other]), HEAD, timeout=0), trusted)
-        with self.assertRaisesRegex(AdmissionError, 'wrong publisher'):
-            watch(SimpleNamespace(request=lambda *args: [other, trusted]), HEAD, timeout=0)
-
-    def test_report_reduces_the_description_to_one_bounded_plain_line(self):
-        status = dict(self.publisher_status('failure'), created_at='2026-11-21T10:00:00Z',
-                      description='bad\n::error::injected ' + 'x' * 500)
-        text = report(status)
-        self.assertEqual(text.count('\n'), 1)
-        self.assertNotIn('::error::', text)
-        self.assertLess(len(text), 420)
-        self.assertIn('as of 2026-11-21T10:00:00Z', text)
-
-    def test_monitor_rejects_a_malformed_sha_before_any_request(self):
-        reader = Mock()
-        with self.assertRaisesRegex(AdmissionError, 'exact candidate SHA'):
-            watch(reader, 'main', timeout=0)
-        reader.request.assert_not_called()
-
     def test_watch_command_states_that_the_required_context_decides_and_writes_summary(self):
-        status = self.publisher_status('pending')
+        status = {'context': 'flowstate/merge-admission', 'state': 'pending', 'description': 'd-pending',
+                  'creator': {'login': 'flowstate-merge-admission[bot]'}}
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()) as out, \
                 patch('scripts.admission_runner.watch', return_value=status), \
                 patch.dict(os.environ, {'GITHUB_STEP_SUMMARY': directory + '/summary', 'GITHUB_TOKEN': 'synthetic'}):
@@ -396,23 +506,6 @@ class Runner(unittest.TestCase):
 
     def test_configuration_error_is_nonzero(self):
         self.assertEqual(main(['--check-config', '--config', '/nonexistent/admission.json']), 1)
-
-    def test_monitor_keeps_polling_until_the_publisher_reports(self):
-        answers = iter([[], [self.publisher_status('success')]])
-        reader = SimpleNamespace(request=lambda *args: next(answers))
-        self.assertEqual(watch(reader, HEAD, timeout=10, clock=lambda: 0, sleep=lambda _: None)['state'], 'success')
-
-    def test_monitor_fetches_individual_status_records_with_verified_creator(self):
-        def api(method, path):
-            self.assertEqual((method, path), ('GET', '/statuses/' + HEAD + '?per_page=100'))
-            return [{'context': 'flowstate/merge-admission', 'state': 'success',
-                     'creator': {'login': 'flowstate-merge-admission[bot]'}}]
-        self.assertEqual(watch(SimpleNamespace(request=api), HEAD, timeout=0)['state'], 'success')
-
-    def test_monitor_rejects_creatorless_combined_status_response(self):
-        reader = SimpleNamespace(request=lambda *args: {'sha': HEAD, 'statuses': []})
-        with self.assertRaisesRegex(AdmissionError, 'status records unavailable'):
-            watch(reader, HEAD, timeout=0)
 
     def test_sigterm_publishes_failure_and_closes_credentials(self):
         script = '''

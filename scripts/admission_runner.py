@@ -11,27 +11,41 @@ from scripts.admission_io import GitHub, execute
 from scripts.admission_local_dropbox import LocalDropbox
 from scripts.admission_metadata import AdmissionError, SHA, refusal_state
 from scripts.admission_publish import ChangedStatusPublisher, PublishedRecords, retain_heads
+from scripts.admission_monitor import report, watch
 from scripts.admission_service import ready
 from scripts.app_credentials import AppCredentials
-from scripts.status_issuer import STATUS_CONTEXT, StatusIssuer, verify_status_source
+from scripts.status_issuer import StatusIssuer, verify_status_source
 
 SCAN_FAILURE_LIMIT = 20
+REASON_LIMIT = 200
 
 
 class CandidatePublisher:
-    """Never let a second PR read publish a result for a different candidate."""
+    """Never let a second PR read publish a result for a different candidate.
+
+    `outcome` is the state the wrapped publisher reports as standing on the head after the newest
+    call: the substituted state when it replaced the requested one, None when it published nothing
+    or reported nothing. A publisher that returns nothing therefore never counts as a success.
+    """
     def __init__(self, publisher, head):
-        self.publisher, self.head = publisher, head
+        self.publisher, self.head, self.outcome = publisher, head, None
 
     def status(self, head, state, description):
         if head != self.head:
             raise AdmissionError('candidate head changed before admission publication')
-        self.publisher.status(head, state, description)
+        self.outcome = None
+        self.outcome = self.publisher.status(head, state, description)
+        return self.outcome
 
 
 def reason(error):
-    """Preserve expected findings, but never print unexpected exception secrets."""
-    return str(error) if isinstance(error, AdmissionError) else 'internal admission error: ' + type(error).__name__
+    """Preserve expected findings, but never print unexpected exception secrets.
+
+    The text becomes one bounded line of printable characters (REASON_LIMIT), so a finding that
+    quotes PR content cannot forge log lines or start a workflow command.
+    """
+    text = str(error) if isinstance(error, AdmissionError) else 'internal admission error: ' + type(error).__name__
+    return ' '.join(''.join(c if c.isprintable() else ' ' for c in text).split())[:REASON_LIMIT]
 
 
 def terminate(signum, frame):
@@ -51,21 +65,37 @@ def startup(config):
 
 
 def run_candidate(number, reader, publisher, config, clock=time.time):
-    """Publish terminal failure for validation, unexpected exceptions and interrupts."""
+    """Publish terminal failure for validation, unexpected exceptions and interrupts.
+
+    Return True only when the evaluated success is what stands on the head: a failure substituted
+    by the publisher (exhausted head, unknown status count) or no publication at all returns False.
+    An interrupt (KeyboardInterrupt, SystemExit) is always re-raised after a best-effort failure
+    publication, whatever that publication does.
+    """
     head = reader.pr(number).get('head', {}).get('sha')
     if not SHA.fullmatch(str(head)):
         raise AdmissionError('cannot bind admission result to candidate head')
+    candidate = CandidatePublisher(publisher, head)
     try:
         execute({'pull_request': {'number': number}}, reader, config['dropbox_read_token'],
-                CandidatePublisher(publisher, head), config['review_public_key'],
-                config['execution_public_key'], clock, ('Build',))
-        return True
+                candidate, config['review_public_key'], config['execution_public_key'], clock, ('Build',))
+        return candidate.outcome == 'success'
     except BaseException as error:
-        publisher.status(head, refusal_state(error), reason(error))
-        if not isinstance(error, Exception):
+        if isinstance(error, Exception):
+            publisher.status(head, refusal_state(error), reason(error))
+        else:
+            interrupted(publisher, head, error)
             raise
         print(f'PR #{number} {head}: {reason(error)}', file=sys.stderr, flush=True)
         return False
+
+
+def interrupted(publisher, head, error):
+    """Publish the failure for an interrupt; a fault in doing so never replaces the interrupt."""
+    try:
+        publisher.status(head, 'failure', reason(error))
+    except Exception as fault:
+        print(f'PR head {head}: interrupt failure not published: {reason(fault)}', file=sys.stderr, flush=True)
 
 
 def process(number, reader, config, published=None):
@@ -76,19 +106,26 @@ def process(number, reader, config, published=None):
     """
     credentials = AppCredentials(config['repository'], config['repository_id'], config['app_id'],
                                  config['installation_id'], config['private_key'])
-    publisher = None
+    publisher, interrupt = None, None
     try:
         head = reader.pr(number).get('head', {}).get('sha')
         issuer = StatusIssuer(config['repository'], credentials, reader)
         publisher = CandidatePublisher(ChangedStatusPublisher(issuer, published, reader), head)
         return run_candidate(number, reader, publisher, config)
+    except BaseException as error:
+        interrupt = None if isinstance(error, Exception) else error
+        raise
     finally:
         try:
             credentials.close()
         except Exception as error:
-            if publisher is not None:
-                publisher.status(publisher.head, 'failure', 'issuer credential cleanup failed')
-            raise AdmissionError('issuer credential cleanup failed') from error
+            if interrupt is not None:
+                print(f'PR #{number}: issuer credential cleanup failed during an interrupt: {reason(error)}',
+                      file=sys.stderr, flush=True)
+            else:
+                if publisher is not None:
+                    publisher.status(publisher.head, 'failure', 'issuer credential cleanup failed')
+                raise AdmissionError('issuer credential cleanup failed') from error
 
 
 def scan(config, number, published):
@@ -117,53 +154,6 @@ def scan(config, number, published):
     if faults == len(results) > 0:
         raise AdmissionError(f'every candidate failed in this scan ({faults})')
     return all(results)
-
-
-def qualified_status(reader, head):
-    """Read creator-bearing status records for the exact candidate SHA."""
-    response = reader.request('GET', f'/statuses/{head}?per_page=100')
-    if not isinstance(response, list):
-        raise AdmissionError('publisher status records unavailable for the candidate')
-    matches = [s for s in response if s.get('context') == STATUS_CONTEXT]
-    status = next(iter(matches), {})
-    if status and status.get('creator', {}).get('login') != 'flowstate-merge-admission[bot]':
-        raise AdmissionError('admission status came from the wrong publisher')
-    return status
-
-
-def watch(reader, head, timeout=120, clock=time.monotonic, sleep=time.sleep):
-    """Monitor publisher liveness for the exact candidate SHA; return its status.
-
-    Any `flowstate/merge-admission` status from the trusted publisher (success,
-    pending, failure or error) proves the publisher is running, so it is returned
-    and the job passes: the required status context, not this monitor, decides the
-    merge. A status from any other creator raises at once, and so does silence
-    until the deadline, which means the publisher is probably not running.
-    """
-    if not SHA.fullmatch(str(head)):
-        raise AdmissionError('monitor requires the exact candidate SHA')
-    deadline = clock() + timeout
-    while True:
-        status = qualified_status(reader, head)
-        if status:
-            return status
-        if clock() >= deadline:
-            raise AdmissionError('the admission publisher has not reported for commit ' + head +
-                                 ' and is probably not running; check '
-                                 '`systemctl --user status flowstate-admission.service`')
-        sleep(5)
-
-
-def report(status):
-    """Describe a publisher status, stating that the required context decides the merge.
-
-    The description is echoed into the job log and step summary, so it is reduced to
-    one bounded line of plain text first: no line can start a workflow command.
-    """
-    described = ' '.join(str(status.get('description')).split())[:200].replace('::', ': :')
-    return ('Admission publisher has reported: flowstate/merge-admission is ' + str(status.get('state')) +
-            ' (' + described + ') as of ' + str(status.get('created_at')) + '. The required status '
-            'context, not this job, decides the merge.\n')
 
 
 def serve(config):
