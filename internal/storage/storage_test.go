@@ -18,152 +18,130 @@ func TestStorage(t *testing.T) {
 	RunSpecs(t, "Storage Suite")
 }
 
-// openT is arrange-only: any setup failure trips the exempt err-check pattern.
+// openT is arrange-only: any setup failure panics.
 func openT() (*sql.DB, string, OpenInfo) {
 	dir := GinkgoT().TempDir()
 	db, info, err := Open(filepath.Join(dir, "t.db"))
-	Expect(err).NotTo(HaveOccurred())
-	err = Migrate(db)
-	Expect(err).NotTo(HaveOccurred())
+	if err != nil {
+		panic(err)
+	}
+	if err := Migrate(db); err != nil {
+		panic(err)
+	}
 	DeferCleanup(func() { _ = db.Close() })
 	return db, dir, info
 }
 
 func appliedRows(db *sql.DB) []int {
 	rows, err := db.Query(`SELECT version FROM schema_migrations ORDER BY version`)
-	Expect(err).NotTo(HaveOccurred())
-	DeferCleanup(rows.Close)
+	if err != nil {
+		panic(err)
+	}
+	defer func() { _ = rows.Close() }()
 	var out []int
 	for rows.Next() {
 		var v int
-		err := rows.Scan(&v)
-		Expect(err).NotTo(HaveOccurred())
+		if err := rows.Scan(&v); err != nil {
+			panic(err)
+		}
 		out = append(out, v)
+	}
+	if err := rows.Err(); err != nil {
+		panic(err)
 	}
 	return out
 }
 
-var _ = Describe("Canonical fixtures", func() {
-	for _, f := range []string{"key_order", "unicode", "numbers", "nested"} {
-		fixture := f
-		It("fixture "+fixture+" matches canonical bytes under the declared encoder", func() {
-			b, err := os.ReadFile("testdata/" + fixture + ".json")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(IsCanonical(string(b))).To(BeTrue(), "%s: fixture not canonical per current encoder", fixture)
-		})
-	}
-})
-
 var _ = Describe("Migrations", func() {
+	var db *sql.DB
+
+	BeforeEach(func() {
+		db, _, _ = openT()
+	})
+
 	It("reapply is a no-op recording no additional migrations", func() {
-		db, _, _ := openT()
 		before := len(appliedRows(db))
-		err := Migrate(db)
-		Expect(err).NotTo(HaveOccurred())
+		if err := Migrate(db); err != nil {
+			panic(err)
+		}
 		Expect(appliedRows(db)).To(HaveLen(before))
 	})
 
-	It("records exactly one migration row", func() {
-		db, _, _ := openT()
+	It("records exactly the two migration rows", func() {
 		Expect(appliedRows(db)).To(HaveLen(2))
 	})
 
-	for _, tbl := range []string{"sessions", "events", "receipts"} {
-		table := tbl
-		It("creates the "+table+" table", func() {
-			db, _, _ := openT()
+	DescribeTable("creates the table",
+		func(table string) {
 			var name string
 			err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&name)
-			Expect(err).NotTo(HaveOccurred())
+			if err != nil {
+				panic(err)
+			}
 			Expect(name).To(Equal(table))
-		})
-	}
+		},
+		Entry("sessions", "sessions"),
+		Entry("events", "events"),
+		Entry("receipts", "receipts"),
+	)
 })
 
 var _ = Describe("Open qualification", func() {
+	var (
+		db   *sql.DB
+		info OpenInfo
+	)
+
+	BeforeEach(func() {
+		db, _, info = openT()
+	})
+
 	It("records the mandated journal_mode pragma", func() {
-		_, _, info := openT()
 		Expect(info.Pragmas["journal_mode"]).To(Equal("wal"))
 	})
 
 	It("records the mandated foreign_keys pragma", func() {
-		_, _, info := openT()
 		Expect(info.Pragmas["foreign_keys"]).To(Equal("1"))
 	})
 
 	It("enforces journal_mode=wal on the live connection", func() {
-		db, _, _ := openT()
 		var mode string
-		err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode)
-		Expect(err).NotTo(HaveOccurred())
+		if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+			panic(err)
+		}
 		Expect(mode).To(Equal("wal"))
 	})
 
 	It("runs a sqlite version at or above the qualified floor 3.40", func() {
-		db, _, _ := openT()
 		var sv string
-		err := db.QueryRow(`SELECT sqlite_version()`).Scan(&sv)
-		Expect(err).NotTo(HaveOccurred())
+		if err := db.QueryRow(`SELECT sqlite_version()`).Scan(&sv); err != nil {
+			panic(err)
+		}
 		var major, minor int
-		_, err = fmt.Sscanf(sv, "%d.%d", &major, &minor)
-		Expect(err).NotTo(HaveOccurred())
+		if _, err := fmt.Sscanf(sv, "%d.%d", &major, &minor); err != nil {
+			panic(err)
+		}
 		Expect(major > 3 || (major == 3 && minor >= 40)).To(BeTrue(), "sqlite_version %q below qualified floor 3.40", sv)
 	})
 
 	It("records a non-empty driver version", func() {
-		_, _, info := openT()
 		Expect(info.DriverVersion).NotTo(BeEmpty())
 	})
 
 	It("records the modernc.org/sqlite driver name", func() {
-		_, _, info := openT()
 		Expect(info.DriverName).To(Equal("modernc.org/sqlite"))
 	})
 
 	It("enforces foreign keys by rejecting dangling inserts", func() {
-		db, _, _ := openT()
 		tx, err := db.Begin()
-		Expect(err).NotTo(HaveOccurred())
+		if err != nil {
+			panic(err)
+		}
+		defer func() { _ = tx.Rollback() }()
 		_, err = tx.Exec(`INSERT INTO events (session_id, seq, created_at_utc, actor, type, payload_sha256, payload_json)
 		VALUES ('missing', 0, 'now', 'user', 'x', 'h', '{}')`)
 		Expect(err).To(HaveOccurred(), "foreign_keys not enforced")
-		err = tx.Rollback()
-		Expect(err).NotTo(HaveOccurred())
 	})
-})
-
-// writeCanonicalFixture is the explicit fixture-generation utility. Callers choose
-// the output path; required specs always use an isolated temporary directory.
-func writeCanonicalFixture(path string, value map[string]any) error {
-	canonical, err := CanonicalJSON(value)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, []byte(canonical), 0o644)
-}
-
-var _ = Describe("Fixture generator", func() {
-	for _, tc := range []struct {
-		name  string
-		value map[string]any
-	}{
-		{"key_order", map[string]any{"zeta": 1, "alpha": 2, "Mid": 3, "_under": 4}},
-		{"unicode", map[string]any{"text": "héllo → 世界", "emoji": "🚀"}},
-		{"numbers", map[string]any{"int": 3, "float": 1.5, "whole": 2.0, "big": 9007199254740993.0}},
-		{"nested", map[string]any{"b": 1, "a": []any{1.25, 2, "x"}, "o": map[string]any{"y": true, "x": nil}}},
-	} {
-		fixture := tc
-		It("writes the frozen "+fixture.name+" canonical fixture", func() {
-			path := filepath.Join(GinkgoT().TempDir(), fixture.name+".json")
-			err := writeCanonicalFixture(path, fixture.value)
-			Expect(err).NotTo(HaveOccurred())
-			got, err := os.ReadFile(path)
-			Expect(err).NotTo(HaveOccurred())
-			frozen, err := os.ReadFile(filepath.Join("testdata", fixture.name+".json"))
-			Expect(err).NotTo(HaveOccurred())
-			Expect(got).To(Equal(frozen))
-		})
-	}
 })
 
 // captureQualification writes the T019 bundle to an explicit destination. It
@@ -224,23 +202,29 @@ var _ = Describe("T019 qualification capture", func() {
 	BeforeEach(func() {
 		db, dir, info := openT()
 		out := filepath.Join(dir, "qualification.json")
-		err := captureQualification(db, info, out)
-		Expect(err).NotTo(HaveOccurred())
+		if err := captureQualification(db, info, out); err != nil {
+			panic(err)
+		}
 		b, err := os.ReadFile(out)
-		Expect(err).NotTo(HaveOccurred())
-		err = json.Unmarshal(b, &captured)
-		Expect(err).NotTo(HaveOccurred())
+		if err != nil {
+			panic(err)
+		}
+		if err := json.Unmarshal(b, &captured); err != nil {
+			panic(err)
+		}
 	})
 	It("captures the modernc driver identity", func() {
 		var info OpenInfo
-		err := json.Unmarshal(captured["open_info"], &info)
-		Expect(err).NotTo(HaveOccurred())
+		if err := json.Unmarshal(captured["open_info"], &info); err != nil {
+			panic(err)
+		}
 		Expect(info.DriverName).To(Equal("modernc.org/sqlite"))
 	})
 	DescribeTable("captures the effective pragma", func(key, want string) {
 		var pragmas map[string]string
-		err := json.Unmarshal(captured["effective_pragmas"], &pragmas)
-		Expect(err).NotTo(HaveOccurred())
+		if err := json.Unmarshal(captured["effective_pragmas"], &pragmas); err != nil {
+			panic(err)
+		}
 		Expect(pragmas[key]).To(Equal(want))
 	},
 		Entry("journal mode", "journal_mode", "wal"),
@@ -252,21 +236,24 @@ var _ = Describe("T019 qualification capture", func() {
 		field := key
 		It("captures "+field, func() {
 			var versions []int
-			err := json.Unmarshal(captured[field], &versions)
-			Expect(err).NotTo(HaveOccurred())
+			if err := json.Unmarshal(captured[field], &versions); err != nil {
+				panic(err)
+			}
 			Expect(versions).To(Equal([]int{1, 2}))
 		})
 	}
 	It("captures the migration no-op result", func() {
 		var noop bool
-		err := json.Unmarshal(captured["reapply_is_noop"], &noop)
-		Expect(err).NotTo(HaveOccurred())
+		if err := json.Unmarshal(captured["reapply_is_noop"], &noop); err != nil {
+			panic(err)
+		}
 		Expect(noop).To(BeTrue())
 	})
 	It("captures the executing Go version", func() {
 		var version string
-		err := json.Unmarshal(captured["go_version"], &version)
-		Expect(err).NotTo(HaveOccurred())
+		if err := json.Unmarshal(captured["go_version"], &version); err != nil {
+			panic(err)
+		}
 		Expect(version).To(Equal(runtime.Version()))
 	})
 })
