@@ -981,6 +981,34 @@ var _ = Describe("Session run failure classification", func() {
 			"provider_error"),
 	)
 
+	Context("a cancelled run whose reservation could not be settled", func() {
+		var (
+			exit   int
+			stderr string
+		)
+
+		BeforeEach(func() {
+			exit, stderr = finishRunOutcome(fmt.Errorf("%w: %w: session s1 is cancelled: settle blocked",
+				app.ErrSessionCancelled, app.ErrReservationSettle))
+		})
+
+		It("keeps exit 130", func() { Expect(exit).To(Equal(130)) })
+		It("keeps the cancelled message", func() {
+			Expect(stderr).To(ContainSubstring("interrupted; session cancelled"))
+		})
+		It("prints the settle failure naming the session", func() {
+			Expect(stderr).To(ContainSubstring("reservation_settle_failed: session s1 is cancelled: settle blocked"))
+		})
+		It("prints one line more than a plain cancellation", func() {
+			Expect(strings.Count(stderr, "\n")).To(Equal(2))
+		})
+	})
+
+	It("prints no settle line for a plain cancellation", func() {
+		_, stderr := finishRunOutcome(app.ErrSessionCancelled)
+		Expect(stderr).NotTo(ContainSubstring("reservation_settle_failed"))
+	})
+
 	It("does not wrap a provider failure a second time", func() {
 		_, stderr := finishRunOutcome(fmt.Errorf("%w: %w", app.ErrProvider, errors.New("zai: api error 429")))
 		Expect(stderrMessage(stderr)).To(Equal("provider_error: zai: api error 429"))
