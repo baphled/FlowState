@@ -264,20 +264,31 @@ var _ = Describe("max_tokens passthrough", func() {
 		}
 		Expect(got).To(Equal(42.0))
 	})
-	It("omits max_tokens when unset", func() {
-		var raw string
+	DescribeTable("sends the resolved max_tokens on the general route", func(in int64, want float64) {
+		var got float64
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			body, _ := io.ReadAll(r.Body)
-			raw = string(body)
+			var req struct {
+				MaxTokens float64 `json:"max_tokens"`
+			}
+			if err := json.Unmarshal(body, &req); err != nil {
+				panic(err)
+			}
+			got = req.MaxTokens
 			w.Header().Set("Content-Type", "text/event-stream")
 			_, _ = w.Write([]byte("data: [DONE]\n\n"))
 		}))
 		DeferCleanup(srv.Close)
 		p := zai.New("k", zai.WithBaseURL(srv.URL))
-		for range p.Stream(context.Background(), &provider.ChatRequest{Model: "glm-5.3"}) {
+		for range p.Stream(context.Background(), &provider.ChatRequest{Model: "glm-5.3", MaxTokens: in}) {
 		}
-		Expect(raw).NotTo(ContainSubstring("max_tokens"))
-	})
+		Expect(got).To(Equal(want))
+	},
+		Entry("unset uses the default", int64(0), 8192.0),
+		Entry("negative uses the default", int64(-5), 8192.0),
+		Entry("explicit small limit is sent as given", int64(20), 20.0),
+		Entry("explicit limit above the cap is capped", int64(500000), 131072.0),
+	)
 })
 
 var _ = Describe("general route stream finish reason", func() {
