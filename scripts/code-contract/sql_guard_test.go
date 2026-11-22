@@ -32,8 +32,8 @@ var _ = Describe("Inline SQL architecture guard", func() {
 		Entry("update in session", "internal/session/session.go", "package session\nvar q = `UPDATE sessions SET state = 1`", 1),
 		Entry("delete in tool", "internal/tool/executor.go", "package tool\nvar q = `DELETE FROM runs`", 1),
 		Entry("multiline select", "internal/runtime/loop/turn.go", "package loop\nvar q = `\n SELECT id\n FROM events`", 1),
-		Entry("migration DDL in adapter", "internal/storage/migrate.go", "package storage\nvar ddl = `CREATE TABLE runs (id TEXT)`", 1),
-		Entry("ORM model insert permitted", "internal/storage/receipts.go", "package storage\nfunc f(db interface{ Create(any) error }, row any) { _ = db.Create(row) }", 0),
+		Entry("migration DDL in adapter", "internal/store/migrate.go", "package store\nvar ddl = `CREATE TABLE runs (id TEXT)`", 1),
+		Entry("ORM model insert permitted", "internal/store/receipts.go", "package store\nfunc f(db interface{ Create(any) error }, row any) { _ = db.Create(row) }", 0),
 		Entry("non-SQL text remains legal", "internal/app/usecase.go", "package app\nvar text = `Select the active model`", 0),
 		Entry("adapter cannot own raw SQL", "internal/store/sqlite.go", "package store\nvar q = `SELECT id FROM events`", 1),
 		Entry("transport cannot own raw SQL", "internal/provider/zai/client.go", "package zai\nvar q = `SELECT id FROM events`", 1),
@@ -55,9 +55,9 @@ var _ = Describe("Inline SQL architecture guard", func() {
 			findings := inspectInlineSQL(sourceFile{Name: path, Source: code})
 			Expect(findings).To(HaveLen(expected))
 		},
-		Entry("dynamic SQL through Exec", "internal/storage/queries.go", "package storage\nfunc f(db interface{ Exec(string) error }, q string) { _ = db.Exec(q) }", 1),
-		Entry("QueryRow in storage", "internal/storage/read.go", "package storage\nfunc f(db interface{ QueryRow(string) any }, q string) { _ = db.QueryRow(q) }", 1),
-		Entry("GORM Raw in storage", "internal/storage/read.go", "package storage\nfunc f(orm interface{ Raw(string) any }, q string) { _ = orm.Raw(q) }", 1),
+		Entry("dynamic SQL through Exec", "internal/store/queries.go", "package store\nfunc f(db interface{ Exec(string) error }, q string) { _ = db.Exec(q) }", 1),
+		Entry("QueryRow in the store", "internal/store/read.go", "package store\nfunc f(db interface{ QueryRow(string) any }, q string) { _ = db.QueryRow(q) }", 1),
+		Entry("GORM Raw in the store", "internal/store/read.go", "package store\nfunc f(orm interface{ Raw(string) any }, q string) { _ = orm.Raw(q) }", 1),
 		Entry("non-database Exec remains legal", "internal/tool/command.go", "package tool\nfunc f(command interface{ Exec() error }) { _ = command.Exec() }", 0),
 		Entry("tools outside production", "scripts/runner.go", "package main\nvar q = `SELECT id FROM events`", 0),
 	)

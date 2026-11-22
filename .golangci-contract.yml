@@ -39,7 +39,7 @@ linters:
             - pkg: database/sql
               desc: Storage belongs behind consumer-owned ports.
         adapters:
-          files: ["**/internal/store/*.go", "**/internal/store/**/*.go", "**/internal/storage/*.go", "**/internal/storage/**/*.go", "**/internal/oauth/*.go", "**/internal/oauth/**/*.go", "**/internal/provider/*/*.go", "**/internal/provider/*/**/*.go", "!$test"]
+          files: ["**/internal/store/*.go", "**/internal/store/**/*.go", "**/internal/oauth/*.go", "**/internal/oauth/**/*.go", "**/internal/provider/*/*.go", "**/internal/provider/*/**/*.go", "!$test"]
           deny:
             - pkg: github.com/baphled/flowstate/internal/app$
               desc: Composition depends on adapters, not the reverse.

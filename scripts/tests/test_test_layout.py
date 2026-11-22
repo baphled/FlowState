@@ -10,19 +10,19 @@ from test_layout import test_layout_errors  # noqa: E402
 
 class TestTestLayout(unittest.TestCase):
     def test_exact_companion_is_allowed(self):
-        paths = {"internal/storage/writer.go", "internal/storage/writer_test.go"}
-        self.assertEqual(test_layout_errors(paths, ["internal/storage/writer_test.go"]), [])
+        paths = {"internal/store/writer.go", "internal/store/writer_test.go"}
+        self.assertEqual(test_layout_errors(paths, ["internal/store/writer_test.go"]), [])
 
     def test_acceptance_number_without_implementation_fails(self):
-        paths = {"internal/storage/writer.go", "internal/storage/acceptance_items45_test.go"}
-        errors = test_layout_errors(paths, ["internal/storage/acceptance_items45_test.go"])
+        paths = {"internal/store/writer.go", "internal/store/acceptance_items45_test.go"}
+        errors = test_layout_errors(paths, ["internal/store/acceptance_items45_test.go"])
         self.assertEqual(len(errors), 1)
         self.assertIn("acceptance_items45.go", errors[0])
 
     def test_fixture_and_qualification_catchalls_fail(self):
-        changed = ["internal/storage/fixtures_gen_test.go",
-                   "internal/storage/qualification_capture_test.go"]
-        errors = test_layout_errors(set(changed) | {"internal/storage/storage.go"}, changed)
+        changed = ["internal/store/fixtures_gen_test.go",
+                   "internal/store/qualification_capture_test.go"]
+        errors = test_layout_errors(set(changed) | {"internal/store/storage.go"}, changed)
         self.assertEqual(len(errors), 2)
 
     def test_suite_bootstrap_is_allowed(self):
@@ -30,9 +30,9 @@ class TestTestLayout(unittest.TestCase):
                                             ["internal/skill/suite_test.go"]), [])
 
     def test_unchanged_legacy_does_not_block_unrelated_work(self):
-        paths = {"internal/storage/legacy_test.go", "internal/storage/writer.go",
-                 "internal/storage/writer_test.go"}
-        self.assertEqual(test_layout_errors(paths, ["internal/storage/writer_test.go"]), [])
+        paths = {"internal/store/legacy_test.go", "internal/store/writer.go",
+                 "internal/store/writer_test.go"}
+        self.assertEqual(test_layout_errors(paths, ["internal/store/writer_test.go"]), [])
 
     def test_new_unmatched_test_is_rejected_even_if_renamed(self):
         paths = {"internal/runtime/loop.go", "internal/runtime/loop_cancel_test.go"}
