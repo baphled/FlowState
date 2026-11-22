@@ -158,6 +158,14 @@ func (s *Store) NewEventWriter(ctx context.Context, sessionID string) (*EventWri
 // Actor and type must be non-empty; an existing (session, seq) row
 // yields ErrSeqCollision. Writes after writer Close fail with
 // ErrClosed.
+//
+// Cancellation has a definite outcome. A context that is already done
+// refuses the append before anything is written. Once the write has
+// started it is not interrupted: the insert commits on its own, so a
+// cancellation arriving during it could report failure for a row that
+// was in fact committed, leaving the writer one seq behind the log and
+// every later append (including the one recording the cancellation)
+// colliding with it.
 func (w *EventWriter) Append(ctx context.Context, actor, typ string, payload any) (int64, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -171,7 +179,10 @@ func (w *EventWriter) Append(ctx context.Context, actor, typ string, payload any
 		return -1, ErrEmptyType
 	}
 	seq := w.next
-	if err := w.insertEvent(ctx, w.store.gdb, seq, actor, typ, payload); err != nil {
+	if err := ctx.Err(); err != nil {
+		return -1, fmt.Errorf("append event seq %d: %w", seq, err)
+	}
+	if err := w.insertEvent(context.WithoutCancel(ctx), w.store.gdb, seq, actor, typ, payload); err != nil {
 		return -1, err
 	}
 	w.next++

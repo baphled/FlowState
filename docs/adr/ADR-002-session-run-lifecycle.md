@@ -58,6 +58,11 @@ happened: `sigint`, `sigterm` or `sighup` for the command-line signal (carried a
 cause), and the neutral `cancelled` when the context carries no named cause. The explicit `session cancel`
 command and the tool-loop run record no reason.
 
+An event append has a definite outcome under cancellation: a context that is already done refuses it before anything
+is written, and a write that has started is not interrupted. Otherwise a cancellation arriving during an append could
+report failure for a committed event, and the append recording the cancellation would collide with it, leaving the
+session active with no final event.
+
 Terminal statuses (`completed`, `cancelled`, `failed`) reject further `session run` and `session cancel` invocations
   with `session_terminal` (exit 6). The valid-status set is validated in `internal/session/storeext.go`; exit codes
   are contract constants in `cmd/flowstate/cli.go`.
