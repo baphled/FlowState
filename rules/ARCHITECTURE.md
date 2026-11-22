@@ -21,8 +21,7 @@ for this backend.
 
 `internal/config` no longer exists (removed in #391): provider settings come from the environment, read where the
 provider is resolved (`internal/provider/registry`). The CLI's own `flowstate.json` is parsed in
-`cmd/flowstate/config.go`. The code-contract allowlists still name the path until that tooling is updated
-separately.
+`cmd/flowstate/config.go`.
 
 Production Go roots are `cmd/flowstate`, the classified `internal` areas, and
 `scripts` for reusable tooling. New roots/public packages need an explicit ownership

@@ -28,7 +28,7 @@ linters:
         cli:
           files: ["**/cmd/**/*.go", "!$test"]
           list-mode: original
-          allow: [$gostd, github.com/baphled/flowstate/internal/app$, github.com/baphled/flowstate/internal/app/, github.com/baphled/flowstate/internal/config$, github.com/baphled/flowstate/internal/config/, github.com/baphled/flowstate/internal/server$, github.com/baphled/flowstate/internal/server/]
+          allow: [$gostd, github.com/baphled/flowstate/internal/app$, github.com/baphled/flowstate/internal/app/, github.com/baphled/flowstate/internal/server$, github.com/baphled/flowstate/internal/server/]
         domain:
           files: ["**/internal/runtime/*.go", "**/internal/runtime/**/*.go", "**/internal/session/*.go", "**/internal/session/**/*.go", "**/internal/tool/*.go", "**/internal/tool/**/*.go", "**/internal/provider/*.go", "!$test"]
           list-mode: original

@@ -1,6 +1,7 @@
 """Preflight rejects real admission failure classes without publishing a status."""
 import os
 import re
+import select
 import shutil
 import signal
 import subprocess
@@ -9,13 +10,24 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.admission_metadata import AdmissionError
-from scripts.admission_preflight import main, ready_preflight
-from scripts.tests.test_admission_io import (
-    HEAD, PARENT, REVIEW_PRIVATE, EXECUTION_PRIVATE, FakeDropbox, FakeGitHub, public, pr,
-)
+# The tool-pin classes below need only the standard library, so the local preflight runs
+# them with a bare python3. The admission fixtures need `cryptography`; where it is
+# missing (a developer machine, never CI) the classes that use them are skipped.
+try:
+    from scripts.admission_metadata import AdmissionError
+    from scripts.admission_preflight import main, ready_preflight
+    from scripts.tests.test_admission_io import (
+        HEAD, PARENT, REVIEW_PRIVATE, EXECUTION_PRIVATE, FakeDropbox, FakeGitHub, public, pr,
+    )
+    ADMISSION_FIXTURES = True
+except ModuleNotFoundError as error:
+    if error.name != 'cryptography' or os.environ.get('CI'):
+        raise
+    ADMISSION_FIXTURES = False
+needs_admission = unittest.skipUnless(ADMISSION_FIXTURES, 'the admission fixtures need cryptography')
 
 
+@needs_admission
 class Readiness(unittest.TestCase):
     def ready(self, github=None, records=None, clock=lambda: 150):
         return ready_preflight(225, PARENT, HEAD, github or FakeGitHub(), records or FakeDropbox(),
@@ -67,6 +79,7 @@ class Readiness(unittest.TestCase):
             self.ready(records=records)
 
 
+@needs_admission
 class PushHook(unittest.TestCase):
     def test_checks_each_pushed_tip_and_propagates_failure(self):
         hook = Path(__file__).resolve().parents[2] / '.githooks/pre-push'
@@ -163,6 +176,23 @@ class ToolPins(unittest.TestCase):
     """Makefile `make preflight` tool pins must match the versions CI installs."""
     root = Path(__file__).resolve().parents[2]
 
+    @staticmethod
+    def logical_lines(lines):
+        """Yield (first line number, text), joining lines continued with a trailing backslash."""
+        number, text = 0, ''
+        for index, line in enumerate(lines, 1):
+            if not text:
+                number = index
+            # A comment or a step name is never continued by a trailing backslash, so it cannot
+            # swallow the install line that follows it.
+            if re.search(r'\\\s*$', line) and not re.match(r'\s*(#|-?\s*name:)', text + line):
+                text += re.sub(r'\\\s*$', '', line).rstrip() + ' '
+                continue
+            yield number, text + line.lstrip() if text else line
+            text = ''
+        if text:
+            yield number, text.rstrip()
+
     def pins(self, tool):
         """Return (location, version) for every pin of the tool in any workflow."""
         found = []
@@ -170,7 +200,7 @@ class ToolPins(unittest.TestCase):
             lines = path.read_text().splitlines()
             env = {m.group(1): m.group(2) for m in
                    (re.match(r'\s*(\w+_VERSION): "?(v[\d.]+)"?\s*$', line) for line in lines) if m}
-            for number, line in enumerate(lines, 1):
+            for number, line in self.logical_lines(lines):
                 where = f'{path.relative_to(self.root)}:{number}'
                 # A comment or a step name that mentions installing the tool is not an install.
                 command = not re.match(r'\s*(#|-?\s*name:)', line)
@@ -237,6 +267,40 @@ class UnrecognisedToolInstall(unittest.TestCase):
     def test_a_known_gosec_install_is_not_reported_twice(self):
         line = 'go install github.com/securego/gosec/v2/cmd/gosec@v2.30.0'
         self.assertEqual(self.pins_of('gosec', line), ['v2.30.0'])
+
+    def test_an_install_continued_over_lines_is_still_read(self):
+        with tempfile.TemporaryDirectory() as root:
+            workflows = Path(root) / '.github/workflows'
+            workflows.mkdir(parents=True)
+            (workflows / 'ci.yml').write_text(
+                'jobs:\n  lint:\n    steps:\n      - run: |\n'
+                '          go install \\\n            github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v9.9.9\n')
+            reader = ToolPins()
+            reader.root = Path(root)
+            self.assertEqual([version for _, version in reader.pins('golangci-lint')], ['unrecognised install'])
+
+    def test_a_comment_ending_in_a_backslash_does_not_hide_the_install_after_it(self):
+        for lead in ('          # tidy up \\', '      - name: tidy up \\'):
+            with self.subTest(lead=lead), tempfile.TemporaryDirectory() as root:
+                workflows = Path(root) / '.github/workflows'
+                workflows.mkdir(parents=True)
+                (workflows / 'ci.yml').write_text(
+                    'jobs:\n  lint:\n    steps:\n' + lead + '\n'
+                    '      - run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v9.9.9\n')
+                reader = ToolPins()
+                reader.root = Path(root)
+                self.assertEqual([v for _, v in reader.pins('golangci-lint')], ['unrecognised install'])
+
+    def test_a_continued_gosec_install_reports_its_version(self):
+        with tempfile.TemporaryDirectory() as root:
+            workflows = Path(root) / '.github/workflows'
+            workflows.mkdir(parents=True)
+            (workflows / 'ci.yml').write_text(
+                'jobs:\n  lint:\n    steps:\n      - run: |\n'
+                '          go install \\\n            github.com/securego/gosec/v2/cmd/gosec@v9.9.9\n')
+            reader = ToolPins()
+            reader.root = Path(root)
+            self.assertEqual([version for _, version in reader.pins('gosec')], ['v9.9.9'])
 
     def test_a_line_that_only_runs_the_tool_is_not_an_install(self):
         self.assertEqual(self.pins_of('golangci-lint', 'golangci-lint run ./...'), [])
@@ -319,18 +383,30 @@ class ToolInstall(unittest.TestCase):
                              ('previous', ['gosec-v1']))
 
     def test_terminated_install_leaves_no_temporary_file(self):
-        stub = 'printf partial > "$GOBIN/gosec"\necho started\nexec sleep 60\n'
+        stub = 'printf partial > "$GOBIN/gosec"\necho "started $$"\nexec sleep 60\n'
         for signal_number in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
             with self.subTest(signal=signal_number.name), tempfile.TemporaryDirectory() as directory:
                 work, env = self.scratch(directory, ['scripts/install_go_tool.sh'], {'go': stub})
                 final = work / 'bin/tools/gosec-v1'
                 run = subprocess.Popen(['bash', 'scripts/install_go_tool.sh', 'x/gosec@v1', 'gosec', str(final)],
                                        cwd=work, env=env, stdout=subprocess.PIPE)
-                self.assertEqual(run.stdout.readline(), b'started\n')
-                run.send_signal(signal_number)
-                run.wait(timeout=20)
-                run.stdout.close()
+                try:
+                    # A regression must fail, not hang: bound the read and the wait.
+                    ready = select.select([run.stdout], [], [], 20)[0]
+                    if not ready:
+                        raise AssertionError('the stub go never started')
+                    child = int(run.stdout.readline().split()[1])
+                    run.send_signal(signal_number)
+                    status = run.wait(timeout=20)
+                finally:
+                    if run.poll() is None:
+                        run.kill()
+                        run.wait()
+                    run.stdout.close()
+                self.assertNotEqual(status, 0)
                 self.assertEqual(list(final.parent.iterdir()), [])
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(child, 0)
 
     def ensure(self, work, env):
         return subprocess.run(['sh', 'scripts/ensure_node_modules.sh'], cwd=work, env=env,
@@ -364,6 +440,11 @@ class ToolInstall(unittest.TestCase):
 class WorkflowPins(unittest.TestCase):
     """Workflow text that nothing else pins (kept here: the contract needs an owning module)."""
     workflows = Path(__file__).resolve().parents[2] / '.github/workflows'
+
+    def test_local_preflight_runs_the_tool_pin_tests_without_the_network_or_a_virtualenv(self):
+        recipe = (self.workflows.parents[1] / 'Makefile').read_text().split('\npreflight:', 1)[1].split('\n\n', 1)[0]
+        pinned = [line for line in recipe.splitlines() if 'unittest' in line and 'ToolPins' in line]
+        self.assertEqual([line.split()[0] for line in pinned], ['python3'])
 
     def test_size_label_bound_is_the_selected_budget_plus_one(self):
         block = (self.workflows / 'pr-validation.yml').read_text().split('  size-label:', 1)[1]

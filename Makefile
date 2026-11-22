@@ -141,6 +141,7 @@ preflight: preflight-guard $(GOLANGCI_LINT) $(GOSEC) ## Run most blocking CI che
 	"$(CURDIR)/$(GOLANGCI_LINT)" run --config .golangci-contract.yml --new-from-rev="$(BASE_SHA)" --whole-files
 	out=$$(mktemp -d) && { python3 -B scripts/security_gate.py --base "$(BASE_SHA)" --scanner "$(CURDIR)/$(GOSEC)" --output "$$out/reports"; rc=$$?; rm -rf "$$out"; exit $$rc; }
 	@sh scripts/ensure_node_modules.sh
+	python3 -B -m unittest scripts.tests.test_admission_preflight.ToolPins scripts.tests.test_admission_preflight.UnrecognisedToolInstall
 	$(MAKE) check-documentation BASE_SHA="$(BASE_SHA)"
 	$(GOTEST) -race -count=1 ./...
 
