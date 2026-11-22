@@ -16,8 +16,12 @@ import (
 
 // swarmDB returns a migrated disposable SQLite database.
 func swarmDB() *sql.DB {
-	db := receiptDB()
-	err := storage.MigrateSwarmTables(db)
+	db, _, err := storage.Open(GinkgoT().TempDir() + "/test.db")
+	Expect(err).NotTo(HaveOccurred())
+	DeferCleanup(func() { _ = db.Close() })
+	err = storage.Migrate(db)
+	Expect(err).NotTo(HaveOccurred())
+	err = storage.MigrateSwarmTables(db)
 	Expect(err).NotTo(HaveOccurred())
 	return db
 }
