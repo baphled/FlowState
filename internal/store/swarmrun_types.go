@@ -13,6 +13,16 @@ type SwarmRun struct {
 	Outcome        string
 	CreatedAt      time.Time
 	Packets        []SwarmRunPacket
+	// Children names the child sessions the run created, one per
+	// packet it delegated; empty for a run that created none.
+	Children []SwarmRunChild
+}
+
+// SwarmRunChild ties one child session to the run and the packet it
+// executes, so a run that ended early still names the sessions it left.
+type SwarmRunChild struct {
+	PacketID  string
+	SessionID string
 }
 
 // SwarmRunPacket is one packet admission decision inside a swarm

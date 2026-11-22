@@ -93,6 +93,26 @@ var _ = Describe("durable swarm run records", func() {
 				}}))
 	})
 
+	It("round-trips the children a run names, in recorded order", func() {
+		st := mustSwarmRunStore()
+		run := sampleSwarmRun("demo.swarm", SwarmRunOutcomeFail)
+		run.Children = []SwarmRunChild{{PacketID: "p1", SessionID: "s-1"}, {PacketID: "p2", SessionID: "s-2"}}
+		recordSwarmRun(st, run)
+		runs, err := st.SwarmRunsFor(context.Background(), "demo.swarm")
+		if err != nil || len(runs) != 1 {
+			panic("SwarmRunsFor did not return the single recorded run")
+		}
+		Expect(runs[0].Children).To(Equal(run.Children))
+	})
+
+	It("rejects a child without a session id and writes no run", func() {
+		st := mustSwarmRunStore()
+		run := sampleSwarmRun("demo.swarm", SwarmRunOutcomePass)
+		run.Children = []SwarmRunChild{{PacketID: "p1"}}
+		got := rejectSwarmRun(st, run)
+		Expect(got).To(Equal(swarmRunRejection{Err: ErrSwarmRunChildMissing}))
+	})
+
 	It("returns the runs of one swarm oldest first", func() {
 		st := mustSwarmRunStore()
 		first := recordSwarmRun(st, sampleSwarmRun("demo.swarm", SwarmRunOutcomeFail))
