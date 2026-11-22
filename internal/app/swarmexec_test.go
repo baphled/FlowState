@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -879,17 +880,34 @@ func hasChild(st *store.Store, parentID string) func() bool {
 // cancelledWhen is a context that becomes cancelled the first time it is
 // asked for its error after ready reports true, and stays cancelled: a
 // cancellation that lands once a known state has been reached. Err is
-// called from the code under test and from database/sql's goroutines, so
-// ready must be safe to call from any goroutine at any time.
+// called from the code under test and from database/sql's goroutines, which
+// may call it after the spec that made it has ended. ready therefore never
+// runs once the context has been stopped, and stopping waits for a call
+// that is already running: the cleanup that stops it is registered after
+// the store was opened, so it runs before the store is closed.
 type cancelledWhen struct {
 	context.Context
-	ready func() bool
-	once  sync.Once
-	done  chan struct{}
+	ready   func() bool
+	once    sync.Once
+	done    chan struct{}
+	mu      sync.Mutex
+	stopped bool
 }
 
+// newCancelledWhen returns the context and registers its stop for the end
+// of the current spec; call it after opening any store ready reads.
 func newCancelledWhen(ready func() bool) *cancelledWhen {
-	return &cancelledWhen{Context: context.Background(), ready: ready, done: make(chan struct{})}
+	c := &cancelledWhen{Context: context.Background(), ready: ready, done: make(chan struct{})}
+	DeferCleanup(c.stop)
+	return c
+}
+
+// stop makes every later Err call report no cancellation without calling
+// ready, after any call to ready that is already running has finished.
+func (c *cancelledWhen) stop() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.stopped = true
 }
 
 // Done is closed once the context has reported its cancellation.
@@ -902,12 +920,58 @@ func (c *cancelledWhen) Err() error {
 		return context.Canceled
 	default:
 	}
-	if !c.ready() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.stopped || !c.ready() {
 		return nil
 	}
 	c.once.Do(func() { close(c.done) })
 	return context.Canceled
 }
+
+var _ = Describe("the cancelledWhen test context", func() {
+	It("does not call ready once it has been stopped", func() {
+		var calls atomic.Int32
+		c := newCancelledWhen(func() bool { calls.Add(1); return true })
+		c.stop()
+		_ = c.Err()
+		Expect(calls.Load()).To(BeZero())
+	})
+
+	It("reports no cancellation once it has been stopped", func() {
+		c := newCancelledWhen(func() bool { return true })
+		c.stop()
+		Expect(c.Err()).NotTo(HaveOccurred())
+	})
+
+	It("keeps reporting a cancellation it had already reported after it is stopped", func() {
+		c := newCancelledWhen(func() bool { return true })
+		_ = c.Err()
+		c.stop()
+		Expect(c.Err()).To(MatchError(context.Canceled))
+	})
+
+	Context("while a call to ready is running", func() {
+		var stopped chan struct{}
+		var release chan struct{}
+
+		BeforeEach(func() {
+			started := make(chan struct{})
+			release = make(chan struct{})
+			stopped = make(chan struct{})
+			c := newCancelledWhen(func() bool { close(started); <-release; return false })
+			go func() { _ = c.Err() }()
+			<-started
+			go func() { c.stop(); close(stopped) }()
+		})
+
+		AfterEach(func() { close(release) })
+
+		It("does not let stop return until that call has finished", func() {
+			Consistently(stopped).WithTimeout(300 * time.Millisecond).WithPolling(20 * time.Millisecond).ShouldNot(BeClosed())
+		})
+	})
+})
 
 // statusNotBeforeLastEvent reports, per child, whether its stored status
 // was written no earlier than its final event.
