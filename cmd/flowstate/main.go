@@ -18,7 +18,10 @@ func main() {
 	// flag it so `session run` cancels its session and exits 130 per the
 	// CLI contract. A swarm gate runs in its own process group, so it never
 	// sees the terminal's signals: the CLI must cancel on them. The
-	// context's cause names the signal, which the engine records.
+	// context's cause names the signal, which the engine records. SIGHUP is
+	// left alone when it was ignored at start (nohup). SIGQUIT is
+	// deliberately not handled: Go's default (dump goroutines, exit 2)
+	// stays as the debugging behaviour operators expect.
 	ctx, stop := notifyCancelCause(context.Background(), cancelSignals(signal.Ignored)...)
 	code := dispatchContext(ctx, os.Args[1:], os.Stdout, os.Stderr)
 	stop()
@@ -63,9 +66,9 @@ func cancelSignals(ignored func(os.Signal) bool) []os.Signal {
 	return sigs
 }
 
-// dispatchContext routes with a parent context; a SIGINT-cancelled
-// context marks the sigintCancelledKey so subcommands can choose the
-// exit-130 path.
+// dispatchContext routes with a parent context; a context cancelled by
+// SIGINT, SIGTERM or SIGHUP marks the sigintCancelledKey (named for the
+// first signal) so subcommands can choose the exit-130 path.
 func dispatchContext(ctx context.Context, args []string, stdout, stderr *os.File) int {
 	if ctx.Value(sigintCancelledKey{}) != nil || ctx.Err() != nil {
 		ctx = context.WithValue(ctx, sigintCancelledKey{}, true)

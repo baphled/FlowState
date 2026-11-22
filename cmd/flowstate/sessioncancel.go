@@ -32,7 +32,7 @@ func cancelSession(ctx context.Context, st *app.Store, id string, stdout, stderr
 // cmdCancel implements `flowstate session cancel <id>`: transitions
 // an active or paused session to cancelled with a session.cancelled
 // event. Exit 0 cancelled; 1 unknown session; 2 usage; 6 terminal;
-// 130 when invoked as the SIGINT cancel path.
+// 130 when invoked as the signal cancel path (SIGINT, SIGTERM or SIGHUP).
 func cmdCancel(ctx context.Context, st *app.Store, id string, stdout, stderr *os.File) int {
 	if id == "" {
 		writeError(stderr, fmt.Errorf("%w: session id required", app.ErrUsage))
@@ -52,7 +52,7 @@ func cmdCancel(ctx context.Context, st *app.Store, id string, stdout, stderr *os
 	return cancelSession(ctx, st, id, stdout, stderr)
 }
 
-// contextWithSigint marks a context as SIGINT-cancelled; test-only
+// contextWithSigint marks a context as signal-cancelled; test-only
 // helper mirroring dispatchContext's marking.
 func contextWithSigint() context.Context {
 	return context.WithValue(context.Background(), sigintCancelledKey{}, true)

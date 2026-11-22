@@ -154,6 +154,13 @@ Scoped explicitly **out** of this amendment: the domain `net/http`/`database/sql
 - `scripts/tests/test_check_code_contract.py` — six new synthetic-repo oracle tests (plus the domain control).
 - `docs/adr/README.md`, `rules/ARCHITECTURE.md`, `docs/architecture/OVERVIEW.md` — index and ownership records.
 
+## Amendment — 2026-11-22: `internal/config` removed
+
+`internal/config` was deleted in #391 (the unused provider file loader). Provider settings now come from the
+environment only, so cmd has no configuration package to import, and the references above describe the decision as
+it stood on 2026-11-19. The decision itself is unchanged: cmd may import `internal/app` and `internal/server`. The
+checker's allowlist entry for `internal/config` is dead and is left for a separate tooling change.
+
 ## Related Plans
 
 - *Ratified ahead of implementation:* the serve surface packet will create `internal/server` inside this
