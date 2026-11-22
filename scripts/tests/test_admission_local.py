@@ -10,6 +10,8 @@ from pathlib import Path
 from scripts.admission_local import CachedRecords, LocalGit, local_commits
 from scripts.admission_metadata import AdmissionError
 from scripts.admission_preflight import commit_preflight
+from scripts.admission_candidate import verify_files
+from scripts.tests.test_admission_changes import DELETED, SCENARIOS, attested, manifest_cases
 from scripts.tests.test_admission_io import REF, record
 
 
@@ -87,3 +89,92 @@ class LocalEvidence(unittest.TestCase):
     def test_complete_commit_range_is_read(self):
         self.git('commit', '--allow-empty', '-qm', 'chore: second synthetic commit')
         self.assertEqual(len(local_commits(self.base, self.git('rev-parse', 'HEAD').strip())), 2)
+
+
+class LocalDeletions(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.repo = Path(self.temp.name)
+        previous = os.getcwd()
+        os.chdir(self.repo)
+        self.addCleanup(os.chdir, previous)
+        self.git('init', '-q')
+        self.git('config', 'user.name', 'Synthetic test fixture')
+        self.git('config', 'user.email', 'fixture@example.invalid')
+        self.git('config', 'commit.gpgsign', 'false')
+
+    def git(self, *args):
+        return subprocess.check_output(['git', *args], stderr=subprocess.PIPE).decode().strip()
+
+    def commit_tree(self, files):
+        for path in Path('.').iterdir():
+            if path.name != '.git':
+                path.unlink()
+        for name, data in files.items():
+            Path(name).write_bytes(data)
+        self.git('add', '-A')
+        self.git('commit', '--allow-empty', '-qm', 'chore: synthetic')
+        return self.git('rev-parse', 'HEAD')
+
+    def scenario_head(self, scenario):
+        parent, child = SCENARIOS[scenario][:2]
+        self.commit_tree(parent)
+        return parent, child, self.commit_tree(child)
+
+    def test_shared_manifest_table(self):
+        for scenario, label, overrides, error in manifest_cases():
+            with self.subTest(scenario=scenario, label=label):
+                parent, child, head = self.scenario_head(scenario)
+                manifest = attested(parent, child, overrides)
+                if error is None:
+                    verify_files(LocalGit(), head, manifest)
+                else:
+                    with self.assertRaisesRegex(AdmissionError, error):
+                        verify_files(LocalGit(), head, manifest)
+
+    def test_deleted_file_is_removed_without_blob(self):
+        _, _, head = self.scenario_head('all-deleted')
+        files = sorted(LocalGit().commit_files(head), key=lambda item: item['filename'])
+        self.assertEqual(files, [{'filename': 'also', 'status': 'removed'},
+                                 {'filename': 'gone', 'status': 'removed'}])
+
+    def test_gitlink_is_rejected(self):
+        self.commit_tree({'keep': b'k'})
+        self.git('update-index', '--add', '--cacheinfo', '160000,' + 'a' * 40 + ',sub')
+        self.git('commit', '-qm', 'chore: synthetic gitlink')
+        with self.assertRaisesRegex(AdmissionError, 'regular'):
+            LocalGit().commit_files(self.git('rev-parse', 'HEAD'))
+
+    def test_file_to_symlink_type_change_is_rejected(self):
+        self.commit_tree({'node': b'k'})
+        Path('node').unlink()
+        Path('node').symlink_to('elsewhere')
+        self.git('add', '-A')
+        self.git('commit', '-qm', 'chore: synthetic type change')
+        with self.assertRaisesRegex(AdmissionError, 'regular'):
+            LocalGit().commit_files(self.git('rev-parse', 'HEAD'))
+
+    def test_symlink_to_file_type_change_is_rejected(self):
+        self.commit_tree({})
+        Path('node').symlink_to('elsewhere')
+        self.git('add', '-A')
+        self.git('commit', '-qm', 'chore: synthetic symlink')
+        Path('node').unlink()
+        Path('node').write_bytes(b'k')
+        self.git('add', '-A')
+        self.git('commit', '-qm', 'chore: synthetic type change')
+        head = self.git('rev-parse', 'HEAD')
+        self.assertEqual(LocalGit().commit_files(head)[0]['status'], 'unsupported')
+        with self.assertRaisesRegex(AdmissionError, 'unsupported'):
+            verify_files(LocalGit(), head, {'node': {'sha256': hashlib.sha256(b'k').hexdigest(), 'bytes': 1}})
+
+    def test_deleted_symlink_matches_github_removed(self):
+        self.commit_tree({})
+        Path('node').symlink_to('elsewhere')
+        self.git('add', '-A')
+        self.git('commit', '-qm', 'chore: synthetic symlink')
+        Path('node').unlink()
+        self.git('add', '-A')
+        self.git('commit', '-qm', 'chore: synthetic removal')
+        verify_files(LocalGit(), self.git('rev-parse', 'HEAD'), {'node': DELETED})

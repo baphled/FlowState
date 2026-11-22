@@ -1,6 +1,6 @@
 """Bind PR state and commit manifests to exact candidate data."""
-import hashlib
 import json
+from scripts.admission_changes import changed_entries, verify_entry
 from scripts.admission_metadata import AdmissionError, SHA, metadata_reference, validate_record
 from scripts.admission_review import agent_review_reference, validate_agent_review
 from scripts.admission_checks import check_runs_page, verify_required_checks
@@ -48,17 +48,8 @@ def verify_commit_chain(base_sha, commits, fetch_record, github):
 
 def verify_files(github, sha, manifest):
     """Bind Dropbox manifest to the actual complete GitHub commit diff."""
-    files = github.commit_files(sha)
-    if len(files) != len(manifest) or {item.get('filename') for item in files} != set(manifest):
+    rows = changed_entries(github.commit_files(sha))
+    if len(rows) != len(manifest) or {row[0] for row in rows} != set(manifest):
         raise AdmissionError('candidate changed-path set differs from Dropbox evidence')
-    for item in files:
-        if item.get('status') not in ('added', 'modified') or item.get('previous_filename'):
-            raise AdmissionError('unattested deletion or rename in candidate')
-        props = manifest[item['filename']]
-        blob_sha = item.get('sha')
-        if not isinstance(props, dict) or not SHA.fullmatch(str(blob_sha)):
-            raise AdmissionError('invalid candidate blob evidence')
-        actual = github.blob(blob_sha)
-        if hashlib.sha256(actual).hexdigest() != props.get('sha256') or len(actual) != props.get('bytes'):
-            raise AdmissionError('candidate blob does not match Dropbox manifest')
-
+    for name, status, blob_sha in rows:
+        verify_entry(github, name, status, blob_sha, manifest[name])

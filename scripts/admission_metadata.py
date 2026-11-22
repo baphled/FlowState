@@ -1,5 +1,7 @@
 """Own parent-bound commit metadata references and record validation."""
 import re
+from itertools import starmap
+from scripts.admission_manifest import manifest_entry_valid
 
 REFERENCE = re.compile(
     r"dropbox:/FlowState/Metadata/attempts/"
@@ -75,6 +77,8 @@ def validate_record(record, reference, parent_sha):
     manifest = (record.get("local_candidate") or {}).get("paths")
     if not isinstance(manifest, dict) or not manifest:
         raise AdmissionError("missing candidate source manifest")
+    if not all(starmap(manifest_entry_valid, manifest.items())):
+        raise AdmissionError("invalid candidate manifest entry")
     return manifest
 
 
