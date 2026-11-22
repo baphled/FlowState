@@ -49,9 +49,14 @@ A session in the Go CLI transitions through exactly one status at a time:
 |---|---|---|
 | `active` | Created or resumed, ready for a run | `session new`, `app.ResumePausedSession`, recovery path |
 | `paused` | Budget exhausted, awaiting explicit resume | Budget stop during `session run` (exit 5) |
-| `cancelled` | SIGINT, SIGTERM, SIGHUP or explicit `session cancel` | Signal handler or `session cancel` command |
+| `cancelled` | a signal, run-route disconnect or shutdown, `session cancel` | Signal handler, run route, `session cancel` |
 | `completed` | Turn finished without error | Turn loop completion |
 | `failed` | Provider error with terminal=true | Provider stream failure |
+
+A run cancelled mid-turn appends `session.cancelled` with `{"status":"cancelled","reason":R}`, where R says what
+happened: `sigint`, `sigterm` or `sighup` for the command-line signal (carried as the root context's cancellation
+cause), and the neutral `cancelled` when the context carries no named cause. The explicit `session cancel`
+command and the tool-loop run record no reason.
 
 Terminal statuses (`completed`, `cancelled`, `failed`) reject further `session run` and `session cancel` invocations
   with `session_terminal` (exit 6). The valid-status set is validated in `internal/session/storeext.go`; exit codes

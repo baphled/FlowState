@@ -922,14 +922,15 @@ var _ = Describe("CLI end-to-end contract matrix", Label("e2e"), func() {
 	})
 
 	for _, tc := range []struct {
-		name string
-		sig  os.Signal
+		name   string
+		sig    os.Signal
+		reason string
 	}{
-		{"SIGINT", os.Interrupt},
-		{"SIGTERM", syscall.SIGTERM},
-		{"SIGHUP", syscall.SIGHUP},
+		{"SIGINT", os.Interrupt, "sigint"},
+		{"SIGTERM", syscall.SIGTERM, "sigterm"},
+		{"SIGHUP", syscall.SIGHUP, "sighup"},
 	} {
-		sig := tc.sig
+		sig, wantReason := tc.sig, tc.reason
 		Context(tc.name+" mid-run cancels the session", func() {
 			if runtime.GOOS == "windows" {
 				// Windows has no POSIX interrupt signal to send, so the
@@ -1024,9 +1025,9 @@ var _ = Describe("CLI end-to-end contract matrix", Label("e2e"), func() {
 				Expect(setupErr).NotTo(HaveOccurred())
 				Expect(observedExit).To(Equal(130))
 			})
-			It("persists session.cancelled with reason sigint", func() {
+			It("persists session.cancelled with the reason matching the signal", func() {
 				Expect(setupErr).NotTo(HaveOccurred())
-				Expect(observedCancelledReason).To(Equal("sigint"))
+				Expect(observedCancelledReason).To(Equal(wantReason))
 			})
 			It("leaves a verifiable log with no partial writes", func() {
 				Expect(setupErr).NotTo(HaveOccurred())
