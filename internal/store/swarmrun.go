@@ -29,10 +29,13 @@ var (
 	ErrSwarmRunOutcomeInvalid = errors.New("store: swarm run outcome must be pass or fail")
 	// ErrSwarmRunPacketMissing rejects a decision row without a packet id.
 	ErrSwarmRunPacketMissing = errors.New("store: swarm run packet id must not be empty")
+	// ErrSwarmRunChildMissing rejects a child row without a packet or session id.
+	ErrSwarmRunChildMissing = errors.New("store: swarm run child packet and session ids must not be empty")
 )
 
-// RecordSwarmRun persists one configured-swarm run and its packet
-// admission rows in a single transaction: the store assigns the run
+// RecordSwarmRun persists one configured-swarm run, its packet
+// admission rows and the child sessions it names in a single
+// transaction: the store assigns the run
 // id and record time; validation failures write nothing and return
 // their sentinel.
 func (s *Store) RecordSwarmRun(ctx context.Context, run SwarmRun) (SwarmRun, error) {
@@ -68,7 +71,7 @@ func (s *Store) RecordSwarmRun(ctx context.Context, run SwarmRun) (SwarmRun, err
 				return fmt.Errorf("create swarm run packet %s: %w", p.PacketID, err)
 			}
 		}
-		return nil
+		return createSwarmRunChildren(tx, run)
 	})
 	if err != nil {
 		return SwarmRun{}, err
@@ -77,7 +80,8 @@ func (s *Store) RecordSwarmRun(ctx context.Context, run SwarmRun) (SwarmRun, err
 }
 
 // SwarmRunsFor loads the recorded runs of the named swarm, oldest
-// first, each with its packet rows in admission order. An unknown
+// first, each with its packet rows in admission order and the child
+// sessions it named. An unknown
 // name is not an error; it yields no runs.
 func (s *Store) SwarmRunsFor(ctx context.Context, name string) ([]SwarmRun, error) {
 	if err := s.checkOpen(); err != nil {
@@ -116,6 +120,11 @@ func (s *Store) SwarmRunsFor(ctx context.Context, name string) ([]SwarmRun, erro
 				PacketID: prow.PacketID, Admitted: prow.Admitted == 1, Reason: prow.Reason,
 			})
 		}
+		children, cerr := s.swarmRunChildren(ctx, row.ID)
+		if cerr != nil {
+			return nil, fmt.Errorf("load swarm runs for %s: %w", name, cerr)
+		}
+		run.Children = children
 		runs = append(runs, run)
 	}
 	sortChronological(runs, func(r SwarmRun) (time.Time, string) { return r.CreatedAt, r.ID })
@@ -138,6 +147,11 @@ func validateSwarmRun(run SwarmRun) error {
 			return ErrSwarmRunPacketMissing
 		}
 	}
+	for _, c := range run.Children {
+		if c.PacketID == "" || c.SessionID == "" {
+			return ErrSwarmRunChildMissing
+		}
+	}
 	return nil
 }
 
@@ -147,4 +161,40 @@ func swarmRunAdmitted(admitted bool) int64 {
 		return 1
 	}
 	return 0
+}
+
+// createSwarmRunChildren writes the run's child rows inside its
+// transaction, so a run and the children it names persist together.
+func createSwarmRunChildren(tx *gorm.DB, run SwarmRun) error {
+	for _, c := range run.Children {
+		cid, err := uuid.NewV7()
+		if err != nil {
+			return fmt.Errorf("mint swarm run child id: %w", err)
+		}
+		if err := tx.Create(&swarmRunChildRow{
+			ID: cid.String(), RunID: run.ID, PacketID: c.PacketID,
+			SessionID: c.SessionID, CreatedAtUTC: iso(run.CreatedAt),
+		}).Error; err != nil {
+			return fmt.Errorf("create swarm run child %s: %w", c.PacketID, err)
+		}
+	}
+	return nil
+}
+
+// swarmRunChildren loads one run's child rows in recorded order; a run
+// that named none yields nil.
+func (s *Store) swarmRunChildren(ctx context.Context, runID string) ([]SwarmRunChild, error) {
+	var rows []swarmRunChildRow
+	err := s.gdb.WithContext(ctx).
+		Where(map[string]any{"run_id": runID}).
+		Order("rowid"). // rowid order preserves insertion order
+		Find(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("load children of swarm run %s: %w", runID, err)
+	}
+	var out []SwarmRunChild
+	for _, r := range rows {
+		out = append(out, SwarmRunChild{PacketID: r.PacketID, SessionID: r.SessionID})
+	}
+	return out, nil
 }

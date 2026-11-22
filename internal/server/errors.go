@@ -7,6 +7,12 @@ import (
 	"net/http"
 )
 
+// ErrReservationUnsettled is wrapped by a CancelSession port error when the
+// session was cancelled but settling its budget reservation failed; the port
+// returns the cancelled row with it. The cancel route answers 500
+// reservation_unsettled and names the cancelled status in a structured field.
+var ErrReservationUnsettled = errors.New("reservation_unsettled")
+
 // statusByCode maps the closed error-code set of
 // specs/CLI-AND-API-CONTRACT.md §2 onto HTTP statuses; internal is
 // explicit so the writeError guard resolves without a silent
@@ -15,7 +21,8 @@ var statusByCode = map[string]int{
 	"usage": http.StatusBadRequest, "session_not_found": http.StatusNotFound,
 	"session_terminal": http.StatusConflict, "session_cancelled": http.StatusConflict,
 	"budget_exceeded": http.StatusConflict, "receipt_invalid": http.StatusUnprocessableEntity,
-	"provider_error": http.StatusBadGateway, "internal": http.StatusInternalServerError}
+	"provider_error": http.StatusBadGateway, "internal": http.StatusInternalServerError,
+	"reservation_unsettled": http.StatusInternalServerError}
 
 func statusFor(code string) int {
 	if status, ok := statusByCode[code]; ok {
@@ -52,9 +59,37 @@ func (s *Server) writeError(w http.ResponseWriter, err error) {
 // errClientGone and errShuttingDown classify a read that was cut short
 // by cancellation; cancelAware produces them and writeError renders them.
 var (
-	errClientGone   = errors.New("client disconnected")
-	errShuttingDown = errors.New("server is shutting down")
+	errClientGone   error = &cancelCause{"client disconnected", "client_disconnected"}
+	errShuttingDown error = &cancelCause{"server is shutting down", "shutdown"}
 )
+
+// Error implements error.
+func (c *cancelCause) Error() string { return c.message }
+
+// CancelReason is the reason a run cancelled by this cause records.
+func (c *cancelCause) CancelReason() string { return c.reason }
+
+// runContext detaches the run route's context from the request's and
+// cancels it with errShuttingDown or errClientGone as its cause when the
+// request ends, so the run records why it was cancelled. A child of the
+// request context would inherit the request's cause instead, which is
+// empty for a disconnect. A deadline on the request context is not visible
+// through ctx.Deadline() here (expiry still cancels the run).
+func runContext(r *http.Request) (context.Context, context.CancelFunc) {
+	parent := r.Context()
+	ctx, cancel := context.WithCancelCause(context.WithoutCancel(parent))
+	stop := context.AfterFunc(parent, func() { cancel(cancelledBy(parent)) })
+	return ctx, func() { stop(); cancel(nil) }
+}
+
+// cancelledBy is errShuttingDown when ctx was cancelled by shutdown and
+// errClientGone otherwise.
+func cancelledBy(ctx context.Context) error {
+	if errors.Is(context.Cause(ctx), errShuttingDown) {
+		return errShuttingDown
+	}
+	return errClientGone
+}
 
 // cancelAware wraps the read ports so a context error raised while the
 // request context is done becomes errShuttingDown (the serve context
@@ -84,10 +119,7 @@ func classifyCancel(ctx context.Context, err error) error {
 		(!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)) {
 		return err
 	}
-	if errors.Is(context.Cause(ctx), errShuttingDown) {
-		return errShuttingDown
-	}
-	return errClientGone
+	return cancelledBy(ctx)
 }
 
 func guardTwo[A, R any](f func(context.Context, A) (R, error)) func(context.Context, A) (R, error) {

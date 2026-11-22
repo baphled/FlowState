@@ -2,6 +2,7 @@
 import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import unittest
@@ -171,17 +172,24 @@ class ToolPins(unittest.TestCase):
                    (re.match(r'\s*(\w+_VERSION): "?(v[\d.]+)"?\s*$', line) for line in lines) if m}
             for number, line in enumerate(lines, 1):
                 where = f'{path.relative_to(self.root)}:{number}'
+                # A comment or a step name that mentions installing the tool is not an install.
+                command = not re.match(r'\s*(#|-?\s*name:)', line)
+                installs = command and re.search(r'\b(go install|curl|wget|brew install)\b', line) and tool in line
                 if tool == 'gosec':
                     m = re.search(r'gosec/v2/cmd/gosec@(\$\{\{ \w+\.\w+ \}\}|\S+)', line)
                     if m:
                         ref = re.match(r'\$\{\{ env\.(\w+) \}\}', m.group(1))
                         found.append((where, env.get(ref.group(1), m.group(1)) if ref else m.group(1)))
+                    elif installs:
+                        found.append((where, 'unrecognised install'))
                 elif 'golangci-lint-action' in line:
                     window = ' '.join(lines[number:number + 6])
                     m = re.search(r'version: (\S+)', window)
                     found.append((where, m.group(1) if m else 'unpinned'))
                 elif re.search(r'golangci-lint/HEAD/install\.sh', line):
                     found.append((where, line.split()[-1]))
+                elif installs:
+                    found.append((where, 'unrecognised install'))
         return found
 
     def test_every_workflow_takes_its_go_version_from_go_mod(self):
@@ -205,6 +213,43 @@ class ToolPins(unittest.TestCase):
                     self.assertEqual(version, match.group(1),
                                      f'{tool}: Makefile:{variable} pins {match.group(1)} '
                                      f'but {where} pins {version}')
+
+
+class UnrecognisedToolInstall(unittest.TestCase):
+    """An install line in a style ToolPins does not know is reported, never silently skipped."""
+    def pins_of(self, tool, line):
+        with tempfile.TemporaryDirectory() as root:
+            workflows = Path(root) / '.github/workflows'
+            workflows.mkdir(parents=True)
+            (workflows / 'ci.yml').write_text(f'jobs:\n  lint:\n    steps:\n      - run: {line}\n')
+            reader = ToolPins()
+            reader.root = Path(root)
+            return [version for _, version in reader.pins(tool)]
+
+    def test_another_golangci_lint_install_style_is_reported(self):
+        line = 'go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v9.9.9'
+        self.assertEqual(self.pins_of('golangci-lint', line), ['unrecognised install'])
+
+    def test_another_gosec_install_style_is_reported(self):
+        line = 'curl -sfL https://example.invalid/gosec/install.sh | sh -s v9.9.9'
+        self.assertEqual(self.pins_of('gosec', line), ['unrecognised install'])
+
+    def test_a_known_gosec_install_is_not_reported_twice(self):
+        line = 'go install github.com/securego/gosec/v2/cmd/gosec@v2.30.0'
+        self.assertEqual(self.pins_of('gosec', line), ['v2.30.0'])
+
+    def test_a_line_that_only_runs_the_tool_is_not_an_install(self):
+        self.assertEqual(self.pins_of('golangci-lint', 'golangci-lint run ./...'), [])
+
+    def test_a_comment_or_step_name_about_installing_is_not_an_install(self):
+        for text in ('# we used to curl gosec', '- name: Install gosec with go install'):
+            with self.subTest(text), tempfile.TemporaryDirectory() as root:
+                workflows = Path(root) / '.github/workflows'
+                workflows.mkdir(parents=True)
+                (workflows / 'ci.yml').write_text(f'jobs:\n  lint:\n    steps:\n      {text}\n')
+                reader = ToolPins()
+                reader.root = Path(root)
+                self.assertEqual(reader.pins('gosec'), [])
 
 
 class ToolInstall(unittest.TestCase):
@@ -244,10 +289,48 @@ class ToolInstall(unittest.TestCase):
             work, env = self.scratch(directory, ['scripts/install_go_tool.sh'],
                                      {'go': 'printf partial > "$GOBIN/gosec"\nexit 3\n'})
             final = work / 'bin/tools/gosec-v1'
-            done = subprocess.run(['sh', 'scripts/install_go_tool.sh', 'x/gosec@v1', 'gosec', str(final)],
+            done = subprocess.run(['bash', 'scripts/install_go_tool.sh', 'x/gosec@v1', 'gosec', str(final)],
                                   cwd=work, env=env, capture_output=True)
             self.assertEqual(done.returncode, 3)
             self.assertEqual(list((work / 'bin/tools').iterdir()), [])
+
+    def install(self, work, env, final):
+        return subprocess.run(['bash', 'scripts/install_go_tool.sh', 'x/gosec@v1', 'gosec', str(final)],
+                              cwd=work, env=env, capture_output=True)
+
+    def test_successful_install_places_the_binary_and_leaves_no_temporary_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work, env = self.scratch(directory, ['scripts/install_go_tool.sh'],
+                                     {'go': 'printf built > "$GOBIN/gosec"\n'})
+            final = work / 'bin/tools/gosec-v1'
+            self.assertEqual(self.install(work, env, final).returncode, 0)
+            self.assertEqual(sorted(p.name for p in final.parent.iterdir()), ['gosec-v1'])
+            self.assertEqual(final.read_text(), 'built')
+
+    def test_failed_build_keeps_the_previous_binary_and_leaves_no_temporary_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work, env = self.scratch(directory, ['scripts/install_go_tool.sh'],
+                                     {'go': 'printf partial > "$GOBIN/gosec"\nexit 3\n'})
+            final = work / 'bin/tools/gosec-v1'
+            final.parent.mkdir(parents=True)
+            final.write_text('previous')
+            self.assertEqual(self.install(work, env, final).returncode, 3)
+            self.assertEqual((final.read_text(), sorted(p.name for p in final.parent.iterdir())),
+                             ('previous', ['gosec-v1']))
+
+    def test_terminated_install_leaves_no_temporary_file(self):
+        stub = 'printf partial > "$GOBIN/gosec"\necho started\nexec sleep 60\n'
+        for signal_number in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+            with self.subTest(signal=signal_number.name), tempfile.TemporaryDirectory() as directory:
+                work, env = self.scratch(directory, ['scripts/install_go_tool.sh'], {'go': stub})
+                final = work / 'bin/tools/gosec-v1'
+                run = subprocess.Popen(['bash', 'scripts/install_go_tool.sh', 'x/gosec@v1', 'gosec', str(final)],
+                                       cwd=work, env=env, stdout=subprocess.PIPE)
+                self.assertEqual(run.stdout.readline(), b'started\n')
+                run.send_signal(signal_number)
+                run.wait(timeout=20)
+                run.stdout.close()
+                self.assertEqual(list(final.parent.iterdir()), [])
 
     def ensure(self, work, env):
         return subprocess.run(['sh', 'scripts/ensure_node_modules.sh'], cwd=work, env=env,

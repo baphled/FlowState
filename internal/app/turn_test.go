@@ -3,7 +3,9 @@ package app
 import (
 	"context"
 	"errors"
+	"os"
 	"sync/atomic"
+	"syscall"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -113,6 +115,45 @@ var _ = Describe("cancelOnInterrupt", func() {
 		It("keeps the recorded cancellation event", func() {
 			Expect(lastType(st, sess.ID)).To(Equal(session.TypeSessionCancelled))
 		})
+	})
+})
+
+// namedCause mimics a cause defined outside this package (the server's),
+// which names its reason only through CancelReason.
+type namedCause struct{ reason string }
+
+func (c namedCause) Error() string        { return "named " + c.reason }
+func (c namedCause) CancelReason() string { return c.reason }
+
+var _ = Describe("the recorded cancellation reason", func() {
+	cancelledWith := func(cause error) context.Context {
+		ctx, cancel := context.WithCancelCause(context.Background())
+		cancel(cause)
+		return ctx
+	}
+
+	DescribeTable("names what cancelled the run",
+		func(cause error, want string) {
+			Expect(CancelReason(cancelledWith(cause))).To(Equal(want))
+		},
+		Entry("interrupt", SignalCause(os.Interrupt), "sigint"),
+		Entry("termination", SignalCause(syscall.SIGTERM), "sigterm"),
+		Entry("hang-up", SignalCause(syscall.SIGHUP), "sighup"),
+		Entry("another signal", SignalCause(syscall.SIGQUIT), "cancelled"),
+		Entry("a client disconnect", namedCause{"client_disconnected"}, "client_disconnected"),
+		Entry("a shutdown", namedCause{"shutdown"}, "shutdown"),
+		Entry("a wrapped cause", errors.Join(errors.New("x"), namedCause{"shutdown"}), "shutdown"),
+		Entry("no cause", nil, "cancelled"),
+		Entry("an unrelated cause", errors.New("boom"), "cancelled"),
+	)
+
+	It("records the cause on session.cancelled, read before the write detaches the context", func() {
+		st := newStore()
+		sess, w := interruptedSession(st)
+		if err := cancelOnInterrupt(cancelledWith(SignalCause(syscall.SIGTERM)), w, st, sess); !errors.Is(err, ErrSessionCancelled) {
+			panic(err)
+		}
+		Expect(payloadOf(st, sess.ID, session.TypeSessionCancelled)).To(MatchJSON(`{"status":"cancelled","reason":"sigterm"}`))
 	})
 })
 

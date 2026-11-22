@@ -1,6 +1,6 @@
 package anthropic
 
-// apikey.go implements the API-key route (providers.anthropic.auth_type:
+// apikey.go implements the API-key route (FLOWSTATE_ANTHROPIC_AUTH=
 // api_key). It is a thin adapter over the Anthropic Messages wire client that
 // already lives in internal/provider/zai (anthropic coding route): that client
 // sends x-api-key, anthropic-version and content headers only. This file adds

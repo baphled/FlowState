@@ -10,7 +10,7 @@ from scripts.admission_config import configuration
 from scripts.admission_io import GitHub, execute
 from scripts.admission_local_dropbox import LocalDropbox
 from scripts.admission_metadata import AdmissionError, SHA, refusal_state
-from scripts.admission_publish import ChangedStatusPublisher, retain_heads
+from scripts.admission_publish import ChangedStatusPublisher, PublishedRecords, retain_heads
 from scripts.admission_service import ready
 from scripts.app_credentials import AppCredentials
 from scripts.status_issuer import STATUS_CONTEXT, StatusIssuer, verify_status_source
@@ -71,7 +71,8 @@ def run_candidate(number, reader, publisher, config, clock=time.time):
 def process(number, reader, config, published=None):
     """Mint/revoke a status-only App token for each candidate, including failures.
 
-    `published` is the process-lived record of the last status published per head.
+    `published` is the process-lived PublishedRecords: the last status per head, its status
+    count and its waiting clock. It is created here when absent, which loses them after the call.
     """
     credentials = AppCredentials(config['repository'], config['repository_id'], config['app_id'],
                                  config['installation_id'], config['private_key'])
@@ -79,7 +80,7 @@ def process(number, reader, config, published=None):
     try:
         head = reader.pr(number).get('head', {}).get('sha')
         issuer = StatusIssuer(config['repository'], credentials, reader)
-        publisher = CandidatePublisher(ChangedStatusPublisher(issuer, published), head)
+        publisher = CandidatePublisher(ChangedStatusPublisher(issuer, published, reader), head)
         return run_candidate(number, reader, publisher, config)
     finally:
         try:
@@ -90,23 +91,32 @@ def process(number, reader, config, published=None):
             raise AdmissionError('issuer credential cleanup failed') from error
 
 
-def scan(config, number=None, published=None):
-    """Evaluate every ready next PR, including those missing review references."""
+def scan(config, number, published):
+    """Evaluate every ready next PR, including those missing review references.
+
+    A PR that is not admitted is an ordinary verdict: it was published and process() returned False.
+    A candidate whose process() raised is a fault (credentials, GitHub, publication). When there was
+    at least one candidate and every one faulted, the scan raises AdmissionError so that serve()
+    counts it as failed; one healthy candidate, or none, keeps the scan good.
+    """
     reader = GitHub(config['repository'], config['github_read_token'])
     candidates = [reader.pr(number)] if number else reader.pages('/pulls?state=open&base=next')
     retain_heads(published, candidates)
-    passed = True
+    results, faults = [], 0
     for pr in candidates:
         if pr.get('state') != 'open' or pr.get('draft') or pr.get('base', {}).get('ref') != 'next':
             if number:
                 raise AdmissionError('requested PR is not open, ready and targeting next')
             continue
         try:
-            passed = process(pr['number'], reader, config, published) and passed
+            results.append(process(pr['number'], reader, config, published))
         except Exception as error:
             print(f"PR #{pr.get('number')}: {reason(error)}", file=sys.stderr, flush=True)
-            passed = False
-    return passed
+            results.append(False)
+            faults += 1
+    if faults == len(results) > 0:
+        raise AdmissionError(f'every candidate failed in this scan ({faults})')
+    return all(results)
 
 
 def qualified_status(reader, head):
@@ -162,7 +172,7 @@ def serve(config):
     Raising lets main() exit non-zero, so systemd restarts the unit, `startup()` verifies
     the App again and a persistent failure shows in the restart counter.
     """
-    published, failures = {}, 0
+    published, failures = PublishedRecords(), 0
     while True:
         try:
             scan(config, None, published)
@@ -204,7 +214,7 @@ def main(argv=None):
             return 0
         ready()
         if args.once or args.pr:
-            return int(not scan(config, args.pr))
+            return int(not scan(config, args.pr, PublishedRecords()))
         return serve(config)
     except (Exception, KeyboardInterrupt) as error:
         if os.environ.get('GITHUB_STEP_SUMMARY'):

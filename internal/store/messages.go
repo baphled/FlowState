@@ -114,14 +114,18 @@ func sortMessageRows(rows []sessionMessageRow) error {
 // payload sender/body) and is marked delivered, all in one
 // transaction. An empty pending set appends nothing and is a no-op.
 // The caller supplies the seq-assignment event writer for the session.
+// The writer advances only after the transaction commits, and by the
+// number of events it appended, so a rollback leaves it level with the log.
 func (w *EventWriter) DrainSteeringMessages(ctx context.Context, sessionID string) (int, error) {
-	var drained int
 	if w.closed || w.store == nil || w.store.db == nil {
 		return 0, ErrClosed
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	var drained int64
+	seq := w.next
 	txErr := w.store.gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		drained = 0 // a retried closure must not double count
 		var rows []sessionMessageRow
 		if err := tx.Where(map[string]any{"session_id": sessionID, "delivered_at_utc": nil}).
 			Order("created_at_utc, id").Find(&rows).Error; err != nil {
@@ -133,11 +137,11 @@ func (w *EventWriter) DrainSteeringMessages(ctx context.Context, sessionID strin
 			return err
 		}
 		for _, row := range rows {
-			if err := w.insertEvent(ctx, tx, w.next, "user", "session.steered", map[string]any{
+			if err := w.insertEvent(ctx, tx, seq+drained, "user", "session.steered", map[string]any{
 				"sender": row.Sender, "body": row.Body,
 			}); err != nil {
 				if isUniqueConstraint(err) {
-					return fmt.Errorf("%w: session %s seq %d", ErrSeqCollision, sessionID, w.next)
+					return fmt.Errorf("%w: session %s seq %d", ErrSeqCollision, sessionID, seq+drained)
 				}
 				return err
 			}
@@ -146,7 +150,6 @@ func (w *EventWriter) DrainSteeringMessages(ctx context.Context, sessionID strin
 				Updates(map[string]any{"delivered_at_utc": iso(time.Now().UTC())}).Error; err != nil {
 				return err
 			}
-			w.next++
 			drained++
 		}
 		return nil
@@ -154,7 +157,8 @@ func (w *EventWriter) DrainSteeringMessages(ctx context.Context, sessionID strin
 	if txErr != nil {
 		return 0, fmt.Errorf("drain steering messages: %w", txErr)
 	}
-	return drained, nil
+	w.next = seq + drained
+	return int(drained), nil
 }
 
 // newMessageID generates the message row id (UUIDv7, matching session

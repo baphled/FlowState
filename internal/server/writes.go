@@ -97,10 +97,20 @@ func (s *Server) closeHandler(id string) http.HandlerFunc {
 
 // cancelHandler answers POST /sessions/{id}/cancel with the cancelled
 // session row. As with close, cancelling a terminal session surfaces
-// session_terminal → 409 rather than a second terminal transition.
+// session_terminal → 409 rather than a second terminal transition. When the
+// cancel committed but settling the budget reservation failed (the port
+// wraps ErrReservationUnsettled) the answer stays 500 but carries the stable
+// code reservation_unsettled and the session's id and status. Those come
+// from the row the port returned, never from a constant: a port that
+// reports the marker without a cancelled row gets the plain error answer.
 func (s *Server) cancelHandler(id string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sess, err := s.ports.CancelSession(writeContext(r), id)
+		if errors.Is(err, ErrReservationUnsettled) && sess.ID == id && sess.Status == "cancelled" {
+			s.writeJSON(w, statusFor("reservation_unsettled"), apiError{Code: "reservation_unsettled",
+				Message: err.Error(), Session: &sessionState{ID: sess.ID, Status: sess.Status}})
+			return
+		}
 		if err != nil {
 			s.writeError(w, err)
 			return
@@ -157,7 +167,9 @@ func (s *Server) runHandler(id string) http.HandlerFunc {
 		}
 		rc := http.NewResponseController(w)
 		_ = rc.SetWriteDeadline(time.Now().Add(runWriteWindow))
-		events, err := s.ports.RunSession(r.Context(), id, RunOptions(req))
+		ctx, release := runContext(r)
+		defer release()
+		events, err := s.ports.RunSession(ctx, id, RunOptions(req))
 		if err != nil {
 			s.writeError(w, err)
 			return

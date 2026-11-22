@@ -17,6 +17,7 @@ REQUIRED_READS = {
 }
 
 IN_PROGRESS = "Checking external evidence and independent review"
+WAITING_CHECK = "Waiting for required check "
 
 
 class AdmissionError(Exception): pass

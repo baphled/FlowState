@@ -1,8 +1,11 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -24,6 +27,47 @@ func runServer() (*Server, *fakePorts) {
 	}
 	return New(f.ports()), f
 }
+
+var _ = Describe("Session cancel with an unsettled reservation", func() {
+	const cancelPath = "/sessions/" + streamID + "/cancel"
+	var rec *httptest.ResponseRecorder
+
+	BeforeEach(func() {
+		f := &fakePorts{}
+		p := f.ports()
+		p.CancelSession = func(_ context.Context, id string) (Session, error) {
+			return Session{ID: id, Status: "cancelled"},
+				fmt.Errorf("%w: reservation_settle_failed: session %s is cancelled", ErrReservationUnsettled, id)
+		}
+		rec = doBody(New(p), http.MethodPost, cancelPath, "")
+	})
+
+	It("keeps the failing 500 status", func() {
+		Expect(rec.Code).To(Equal(http.StatusInternalServerError))
+	})
+
+	It("answers the stable reservation_unsettled code", func() {
+		Expect(rec.Body.String()).To(ContainSubstring(`"code":"reservation_unsettled"`))
+	})
+
+	It("states in a structured field that the session is cancelled", func() {
+		Expect(rec.Body.String()).To(ContainSubstring(`"session":{"id":"` + streamID + `","status":"cancelled"}`))
+	})
+
+	It("does not claim the session is cancelled when the port returned no cancelled row", func() {
+		p := (&fakePorts{}).ports()
+		p.CancelSession = func(context.Context, string) (Session, error) {
+			return Session{}, fmt.Errorf("%w: no row", ErrReservationUnsettled)
+		}
+		Expect(doBody(New(p), http.MethodPost, cancelPath, "").Body.String()).NotTo(ContainSubstring(`"session"`))
+	})
+
+	It("omits the session field from an unrelated cancel failure", func() {
+		s, f := sampleServer()
+		f.writeErr = errFakeUnmapped
+		Expect(doBody(s, http.MethodPost, cancelPath, "").Body.String()).NotTo(ContainSubstring(`"session"`))
+	})
+})
 
 var _ = Describe("Session run", func() {
 	It("returns the projected run events as the session-events array", func() {

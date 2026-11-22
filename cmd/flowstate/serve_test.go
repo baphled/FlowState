@@ -89,6 +89,16 @@ var _ = Describe("Serve write port wiring", func() {
 		Expect(err).To(MatchError(ContainSubstring("is cancelled")))
 	})
 
+	It("marks a failed budget settle on cancel with the server's unsettled sentinel", func() {
+		db := filepath.Join(GinkgoT().TempDir(), "settle-marker.db")
+		id := seedUnsettleableChild(db)
+		st, err := app.OpenStore(db)
+		must(err)
+		DeferCleanup(func() { must(st.Close()) })
+		_, err = servePorts(st, &flags{}).CancelSession(context.Background(), id)
+		Expect(err).To(MatchError(server.ErrReservationUnsettled))
+	})
+
 	It("rejects a terminal close through the shared error table", func() {
 		st, sess := seedStore()
 		_, err := servePorts(st, &flags{}).CloseSession(context.Background(), sess.ID)

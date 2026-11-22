@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/baphled/flowstate/internal/store"
 )
@@ -16,6 +17,14 @@ var ErrDurableSinkMissing = errors.New("swarm: durable receipts have no store")
 // digest of the manifest bytes the run executes.
 func NewDurableReceipts(sink RunSink, manifestSHA256 string) *DurableReceipts {
 	return &DurableReceipts{sink: sink, manifestSHA: manifestSHA256}
+}
+
+// WithChildren names the child sessions the run created, so the run
+// record lands with them; it returns d for chaining. The slice is
+// copied: later changes by the caller do not reach the recorded run.
+func (d *DurableReceipts) WithChildren(children []store.SwarmRunChild) *DurableReceipts {
+	d.children = slices.Clone(children)
+	return d
 }
 
 // RecordAdmission buffers one admission decision; rows land in the
@@ -45,12 +54,12 @@ func (d *DurableReceipts) RecordGates(ctx context.Context, runID string, decisio
 		outcome = store.SwarmRunOutcomePass
 	}
 	run := store.SwarmRun{
-		Name: runID, ManifestSHA256: d.manifestSHA, Outcome: outcome, Packets: d.decisions,
+		Name: runID, ManifestSHA256: d.manifestSHA, Outcome: outcome, Packets: d.decisions, Children: d.children,
 	}
 	if _, err := d.sink.RecordSwarmRun(ctx, run); err != nil {
 		return fmt.Errorf("record swarm run %s: %w", runID, err)
 	}
-	d.decisions = nil
+	d.decisions, d.children = nil, nil
 	return nil
 }
 

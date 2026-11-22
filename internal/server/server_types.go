@@ -172,8 +172,16 @@ type Server struct {
 }
 
 type apiError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code    string        `json:"code"`
+	Message string        `json:"message"`
+	Session *sessionState `json:"session,omitempty"`
+}
+
+// sessionState names a session's status inside an error body, so a client
+// can tell a partly failed operation from one that did nothing.
+type sessionState struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
 }
 
 // sessionItem mirrors the CLI session-list item field-for-field.
@@ -323,4 +331,12 @@ type diagnosisBody struct {
 	Available       *int64 `json:"available"`
 	FinishReason    string `json:"finish_reason,omitempty"`
 	Truncated       bool   `json:"truncated,omitempty"`
+}
+
+// cancelCause is a request cancellation cause that also names the reason a
+// cancelled run records; internal/app reads CancelReason through an
+// interface, as this package must not import it.
+type cancelCause struct {
+	message string
+	reason  string
 }

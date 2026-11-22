@@ -109,6 +109,17 @@ type swarmRunRow struct {
 	CreatedAtUTC   string `gorm:"column:created_at_utc;not null;type:text"`
 }
 
+// swarmRunChildRow mirrors the swarm_run_children table: one child
+// session per packet a run delegated; like the packet rows it carries
+// no FK (run and rows persist together).
+type swarmRunChildRow struct {
+	ID           string `gorm:"column:id;primaryKey;not null;type:text"`
+	RunID        string `gorm:"column:run_id;not null;type:text;index:idx_swarm_run_children_run_id"`
+	PacketID     string `gorm:"column:packet_id;not null;type:text"`
+	SessionID    string `gorm:"column:session_id;not null;type:text"`
+	CreatedAtUTC string `gorm:"column:created_at_utc;not null;type:text"`
+}
+
 // swarmRunPacketRow mirrors the swarm_run_packets table (v7): one
 // admission decision per packet; SQLite stores the boolean as 1/0
 // and the run link carries no FK (run and rows persist together).

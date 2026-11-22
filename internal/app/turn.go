@@ -8,9 +8,11 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/registry"
@@ -116,16 +118,52 @@ func TurnWithOptions(ctx context.Context, st *store.Store, sess *store.Session, 
 	return &TurnResult{SessionID: sess.ID, FinalContent: s.content, FinishReason: s.finishReason}, nil
 }
 
-// cancelOnInterrupt cancels the session cleanly on SIGINT so the CLI
-// can exit 130 without partial silent writes; a detached context
+// ReasonCancelled is recorded when the cancellation carries no known cause.
+const ReasonCancelled = "cancelled"
+
+// Error implements error.
+func (c *CancelCause) Error() string { return "cancelled: " + c.Reason }
+
+// CancelReason returns the reason the cause records.
+func (c *CancelCause) CancelReason() string { return c.Reason }
+
+// SignalCause is the cancellation cause for sig: sigint, sigterm or
+// sighup; any other signal is the neutral ReasonCancelled.
+func SignalCause(sig os.Signal) error {
+	switch sig {
+	case os.Interrupt:
+		return &CancelCause{Reason: "sigint"}
+	case syscall.SIGTERM:
+		return &CancelCause{Reason: "sigterm"}
+	case syscall.SIGHUP:
+		return &CancelCause{Reason: "sighup"}
+	}
+	return &CancelCause{Reason: ReasonCancelled}
+}
+
+// CancelReason reports why ctx was cancelled, from its cancellation
+// cause; a cancellation with no named cause is ReasonCancelled. Read it
+// before detaching the context, as WithoutCancel drops the cause.
+func CancelReason(ctx context.Context) string {
+	var r reasonedCause
+	if errors.As(context.Cause(ctx), &r) {
+		return r.CancelReason()
+	}
+	return ReasonCancelled
+}
+
+// cancelOnInterrupt cancels the session cleanly on an interrupt, SIGTERM,
+// SIGHUP or a server-side cancellation, recording which one (CancelReason)
+// so the CLI can exit 130 without partial silent writes; a detached context
 // completes the cancellation writes even though the parent is
 // cancelled. The event is appended before the status, as on every
 // other terminal path, so a reader that observes the terminal status
 // always finds its final event already committed.
 func cancelOnInterrupt(ctx context.Context, w *store.EventWriter, st *store.Store, sess *store.Session) error {
+	reason := CancelReason(ctx)
 	cctx := context.WithoutCancel(ctx)
 	if _, aerr := w.Append(cctx, session.ActorEngine, session.TypeSessionCancelled,
-		map[string]any{"status": "cancelled", "reason": "sigint"}); aerr != nil {
+		map[string]any{"status": "cancelled", "reason": reason}); aerr != nil {
 		return aerr
 	}
 	if serr := st.UpdateSessionStatus(cctx, sess.ID, "cancelled"); serr != nil {

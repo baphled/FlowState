@@ -193,7 +193,7 @@ All resolution (ambient lookup, precedence merge, hash computation) lives in `cm
 
 **Rejected.** The CLI's wire format is JSON; a second format adds a parser dependency and a second mental model.
   JSON's lack of comments is a feature here — stale comment drift cannot disagree with active values. The prototype's
-  YAML config support (`internal/config`) is fswt heritage, not the Go CLI contract.
+  YAML provider file (`providers.yaml`) was fswt heritage, not the Go CLI contract; it is no longer read.
 
 ### C. Config stored in SQLite alongside sessions
 

@@ -36,10 +36,16 @@ func CreateSession(ctx context.Context, st *Store, provider, modelID, harness, c
 // the concrete store: the parent must exist and be non-terminal (else
 // ErrUsage), the child id is a fresh UUIDv7, and the child log opens
 // with a session.delegated event (actor user, payload parent_id)
-// before the initial turn.start carrying the task.
+// before the initial turn.start carrying the task. A context that is
+// already done creates nothing; once the child's row is written the
+// creation completes whatever happens to the context, so a child either
+// does not exist or exists with its task.
 func CreateChildSession(ctx context.Context, st *Store, parentID, provider, modelID, harness, configSHA, task string) (*store.Session, error) {
 	if parentID == "" || provider == "" || modelID == "" || task == "" {
 		return nil, fmt.Errorf("%w: parent, provider, model and task must not be empty", ErrUsage)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("create child session: %w", err)
 	}
 	parent, err := st.GetSession(ctx, parentID)
 	if err != nil {
@@ -62,7 +68,19 @@ func CreateChildSession(ctx context.Context, st *Store, parentID, provider, mode
 	if err != nil {
 		return nil, fmt.Errorf("generate session id: %w", err)
 	}
-	child, err := st.CreateChildSession(ctx, id, parentID, provider, modelID, harness, configSHA)
+	// From here the creation is not interrupted: a cancellation between
+	// the row and its opening events would leave an active child with no
+	// task that nothing owns.
+	return openChildSession(context.WithoutCancel(ctx), st, childSpec{
+		id: id, parentID: parentID, provider: provider, modelID: modelID,
+		harness: harness, configSHA: configSHA, task: task,
+	})
+}
+
+// openChildSession writes the child's row and its two opening events:
+// session.delegated, then the turn.start carrying the task.
+func openChildSession(ctx context.Context, st *Store, c childSpec) (*store.Session, error) {
+	child, err := st.CreateChildSession(ctx, c.id, c.parentID, c.provider, c.modelID, c.harness, c.configSHA)
 	if err != nil {
 		return nil, err
 	}
@@ -71,10 +89,10 @@ func CreateChildSession(ctx context.Context, st *Store, parentID, provider, mode
 		return nil, err
 	}
 	defer w.Close()
-	if _, err := w.Append(ctx, session.ActorUser, TypeSessionDelegated, map[string]any{"parent_id": parentID}); err != nil {
+	if _, err := w.Append(ctx, session.ActorUser, TypeSessionDelegated, map[string]any{"parent_id": c.parentID}); err != nil {
 		return nil, err
 	}
-	if _, err := w.Append(ctx, session.ActorUser, session.TypeTurnStart, map[string]any{"task": task}); err != nil {
+	if _, err := w.Append(ctx, session.ActorUser, session.TypeTurnStart, map[string]any{"task": c.task}); err != nil {
 		return nil, err
 	}
 	return child, nil

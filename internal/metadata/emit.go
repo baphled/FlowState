@@ -20,7 +20,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/baphled/flowstate/internal/storage"
+	"github.com/baphled/flowstate/internal/store"
 )
 
 // Typed errors surfaced to callers.
@@ -54,7 +54,7 @@ func Root() string {
 // file is verified by an upload-then-readback byte comparison before
 // success, and a verified receipt.json — conforming to the
 // m1-acceptance-receipt-v2 schema enforced by app.ValidateReceiptFile
-// — is indexed in the receipts table via storage.InsertReceipt.
+// — is indexed in the receipts table via store.ReceiptLog.
 // Rewriting an existing attempt fails with ErrAttemptExists; a
 // readback mismatch fails with ErrReadbackMismatch.
 func Emit(ctx context.Context, db *sql.DB, a Attempt) (*AttemptRecord, error) {
@@ -245,10 +245,14 @@ func indexReceipt(ctx context.Context, db *sql.DB, a Attempt, dir, now string, d
 	rec := &AttemptRecord{AttemptDir: dir, PacketPath: filepath.Join(dir, "packet.json"),
 		ReceiptPath: filepath.Join(dir, "receipt.json"), PacketSHA256: digests["packet.json"],
 		ReceiptSHA256: digests["receipt.json"]}
-	ins := storage.Receipt{ID: a.ID, CapabilityID: a.CapabilityID, CommitSHA: a.CommitSHA,
+	ins := store.Receipt{ID: a.ID, CapabilityID: a.CapabilityID, CommitSHA: a.CommitSHA,
 		ReceiptRef: rec.ReceiptPath, ReceiptSHA256: rec.ReceiptSHA256,
 		GateOutcome: a.GateOutcome, RecordedAtUTC: now}
-	if err := storage.InsertReceipt(ctx, db, ins); err != nil {
+	log, err := store.NewReceiptLog(db)
+	if err != nil {
+		return nil, err
+	}
+	if err := log.Insert(ctx, ins); err != nil {
 		return nil, err
 	}
 	return rec, nil

@@ -25,9 +25,20 @@ exclusive merge authority.
   the same pair the local pre-push reader sees with rename detection off, so for regular files both readers
   accept the same manifests. A `renamed` file without `previous_filename` never passes. A copy is only an
   addition of the new path; its source is not a changed path.
-- File modes are checked only by the local pre-push reader, which rejects a symlink, a gitlink and a type
-  change. GitHub's changed-file list carries no mode, so the publisher cannot see them: it binds the blob's
-  content but not its mode. This gap predates deletions; closing it needs a tree-mode read on the publisher.
+- File modes are checked by both readers, which must agree. The local pre-push reader rejects a symlink, a
+  gitlink and a type change from git's own modes. GitHub's changed-file list carries no mode, so the publisher
+  (`GitHub.commit_files`) reads the commit's tree (`/git/trees/{tree}?recursive=1`, the tree sha taken from the
+  verified `/commits/{sha}` record, never from a ref). Every added, modified, renamed or copied path must exist
+  in that tree as a `blob` of mode 100644 or 100755 (`candidate files must be regular blobs`), and the tree's
+  blob sha must equal the file row's sha. For a path GitHub does not report as plainly added, the parent tree
+  is read too (the parent's tree sha comes from `/git/commits/{parent}`, or from the previous commit of the
+  chain), and a parent entry that was not a regular file is a type change, rejected as
+  `unsupported file status`. A truncated recursive tree is not trusted: only the directories on the changed
+  paths are walked one level per request, and a truncated level is rejected. A response that is malformed or
+  answers for another tree or commit is rejected. Deleting a symlink stays allowed on both readers. Cost: no
+  extra request for a pure deletion; one tree read per commit that adds files; for a commit that modifies,
+  renames or copies, also the parent tree and, unless its sha is already known from the chain, the parent
+  commit record. The truncated fallback walks each changed path separately.
 - Candidate commits must form a linear chain from the exact current base SHA.
   Admission snapshots the head, base ref/SHA, PR number, author, open/draft state
   and full description. A relevant change before the final decision fails.

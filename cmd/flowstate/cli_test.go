@@ -23,8 +23,6 @@ import (
 	. "github.com/onsi/gomega"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
-
-	"github.com/baphled/flowstate/internal/config"
 )
 
 // This suite productises the CLI contract end-to-end matrix: every
@@ -65,33 +63,32 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	e2eBin = string(data)
 })
 
-// Every spec runs the in-process CLI against an empty provider
-// configuration directory and with no ambient provider keys. Without
-// this a developer's own providers.yaml (or exported key) turned specs
-// into live provider calls with a real credential, and their outcome
-// depended on the machine. A spec that needs a configuration or a key
-// sets its own afterwards.
+// Every spec runs the in-process CLI with no ambient provider settings.
+// Without this a developer's own exported key turned specs into live
+// provider calls with a real credential, and their outcome depended on the
+// machine. A spec that needs a key or a route sets its own afterwards.
 var _ = BeforeEach(func() {
-	GinkgoT().Setenv("FLOWSTATE_CONFIG_DIR", GinkgoT().TempDir())
-	GinkgoT().Setenv("ZAI_API_KEY", "")
-	GinkgoT().Setenv("ANTHROPIC_API_KEY", "")
+	for _, name := range ambientProviderVars {
+		GinkgoT().Setenv(name, "")
+	}
 })
 
-var _ = Describe("provider configuration isolation", func() {
-	It("points the in-process CLI at a configuration outside the user's own", func() {
-		base, err := os.UserConfigDir()
-		if err != nil {
-			panic(err)
-		}
-		path, err := config.Path()
-		if err != nil {
-			panic(err)
-		}
-		Expect(path).NotTo(HavePrefix(base))
+// ambientProviderVars are every provider setting the CLI reads from the
+// environment; the suite clears them so no spec reaches a live provider.
+var ambientProviderVars = []string{"ZAI_API_KEY", "ZAI_BASE_URL", "ZAI_PLAN", "ZAI_CODING_ROUTE",
+	"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "FLOWSTATE_ANTHROPIC_AUTH", "FLOWSTATE_CLAUDE_BIN"}
+
+var _ = Describe("provider environment isolation", func() {
+	It("leaves the suite with no z.ai key, so no live provider is reachable", func() {
+		Expect(os.Getenv("ZAI_API_KEY")).To(BeEmpty())
 	})
 
-	It("points every subprocess at the empty build directory", func() {
-		Expect(e2eEnv("http://127.0.0.1:0")).To(ContainElement("FLOWSTATE_CONFIG_DIR=" + filepath.Dir(e2eBin)))
+	It("leaves the suite with no anthropic key, so no live provider is reachable", func() {
+		Expect(os.Getenv("ANTHROPIC_API_KEY")).To(BeEmpty())
+	})
+
+	It("leaves the suite on the default anthropic route", func() {
+		Expect(os.Getenv("FLOWSTATE_ANTHROPIC_AUTH")).To(BeEmpty())
 	})
 
 	It("drops ambient anthropic settings from the subprocess environment", func() {
@@ -102,9 +99,7 @@ var _ = Describe("provider configuration isolation", func() {
 
 // e2eEnv builds the subprocess environment: the ambient environment
 // minus ambient provider or FlowState live settings, plus the local
-// fake provider selection and an empty provider configuration
-// directory (the build directory holds only the binary), so the binary
-// never touches the live network or the developer's providers.yaml.
+// fake provider selection, so the binary never touches the live network.
 func e2eEnv(baseURL string, extra ...string) []string {
 	env := []string{}
 	for _, kv := range os.Environ() {
@@ -114,8 +109,7 @@ func e2eEnv(baseURL string, extra ...string) []string {
 		}
 	}
 	env = append(env, "ZAI_API_KEY=e2e-test-key", "ZAI_BASE_URL="+baseURL,
-		"ZAI_PLAN=coding", "ZAI_CODING_ROUTE=openai",
-		"FLOWSTATE_CONFIG_DIR="+filepath.Dir(e2eBin))
+		"ZAI_PLAN=coding", "ZAI_CODING_ROUTE=openai")
 	return append(env, extra...)
 }
 
@@ -160,7 +154,19 @@ func e2eRunWith(baseURL, dir string, extraEnv []string, argv ...string) result {
 // output after it receives is race-free (the exec copiers finish
 // before Wait returns).
 func e2eStart(baseURL string, argv ...string) (*exec.Cmd, chan result) {
-	cmd := e2eExecCommand(e2eBin, argv...)
+	return e2eSpawn(e2eExecCommand(e2eBin, argv...), baseURL)
+}
+
+// e2eStartHangupIgnored starts the binary as nohup would: a POSIX shell
+// ignores SIGHUP and execs the binary, which inherits the ignored
+// disposition and keeps the shell's PID. Unix only.
+func e2eStartHangupIgnored(baseURL string, argv ...string) (*exec.Cmd, chan result) {
+	wrapped := append([]string{"-c", `trap '' HUP; exec "$@"`, "sh", e2eBin}, argv...)
+	return e2eSpawn(e2eExecCommand("/bin/sh", wrapped...), baseURL)
+}
+
+// e2eSpawn starts cmd with the e2e environment and reports its result.
+func e2eSpawn(cmd *exec.Cmd, baseURL string) (*exec.Cmd, chan result) {
 	cmd.Env = e2eEnv(baseURL)
 	var out, errs bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errs
@@ -922,14 +928,15 @@ var _ = Describe("CLI end-to-end contract matrix", Label("e2e"), func() {
 	})
 
 	for _, tc := range []struct {
-		name string
-		sig  os.Signal
+		name   string
+		sig    os.Signal
+		reason string
 	}{
-		{"SIGINT", os.Interrupt},
-		{"SIGTERM", syscall.SIGTERM},
-		{"SIGHUP", syscall.SIGHUP},
+		{"SIGINT", os.Interrupt, "sigint"},
+		{"SIGTERM", syscall.SIGTERM, "sigterm"},
+		{"SIGHUP", syscall.SIGHUP, "sighup"},
 	} {
-		sig := tc.sig
+		sig, wantReason := tc.sig, tc.reason
 		Context(tc.name+" mid-run cancels the session", func() {
 			if runtime.GOOS == "windows" {
 				// Windows has no POSIX interrupt signal to send, so the
@@ -1024,9 +1031,9 @@ var _ = Describe("CLI end-to-end contract matrix", Label("e2e"), func() {
 				Expect(setupErr).NotTo(HaveOccurred())
 				Expect(observedExit).To(Equal(130))
 			})
-			It("persists session.cancelled with reason sigint", func() {
+			It("persists session.cancelled with the reason matching the signal", func() {
 				Expect(setupErr).NotTo(HaveOccurred())
-				Expect(observedCancelledReason).To(Equal("sigint"))
+				Expect(observedCancelledReason).To(Equal(wantReason))
 			})
 			It("leaves a verifiable log with no partial writes", func() {
 				Expect(setupErr).NotTo(HaveOccurred())
@@ -1041,6 +1048,70 @@ var _ = Describe("CLI end-to-end contract matrix", Label("e2e"), func() {
 			})
 		})
 	}
+
+	Context("a run started with SIGHUP ignored (nohup)", func() {
+		if runtime.GOOS == "windows" {
+			return // no POSIX signals or sh wrapper; see the signal specs above
+		}
+		var cmd *exec.Cmd
+		var done chan result
+		var db, id string
+
+		BeforeEach(func() {
+			srv, arrived := e2eStallProvider()
+			db = filepath.Join(GinkgoT().TempDir(), "e2e.db")
+			id = e2eNewSession(srv.URL, db)
+			cmd, done = e2eStartHangupIgnored(srv.URL, "session", "run", "--db", db, id)
+			// Stop exactly the process started here, whether or not a spec failed.
+			DeferCleanup(func() { _ = cmd.Process.Kill() })
+			select {
+			case <-arrived:
+			case <-time.After(10 * time.Second):
+				panic("provider request not observed")
+			}
+			// A persisted event shows the run is live past handler installation.
+			deadline, ticker := time.After(10*time.Second), time.NewTicker(50*time.Millisecond)
+			defer ticker.Stop()
+			for live := false; !live; {
+				select {
+				case <-deadline:
+					panic("first persisted event not observed")
+				case <-ticker.C:
+					live = len(e2eEvents(srv.URL, db, id)) > 0
+				}
+			}
+			if err := cmd.Process.Signal(syscall.SIGHUP); err != nil {
+				panic(err)
+			}
+		})
+		It("keeps running after SIGHUP", func() {
+			Consistently(done).WithTimeout(2 * time.Second).WithPolling(100 * time.Millisecond).ShouldNot(Receive())
+		})
+		It("records no cancellation after SIGHUP", func() {
+			Consistently(func() string { return cancelledReason(db, id) }).
+				WithTimeout(2 * time.Second).WithPolling(100 * time.Millisecond).Should(BeEmpty())
+		})
+		It("exits 130 on a following SIGTERM", func() {
+			if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+				panic(err)
+			}
+			Eventually(func() int {
+				select {
+				case run := <-done:
+					return run.exit
+				default:
+					return -1 // still running
+				}
+			}).WithTimeout(30 * time.Second).WithPolling(100 * time.Millisecond).Should(Equal(130))
+		})
+		It("records the reason sigterm", func() {
+			if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+				panic(err)
+			}
+			Eventually(func() string { return cancelledReason(db, id) }).
+				WithTimeout(30 * time.Second).WithPolling(100 * time.Millisecond).Should(Equal("sigterm"))
+		})
+	})
 
 	Context("--json output validates against committed schemas", func() {
 		// The schemas in schemas/cli.json are hand-authored per

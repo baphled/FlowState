@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/store"
 	"github.com/baphled/flowstate/internal/swarm"
 )
@@ -33,8 +34,10 @@ import (
 // before any creation; any child-creation, reservation or steering
 // failure aborts the run with the partial result — children already
 // created stay active (compensated rollback is M2+). Budget failures
-// surface as ErrUsage through the ReserveChildBudget seam. When a
-// gate fails or admission rejects, the complete child set stays and
+// surface as ErrUsage through the ReserveChildBudget seam. A run
+// cancelled after children exist records each unfinished child as
+// cancelled (see cancelSwarmChildren) and names them on its stored
+// run. When a gate fails or admission rejects, the complete child set stays and
 // the error reports the swarm as not accepted.
 func RunSwarm(ctx context.Context, st *Store, parent *store.Session, m swarm.Manifest,
 	budgetPerChild int64, admitter swarm.RunAdmitter, gates *swarm.GateRunner) (SwarmExecResult, error) {
@@ -51,14 +54,15 @@ func RunSwarm(ctx context.Context, st *Store, parent *store.Session, m swarm.Man
 	res := SwarmExecResult{Children: children, Reservations: reservations, Manifest: m}
 	if err != nil {
 		if errors.Is(ctx.Err(), context.Canceled) {
-			return res, mapSwarmRunError(ctx.Err())
+			cerr := recordCancelledCreation(ctx, st, m, res, admitter, gates)
+			return res, settleCancelledSwarm(ctx, st, res, errors.Join(mapSwarmRunError(ctx.Err()), cerr))
 		}
 		return res, err
 	}
-	run, err := swarmRunDurable(ctx, st, m, admitter, gates)
+	run, err := swarmRunDurable(ctx, st, m, res, admitter, gates)
 	res.Admitted, res.Gates = run.Admitted, run.Gates
 	if err != nil {
-		return res, err
+		return res, settleCancelledSwarm(ctx, st, res, err)
 	}
 	if !run.Gates.Accepted {
 		return res, swarmNotAccepted(m, run)
@@ -119,14 +123,14 @@ func attributeSwarmChild(ctx context.Context, st *Store, parentID, childID, pack
 
 // swarmRunDurable drives the admission-and-gate run with durable
 // receipts pinned to the executed manifest's digest, landing the run
-// record and its packet rows in the store.
-func swarmRunDurable(ctx context.Context, st *Store, m swarm.Manifest,
+// record, its packet rows and the children it created in the store.
+func swarmRunDurable(ctx context.Context, st *Store, m swarm.Manifest, created SwarmExecResult,
 	admitter swarm.RunAdmitter, gates *swarm.GateRunner) (swarm.RunResult, error) {
 	sha, err := swarmManifestSHA(m)
 	if err != nil {
 		return swarm.RunResult{}, err
 	}
-	run, rerr := swarm.Run(ctx, m, admitter, gates, nil, swarm.NewDurableReceipts(st, sha))
+	run, rerr := swarm.Run(ctx, m, admitter, gates, nil, swarm.NewDurableReceipts(st, sha).WithChildren(created.storedChildren()))
 	if rerr != nil {
 		return run, mapSwarmRunError(rerr)
 	}
@@ -222,3 +226,81 @@ func RunSwarmFile(ctx context.Context, st *Store, parent *Session, manifestPath 
 // Admit always accepts the packet; gates are the meaningful
 // completion check.
 func (AlwaysAdmit) Admit(swarm.Packet, []byte) error { return nil }
+
+// storedChildren maps the created children onto the run record's
+// child rows, in creation order.
+func (r SwarmExecResult) storedChildren() []store.SwarmRunChild {
+	out := make([]store.SwarmRunChild, 0, len(r.Children))
+	for _, c := range r.Children {
+		out = append(out, store.SwarmRunChild{PacketID: c.PacketID, SessionID: c.Session.ID})
+	}
+	return out
+}
+
+// recordCancelledCreation lands the failed run record, naming the
+// children already created, when a cancellation cut child creation
+// short: the run loop never ran, so nothing else would record them. It
+// returns only a recording failure; a run without children records
+// nothing, as before.
+func recordCancelledCreation(ctx context.Context, st *Store, m swarm.Manifest, res SwarmExecResult,
+	admitter swarm.RunAdmitter, gates *swarm.GateRunner) error {
+	if len(res.Children) == 0 {
+		return nil
+	}
+	_, err := swarmRunDurable(ctx, st, m, res, admitter, gates)
+	if err == nil || errors.Is(err, ErrSessionCancelled) {
+		return nil
+	}
+	return err
+}
+
+// settleCancelledSwarm records each unfinished child of a cancelled
+// run as cancelled with the parent's reason. A run that was not
+// cancelled returns err untouched; a recording failure joins err so
+// the interrupt class is kept. The reason is read before the context
+// is detached, as WithoutCancel drops the cancellation cause.
+func settleCancelledSwarm(ctx context.Context, st *Store, res SwarmExecResult, err error) error {
+	if !errors.Is(err, ErrSessionCancelled) || len(res.Children) == 0 {
+		return err
+	}
+	reason := CancelReason(ctx)
+	rec := cancelSwarmChildren(context.WithoutCancel(ctx), st, res.Children, reason)
+	return errors.Join(err, rec)
+}
+
+// cancelSwarmChildren records every child that has not reached a
+// terminal status as cancelled: the session.cancelled event first, then
+// the status, as on every other terminal path. A child that already
+// completed, failed or was cancelled keeps its status. ctx must be
+// detached from the cancellation, as EventWriter.Append refuses a done
+// context; the single writer per session is closed before returning.
+func cancelSwarmChildren(ctx context.Context, st *Store, children []SwarmChild, reason string) error {
+	var errs []error
+	for _, c := range children {
+		if err := cancelSwarmChild(ctx, st, c.Session.ID, reason); err != nil {
+			errs = append(errs, fmt.Errorf("app: run swarm: cancel child %s: %w", c.PacketID, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// cancelSwarmChild cancels one child unless it is already terminal.
+func cancelSwarmChild(ctx context.Context, st *Store, id, reason string) error {
+	cur, err := st.GetSession(ctx, id)
+	if err != nil {
+		return err
+	}
+	if delegatedParentTerminal[cur.Status] {
+		return nil
+	}
+	w, err := st.NewEventWriter(ctx, id)
+	if err != nil {
+		return err
+	}
+	defer w.Close()
+	if _, err := w.Append(ctx, session.ActorEngine, session.TypeSessionCancelled,
+		map[string]any{"status": "cancelled", "reason": reason}); err != nil {
+		return err
+	}
+	return st.UpdateSessionStatus(ctx, id, "cancelled")
+}

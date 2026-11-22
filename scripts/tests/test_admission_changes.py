@@ -3,6 +3,7 @@ import hashlib
 import unittest
 
 from scripts.admission_candidate import verify_files
+from scripts.admission_changes import check_modes
 from scripts.admission_metadata import AdmissionError
 from scripts.tests.test_admission_io import HEAD
 
@@ -64,6 +65,17 @@ def manifest_cases():
               ("copy", "source listed as deleted", {"src": DELETED}, "changed-path")]
     cases += [("mixed", "malformed %r" % bad, {"gone": bad}, "unattested deletion") for bad in BAD_DELETIONS]
     return cases
+# (label, parent mode or None, commit mode, error): one path `node`; both readers must agree.
+MODE_CASES = [("added regular", None, "100644", None), ("added executable", None, "100755", None),
+              ("added symlink", None, "120000", "candidate files must be regular blobs"),
+              ("added submodule", None, "160000", "candidate files must be regular blobs"),
+              ("mode flip", "100644", "100755", None),
+              ("file into symlink", "100644", "120000", "candidate files must be regular blobs"),
+              ("file into submodule", "100644", "160000", "candidate files must be regular blobs"),
+              ("symlink into file", "120000", "100644", "unsupported file status"),
+              ("submodule into file", "160000", "100644", "unsupported file status")]
+def entry_for(mode, data):
+    return (mode, "commit" if mode == "160000" else "blob", git_blob(data))
 class ScenarioGitHub:
     def __init__(self, files, blobs):
         self.files, self.blobs = files, blobs
@@ -103,6 +115,20 @@ class GitHubDeletions(unittest.TestCase):
             verify_files(ScenarioGitHub(files, {git_blob(OLD): OLD}), HEAD,
                          {"a": DELETED, "b": blob_entry(OLD)})
 
+class PublisherModes(unittest.TestCase):
+    def test_shared_mode_table(self):
+        for label, before, now, error in MODE_CASES:
+            with self.subTest(label=label):
+                status = "added" if before is None else "modified"
+                files = [{"filename": "node", "sha": git_blob(NEW), "status": status}]
+                previous = {} if before is None else {"node": entry_for(before, OLD)}
+                if error is None:
+                    check_modes(files, {"node": entry_for(now, NEW)}, previous)
+                else:
+                    with self.assertRaisesRegex(AdmissionError, error):
+                        check_modes(files, {"node": entry_for(now, NEW)}, previous)
+    def test_removed_symlink_is_never_examined(self):
+        check_modes([{"filename": "node", "status": "removed"}], {}, {"node": entry_for("120000", OLD)})
 
 if __name__ == "__main__":
     unittest.main()

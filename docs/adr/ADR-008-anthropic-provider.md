@@ -48,7 +48,9 @@ FlowState must be able to use a user's Claude subscription through the `anthropi
   print mode.** The `anthropic` provider's OAuth route (`anthropic.Subscription`,
   `internal/provider/anthropic`) implements
   `provider.Streamer`. The sign-in is the user's own OAuth sign-in inside the unmodified `claude` binary. Selection is
-  by `providers.anthropic.auth_type`: `oauth` (the default) or `api_key` (the API-key route below).
+  by `FLOWSTATE_ANTHROPIC_AUTH`: `oauth` (the default, also when unset or empty) or `api_key` (the API-key route
+  below); any other value fails resolution naming both. The route is never inferred from `ANTHROPIC_API_KEY`, which
+  users export for other tools.
   There is no `claude-code` provider name.
 
 1. One process per request: `claude -p --output-format stream-json --verbose --include-partial-messages
@@ -68,10 +70,8 @@ FlowState must be able to use a user's Claude subscription through the `anthropi
    inherited minus the variables listed in item 9. `--bare` is not passed because it skips the keychain read
    that sign-in relies on.
 2. The binary is `claude` on PATH, overridable with `FLOWSTATE_CLAUDE_BIN`. Resolving the provider never runs the
-   binary or checks sign-in. A `providers.yaml` that exists but cannot be read or parsed fails resolution with that
-   error instead of silently selecting the subscription route; an absent file is the default configuration. The
-   file is this CLI's own: `config.yaml` in the same directory belongs to the older FlowState harness, has a
-   different schema, and is never read (it made every `anthropic` session fail on a machine with both). A
+   binary or checks sign-in. Provider settings come from the environment only: no
+   configuration file is read, so `providers.yaml` and the older harness's `config.yaml` have no effect. A
    missing binary is reported with its path in double quotes (backslashes unchanged), so a path with spaces is
    unambiguous.
 3. Hard rules (OAuth route): FlowState never reads, stores, refreshes or forwards any Claude credential or token;
@@ -118,18 +118,17 @@ FlowState must be able to use a user's Claude subscription through the `anthropi
 
 ## API-key route
 
-`auth_type: api_key` selects `anthropic.APIKey`, a second and fully independent route: ordinary Anthropic API
-billing with a key the user created, not the Claude subscription. The hard rules of the OAuth route do not apply to
-it and it shares nothing with it: it never reads the Claude Code sign-in or `~/.claude`, never runs `claude`, and
-sends no OAuth, `Authorization` or `anthropic-beta` header, only `x-api-key`, `anthropic-version: 2023-06-01` and
-content headers, to `<base>/v1/messages`.
+`FLOWSTATE_ANTHROPIC_AUTH=api_key` selects `anthropic.APIKey`, a second and fully independent route:
+ordinary Anthropic API billing with a key the user created, not the Claude subscription. The hard rules of the OAuth
+route do not apply to it and it shares nothing with it: it never reads the Claude Code sign-in or `~/.claude`, never
+runs `claude`, and sends no OAuth, `Authorization` or `anthropic-beta` header, only `x-api-key`,
+`anthropic-version: 2023-06-01` and content headers, to `<base>/v1/messages`.
 
-1. Key: `ANTHROPIC_API_KEY`, else `providers.anthropic.api_key`. A missing key fails at resolve time with an error
-   naming both sources. The key is never written to a log line or event. In an error, every exact occurrence of
-   the key in the API error type and message, a transport error or a stream error is replaced by `[redacted]`; an
-   altered form of the key (partial, encoded) is not detected. Resolving makes no network request.
-2. Base URL: `ANTHROPIC_BASE_URL`, else `providers.anthropic.host`, else `https://api.anthropic.com` (the override
-   serves tests and proxies).
+1. Key: `ANTHROPIC_API_KEY`. A missing key fails at resolve time with an error naming the variable. The key is
+   never written to a log line or event. In an error, every exact occurrence of the key in the API error type and
+   message, a transport error or a stream error is replaced by `[redacted]`; an altered form of the key (partial,
+   encoded) is not detected. Resolving makes no network request.
+2. Base URL: `ANTHROPIC_BASE_URL`, else `https://api.anthropic.com` (the override serves tests and proxies).
 3. Design: `APIKey` composes the existing Messages wire client in `internal/provider/zai` (anthropic coding route).
    Two opt-in options, off by default so the z.ai route is unchanged apart from item 5: `WithAnthropicSystem` (system
    messages go in the top-level `system` field; a request of only system messages is refused before any request)

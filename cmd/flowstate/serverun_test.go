@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -318,7 +319,7 @@ var _ = Describe("Serve run failure classification", func() {
 		var status int
 		var code, message string
 		BeforeEach(func() {
-			status, code, message = post("z.ai", func(string, string) { isolatedProviderConfig("") })
+			status, code, message = post("z.ai", func(string, string) { isolatedProviderConfig() })
 		})
 		It("answers 502", func() { Expect(status).To(Equal(http.StatusBadGateway)) })
 		It("reports provider_error", func() { Expect(code).To(Equal("provider_error")) })
@@ -327,15 +328,77 @@ var _ = Describe("Serve run failure classification", func() {
 		})
 	})
 
-	Context("a malformed providers.yaml on the anthropic route", func() {
+	Context("an unknown FLOWSTATE_ANTHROPIC_AUTH on the anthropic route", func() {
 		var status int
 		var code string
 		BeforeEach(func() {
 			status, code, _ = post("anthropic", func(string, string) {
-				isolatedProviderConfig("providers: [unterminated\n")
+				isolatedProviderConfig("FLOWSTATE_ANTHROPIC_AUTH=magic")
 			})
 		})
 		It("answers 502", func() { Expect(status).To(Equal(http.StatusBadGateway)) })
 		It("reports provider_error", func() { Expect(code).To(Equal("provider_error")) })
+	})
+})
+
+// cancelledReason replays one session's log from the database and returns
+// the reason on its session.cancelled event ("" when there is none).
+func cancelledReason(db, id string) string {
+	st, err := app.OpenStore(db)
+	must(err)
+	defer func() { must(st.Close()) }()
+	events, err := st.Replay(context.Background(), id)
+	must(err)
+	for _, e := range events {
+		if e.Type != "session.cancelled" {
+			continue
+		}
+		var payload struct {
+			Reason string `json:"reason"`
+		}
+		must(json.Unmarshal([]byte(e.PayloadJSON), &payload))
+		return payload.Reason
+	}
+	return ""
+}
+
+var _ = Describe("Serve run cancellation reason", func() {
+	// bootStalledRun boots serve, starts a run whose provider stalls and
+	// returns once the provider has begun streaming, so the run is live.
+	bootStalledRun := func() (cancelClient context.CancelFunc, id, db string, stop func() int, finished <-chan struct{}) {
+		srv, arrived := e2eStallProvider()
+		withFakeZai(srv)
+		var base string
+		base, id, db, stop = bootSeededProviderSession("z.ai")
+		reqCtx, cancel := context.WithCancel(context.Background())
+		req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, base+"/sessions/"+id+"/run", nil)
+		must(err)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			if res, derr := http.DefaultClient.Do(req); derr == nil {
+				_, _ = io.Copy(io.Discard, res.Body)
+				_ = res.Body.Close()
+			}
+		}()
+		<-arrived
+		return cancel, id, db, stop, done
+	}
+
+	It("records client_disconnected when the client goes away mid-run", func() {
+		cancelClient, id, db, stop, finished := bootStalledRun()
+		defer func() { mustExit(stop()) }()
+		cancelClient()
+		<-finished
+		Eventually(func() string { return cancelledReason(db, id) }).
+			WithTimeout(10 * time.Second).WithPolling(50 * time.Millisecond).Should(Equal("client_disconnected"))
+	})
+
+	It("records shutdown when the server stops mid-run", func() {
+		cancelClient, id, db, stop, finished := bootStalledRun()
+		defer cancelClient()
+		mustExit(stop())
+		<-finished
+		Expect(cancelledReason(db, id)).To(Equal("shutdown"))
 	})
 })

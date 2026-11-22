@@ -202,18 +202,25 @@ var _ = Describe("Legacy v3 database upgrade", func() {
 		store = s
 	})
 
-	It("records schema version 7 after the first migrated open", func() {
+	It("records schema version 8 after the first migrated open", func() {
 		v, err := store.SchemaVersion()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(v).To(Equal(int64(7)))
+		Expect(v).To(Equal(int64(8)))
 	})
 
-	It("appends versions 4 through 7 to the recorded schema_migrations", func() {
-		// version is INTEGER PRIMARY KEY, so count 7 with max 7 pins {1..7}.
+	It("appends versions 4 through 8 to the recorded schema_migrations", func() {
+		// version is INTEGER PRIMARY KEY, so count 8 with max 8 pins {1..8}.
 		var n, maxV int64
 		err := store.db.QueryRow(`SELECT count(*), max(version) FROM schema_migrations`).Scan(&n, &maxV)
 		Expect(err).NotTo(HaveOccurred())
-		Expect([2]int64{n, maxV}).To(Equal([2]int64{7, 7}))
+		Expect([2]int64{n, maxV}).To(Equal([2]int64{8, 8}))
+	})
+
+	It("creates the swarm_run_children table on a migrated legacy database", func() {
+		var n int
+		err := store.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='swarm_run_children'`).Scan(&n)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(1))
 	})
 
 	It("preserves the committed session row field-for-field", func() {

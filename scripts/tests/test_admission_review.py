@@ -29,6 +29,22 @@ class ReviewReference(unittest.TestCase):
                 agent_review_reference(body)
             self.assertNotIsInstance(caught.exception, AdmissionPending)
 
+    def test_a_misspelled_review_line_is_a_failure_naming_the_spelling(self):
+        for body in ("agent-review: " + self.REF, "Agent-review: " + self.REF, "AGENT-REVIEW: " + self.REF,
+                     " Agent-Review: " + self.REF, "Agent Review: " + self.REF, "Agent_Review: " + self.REF,
+                     "Agent-Review : " + self.REF, "x\nagent-review:"):
+            with self.subTest(body=body), self.assertRaisesRegex(AdmissionError, "spelled exactly") as caught:
+                agent_review_reference(body)
+            self.assertNotIsInstance(caught.exception, AdmissionPending)
+
+    def test_a_valid_line_beside_a_misspelled_one_is_a_failure(self):
+        with self.assertRaisesRegex(AdmissionError, "spelled exactly"):
+            agent_review_reference("Agent-Review: " + self.REF + "\nagent-review: " + self.REF)
+
+    def test_text_merely_mentioning_the_review_is_still_waiting(self):
+        with self.assertRaises(AdmissionPending):
+            agent_review_reference("See the Agent-Review: line below\nnot an agent review yet")
+
     def test_single_valid_line_is_returned(self):
         self.assertEqual(agent_review_reference("x\nAgent-Review: " + self.REF), self.REF)
 
