@@ -37,16 +37,17 @@ func CreateSession(ctx context.Context, st *Store, provider, modelID, harness, c
 // ErrUsage), the child id is a fresh UUIDv7, and the child log opens
 // with a session.delegated event (actor user, payload parent_id)
 // before the initial turn.start carrying the task. A context that is
-// already done creates nothing and reports ErrSessionCancelled (the
-// context error stays in the chain); once the child's row is written the
-// creation completes whatever happens to the context, so a child either
-// does not exist or exists with its task.
+// already done creates nothing: a cancelled one reports ErrSessionCancelled
+// and a deadline-exceeded one a plain wrapped error (see childContextError),
+// each keeping the context error in the chain. Once the child's row is
+// written the creation completes whatever happens to the context, so a
+// child either does not exist or exists with its task.
 func CreateChildSession(ctx context.Context, st *Store, parentID, provider, modelID, harness, configSHA, task string) (*store.Session, error) {
 	if parentID == "" || provider == "" || modelID == "" || task == "" {
 		return nil, fmt.Errorf("%w: parent, provider, model and task must not be empty", ErrUsage)
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("%w: create child session: %w", ErrSessionCancelled, err)
+		return nil, childContextError(err)
 	}
 	parent, err := st.GetSession(ctx, parentID)
 	if err != nil {
@@ -76,6 +77,18 @@ func CreateChildSession(ctx context.Context, st *Store, parentID, provider, mode
 		id: id, parentID: parentID, provider: provider, modelID: modelID,
 		harness: harness, configSHA: configSHA, task: task,
 	})
+}
+
+// childContextError classes a done context for child creation as
+// mapSwarmRunError does for a swarm run: only context.Canceled is an
+// interrupt (ErrSessionCancelled, exit 130). A deadline is a limit the
+// caller imposed, not a user interrupt, so DeadlineExceeded keeps its
+// own identity under a plain wrapping (class internal).
+func childContextError(err error) error {
+	if errors.Is(err, context.Canceled) {
+		return fmt.Errorf("%w: create child session: %w", ErrSessionCancelled, err)
+	}
+	return fmt.Errorf("app: create child session: %w", err)
 }
 
 // openChildSession writes the child's row and its two opening events:

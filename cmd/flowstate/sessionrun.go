@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/baphled/flowstate/internal/app"
 )
@@ -267,8 +268,7 @@ func runSessionTurn(ctx context.Context, st *app.Store, sess *app.Session, fl *f
 	p, perr := providerResolver(sess.Provider)
 	if perr != nil {
 		if errors.Is(perr, app.ErrSessionCancelled) {
-			writeError(stderr, fmt.Errorf("%w: interrupted; session cancelled", app.ErrSessionCancelled))
-			return exitSigint
+			return reportInterrupt(perr, stderr)
 		}
 		writeError(stderr, providerFailure(perr))
 		return exitProviderError
@@ -329,8 +329,7 @@ func providerFailure(err error) error {
 func finishRun(err error, res *app.TurnResult, fl *flags, stderr *os.File) int {
 	if err != nil {
 		if errors.Is(err, app.ErrSessionCancelled) {
-			writeError(stderr, fmt.Errorf("%w: interrupted; session cancelled", app.ErrSessionCancelled))
-			return exitSigint
+			return reportInterrupt(err, stderr)
 		}
 		if errors.Is(err, app.ErrBudgetExceeded) {
 			writeError(stderr, err)
@@ -352,6 +351,19 @@ func finishRun(err error, res *app.TurnResult, fl *flags, stderr *os.File) int {
 	}
 	noteTruncation(res, stderr)
 	return exitOK
+}
+
+// reportInterrupt reports a cancelled run and returns exit 130. A
+// reservation settle failure joined to the cancellation is printed first
+// as its own line, as `session cancel` does, so it is not hidden behind
+// the fixed interrupt message; the exit status never changes.
+func reportInterrupt(err error, stderr *os.File) int {
+	if errors.Is(err, app.ErrReservationSettle) {
+		_, detail, _ := strings.Cut(err.Error(), app.ErrReservationSettle.Error()+": ")
+		writeError(stderr, fmt.Errorf("%w: %s", app.ErrReservationSettle, detail))
+	}
+	writeError(stderr, fmt.Errorf("%w: interrupted; session cancelled", app.ErrSessionCancelled))
+	return exitSigint
 }
 
 // noteTruncation tells the person running the command that the final

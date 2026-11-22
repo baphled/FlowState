@@ -171,8 +171,10 @@ func swarmNotAccepted(m swarm.Manifest, run swarm.RunResult) error {
 // is wrapped with the run-swarm prefix. Both RunSwarm and
 // SwarmRunManifest use it.
 //
-// Only context.Canceled maps: no CLI or server path puts a deadline on a
-// swarm run today, so DeadlineExceeded keeps the generic wrapping.
+// Only context.Canceled maps: a deadline is a limit the caller imposed, not
+// a user interrupt (exit 130 and reason cancelled would mislead), so
+// DeadlineExceeded keeps the generic wrapping. CreateChildSession applies
+// the same rule (childContextError).
 func mapSwarmRunError(err error) error {
 	if errors.Is(err, context.Canceled) {
 		return fmt.Errorf("app: run swarm: %w: %w", ErrSessionCancelled, err)
@@ -272,7 +274,8 @@ func settleCancelledSwarm(ctx context.Context, st *Store, res SwarmExecResult, e
 // cancelSwarmChildren records every child that has not reached a
 // terminal status as cancelled: the session.cancelled event first, then
 // the status, as on every other terminal path. A child that already
-// completed, failed or was cancelled keeps its status. ctx must be
+// completed, failed or was cancelled keeps its status (its reservation is
+// still settled). ctx must be
 // detached from the cancellation, as EventWriter.Append refuses a done
 // context; the single writer per session is closed before returning.
 func cancelSwarmChildren(ctx context.Context, st *Store, children []SwarmChild, reason string) error {
@@ -285,14 +288,17 @@ func cancelSwarmChildren(ctx context.Context, st *Store, children []SwarmChild, 
 	return errors.Join(errs...)
 }
 
-// cancelSwarmChild cancels one child unless it is already terminal.
+// cancelSwarmChild cancels one child unless it is already terminal. A
+// terminal child still has its reservation settled: an earlier settle may
+// have failed, and settling a settled reservation is a no-op (only a
+// reserved one is updated), so the retry is always safe.
 func cancelSwarmChild(ctx context.Context, st *Store, id, reason string) error {
 	cur, err := st.GetSession(ctx, id)
 	if err != nil {
 		return err
 	}
 	if delegatedParentTerminal[cur.Status] {
-		return nil
+		return settleChildReservation(ctx, st, id)
 	}
 	w, err := st.NewEventWriter(ctx, id)
 	if err != nil {
@@ -306,6 +312,12 @@ func cancelSwarmChild(ctx context.Context, st *Store, id, reason string) error {
 	if err := st.UpdateSessionStatus(ctx, id, "cancelled"); err != nil {
 		return err
 	}
+	return settleChildReservation(ctx, st, id)
+}
+
+// settleChildReservation marks the child's reservation charged, tagging a
+// failure with ErrReservationSettle; a child without one is untouched.
+func settleChildReservation(ctx context.Context, st *Store, id string) error {
 	if err := st.SetReservationCharged(ctx, id); err != nil {
 		return fmt.Errorf("%w: %w", ErrReservationSettle, err)
 	}
