@@ -45,7 +45,7 @@ unknown sessions, answer 400 `usage` because the app layer wraps them into
 `ErrUsage` before the shared code table.
 S4 adds the path-based swarm and receipt endpoints — `POST /swarm/validate`
 `{"path"}`, `POST /swarm/run` `{"parent","path","budget"}` (unknown parent 404,
-budget stops 409, gate-not-accepted surfaces the app's unwrapped error → 500) and
+budget stops 409, a not-accepted run — failed gate or rejected packet — is 422 `receipt_invalid`, and the CLI exits 8) and
 `POST /receipt/validate` `{"path"}` (an invalid receipt is a 200 `"invalid"`
 verdict mirroring the CLI's per-file line) — reusing the CLI `swarm-validate`,
 `swarm-run` and `receipt-validate` schema keys.

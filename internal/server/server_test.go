@@ -33,7 +33,7 @@ var errFakeReceipt = errors.New(`receipt_invalid: "receipt.json": gate_outcome i
 var fakeCodes = map[error]string{
 	errFakeUsage: "usage", errFakeMissing: "session_not_found", errFakeTerminal: "session_terminal",
 	errFakeScope: "usage", errFakeManifest: "usage", errFakeBudgetStop: "budget_exceeded",
-	errFakeGate: "internal", errFakeReceipt: "receipt_invalid",
+	errFakeGate: "receipt_invalid", errFakeReceipt: "receipt_invalid",
 	errFakeProvider: "provider_error", errFakeBudget: "budget_exceeded",
 }
 
@@ -591,15 +591,15 @@ var _ = Describe("Serve S1 transport", func() {
 				`{"code":"budget_exceeded","message":"budget exceeded: grant 200 exceeds available 100"}`}))
 		})
 
-		// Actual mapping: RunSwarm's not-accepted error carries no
-		// sentinel, so ErrorCode answers internal and the shared table
-		// renders 500 — the same outcome the CLI exit path takes.
-		It("maps a gate-not-accepted run onto 500 internal", func() {
+		// The app's not-accepted error maps onto receipt_invalid; the
+		// shared table renders 422 — the CLI exits 8 for the same class.
+		// Only the {code,message} error body is written; no run result.
+		It("maps a gate-not-accepted run onto 422 receipt_invalid", func() {
 			s, f := sampleServer()
 			f.swarmErr = errFakeGate
 			rec := doBody(s, http.MethodPost, "/swarm/run", runOK)
-			Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusInternalServerError,
-				`{"code":"internal","message":"app: run swarm demo.swarm not accepted: failed gates [no], admitted 1 of 1 packets"}`}))
+			Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusUnprocessableEntity,
+				`{"code":"receipt_invalid","message":"app: run swarm demo.swarm not accepted: failed gates [no], admitted 1 of 1 packets"}`}))
 		})
 
 		It("rejects a GET on the route with 405 usage", func() {
