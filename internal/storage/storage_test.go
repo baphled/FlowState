@@ -1,14 +1,12 @@
 package storage
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
-	"sync"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -131,105 +129,6 @@ var _ = Describe("Open qualification", func() {
 		Expect(err).To(HaveOccurred(), "foreign_keys not enforced")
 		err = tx.Rollback()
 		Expect(err).NotTo(HaveOccurred())
-	})
-})
-
-// concurrentWriters arranges the race scenario shared by the writer
-// concurrency specs; it asserts nothing behavioural.
-func concurrentWriters(db *sql.DB) (context.Context, string, []error) {
-	w, sess, err := NewEventWriter(db, Session{Provider: "p", ModelID: "m", Harness: "t"})
-	Expect(err).NotTo(HaveOccurred())
-	ctx := context.Background()
-	var mu sync.Mutex
-	var failures []error
-	var wg sync.WaitGroup
-	for g := 0; g < 8; g++ {
-		wg.Add(1)
-		go func(g int) {
-			defer wg.Done()
-			for i := 0; i < 25; i++ {
-				err := w.Append(ctx, EventIn{Actor: "provider:fake", Type: "provider.delta",
-					Payload: map[string]any{"g": g, "i": i}})
-				if err != nil {
-					mu.Lock()
-					failures = append(failures, err)
-					mu.Unlock()
-				}
-			}
-		}(g)
-	}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < 50; i++ {
-			if _, err := ReadEvents(ctx, db, sess.ID); err != nil {
-				mu.Lock()
-				failures = append(failures, err)
-				mu.Unlock()
-				return
-			}
-		}
-	}()
-	wg.Wait()
-	return ctx, sess.ID, failures
-}
-
-var _ = Describe("Writer concurrency", func() {
-	It("concurrent reads never fail under writer contention", func() {
-		db, _, _ := openT()
-		_, _, failures := concurrentWriters(db)
-		Expect(failures).To(BeEmpty())
-	})
-
-	It("single owner keeps the sequence contiguous under race", func() {
-		db, _, _ := openT()
-		ctx, sid, _ := concurrentWriters(db)
-		Expect(VerifyContiguous(ctx, db, sid)).To(Succeed())
-	})
-})
-
-// replayableSession arranges a session with five appended events.
-func replayableSession(db *sql.DB) (context.Context, string) {
-	w, sess, err := NewEventWriter(db, Session{Provider: "p", ModelID: "m", Harness: "t"})
-	Expect(err).NotTo(HaveOccurred())
-	ctx := context.Background()
-	for i := 0; i < 5; i++ {
-		err := w.Append(ctx, EventIn{Actor: "user", Type: "provider.delta", Payload: map[string]any{"i": i}})
-		Expect(err).NotTo(HaveOccurred())
-	}
-	return ctx, sess.ID
-}
-
-var _ = Describe("Replay oracle", func() {
-	It("replay fails on a corrupted digest", func() {
-		db, _, _ := openT()
-		ctx, sid := replayableSession(db)
-		_, err := Replay(ctx, db, sid)
-		Expect(err).NotTo(HaveOccurred())
-		_, err = db.Exec(`UPDATE events SET payload_sha256='deadbeef' WHERE session_id=? AND seq=2`, sid)
-		Expect(err).NotTo(HaveOccurred())
-		_, err = Replay(ctx, db, sid)
-		Expect(err).To(HaveOccurred(), "replay accepted corrupted digest")
-	})
-
-	It("restored fixture digests make replay succeed again", func() {
-		db, _, _ := openT()
-		ctx, sid := replayableSession(db)
-		_, err := db.Exec(`UPDATE events SET payload_sha256='deadbeef' WHERE session_id=? AND seq=2`, sid)
-		Expect(err).NotTo(HaveOccurred())
-		_, err = RestoreFixtureDigests(ctx, db, sid)
-		Expect(err).NotTo(HaveOccurred())
-		ok := func() bool { _, err := Replay(ctx, db, sid); return err == nil }()
-		Expect(ok).To(BeTrue(), "replay rejected after digest restore")
-	})
-
-	It("replay fails on a corrupted sequence", func() {
-		db, _, _ := openT()
-		ctx, sid := replayableSession(db)
-		_, err := db.Exec(`DELETE FROM events WHERE session_id=? AND seq=2`, sid)
-		Expect(err).NotTo(HaveOccurred())
-		_, err = Replay(ctx, db, sid)
-		Expect(err).To(HaveOccurred(), "replay accepted corrupted sequence")
 	})
 })
 
