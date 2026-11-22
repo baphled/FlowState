@@ -2,6 +2,26 @@
 
 All notable changes to the FlowState project will be documented in this file.
 
+## [1.9.1](https://github.com/baphled/FlowState/compare/v1.9.0...v1.9.1) (2026-11-22)
+
+### Bug Fixes
+
+* **ci:** judge a pull request by the base's contract checkers ([#412](https://github.com/baphled/FlowState/issues/412)) ([e8c361a](https://github.com/baphled/FlowState/commit/e8c361a084018ddb9f922a54289a692be0770f38))
+* **engine:** carry a settle failure as a typed error ([#414](https://github.com/baphled/FlowState/issues/414)) ([29dc86c](https://github.com/baphled/FlowState/commit/29dc86c070d36f82b12396f71af0e84176d08687))
+* **engine:** name every child whose reservation failed to settle ([#416](https://github.com/baphled/FlowState/issues/416)) ([b85c838](https://github.com/baphled/FlowState/commit/b85c83807243c2c16e2630ca108d5c9026086aa6))
+* **engine:** print a settle failure on run and keep deadlines distinct ([#413](https://github.com/baphled/FlowState/issues/413)) ([b9591d8](https://github.com/baphled/FlowState/commit/b9591d84720c57eb264f6c166de0a90778e99aa2))
+* **engine:** settle reservations and children when a run does not complete ([#407](https://github.com/baphled/FlowState/issues/407)) ([e236f5e](https://github.com/baphled/FlowState/commit/e236f5e99f222b9f4afd6b78f5b622826fa077ef))
+* **store:** reject a steering drain for another session ([#404](https://github.com/baphled/FlowState/issues/404)) ([3924e81](https://github.com/baphled/FlowState/commit/3924e81c2d3dd7fe2b884595edf2b4d40e80d4a5))
+* **workflow:** report what a one-shot admission run actually published ([#409](https://github.com/baphled/FlowState/issues/409)) ([dcb7031](https://github.com/baphled/FlowState/commit/dcb7031dd54f078bc828dd8bb23b84e4fd74d730))
+
+### Code Refactoring
+
+* **engine:** give the member receipt write the caller's context ([#417](https://github.com/baphled/FlowState/issues/417)) ([799ff11](https://github.com/baphled/FlowState/commit/799ff11a9f8fbda1304b934dfe0fd0b3b2ae84a2))
+* **store:** add the swarm receipt tables to the store ([#408](https://github.com/baphled/FlowState/issues/408)) ([4b95ba9](https://github.com/baphled/FlowState/commit/4b95ba92a4a52d0d081910a54ceb53dc20719123))
+* **store:** open the receipts database through the store ([#415](https://github.com/baphled/FlowState/issues/415)) ([feb8cc0](https://github.com/baphled/FlowState/commit/feb8cc028d853ad7e119a73057f10b16d1b7c8ce))
+* **store:** remove the storage package's unused canonical helpers ([#406](https://github.com/baphled/FlowState/issues/406)) ([257d171](https://github.com/baphled/FlowState/commit/257d171f1af30136f4926087c66fb95e9bf6514c))
+* **store:** switch the swarm receipt callers to the store ([#411](https://github.com/baphled/FlowState/issues/411)) ([6b94aa0](https://github.com/baphled/FlowState/commit/6b94aa04f674a0c2744bc3249940d2fda78f6f5a))
+
 ## [1.9.0](https://github.com/baphled/FlowState/compare/v1.8.1...v1.9.0) (2026-11-22)
 
 ### Features
