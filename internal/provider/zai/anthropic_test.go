@@ -99,43 +99,32 @@ var _ = Describe("coding (Anthropic-compatible) route", func() {
 		Expect(hitPath).To(Equal("/api/anthropic/v1/messages"))
 	})
 
-	It("clamps max_tokens into [1,131072] on the coding route", func() {
+	DescribeTable("sends the resolved max_tokens on the anthropic coding route", func(in int64, want string) {
 		srv, bodies := codingServer(`{"content":[]}`, "")
 		defer srv.Close()
 		p := New("k", WithBaseURL(srv.URL), WithCoding(), WithCodingRoute("anthropic"))
-		_, _ = p.Chat(context.Background(), &provider.ChatRequest{MaxTokens: 500000})
-		Expect(bodies()).To(ContainSubstring(`"max_tokens":131072`))
-	})
-
-	It("clamps a zero max_tokens to the default floor on the coding route", func() {
-		srv, bodies := codingServer(`{"content":[]}`, "")
-		defer srv.Close()
-		p := New("k", WithBaseURL(srv.URL), WithCoding(), WithCodingRoute("anthropic"))
-		_, _ = p.Chat(context.Background(), &provider.ChatRequest{})
-		Expect(bodies()).To(ContainSubstring(`"max_tokens":8192`))
-	})
+		_, _ = p.Chat(context.Background(), &provider.ChatRequest{MaxTokens: in})
+		Expect(bodies()).To(ContainSubstring(want))
+	},
+		Entry("unset uses the default", int64(0), `"max_tokens":8192`),
+		Entry("negative uses the default", int64(-5), `"max_tokens":8192`),
+		Entry("explicit small limit is sent as given", int64(20), `"max_tokens":20`),
+		Entry("explicit limit above the cap is capped", int64(500000), `"max_tokens":131072`),
+	)
 })
 
 var _ = Describe("ClampMaxTokens", func() {
-	It("lifts values below the default floor", func() {
-		Expect(ClampMaxTokens(0)).To(Equal(int64(MaxTokensDefault)))
-	})
-
-	It("lifts negative values to the default floor", func() {
-		Expect(ClampMaxTokens(-5)).To(Equal(int64(MaxTokensDefault)))
-	})
-
-	It("keeps in-range values unchanged", func() {
-		Expect(ClampMaxTokens(9000)).To(Equal(int64(9000)))
-	})
-
-	It("keeps the exact maximum unchanged", func() {
-		Expect(ClampMaxTokens(131072)).To(Equal(int64(131072)))
-	})
-
-	It("caps values above the maximum", func() {
-		Expect(ClampMaxTokens(131073)).To(Equal(int64(131072)))
-	})
+	DescribeTable("resolves the limit", func(in, want int64) {
+		Expect(ClampMaxTokens(in)).To(Equal(want))
+	},
+		Entry("unset becomes the default", int64(0), int64(MaxTokensDefault)),
+		Entry("negative becomes the default", int64(-5), int64(MaxTokensDefault)),
+		Entry("an explicit limit below the default is kept", int64(20), int64(20)),
+		Entry("the smallest explicit limit is kept", int64(1), int64(1)),
+		Entry("an in-range limit is kept", int64(9000), int64(9000)),
+		Entry("the exact maximum is kept", int64(131072), int64(131072)),
+		Entry("a limit above the maximum is capped", int64(131073), int64(131072)),
+	)
 })
 
 var _ = Describe("WithCoding base URL", func() {

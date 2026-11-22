@@ -143,7 +143,8 @@ content headers, to `<base>/v1/messages`.
    the z.ai anthropic route, which previously reported those cases as a completed turn. `stop_reason` maps to the
    finish reason: `end_turn`, `stop_sequence` or absent: `stop`; `max_tokens`: `length`; others unchanged.
 6. Unsupported: structured tools and tool-role history (refused before any request); non-text blocks are ignored;
-   token usage is not reported; `max_tokens` is clamped to 8192..131072; no retries.
+   token usage is not reported; an unset `max_tokens` becomes 8192 and an explicit one is sent as given, capped at
+   131072 (a small limit can be spent on hidden reasoning, giving finish reason `length`); no retries.
 
 ## Consequences
 

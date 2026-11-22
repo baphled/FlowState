@@ -74,7 +74,7 @@ var _ = Describe("coding (OpenAI-compatible default) route", func() {
 		Expect(path.Load()).To(Equal("/api/coding/paas/v4/chat/completions"))
 	})
 
-	It("clamps max_tokens into range on the openai coding route", func() {
+	DescribeTable("sends the resolved max_tokens on the openai coding route", func(in int64, want string) {
 		var body atomic.Value
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			b := make([]byte, 4096)
@@ -85,9 +85,14 @@ var _ = Describe("coding (OpenAI-compatible default) route", func() {
 		}))
 		defer srv.Close()
 		p := New("k", WithBaseURL(srv.URL), WithCoding())
-		_, _ = p.Chat(context.Background(), &provider.ChatRequest{MaxTokens: 500000})
-		Expect(body.Load()).To(ContainSubstring(`"max_tokens":131072`))
-	})
+		_, _ = p.Chat(context.Background(), &provider.ChatRequest{MaxTokens: in})
+		Expect(body.Load()).To(ContainSubstring(want))
+	},
+		Entry("unset uses the default", int64(0), `"max_tokens":8192`),
+		Entry("negative uses the default", int64(-5), `"max_tokens":8192`),
+		Entry("explicit small limit is sent as given", int64(20), `"max_tokens":20`),
+		Entry("explicit limit above the cap is capped", int64(500000), `"max_tokens":131072`),
+	)
 
 	It("surfaces a typed APIError on non-2xx coding responses", func() {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
