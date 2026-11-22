@@ -142,13 +142,23 @@ them can be admitted.
 
 Waiting is `pending`, a defect is `failure`. `pending: Awaiting an independent exact-head
 agent review` means nothing in the PR description resembles a review line. A line that looks like one
-(any case, spacing before the colon, `Agent Review:`, `Agent_Review:` or leading blanks) but is not exactly
-`Agent-Review: <reference>` is a `failure` naming the spelling, never the waiting `pending`.
+(any case, spacing before the colon, `Agent Review:`, `Agent_Review:`, leading blanks, or a look-alike hyphen
+such as U+2011 or U+2013) but is not exactly `Agent-Review: <reference>` is a `failure` naming the spelling,
+never the waiting `pending`. The look-alike match runs on a normalised copy (NFKC, any dash or minus folded to
+`-`, invisible format characters removed); the copy is never used to accept a line.
 `pending: Waiting for required check <name>` means a required check is not reported, queued
 or in progress on the head. More than one line, a malformed reference, or a required check
 that finished without success is a `failure`. A waiting `pending` is a non-success record: the
 marker is skipped while it stands and it is published once per change. A pending candidate is
-not admitted: `--once`/`--pr` still exit nonzero.
+not admitted: `--once`/`--pr` still exit nonzero. They exit 0 only when the evaluated `success` is what the
+publisher actually published for the head: an exhausted head (nothing published) or an unknown status count
+(`failure: ... count is unavailable`) is a nonzero exit, as is any other substituted failure. The service loop
+ignores the result and is unchanged. An interrupt (`KeyboardInterrupt`, `SystemExit`) always propagates out of
+the candidate, the scan and the service loop, after a best-effort `failure`; the reason logged for a failed
+candidate is one printable line of at most 200 characters. The publisher itself condenses every description to
+the text GitHub keeps (one printable line, at most 140 characters) before it compares it with the last
+publication, so a finding published by the evaluation and again by the runner reads the same and is posted once,
+not once per cycle.
 
 Waiting for a required check has a deadline. The publisher records when it first saw a head waiting for
 a given check; after 60 minutes (`CHECK_DEADLINE`) of continuous waiting for the SAME check it publishes

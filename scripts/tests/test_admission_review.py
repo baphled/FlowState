@@ -37,6 +37,23 @@ class ReviewReference(unittest.TestCase):
                 agent_review_reference(body)
             self.assertNotIsInstance(caught.exception, AdmissionPending)
 
+    def test_a_review_line_with_a_unicode_look_alike_is_a_failure_naming_the_spelling(self):
+        for hyphen in ("\u2010", "\u2011", "\u2013", "\u2014", "\u2212", "\ufe63", "\uff0d"):
+            for body in ("Agent" + hyphen + "Review: " + self.REF, "x\nAGENT" + hyphen + "review: " + self.REF):
+                with self.subTest(body=body), self.assertRaisesRegex(AdmissionError, "spelled exactly") as caught:
+                    agent_review_reference(body)
+                self.assertNotIsInstance(caught.exception, AdmissionPending)
+
+    def test_a_review_line_with_invisible_or_compatibility_characters_is_a_failure(self):
+        for body in ("Agent\u200b-Review: " + self.REF, "Agent-\u00adReview: " + self.REF,
+                     "\uff21gent-Review: " + self.REF):
+            with self.subTest(body=body), self.assertRaisesRegex(AdmissionError, "spelled exactly"):
+                agent_review_reference(body)
+
+    def test_a_valid_line_beside_a_unicode_look_alike_is_a_failure(self):
+        with self.assertRaisesRegex(AdmissionError, "spelled exactly"):
+            agent_review_reference("Agent-Review: " + self.REF + "\nAgent\u2011Review: " + self.REF)
+
     def test_a_valid_line_beside_a_misspelled_one_is_a_failure(self):
         with self.assertRaisesRegex(AdmissionError, "spelled exactly"):
             agent_review_reference("Agent-Review: " + self.REF + "\nagent-review: " + self.REF)
