@@ -318,7 +318,7 @@ var _ = Describe("Serve run failure classification", func() {
 		var status int
 		var code, message string
 		BeforeEach(func() {
-			status, code, message = post("z.ai", func(string, string) { isolatedProviderConfig("") })
+			status, code, message = post("z.ai", func(string, string) { isolatedProviderConfig() })
 		})
 		It("answers 502", func() { Expect(status).To(Equal(http.StatusBadGateway)) })
 		It("reports provider_error", func() { Expect(code).To(Equal("provider_error")) })
@@ -327,12 +327,12 @@ var _ = Describe("Serve run failure classification", func() {
 		})
 	})
 
-	Context("a malformed providers.yaml on the anthropic route", func() {
+	Context("an unknown FLOWSTATE_ANTHROPIC_AUTH on the anthropic route", func() {
 		var status int
 		var code string
 		BeforeEach(func() {
 			status, code, _ = post("anthropic", func(string, string) {
-				isolatedProviderConfig("providers: [unterminated\n")
+				isolatedProviderConfig("FLOWSTATE_ANTHROPIC_AUTH=magic")
 			})
 		})
 		It("answers 502", func() { Expect(status).To(Equal(http.StatusBadGateway)) })

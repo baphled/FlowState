@@ -1,5 +1,5 @@
 // Package anthropic implements the Anthropic provider: two independent routes
-// chosen by providers.anthropic.auth_type. This file is the OAuth (subscription)
+// chosen by FLOWSTATE_ANTHROPIC_AUTH. This file is the OAuth (subscription)
 // route: it reaches a user's Claude subscription ONLY by running the user's own,
 // unmodified `claude` binary in headless print mode and reading its stream-json
 // output. The API-key route (apikey.go) sends the user's API key to the Messages

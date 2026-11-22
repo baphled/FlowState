@@ -133,21 +133,43 @@ go run github.com/onsi/ginkgo/v2/ginkgo --procs=2 --randomize-all --randomize-su
 
 ## Provider configuration
 
-Provider settings (`providers.<name>.host`, `api_key`, `plan`, `route`, `auth_type`) are read from
-`providers.yaml` in `$FLOWSTATE_CONFIG_DIR`, else in the user configuration directory's `flowstate`
-folder (`~/.config/flowstate` on Linux). Environment variables win over the file, and an absent file is
-the default configuration. The file is this CLI's own. `config.yaml` belongs to the older FlowState
-harness (on Linux it sits in the same directory), has a different schema, and is never read. A CLI
-configuration previously kept in `config.yaml` must be moved to `providers.yaml`: settings left behind are
-ignored without a warning, which can change the `anthropic` route (an `api_key` selection reverts to the
-subscription default) and the z.ai plan, host and so endpoint (they revert to the coding-plan defaults); only
-a missing z.ai key fails loudly. Session composition is separate: it comes from `flowstate.json` (ADR-005),
-which never holds credentials.
+Provider settings come from the environment only. The CLI reads no provider configuration file: session
+composition is `flowstate.json` (ADR-005), which never holds credentials, and secrets are never stored by the CLI.
+
+| Provider | Variable | Meaning | Default |
+|---|---|---|---|
+| `z.ai` (alias `zai`) | `ZAI_API_KEY` | API key; required, resolving fails naming it when unset | none |
+| `z.ai` | `ZAI_BASE_URL` | Endpoint base URL | the plan's endpoint |
+| `z.ai` | `ZAI_PLAN` | `coding` or `general` | `coding` when unset |
+| `z.ai` | `ZAI_CODING_ROUTE` | Coding-plan wire format, `openai` or `anthropic` | `openai`; `anthropic` when |
+| | | | `ZAI_BASE_URL` names `/api/anthropic` |
+| `anthropic` | `FLOWSTATE_ANTHROPIC_AUTH` | Route: `oauth` or `api_key`; another value is an error | `oauth` |
+| `anthropic` | `FLOWSTATE_CLAUDE_BIN` | `claude` binary for the `oauth` route | `claude` on `PATH` |
+| `anthropic` | `ANTHROPIC_API_KEY` | Key for the `api_key` route; required there | none |
+| `anthropic` | `ANTHROPIC_BASE_URL` | API base URL for the `api_key` route | `https://api.anthropic.com` |
+
+`ANTHROPIC_API_KEY` never selects the `api_key` route; only `FLOWSTATE_ANTHROPIC_AUTH=api_key` does, because users
+export that key for other tools and still want the subscription.
+
+### Migrating from `providers.yaml`
+
+Earlier builds read `providers.yaml` (in `$FLOWSTATE_CONFIG_DIR` or the user configuration directory's `flowstate`
+folder). It is no longer read, `config.yaml` and `FLOWSTATE_CONFIG_DIR` are ignored, and nothing warns about a
+leftover file. Move each setting to the variable above, then delete the file:
+
+- `providers.zai.api_key` becomes `ZAI_API_KEY`, `host` becomes `ZAI_BASE_URL`, `plan` becomes `ZAI_PLAN` and
+  `route` becomes `ZAI_CODING_ROUTE`.
+- `providers.anthropic.auth_type: api_key` becomes `FLOWSTATE_ANTHROPIC_AUTH=api_key` with `ANTHROPIC_API_KEY` (from
+  `api_key`) and optionally `ANTHROPIC_BASE_URL` (from `host`). Without the new variable the `anthropic` provider
+  uses the Claude subscription route, so a user who is not signed in with `claude` gets a sign-in error rather than
+  a charge; one who is signed in uses the subscription instead of the API.
+- A missing `ZAI_API_KEY` still fails loudly, but a stale `plan`, `host` or `route` is silently replaced by the
+  defaults (coding plan, the plan's endpoint) until its variable is set.
 
 ## Anthropic provider
 
 `internal/provider/anthropic` (registry name `anthropic`) is selected by
-`providers.anthropic.auth_type`: `oauth` (the default) or `api_key`.
+`FLOWSTATE_ANTHROPIC_AUTH`: `oauth` (the default) or `api_key`.
 The OAuth route reaches a user's Claude subscription through their own Claude Code sign-in,
 only by running the user's own unmodified `claude` binary in headless
 print mode, prompt on stdin, and parsing its stream-json output. FlowState never reads,
@@ -159,12 +181,11 @@ resell a subscription but does not enforce single-user use: `flowstate serve` ru
 for anyone who can reach it, so keep the loopback bind and set `FLOWSTATE_SERVE_TOKEN`; letting
 others reach it would route their requests through the owner's plan, which the policy forbids.
 
-The `api_key` route (`anthropic.APIKey`) is ordinary Anthropic API billing, independent of the
-subscription route. It sends the key (`ANTHROPIC_API_KEY`, else `providers.anthropic.api_key`) as
-`x-api-key` to `<base>/v1/messages` (`ANTHROPIC_BASE_URL`, else `providers.anthropic.host`, else
-`https://api.anthropic.com`), reusing the Messages wire client in `internal/provider/zai`. It never reads
-the Claude Code sign-in or runs `claude`. It supports text chat and streaming, system messages and
-`MaxTokens`; structured tools are refused, a truncated stream is an error, and nothing is retried.
+The `api_key` route (`anthropic.APIKey`) is ordinary Anthropic API billing, independent of the subscription route. It
+sends the key (`ANTHROPIC_API_KEY`) as `x-api-key` to `<base>/v1/messages` (`ANTHROPIC_BASE_URL`, else
+`https://api.anthropic.com`), reusing the Messages wire client in `internal/provider/zai`. It never reads the Claude
+Code sign-in or runs `claude`. It supports text chat and streaming, system messages and `MaxTokens`; structured tools
+are refused, a truncated stream is an error, and nothing is retried.
 See ADR-008.
 
 ## Session tool catalog

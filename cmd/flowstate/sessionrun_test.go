@@ -17,7 +17,6 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/app"
-	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/zai"
 	"github.com/baphled/flowstate/internal/store"
@@ -114,20 +113,15 @@ func stderrMessage(out string) string {
 	return ec.Message
 }
 
-// isolatedProviderConfig points the config dir at a fresh directory
-// holding doc (none when empty) and clears the zai key, so no real
-// provider configuration or credential is reachable.
-func isolatedProviderConfig(doc string) {
-	dir := GinkgoT().TempDir()
-	GinkgoT().Setenv("FLOWSTATE_CONFIG_DIR", dir)
-	GinkgoT().Setenv("XDG_CONFIG_HOME", dir)
-	GinkgoT().Setenv("ZAI_API_KEY", "")
-	GinkgoT().Setenv("ANTHROPIC_API_KEY", "")
-	if doc == "" {
-		return
+// isolatedProviderConfig clears every ambient provider setting, so no live
+// provider or credential is reachable, then applies env (name=value pairs).
+func isolatedProviderConfig(env ...string) {
+	for _, name := range ambientProviderVars {
+		GinkgoT().Setenv(name, "")
 	}
-	if err := os.WriteFile(filepath.Join(dir, config.FileName), []byte(doc), 0o600); err != nil {
-		panic(err)
+	for _, kv := range env {
+		name, value, _ := strings.Cut(kv, "=")
+		GinkgoT().Setenv(name, value)
 	}
 }
 
@@ -942,7 +936,7 @@ var _ = Describe("Session run failure classification", func() {
 		var run result
 		BeforeEach(func() {
 			id := newSession("z.ai")
-			isolatedProviderConfig("")
+			isolatedProviderConfig()
 			run = runCLIRun(id)
 		})
 		It("exits 3", func() { Expect(run.exit).To(Equal(3)) })
@@ -952,11 +946,11 @@ var _ = Describe("Session run failure classification", func() {
 		})
 	})
 
-	Context("a malformed providers.yaml on the anthropic route", func() {
+	Context("an unknown FLOWSTATE_ANTHROPIC_AUTH on the anthropic route", func() {
 		var run result
 		BeforeEach(func() {
 			id := newSession("anthropic")
-			isolatedProviderConfig("providers: [unterminated\n")
+			isolatedProviderConfig("FLOWSTATE_ANTHROPIC_AUTH=magic")
 			run = runCLIRun(id)
 		})
 		It("exits 3", func() { Expect(run.exit).To(Equal(3)) })

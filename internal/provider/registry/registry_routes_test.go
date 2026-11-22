@@ -4,14 +4,11 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"sync/atomic"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/registry"
 	"github.com/baphled/flowstate/internal/provider/zai"
@@ -21,9 +18,8 @@ func tctx() context.Context { return context.Background() }
 
 func resolveForRoute() (provider.Provider, error) { return registry.Resolve("z.ai") }
 
-var _ = Describe("zai coding route precedence", func() {
+var _ = Describe("zai coding route selection", func() {
 	BeforeEach(func() {
-		GinkgoT().Setenv("FLOWSTATE_CONFIG_DIR", GinkgoT().TempDir())
 		GinkgoT().Setenv("ZAI_API_KEY", "k")
 		GinkgoT().Setenv("ZAI_BASE_URL", "")
 		GinkgoT().Setenv("ZAI_PLAN", "")
@@ -77,49 +73,33 @@ var _ = Describe("zai coding route precedence", func() {
 		Expect(path.Load()).To(Equal("POST /custom/chat/completions"))
 	})
 
-	It("infers the anthropic route from a config host naming /api/anthropic", func() {
+	It("infers the anthropic route from a ZAI_BASE_URL naming /api/anthropic", func() {
 		srv, path := routeServer()
 		defer srv.Close()
 		zai.TestHookSetCodingBaseURL("https://zai-invalid.example.invalid")
-		dir := GinkgoT().TempDir()
-		if err := os.WriteFile(filepath.Join(dir, config.FileName), []byte(
-			"providers:\n  zai:\n    plan: coding\n    host: "+srv.URL+"/api/anthropic\n"), 0o600); err != nil {
-			panic(err)
-		}
-		GinkgoT().Setenv("FLOWSTATE_CONFIG_DIR", dir)
+		GinkgoT().Setenv("ZAI_PLAN", "coding")
+		GinkgoT().Setenv("ZAI_BASE_URL", srv.URL+"/api/anthropic")
 		p, err := resolveForRoute()
 		Expect(err).NotTo(HaveOccurred())
 		_, _ = p.Chat(tctx(), &provider.ChatRequest{})
 		Expect(path.Load()).To(Equal("POST /api/anthropic/v1/messages"))
 	})
 
-	writeCfg := func(body string) {
-		dir := GinkgoT().TempDir()
-		if err := os.WriteFile(filepath.Join(dir, config.FileName), []byte(body), 0o600); err != nil {
-			panic(err)
-		}
-		GinkgoT().Setenv("FLOWSTATE_CONFIG_DIR", dir)
-	}
-
-	It("lets ZAI_CODING_ROUTE win over providers.zai.route", func() {
+	It("lets ZAI_CODING_ROUTE=openai win over the base-URL inference", func() {
 		srv, path := routeServer()
 		defer srv.Close()
-		zai.TestHookSetCodingBaseURL(srv.URL + "/api/coding/paas/v4")
-		zai.TestHookSetAnthropicBaseURL(srv.URL + "/api/anthropic")
-		writeCfg("providers:\n  zai:\n    plan: coding\n    route: anthropic\n")
+		GinkgoT().Setenv("ZAI_BASE_URL", srv.URL+"/api/anthropic")
 		GinkgoT().Setenv("ZAI_CODING_ROUTE", "openai")
 		p, err := resolveForRoute()
 		Expect(err).NotTo(HaveOccurred())
 		_, err = p.Chat(tctx(), &provider.ChatRequest{})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(path.Load()).To(Equal("POST /api/coding/paas/v4/chat/completions"))
+		Expect(path.Load()).To(Equal("POST /api/anthropic/chat/completions"))
 	})
 
-	It("lets ZAI_BASE_URL win over the config host when inferring the route", func() {
+	It("does not infer the anthropic route from a base URL that does not name it", func() {
 		srv, path := routeServer()
 		defer srv.Close()
-		zai.TestHookSetCodingBaseURL("https://zai-invalid.example.invalid")
-		writeCfg("providers:\n  zai:\n    plan: coding\n    host: " + srv.URL + "/api/anthropic\n")
 		GinkgoT().Setenv("ZAI_BASE_URL", srv.URL+"/plain")
 		p, err := resolveForRoute()
 		Expect(err).NotTo(HaveOccurred())
