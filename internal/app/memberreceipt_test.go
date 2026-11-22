@@ -1,6 +1,7 @@
 package app_test
 
 import (
+	"context"
 	"path/filepath"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -23,14 +24,14 @@ var _ = Describe("SwarmEmitMemberReceipt", func() {
 
 	It("persists a member receipt for an admitted packet", func() {
 		dbPath := filepath.Join(GinkgoT().TempDir(), "run.db")
-		rec, err := app.SwarmEmitMemberReceipt(dbPath, "demo.swarm", []string{"p1"}, claim)
+		rec, err := app.SwarmEmitMemberReceipt(context.Background(), dbPath, "demo.swarm", []string{"p1"}, claim)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(rec.Identity.PacketID).To(Equal("p1"))
 	})
 
 	It("stores the member receipt row with its outcome and evidence digest", func() {
 		dbPath := filepath.Join(GinkgoT().TempDir(), "run.db")
-		rec, err := app.SwarmEmitMemberReceipt(dbPath, "demo.swarm", []string{"p1"}, claim)
+		rec, err := app.SwarmEmitMemberReceipt(context.Background(), dbPath, "demo.swarm", []string{"p1"}, claim)
 		if err != nil {
 			panic(err)
 		}
@@ -42,10 +43,21 @@ var _ = Describe("SwarmEmitMemberReceipt", func() {
 	It("stores a failing member outcome as fail", func() {
 		claim.GateOutcome = "fail"
 		dbPath := filepath.Join(GinkgoT().TempDir(), "run.db")
-		if _, err := app.SwarmEmitMemberReceipt(dbPath, "demo.swarm", []string{"p1"}, claim); err != nil {
+		if _, err := app.SwarmEmitMemberReceipt(context.Background(), dbPath, "demo.swarm", []string{"p1"}, claim); err != nil {
 			panic(err)
 		}
 		row := receiptRow(dbPath, "SELECT gate_outcome FROM swarm_member_receipts", 1)
 		Expect(row).To(Equal([]string{"fail"}))
+	})
+
+	It("records a finished packet's receipt after the caller context is cancelled", func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		dbPath := filepath.Join(GinkgoT().TempDir(), "run.db")
+		if _, err := app.SwarmEmitMemberReceipt(ctx, dbPath, "demo.swarm", []string{"p1"}, claim); err != nil {
+			panic(err)
+		}
+		row := receiptRow(dbPath, "SELECT packet_id FROM swarm_member_receipts", 1)
+		Expect(row).To(Equal([]string{"p1"}))
 	})
 })
