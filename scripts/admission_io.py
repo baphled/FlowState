@@ -10,6 +10,7 @@ from scripts.admission_metadata import (AdmissionError, IN_PROGRESS, REFERENCE, 
                                         refusal_state, validate_record, event_pr_number)
 from scripts.admission_review import agent_review_reference, validate_agent_review
 from scripts.admission_candidate import verify_candidate, verify_files, candidate_snapshot, verify_required_checks
+from scripts.admission_trees import TreeModes
 from scripts.admission_checks import check_runs_page
 from scripts.admission_authentication import authenticate_review
 from scripts.admission_transport import open_no_redirect, strict_json, response_json
@@ -24,6 +25,7 @@ class GitHub:
         self.base = "https://api.github.com/repos/" + repository
         self.repository = repository
         self.token = token
+        self.trees = TreeModes(lambda method, path: self.request(method, path))
     def request(self, method, path, body=None):
         if method != "GET" or body is not None:
             raise AdmissionError("GitHub reader permits GET requests only")
@@ -52,15 +54,21 @@ class GitHub:
                 return items
         raise AdmissionError("GitHub pagination exceeds safety bound")
     def commit_files(self, sha):
-        files = []
+        """Return the commit's changed-file rows after proving each is a regular blob at `sha`.
+
+        Mirrors the local reader, which also rejects irregular modes while reading. The modes come
+        from the commit's own tree (sha taken from the verified `/commits/{sha}` record), never a ref.
+        """
+        files, records = [], []
         for page in range(1, 11):
             record = self.request("GET", f"/commits/{sha}?per_page=100&page={page}")
             chunk = record.get("files")
             if record.get("sha") != sha or not isinstance(chunk, list):
                 raise AdmissionError("incomplete GitHub commit file evidence")
+            records.append(record)
             files.extend(chunk)
             if len(chunk) < 100:
-                return files
+                return self.trees.checked(sha, files, records[0])
         raise AdmissionError("GitHub commit files exceed page bound")
     def blob(self, sha):
         record = self.request("GET", "/git/blobs/" + sha)
