@@ -307,9 +307,14 @@ var _ = Describe("RunSwarm", func() {
 			res      app.SwarmExecResult
 			finished string
 			share    int64
+			// settledFirst settles the children's reservations as the
+			// first completes, as a normal completion does; settledBefore
+			// is the reservation row and parent pool at that moment.
+			settledFirst  bool
+			settledBefore settledView
 		)
 
-		BeforeEach(func() { share = 0 })
+		BeforeEach(func() { share, settledFirst = 0, false })
 
 		// runCancelled cancels the run during its first gate, with the
 		// sigint cause; finishFirst completes one child beforehand.
@@ -328,6 +333,19 @@ var _ = Describe("RunSwarm", func() {
 					finished = childIDsOf(ctx, st, parent.ID)[0]
 					if err := st.UpdateSessionStatus(ctx, finished, "completed"); err != nil {
 						panic(err)
+					}
+					if settledFirst {
+						if err := st.ChargeReservation(ctx, finished, 3); err != nil {
+							panic(err)
+						}
+						// Every child's grant is settled, so the pool the run ends
+						// with is only what the cancelled run itself could change.
+						for _, id := range childIDsOf(ctx, st, parent.ID) {
+							if err := st.SetReservationCharged(ctx, id); err != nil {
+								panic(err)
+							}
+						}
+						settledBefore = settledViewOf(ctx, st, parent.ID, finished)
 					}
 				}
 				cancel(&app.CancelCause{Reason: "sigint"})
@@ -396,6 +414,22 @@ var _ = Describe("RunSwarm", func() {
 					panic(err)
 				}
 				Expect(got.Status).To(Equal("completed"))
+			})
+		})
+
+		Context("and one had completed and already settled its reservation", func() {
+			BeforeEach(func() {
+				share, settledFirst = 10, true
+				runCancelled(true)
+			})
+
+			It("leaves its reservation row and the parent's pool as they were", func() {
+				Expect(settledViewOf(ctx, st, parent.ID, finished)).To(Equal(settledBefore))
+			})
+
+			It("had settled the reservation by charging the consumed tokens", func() {
+				Expect(settledBefore.Reservation).To(
+					And(HaveField("Status", "charged"), HaveField("Consumed", int64(3))))
 			})
 		})
 
@@ -610,6 +644,63 @@ var _ = Describe("RunSwarm", func() {
 				session.TypeSessionCancelled + `:{"reason":"swarm_aborted","status":"cancelled"}`,
 				session.TypeSessionCancelled + `:{"reason":"swarm_aborted","status":"cancelled"}`,
 			}))
+		})
+	})
+
+	Context("when the run is cancelled and a child's reservation cannot be settled", func() {
+		var (
+			res app.SwarmExecResult
+			err error
+		)
+
+		BeforeEach(func() {
+			path := filepath.Join(GinkgoT().TempDir(), "settle.db")
+			st, oerr := store.Open(path)
+			if oerr != nil {
+				panic(oerr)
+			}
+			DeferCleanup(func() { _ = st.Close() })
+			parent := swarmExecParent(ctx, st)
+			if oerr = st.SetBudgetPool(ctx, parent.ID, 100); oerr != nil {
+				panic(oerr)
+			}
+			cctx, cancel := context.WithCancelCause(ctx)
+			defer cancel(nil)
+			gates := swarm.NewGateRunnerWith(func(context.Context, string, []string) error {
+				db, derr := sql.Open("sqlite", "file:"+path)
+				if derr != nil {
+					panic(derr)
+				}
+				defer func() { _ = db.Close() }()
+				if _, derr = db.Exec(`CREATE TRIGGER no_settle BEFORE UPDATE ON budget_reservations ` +
+					`BEGIN SELECT RAISE(ABORT, 'settle blocked'); END`); derr != nil {
+					panic(derr)
+				}
+				cancel(&app.CancelCause{Reason: "sigint"})
+				return nil
+			})
+			m := swarmExecManifest()
+			m.Gates = append(m.Gates, swarm.Gate{Name: "second", Command: "second"})
+			res, err = app.RunSwarm(cctx, st, parent, m, 10, admitAll{}, gates)
+			if !errors.Is(err, app.ErrSessionCancelled) || len(res.Children) != 2 {
+				panic(fmt.Sprintf("the run did not cancel after creating its children: %v", err))
+			}
+		})
+
+		It("reports the settle failure as a SettleError naming a child", func() {
+			var se *app.SettleError
+			if !errors.As(err, &se) {
+				panic("no SettleError in the cancelled run's error")
+			}
+			Expect(se.SessionID).To(Equal(res.Children[0].Session.ID))
+		})
+
+		It("keeps ErrReservationSettle in the chain", func() {
+			Expect(errors.Is(err, app.ErrReservationSettle)).To(BeTrue())
+		})
+
+		It("keeps the interrupt class", func() {
+			Expect(app.ErrorCode(err)).To(Equal(app.CodeSessionCancelled))
 		})
 	})
 
@@ -847,6 +938,26 @@ func reservationStatuses(ctx context.Context, st *store.Store, children []app.Sw
 		out = append(out, r.Status)
 	}
 	return out
+}
+
+// settledView is a child's reservation row with its parent's budget
+// snapshot, compared whole before and after a cancelled run.
+type settledView struct {
+	Reservation store.BudgetReservation
+	Snapshot    store.BudgetSnapshot
+}
+
+// settledViewOf reads the child's reservation and the parent's snapshot.
+func settledViewOf(ctx context.Context, st *store.Store, parentID, childID string) settledView {
+	r, err := st.ReservationFor(ctx, childID)
+	if err != nil {
+		panic(err)
+	}
+	snap, err := st.BudgetSnapshot(ctx, parentID)
+	if err != nil {
+		panic(err)
+	}
+	return settledView{r, snap}
 }
 
 // reservationStatusOf reads one session's reservation status.

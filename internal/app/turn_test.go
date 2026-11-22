@@ -211,6 +211,26 @@ var _ = Describe("cancelOnInterrupt and the budget reservation", func() {
 		It("leaves the session cancelled", func() {
 			Expect(statusOf(st, child.ID)).To(Equal("cancelled"))
 		})
+
+		It("carries the session id structurally", func() {
+			var se *SettleError
+			if !errors.As(err, &se) {
+				panic("the settle failure is not a SettleError")
+			}
+			Expect(se.SessionID).To(Equal(child.ID))
+		})
+
+		It("carries the settle cause structurally", func() {
+			var se *SettleError
+			if !errors.As(err, &se) {
+				panic("the settle failure is not a SettleError")
+			}
+			Expect(se.SettleCause()).To(MatchError(ContainSubstring("settle blocked")))
+		})
+
+		It("is still the cancelled class", func() {
+			Expect(errors.Is(err, ErrSessionCancelled)).To(BeTrue())
+		})
 	})
 })
 
