@@ -1,5 +1,7 @@
 package swarm
 
+import "context"
+
 // MemberIdentity names one admitted member of a configured swarm:
 // the packet id plus the run (manifest) it belongs to.
 type MemberIdentity struct {
@@ -40,8 +42,10 @@ type MemberAuthorizer interface {
 
 // MemberReceiptSink persists member receipts.
 type MemberReceiptSink interface {
-	// RecordMemberReceipt stores one emitted receipt.
-	RecordMemberReceipt(rec MemberReceipt) error
+	// RecordMemberReceipt stores one emitted receipt. EmitMemberReceipt
+	// passes a context detached from the caller's cancellation but
+	// carrying its values, so the write completes for a finished packet.
+	RecordMemberReceipt(ctx context.Context, rec MemberReceipt) error
 }
 
 // admissionAuthorizer adapts one run's admission result into a

@@ -1,6 +1,7 @@
 package swarm
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -56,7 +57,13 @@ func (a *admissionAuthorizer) AuthorizeMember(claim MemberClaim) error {
 // EmitMemberReceipt validates and authorises one member claim and
 // hands the durable receipt to the sink. Any admitted member may
 // emit; the authorizer is the run's admission record.
-func EmitMemberReceipt(auth MemberAuthorizer, claim MemberClaim, sink MemberReceiptSink) (MemberReceipt, error) {
+//
+// A claim describes a packet that has already finished, so its receipt
+// must survive the caller's cancellation: the sink receives
+// context.WithoutCancel(ctx), which keeps ctx's values but drops its
+// cancellation and deadline. Validation and authorisation still fail
+// first, so nothing is recorded for a claim that is not admitted.
+func EmitMemberReceipt(ctx context.Context, auth MemberAuthorizer, claim MemberClaim, sink MemberReceiptSink) (MemberReceipt, error) {
 	if err := claim.Validate(); err != nil {
 		return MemberReceipt{}, err
 	}
@@ -72,7 +79,7 @@ func EmitMemberReceipt(auth MemberAuthorizer, claim MemberClaim, sink MemberRece
 		EvidenceSHA256: claim.EvidenceSHA256(),
 	}
 	if sink != nil {
-		if err := sink.RecordMemberReceipt(rec); err != nil {
+		if err := sink.RecordMemberReceipt(context.WithoutCancel(ctx), rec); err != nil {
 			return MemberReceipt{}, err
 		}
 	}
