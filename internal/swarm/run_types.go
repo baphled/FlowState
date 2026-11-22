@@ -1,5 +1,7 @@
 package swarm
 
+import "context"
+
 // RunResult is the outcome of one configured-swarm run: which
 // packets were admitted, the per-gate outcomes and whether every
 // gate accepted the run.
@@ -16,10 +18,10 @@ type RunResult struct {
 // to; nil events are ignored.
 type RunEvents interface {
 	// PacketAdmitted reports one packet admitted to the run.
-	PacketAdmitted(p Packet)
+	PacketAdmitted(ctx context.Context, p Packet)
 	// PacketRejected reports one packet refused admission with its
 	// reason.
-	PacketRejected(id, reason string)
+	PacketRejected(ctx context.Context, id, reason string)
 }
 
 // RunAdmitter is the admission seam the run loop drives; the
@@ -33,9 +35,9 @@ type RunAdmitter interface {
 // events and gate outcomes persisted beyond the process lifetime.
 type RunReceipts interface {
 	// RecordAdmission persists one admission decision.
-	RecordAdmission(runID string, p Packet, admitted bool, reason string) error
+	RecordAdmission(ctx context.Context, runID string, p Packet, admitted bool, reason string) error
 	// RecordGates persists the aggregated gate decision of one run.
-	RecordGates(runID string, d GatesDecision) error
+	RecordGates(ctx context.Context, runID string, d GatesDecision) error
 }
 
 // manifestDoc mirrors Manifest with explicit yaml field names; the

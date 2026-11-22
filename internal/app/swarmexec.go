@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/baphled/flowstate/internal/store"
@@ -48,9 +49,12 @@ func RunSwarm(ctx context.Context, st *Store, parent *store.Session, m swarm.Man
 	children, reservations, err := swarmChildren(ctx, st, parent, m, budgetPerChild)
 	res := SwarmExecResult{Children: children, Reservations: reservations, Manifest: m}
 	if err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return res, mapSwarmRunError(ctx.Err())
+		}
 		return res, err
 	}
-	run, err := swarmRunDurable(st, m, admitter, gates)
+	run, err := swarmRunDurable(ctx, st, m, admitter, gates)
 	res.Admitted, res.Gates = run.Admitted, run.Gates
 	if err != nil {
 		return res, err
@@ -116,17 +120,32 @@ func attributeSwarmChild(ctx context.Context, st *Store, parentID, childID, pack
 // swarmRunDurable drives the admission-and-gate run with durable
 // receipts pinned to the executed manifest's digest, landing the run
 // record and its packet rows in the store.
-func swarmRunDurable(st *Store, m swarm.Manifest,
+func swarmRunDurable(ctx context.Context, st *Store, m swarm.Manifest,
 	admitter swarm.RunAdmitter, gates *swarm.GateRunner) (swarm.RunResult, error) {
 	sha, err := swarmManifestSHA(m)
 	if err != nil {
 		return swarm.RunResult{}, err
 	}
-	run, rerr := swarm.Run(m, admitter, gates, nil, swarm.NewDurableReceipts(st, sha))
+	run, rerr := swarm.Run(ctx, m, admitter, gates, nil, swarm.NewDurableReceipts(st, sha))
 	if rerr != nil {
-		return run, fmt.Errorf("app: run swarm: %w", rerr)
+		return run, mapSwarmRunError(rerr)
 	}
 	return run, nil
+}
+
+// mapSwarmRunError is the one place a swarm run failure becomes an app
+// error: a cancelled run maps onto ErrSessionCancelled (the CLI's
+// exit-130 interrupt contract) with the cause kept; any other failure
+// is wrapped with the run-swarm prefix. Both RunSwarm and
+// SwarmRunManifest use it.
+//
+// Only context.Canceled maps: no CLI or server path puts a deadline on a
+// swarm run today, so DeadlineExceeded keeps the generic wrapping.
+func mapSwarmRunError(err error) error {
+	if errors.Is(err, context.Canceled) {
+		return fmt.Errorf("app: run swarm: %w: %w", ErrSessionCancelled, err)
+	}
+	return fmt.Errorf("app: run swarm: %w", err)
 }
 
 // swarmManifestSHA pins the executed manifest content as the SHA-256

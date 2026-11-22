@@ -259,6 +259,61 @@ var _ = Describe("RunSwarm", func() {
 			}{true, []string{"p1", "p2"}, store.SwarmRunOutcomeFail}))
 	})
 
+	Context("when the caller cancels during a gate", func() {
+		var (
+			st  *store.Store
+			err error
+		)
+
+		BeforeEach(func() {
+			st = openSwarmExecStore()
+			parent := swarmExecParent(ctx, st)
+			cctx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			gates := swarm.NewGateRunnerWith(func(context.Context, string, []string) error {
+				cancel()
+				return nil
+			})
+			m := swarmExecManifest()
+			m.Gates = append(m.Gates, swarm.Gate{Name: "second", Command: "second"})
+			_, err = app.RunSwarm(cctx, st, parent, m, 0, admitAll{}, gates)
+		})
+
+		It("maps the cancellation onto the interrupt error", func() {
+			Expect(err).To(MatchError(app.ErrSessionCancelled))
+		})
+
+		It("records the run as failed", func() {
+			runs, listErr := st.SwarmRunsFor(ctx, "demo.swarm")
+			if listErr != nil || len(runs) != 1 {
+				panic("the cancelled run persisted no single record")
+			}
+			Expect(runs[0].Outcome).To(Equal(store.SwarmRunOutcomeFail))
+		})
+	})
+
+	It("maps a one-gate run cancelled mid-gate onto the interrupt error", func() {
+		st := openSwarmExecStore()
+		parent := swarmExecParent(ctx, st)
+		cctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		gates := swarm.NewGateRunnerWith(func(context.Context, string, []string) error {
+			cancel()
+			return errors.New("signal: killed")
+		})
+		_, err := app.RunSwarm(cctx, st, parent, swarmExecManifest(), 0, admitAll{}, gates)
+		Expect(err).To(MatchError(app.ErrSessionCancelled))
+	})
+
+	It("maps a cancellation during child creation onto the interrupt error", func() {
+		st := openSwarmExecStore()
+		parent := swarmExecParent(ctx, st)
+		cctx, cancel := context.WithCancel(ctx)
+		cancel()
+		_, err := app.RunSwarm(cctx, st, parent, swarmExecManifest(), 0, admitAll{}, swarm.NewGateRunner())
+		Expect(err).To(MatchError(app.ErrSessionCancelled))
+	})
+
 	It("reports admission rejection without discarding children", func() {
 		st := openSwarmExecStore()
 		parent := swarmExecParent(ctx, st)

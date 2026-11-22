@@ -42,4 +42,27 @@ var _ = Describe("SwarmRun", func() {
 		_, runErr := app.SwarmRunManifest(context.Background(), dbPath, bad)
 		Expect(runErr).To(MatchError(ContainSubstring("gates failed")))
 	})
+
+	Context("when the caller's context is cancelled", func() {
+		var runErr error
+
+		BeforeEach(func() {
+			cctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			dbPath := filepath.Join(GinkgoT().TempDir(), "run.db")
+			_, runErr = app.SwarmRunManifest(cctx, dbPath, manifest)
+		})
+
+		It("stops the run with an error", func() {
+			Expect(runErr).To(HaveOccurred())
+		})
+
+		It("maps the cancellation onto the interrupt error", func() {
+			Expect(runErr).To(MatchError(app.ErrSessionCancelled))
+		})
+
+		It("keeps the cancellation cause", func() {
+			Expect(runErr).To(MatchError(context.Canceled))
+		})
+	})
 })
