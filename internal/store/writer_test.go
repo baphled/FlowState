@@ -8,6 +8,77 @@ import (
 	. "github.com/onsi/gomega"
 )
 
+var _ = Describe("EventWriter sequence accounting across a rolled-back transaction", func() {
+	var s *Store
+	var w *EventWriter
+	var ctx context.Context
+
+	// failStatusUpdate makes every session status update abort, so Pause
+	// and Resume fail after their event insert and roll back.
+	failStatusUpdate := func() {
+		mustRawExec(s, `CREATE TRIGGER fail_status BEFORE UPDATE ON sessions
+			BEGIN SELECT RAISE(ABORT, 'forced status failure'); END`)
+	}
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		s = newTestStore()
+		sid := mustSession(s)
+		var err error
+		w, err = s.NewEventWriter(ctx, sid)
+		if err != nil {
+			panic(err)
+		}
+		DeferCleanup(func() { _ = w.Close() })
+	})
+
+	It("leaves the writer where it was when Pause rolls back", func() {
+		failStatusUpdate()
+		if err := w.Pause(ctx, PauseInfo{Reason: "budget"}); err == nil {
+			panic("pause unexpectedly succeeded")
+		}
+		Expect(w.NextSeq()).To(Equal(int64(0)))
+	})
+
+	It("assigns the next append the first free seq after a rolled-back Pause", func() {
+		failStatusUpdate()
+		if err := w.Pause(ctx, PauseInfo{Reason: "budget"}); err == nil {
+			panic("pause unexpectedly succeeded")
+		}
+		seq, err := w.Append(ctx, "user", "after", nil)
+		if err != nil {
+			panic(err)
+		}
+		Expect(seq).To(Equal(int64(0)))
+	})
+
+	It("leaves the writer where it was when Resume rolls back", func() {
+		if err := w.Pause(ctx, PauseInfo{Reason: "budget"}); err != nil {
+			panic(err)
+		}
+		failStatusUpdate()
+		if err := w.Resume(ctx); err == nil {
+			panic("resume unexpectedly succeeded")
+		}
+		Expect(w.NextSeq()).To(Equal(int64(1)))
+	})
+
+	It("assigns the next append the first free seq after a rolled-back Resume", func() {
+		if err := w.Pause(ctx, PauseInfo{Reason: "budget"}); err != nil {
+			panic(err)
+		}
+		failStatusUpdate()
+		if err := w.Resume(ctx); err == nil {
+			panic("resume unexpectedly succeeded")
+		}
+		seq, err := w.Append(ctx, "user", "after", nil)
+		if err != nil {
+			panic(err)
+		}
+		Expect(seq).To(Equal(int64(1)))
+	})
+})
+
 var _ = Describe("CreateChildSession", func() {
 	var ctx context.Context
 	BeforeEach(func() { ctx = context.Background() })
