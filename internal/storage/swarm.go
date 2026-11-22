@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
@@ -38,7 +39,7 @@ func swarmTimestamp() string {
 }
 
 // RecordAdmission persists an admission decision through a mapped model.
-func (r *SwarmReceipts) RecordAdmission(runID string, p swarm.Packet, admitted bool, reason string) error {
+func (r *SwarmReceipts) RecordAdmission(ctx context.Context, runID string, p swarm.Packet, admitted bool, reason string) error {
 	outcome := "reject"
 	if admitted {
 		outcome = "admit"
@@ -47,15 +48,15 @@ func (r *SwarmReceipts) RecordAdmission(runID string, p swarm.Packet, admitted b
 		RunID: runID, PacketID: p.ID, Outcome: outcome,
 		Reason: reason, RecordedAtUTC: swarmTimestamp(),
 	}
-	if err := r.db.Create(row).Error; err != nil {
+	if err := r.db.WithContext(ctx).Create(row).Error; err != nil {
 		return fmt.Errorf("storage: record admission: %w", err)
 	}
 	return nil
 }
 
 // RecordGates persists gate outcomes atomically through GORM.
-func (r *SwarmReceipts) RecordGates(runID string, d swarm.GatesDecision) error {
-	return r.db.Transaction(func(tx *gorm.DB) error {
+func (r *SwarmReceipts) RecordGates(ctx context.Context, runID string, d swarm.GatesDecision) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, outcome := range d.Outcomes {
 			state := "fail"
 			if outcome.Passed {

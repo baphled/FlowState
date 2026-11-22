@@ -21,7 +21,7 @@ func NewDurableReceipts(sink RunSink, manifestSHA256 string) *DurableReceipts {
 // RecordAdmission buffers one admission decision; rows land in the
 // store only when the complete run flushes at RecordGates, so a run
 // that never reaches its gate decision leaves no partial record.
-func (d *DurableReceipts) RecordAdmission(_ string, p Packet, admitted bool, reason string) error {
+func (d *DurableReceipts) RecordAdmission(_ context.Context, _ string, p Packet, admitted bool, reason string) error {
 	if d.sink == nil {
 		return ErrDurableSinkMissing
 	}
@@ -33,8 +33,10 @@ func (d *DurableReceipts) RecordAdmission(_ string, p Packet, admitted bool, rea
 
 // RecordGates flushes the buffered run through the store: the gate
 // decision becomes the run outcome and every buffered admission
-// becomes one packet row.
-func (d *DurableReceipts) RecordGates(runID string, decision GatesDecision) error {
+// becomes one packet row. A run that was cancelled before every gate
+// ran is not accepted, so it lands with the existing fail outcome;
+// the store write honours ctx, which Run detaches from cancellation.
+func (d *DurableReceipts) RecordGates(ctx context.Context, runID string, decision GatesDecision) error {
 	if d.sink == nil {
 		return ErrDurableSinkMissing
 	}
@@ -45,7 +47,7 @@ func (d *DurableReceipts) RecordGates(runID string, decision GatesDecision) erro
 	run := store.SwarmRun{
 		Name: runID, ManifestSHA256: d.manifestSHA, Outcome: outcome, Packets: d.decisions,
 	}
-	if _, err := d.sink.RecordSwarmRun(context.Background(), run); err != nil {
+	if _, err := d.sink.RecordSwarmRun(ctx, run); err != nil {
 		return fmt.Errorf("record swarm run %s: %w", runID, err)
 	}
 	d.decisions = nil
