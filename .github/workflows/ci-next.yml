@@ -317,12 +317,18 @@ jobs:
         with:
           version: v2.11.3
 
+      - name: Fetch the protected-base contract linter configuration
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: python3 -B scripts/base_checkers.py config --base "$BASE_SHA" --dest "$RUNNER_TEMP/golangci-contract-base.yml"
+
       - name: Enforce modularity and API documentation
         if: github.event_name == 'pull_request'
         uses: golangci/golangci-lint-action@4afd733a84b1f43292c63897423277bb7f4313a9 # v8
         with:
           version: v2.11.3
-          args: --config .golangci-contract.yml --new-from-rev=${{ github.event.pull_request.base.sha }} --whole-files
+          args: --config ${{ runner.temp }}/golangci-contract-base.yml --new-from-rev=${{ github.event.pull_request.base.sha }} --whole-files
 
   test:
     name: Test (${{ matrix.os }})

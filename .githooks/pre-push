@@ -28,9 +28,9 @@ files=$(python3 -B "$selector" --policy "$policy" --title "$title" --branch "$br
 export FLOWSTATE_PR_MAX_FILES="$files"
 python3 -B scripts/pr_size.py --base "$BASE" --head "$HEAD"
 
-python3 -B scripts/check_code_contract.py --base "$BASE"
-python3 -B scripts/check_test_contract.py --base "$BASE"
-python3 -B -m scripts.check_python_contract --base "$BASE"
+python3 -B scripts/base_checkers.py run --base "$BASE" -- python3 -B scripts/check_code_contract.py --base "$BASE"
+python3 -B scripts/base_checkers.py run --base "$BASE" -- python3 -B scripts/check_test_contract.py --base "$BASE"
+python3 -B scripts/base_checkers.py run --base "$BASE" -- python3 -B -m scripts.check_python_contract --base "$BASE"
 # Subject policy on every pushed commit (commit-msg validates locally
 # created commits; this also covers amended or transplanted histories).
 git log --format=%s "$BASE..$HEAD" | while IFS= read -r subject; do

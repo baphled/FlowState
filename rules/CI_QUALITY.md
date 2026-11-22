@@ -59,6 +59,69 @@ python3 -B -m unittest discover -s scripts/tests -p test_required_build.py -v
 This rule cannot change server-side protection settings. Verify the
 effective GitHub ruleset and required context names independently.
 
+## Contract checkers come from the base
+
+A pull request must not be able to weaken the checks that judge it. The contract
+checkers therefore run the code and configuration of the **base commit** against
+the pull request's committed tree. `scripts/base_checkers.py` materialises these
+exact paths from `BASE_SHA` into a private temporary directory and runs the
+checker there, with the repository's git database so it still reads the candidate
+`HEAD`:
+
+- `go.mod`, `go.sum` (the module the Go checkers are built in);
+- `scripts/check_code_contract.py`, `scripts/check_test_contract.py`,
+  `scripts/check_python_contract.py`;
+- their imports `scripts/contract_sources.py`, `scripts/python_contract_ast.py`,
+  `scripts/test_layout.py`;
+- everything under `scripts/code-contract/` and `scripts/test-contract/`;
+- `.golangci-contract.yml`, exported with `base_checkers.py config` and passed to
+  the pinned linter by `--config` (CI step "Fetch the protected-base contract
+  linter configuration"; `make check-code-quality` and `make preflight`).
+
+`make check-code-contract`, `check-test-contract`, `check-python-contract`, the
+pre-push hook and `make preflight` use it. It needs only git and the base commit
+already fetched; no network or secret. Any failure to produce the base copy (a
+base that is not a 40-character ancestor SHA, a missing required path, a
+non-regular file) exits 2 and runs nothing: there is no fallback to the checkout.
+A base that predates a checker cannot be bootstrapped by this gate; that needs an
+explicit maintainer decision recorded outside the pull request.
+
+Intended semantics: a pull request that legitimately changes a checker is judged
+by the **old** checker, and the new one applies from the next pull request on.
+The reviewer of such a change reads the diff of the checker itself, because the
+old checker cannot vouch for it. Offline, `make preflight BASE_SHA=<base>` works
+from a fetched `origin/next`. `--worktree` previews of the test checker are not
+evidence and are not wrapped.
+
+What this protects against, and what it does not. It defends against a pull
+request **changing a checker** to pass its own violation. It does **not** defend
+against a pull request changing its own CI wiring: the wrapper, the Makefile
+(including `-include .env.ci`), the hook and the workflow files come from the
+pull request (a `pull_request` run uses the merge ref's workflow files), so a
+pull request can edit them to skip the wrapper, or write `$GITHUB_ENV` or
+`$GITHUB_PATH` before it runs. Other checks also still run from the tree:
+`scripts/pr_size.py` (the hook and `make check-pr-size`; in CI the `scope` job reads it from the base, but
+copies it from the tree when the base lacks it, the same bootstrap gap as below),
+`scripts/security_gate.py`, `scripts/check_docs.mjs` and
+`scripts/docs_contract.mjs` (`make check-documentation`),
+`scripts/check_commit_subject.py`, the `gofmt` and `make check` steps, `npm ci`
+lifecycle scripts, and the unit tests inside the `make check-*` targets. The
+tamper-resistant gate is the external `flowstate/merge-admission` status, whose
+code runs outside the pull request, together with the exact-head independent
+review; changes to any file named in this paragraph need that review as closely
+as a checker change. For a pull request whose base is a feature branch rather
+than `next` or `main` (the `pull_request` base list in `ci-next.yml` includes
+such branches), "the base" is that writable branch and the trust is whatever it
+holds. The older "protected-base Python source contract" step in `ci-next.yml`
+is a separate mechanism that still copies the checker from the tree when the
+base lacks it, the opposite of the fail-closed rule here; it is to be folded
+into the wrapper. Moving the remaining checks to the base needs a required
+workflow or a `pull_request_target` job that checks out the base, a repository
+settings decision. Two more limits: `ci.yml` (pull requests to `main`) has no Python-contract step, only
+`ci-next.yml` does; and `base.sha` in a pull request event can be older than the merge ref's first parent when the
+base branch has moved, so the checkers are then the older base's. An inline `//nolint` in the pull request's Go
+source still applies, because only the linter configuration comes from the base.
+
 ## Local CI preflight
 
 `make preflight BASE_SHA=<actual-next-base>` runs most of the blocking CI jobs
