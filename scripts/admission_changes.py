@@ -28,6 +28,41 @@ def changed_entries(files):
     return rows
 
 
+REGULAR_MODES = ('100644', '100755')
+
+
+def mode_paths(files):
+    """Paths whose mode must be read: every non-removed path at the commit, and at the parent
+    only those GitHub reports as other than plainly added (they may replace a parent entry)."""
+    live = [(item.get('status'), item.get('filename')) for item in files if item.get('status') != 'removed']
+    return ([name for _, name in live if isinstance(name, str)],
+            [name for status, name in live if status != 'added' and isinstance(name, str)])
+
+
+def check_modes(files, current, previous):
+    """Fail closed unless every non-removed path is a regular blob in the commit's tree.
+
+    `current` and `previous` map path to (mode, type, blob sha) at the commit and its parent.
+    The tree's blob sha must equal the changed-file row's sha, and a path must exist in the commit
+    tree. Like the local reader, a replaced parent entry that was not a regular file is a type
+    change and is rejected; a deletion is never examined, so removing a symlink stays allowed.
+    """
+    for item in files:
+        name = item.get('filename')
+        if item.get('status') == 'removed' or not isinstance(name, str):
+            continue
+        entry = current.get(name)
+        if entry is None:
+            raise AdmissionError('candidate path missing from commit tree')
+        if entry[0] not in REGULAR_MODES or entry[1] != 'blob':
+            raise AdmissionError('candidate files must be regular blobs')
+        if entry[2] != item.get('sha'):
+            raise AdmissionError('candidate tree blob differs from changed-file evidence')
+        before = previous.get(name)
+        if item.get('status') != 'added' and before is not None and before[0] not in REGULAR_MODES:
+            raise AdmissionError('unsupported file status in candidate')
+
+
 def verify_entry(github, name, status, blob_sha, props):
     """Accept a deletion only with the exact deletion entry and a blob only with a matching one."""
     if status == 'removed':

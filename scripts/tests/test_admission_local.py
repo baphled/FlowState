@@ -11,7 +11,8 @@ from scripts.admission_local import CachedRecords, LocalGit, local_commits
 from scripts.admission_metadata import AdmissionError
 from scripts.admission_preflight import commit_preflight
 from scripts.admission_candidate import verify_files
-from scripts.tests.test_admission_changes import DELETED, SCENARIOS, attested, manifest_cases
+from scripts.tests.test_admission_changes import DELETED, MODE_CASES, NEW, OLD, SCENARIOS
+from scripts.tests.test_admission_changes import attested, blob_entry, manifest_cases
 from scripts.tests.test_admission_io import REF, record
 
 
@@ -168,6 +169,28 @@ class LocalDeletions(unittest.TestCase):
         self.assertEqual(LocalGit().commit_files(head)[0]['status'], 'unsupported')
         with self.assertRaisesRegex(AdmissionError, 'unsupported'):
             verify_files(LocalGit(), head, {'node': {'sha256': hashlib.sha256(b'k').hexdigest(), 'bytes': 1}})
+
+    def stage(self, mode, data):
+        blob = subprocess.run(['git', 'hash-object', '-w', '--stdin'], input=data,
+                              stdout=subprocess.PIPE, check=True).stdout.decode().strip()
+        self.git('update-index', '--add', '--cacheinfo', f'{mode},{blob},node')
+
+    def test_shared_mode_table(self):
+        for label, before, now, error in MODE_CASES:
+            with self.subTest(label=label):
+                self.commit_tree({})
+                if before is not None:
+                    self.stage(before, OLD)
+                    self.git('commit', '-qm', 'chore: synthetic parent')
+                self.stage(now, NEW)
+                self.git('commit', '-qm', 'chore: synthetic child')
+                manifest = {'node': blob_entry(NEW)}
+                head = self.git('rev-parse', 'HEAD')
+                if error is None:
+                    verify_files(LocalGit(), head, manifest)
+                else:
+                    with self.assertRaisesRegex(AdmissionError, error):
+                        verify_files(LocalGit(), head, manifest)
 
     def test_deleted_symlink_matches_github_removed(self):
         self.commit_tree({})
