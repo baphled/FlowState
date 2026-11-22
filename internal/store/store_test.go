@@ -78,6 +78,43 @@ var _ = Describe("Store open/migrations", func() {
 		}
 	})
 
+	It("applies the busy_timeout pragma on open", func() {
+		s := newTestStore()
+		var got string
+		err := s.db.QueryRow("PRAGMA busy_timeout").Scan(&got)
+		if err != nil {
+			panic(err)
+		}
+		Expect(got).To(Equal("5000"))
+	})
+
+	It("enforces declared foreign keys on the opened connection", func() {
+		s := newTestStore()
+		for _, ddl := range []string{
+			`CREATE TABLE fk_parent (id TEXT PRIMARY KEY)`,
+			`CREATE TABLE fk_child (pid TEXT NOT NULL REFERENCES fk_parent(id))`,
+		} {
+			if _, err := s.db.Exec(ddl); err != nil {
+				panic(err)
+			}
+		}
+		_, err := s.db.Exec(`INSERT INTO fk_child (pid) VALUES ('missing')`)
+		Expect(err).To(HaveOccurred())
+	})
+
+	It("exposes the open handle for adapters that bind their own ORM", func() {
+		s := newTestStore()
+		Expect(s.DB().Ping()).To(Succeed())
+	})
+
+	It("exposes no handle once closed", func() {
+		s := newTestStore()
+		if err := s.Close(); err != nil {
+			panic(err)
+		}
+		Expect(s.DB()).To(BeNil())
+	})
+
 	for _, table := range []string{"schema_migrations", "sessions", "events", "receipts"} {
 		tbl := table
 		It("creates the "+tbl+" table on open", func() {
