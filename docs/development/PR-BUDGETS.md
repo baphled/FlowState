@@ -1,21 +1,22 @@
 # Change-type PR review budgets
 
-The *protected target* `.env.ci` defines the default and typed changed-line
-budgets; PRs never read their own edited policy. The selected budget applies to
-added **plus** deleted lines, including tests and docs. Path (10), changed-byte
-(128 KiB) and changed-blob (1 MiB) caps remain in force. This is not an exemption
-from cohesive scope, actual agent verification, exact-head CI or source guards.
+The *protected target* `.env.ci` defines the default and typed budgets; PRs never read their own edited
+policy. The line budget applies to added **plus** deleted lines, including tests and docs. Changed-byte
+(128 KiB) and changed-blob (1 MiB) caps remain in force. This is not an exemption from cohesive scope, actual
+agent verification, exact-head CI or source guards.
 
-| Conventional title | Branch prefix | Line limit |
-| --- | --- | ---: |
-| `feat(...)` | `feature/` | 1,200 |
-| `fix(...)` | `fix/` | 800 |
-| `refactor(...)` | `refactor/` | 900 |
-| `test(...)` | `test/` | 900 |
-| `docs(...)` | `docs/` | 900 |
-| `perf(...)` | `perf/` | 900 |
-| `chore(...)` | `chore/` | 600 |
-| `revert(...)` | `revert/` | 600 |
+| Conventional title | Branch prefix | Line limit | Path limit |
+| --- | --- | ---: | ---: |
+| `feat(...)` | `feature/` | 1,200 | 15 |
+| `docs(...)` | `docs/` | 2,000 | 10 |
+| `fix`, `refactor`, `test`, `perf`, `chore`, `revert` | the matching prefix | 600 | 10 |
+
+These are the values in `.env.ci` (`FLOWSTATE_PR_MAX_LINES`, `_FEAT`, `_DOCS`, `FLOWSTATE_PR_MAX_FILES`,
+`_FEAT`); a kind without its own key uses the default. A test pins them.
+
+An exception is a policy change, not a waiver: on 2026-11-21 the owner approved one pull request above the
+bounds (#373), and it was made by raising the bounds in two reviewed policy changes (#372, #376) and
+restoring them in a third once it had merged.
 
 The protected selector requires matching title and branch types. Misclassification
 is a review finding, not a workaround for the size limit. CI uses the protected
