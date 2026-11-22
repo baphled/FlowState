@@ -31,8 +31,10 @@ its presence is not permission to add another dependency or a new global.
 fields with embedded `events`), the write endpoints `POST /sessions/{id}/close`
 and `POST /sessions/{id}/cancel` (200 with the terminal session row; a terminal
 session answers 409 `session_terminal` — closing/cancelling is not idempotent; if the cancel commits but
-settling the session's budget reservation fails, the answer is 500 `internal` whose message says the session
-is cancelled, and the CLI prints the cancelled state before the error),
+settling the session's budget reservation fails, the answer is still 500 but with the stable code
+`reservation_unsettled` and a structured `session` field `{"id","status":"cancelled"}`, so a client can tell it
+from "nothing happened"; the CLI prints the cancelled state before the error, whose code stays `internal` and
+whose exit stays 1),
 and `GET /sessions/{id}/doctor` reusing the CLI `session-doctor` output shape,
 wired through narrow `server.Ports`; no store
 type crosses into transport and `cmd` only builds the closures and listener.

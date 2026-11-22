@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -173,6 +174,9 @@ func serveClose(ctx context.Context, st *app.Store, id string) (server.Session, 
 // serveCancel wires POST /sessions/{id}/cancel onto app.CancelSession.
 func serveCancel(ctx context.Context, st *app.Store, id string) (server.Session, error) {
 	sess, err := app.CancelSession(ctx, st, id)
+	if errors.Is(err, app.ErrReservationSettle) && sess != nil { // the cancel committed: return the row with the marker
+		return serveSession(*sess), fmt.Errorf("%w: %w", server.ErrReservationUnsettled, err)
+	}
 	if err != nil {
 		return server.Session{}, err
 	}

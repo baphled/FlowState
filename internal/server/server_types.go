@@ -172,8 +172,16 @@ type Server struct {
 }
 
 type apiError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code    string        `json:"code"`
+	Message string        `json:"message"`
+	Session *sessionState `json:"session,omitempty"`
+}
+
+// sessionState names a session's status inside an error body, so a client
+// can tell a partly failed operation from one that did nothing.
+type sessionState struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
 }
 
 // sessionItem mirrors the CLI session-list item field-for-field.
