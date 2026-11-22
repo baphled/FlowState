@@ -122,10 +122,10 @@ GOLANGCI_LINT := $(TOOLS_BIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
 GOSEC := $(TOOLS_BIN)/gosec-$(GOSEC_VERSION)
 
 $(GOLANGCI_LINT):
-	GOTOOLCHAIN='$(REPO_GOTOOLCHAIN)' GOCMD='$(GOCMD)' sh scripts/install_go_tool.sh github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) golangci-lint "$@"
+	GOTOOLCHAIN='$(REPO_GOTOOLCHAIN)' GOCMD='$(GOCMD)' bash scripts/install_go_tool.sh github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) golangci-lint "$@"
 
 $(GOSEC):
-	GOTOOLCHAIN='$(REPO_GOTOOLCHAIN)' GOCMD='$(GOCMD)' sh scripts/install_go_tool.sh github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION) gosec "$@"
+	GOTOOLCHAIN='$(REPO_GOTOOLCHAIN)' GOCMD='$(GOCMD)' bash scripts/install_go_tool.sh github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION) gosec "$@"
 
 # CI sees the committed tree, so uncommitted edits must not decide the result.
 preflight-guard:
