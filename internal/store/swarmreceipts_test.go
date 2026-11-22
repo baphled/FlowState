@@ -9,9 +9,9 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// legacySwarmReceiptDDL must match the DDL the legacy
-// internal/storage.MigrateSwarmTables produces (CHECK constraints
-// included) until that package is deleted.
+// legacySwarmReceiptDDL is the schema (CHECK constraints included) of
+// swarm receipt tables created by earlier releases; databases that
+// already hold them must keep opening.
 const legacySwarmReceiptDDL = "CREATE TABLE `swarm_admissions` (`run_id` TEXT NOT NULL,`packet_id` TEXT NOT NULL," +
 	"`outcome` TEXT NOT NULL,`reason` TEXT NOT NULL,`recorded_at_utc` TEXT NOT NULL," +
 	"CONSTRAINT `chk_swarm_admission_outcome` CHECK (outcome IN ('admit','reject')));" +
