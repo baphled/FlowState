@@ -41,3 +41,10 @@ type LoopHandle struct {
 	// close releases the event-writer registration.
 	close func() error
 }
+
+// childSpec is everything a child session is opened from: its fresh
+// id, the parent it is delegated from, the provider settings it
+// inherits and the task its first turn carries.
+type childSpec struct {
+	id, parentID, provider, modelID, harness, configSHA, task string
+}

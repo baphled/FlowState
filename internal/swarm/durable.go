@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/baphled/flowstate/internal/store"
 )
@@ -19,9 +20,10 @@ func NewDurableReceipts(sink RunSink, manifestSHA256 string) *DurableReceipts {
 }
 
 // WithChildren names the child sessions the run created, so the run
-// record lands with them; it returns d for chaining.
+// record lands with them; it returns d for chaining. The slice is
+// copied: later changes by the caller do not reach the recorded run.
 func (d *DurableReceipts) WithChildren(children []store.SwarmRunChild) *DurableReceipts {
-	d.children = children
+	d.children = slices.Clone(children)
 	return d
 }
 
