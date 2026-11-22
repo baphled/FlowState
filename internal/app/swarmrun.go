@@ -33,24 +33,24 @@ func SwarmRunManifest(ctx context.Context, dbPath string, m swarm.Manifest) (swa
 		return swarm.RunResult{}, fmt.Errorf("app: initialise swarm persistence: %w", err)
 	}
 	ev := &runEventsTo{rec: rec, runID: m.Name}
-	res, err := swarm.Run(m, swarm.NewAdmissionLog(), swarm.NewGateRunner(), ev, rec)
+	res, err := swarm.Run(ctx, m, swarm.NewAdmissionLog(), swarm.NewGateRunner(), ev, rec)
 	if err != nil {
-		return res, err
+		return res, mapSwarmRunError(err)
 	}
 	if !res.Gates.Accepted {
-		return res, fmt.Errorf("app: gates failed: %v", res.Gates.FailedGateNames())
+		return res, swarmNotAccepted(m, res)
 	}
 	return res, nil
 }
 
 // PacketAdmitted persists one admitted packet.
-func (e *runEventsTo) PacketAdmitted(p swarm.Packet) {
-	_ = e.rec.RecordAdmission(e.runID, p, true, "")
+func (e *runEventsTo) PacketAdmitted(ctx context.Context, p swarm.Packet) {
+	_ = e.rec.RecordAdmission(ctx, e.runID, p, true, "")
 }
 
 // PacketRejected persists one rejected packet with its reason.
-func (e *runEventsTo) PacketRejected(id, reason string) {
-	_ = e.rec.RecordAdmission(e.runID, swarm.Packet{ID: id}, false, reason)
+func (e *runEventsTo) PacketRejected(ctx context.Context, id, reason string) {
+	_ = e.rec.RecordAdmission(ctx, e.runID, swarm.Packet{ID: id}, false, reason)
 }
 
 // Compile-time interface checks for the run-loop sinks.

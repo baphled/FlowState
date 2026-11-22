@@ -112,18 +112,24 @@ func WithBaseURL(u string) Option {
 // with 400 error 1210 (evidence 2026-11-03).
 const MaxTokensMax = 131072
 
-// MaxTokensDefault is the floor applied when a turn leaves
-// max_tokens unset: glm-5.x reasoning models spend hidden
-// reasoning tokens against the same budget, so a 1-token floor
-// starves the answer and streaming completes empty (live evidence
-// 2026-11-03, both coding surfaces).
+// MaxTokensDefault is the limit sent when a turn leaves
+// max_tokens unset (zero or negative): glm-5.x reasoning models
+// spend hidden reasoning tokens against the same budget, so a small
+// provider default starves the answer and streaming completes empty
+// (live evidence 2026-11-03, both coding surfaces). It is a default
+// for an unset limit only, never a floor on an explicit one.
 const MaxTokensDefault = 8192
 
-// ClampMaxTokens bounds max_tokens into [MaxTokensDefault,
-// MaxTokensMax] so unset (0) or oversized budgets never trigger
-// error 1210 and never starve reasoning models.
+// ClampMaxTokens resolves the max_tokens to send on every route: an
+// unset limit (n <= 0) becomes MaxTokensDefault, and an explicit
+// positive limit is sent as given, capped at MaxTokensMax so it never
+// triggers error 1210. There is no floor: an explicit small limit is
+// honoured. Caveat: with a reasoning model a small explicit limit can
+// be consumed by hidden reasoning before any visible text, so the turn
+// ends truncated (finish reason "length") rather than being silently
+// raised.
 func ClampMaxTokens(n int64) int64 {
-	if n < MaxTokensDefault {
+	if n <= 0 {
 		return MaxTokensDefault
 	}
 	if n > MaxTokensMax {
@@ -260,7 +266,9 @@ func (p *Provider) emitSSELine(ctx context.Context, out chan<- provider.StreamEv
 		return true
 	}
 	for _, c := range chunk.Choices {
-		if c.FinishReason != "" {
+		// "length" is sticky: a truncation on any choice must not be hidden by
+		// a later choice or chunk ending "stop".
+		if c.FinishReason != "" && *finish != provider.FinishLength {
 			*finish = c.FinishReason
 		}
 		if c.Delta.Content != "" {
@@ -284,7 +292,7 @@ func (p *Provider) post(ctx context.Context, req *provider.ChatRequest, stream b
 	if model == "" {
 		model = p.model
 	}
-	buf, err := json.Marshal(request{Model: model, Messages: req.Messages, MaxTokens: req.MaxTokens, Stream: stream})
+	buf, err := json.Marshal(request{Model: model, Messages: req.Messages, MaxTokens: ClampMaxTokens(req.MaxTokens), Stream: stream})
 	if err != nil {
 		return nil, err
 	}

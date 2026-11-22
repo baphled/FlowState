@@ -40,6 +40,58 @@ var _ = Describe("SwarmRun", func() {
 		bad.Gates = []swarm.Gate{{Name: "broken", Description: "b", Command: "false"}}
 		dbPath := filepath.Join(GinkgoT().TempDir(), "run.db")
 		_, runErr := app.SwarmRunManifest(context.Background(), dbPath, bad)
-		Expect(runErr).To(MatchError(ContainSubstring("gates failed")))
+		Expect(runErr).To(MatchError(app.ErrSwarmNotAccepted))
+	})
+
+	It("names the failed gate in the not-accepted error", func() {
+		bad := manifest
+		bad.Gates = []swarm.Gate{{Name: "broken", Description: "b", Command: "false"}}
+		dbPath := filepath.Join(GinkgoT().TempDir(), "run.db")
+		_, runErr := app.SwarmRunManifest(context.Background(), dbPath, bad)
+		Expect(runErr).To(MatchError(ContainSubstring("failed gates [broken]")))
+	})
+
+	It("classes a failed gate as receipt_invalid", func() {
+		bad := manifest
+		bad.Gates = []swarm.Gate{{Name: "broken", Description: "b", Command: "false"}}
+		dbPath := filepath.Join(GinkgoT().TempDir(), "run.db")
+		_, runErr := app.SwarmRunManifest(context.Background(), dbPath, bad)
+		Expect(app.ErrorCode(runErr)).To(Equal(app.CodeReceiptInvalid))
+	})
+
+	It("reports a rejected packet as not accepted", func() {
+		bad := manifest
+		bad.Packets = []swarm.Packet{{ID: "p1", Scope: "demo.swarm.plan", Task: "plan the work",
+			SourceSHA256: swarm.SHA256HexForTest([]byte("different body"))}}
+		dbPath := filepath.Join(GinkgoT().TempDir(), "run.db")
+		_, runErr := app.SwarmRunManifest(context.Background(), dbPath, bad)
+		Expect(runErr).To(MatchError(app.ErrSwarmNotAccepted))
+	})
+
+	Context("when the caller's context is cancelled", func() {
+		var runErr error
+
+		BeforeEach(func() {
+			cctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			dbPath := filepath.Join(GinkgoT().TempDir(), "run.db")
+			_, runErr = app.SwarmRunManifest(cctx, dbPath, manifest)
+		})
+
+		It("stops the run with an error", func() {
+			Expect(runErr).To(HaveOccurred())
+		})
+
+		It("maps the cancellation onto the interrupt error", func() {
+			Expect(runErr).To(MatchError(app.ErrSessionCancelled))
+		})
+
+		It("keeps the interrupt class rather than receipt_invalid", func() {
+			Expect(app.ErrorCode(runErr)).To(Equal(app.CodeSessionCancelled))
+		})
+
+		It("keeps the cancellation cause", func() {
+			Expect(runErr).To(MatchError(context.Canceled))
+		})
 	})
 })

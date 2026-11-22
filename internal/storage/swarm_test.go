@@ -1,6 +1,7 @@
 package storage_test
 
 import (
+	"context"
 	"database/sql"
 
 	sqlite "github.com/libtnb/sqlite"
@@ -25,7 +26,7 @@ func swarmDB() *sql.DB {
 func storedAdmission(db *sql.DB) string {
 	rec, err := storage.NewSwarmReceipts(db)
 	Expect(err).NotTo(HaveOccurred())
-	err = rec.RecordAdmission("run", swarm.Packet{ID: "p1"}, true, "")
+	err = rec.RecordAdmission(context.Background(), "run", swarm.Packet{ID: "p1"}, true, "")
 	Expect(err).NotTo(HaveOccurred())
 	mapped, err := gorm.Open(sqlite.New(sqlite.Config{Conn: db}), &gorm.Config{})
 	Expect(err).NotTo(HaveOccurred())
@@ -56,7 +57,7 @@ func storedMemberDigest(db *sql.DB) string {
 func storedSwarmGateOutcome(db *sql.DB) string {
 	rec, err := storage.NewSwarmReceipts(db)
 	Expect(err).NotTo(HaveOccurred())
-	err = rec.RecordGates("run", swarm.GatesDecision{
+	err = rec.RecordGates(context.Background(), "run", swarm.GatesDecision{
 		Outcomes: []swarm.GateOutcome{{Gate: swarm.Gate{Name: "lint"}, Passed: true}},
 	})
 	Expect(err).NotTo(HaveOccurred())
@@ -82,6 +83,27 @@ var _ = Describe("Swarm receipt persistence", func() {
 	It("reapplying the swarm schema does not fail", func() {
 		db := swarmDB()
 		Expect(storage.MigrateSwarmTables(db)).To(Succeed())
+	})
+
+	It("does not persist an admission once the context is cancelled", func() {
+		rec, err := storage.NewSwarmReceipts(swarmDB())
+		if err != nil {
+			panic(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		Expect(rec.RecordAdmission(ctx, "run", swarm.Packet{ID: "p1"}, true, "")).To(MatchError(context.Canceled))
+	})
+
+	It("does not persist gate receipts once the context is cancelled", func() {
+		rec, err := storage.NewSwarmReceipts(swarmDB())
+		if err != nil {
+			panic(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		d := swarm.GatesDecision{Outcomes: []swarm.GateOutcome{{Gate: swarm.Gate{Name: "lint"}, Passed: true}}}
+		Expect(rec.RecordGates(ctx, "run", d)).To(MatchError(context.Canceled))
 	})
 
 	It("persists an admitted packet", func() {

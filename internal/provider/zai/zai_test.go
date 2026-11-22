@@ -264,20 +264,33 @@ var _ = Describe("max_tokens passthrough", func() {
 		}
 		Expect(got).To(Equal(42.0))
 	})
-	It("omits max_tokens when unset", func() {
-		var raw string
+	DescribeTable("sends the resolved max_tokens on the general route", func(in int64, want float64) {
+		var got float64
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			body, _ := io.ReadAll(r.Body)
-			raw = string(body)
+			var req struct {
+				MaxTokens float64 `json:"max_tokens"`
+			}
+			if err := json.Unmarshal(body, &req); err != nil {
+				panic(err)
+			}
+			got = req.MaxTokens
 			w.Header().Set("Content-Type", "text/event-stream")
 			_, _ = w.Write([]byte("data: [DONE]\n\n"))
 		}))
 		DeferCleanup(srv.Close)
 		p := zai.New("k", zai.WithBaseURL(srv.URL))
-		for range p.Stream(context.Background(), &provider.ChatRequest{Model: "glm-5.3"}) {
+		for range p.Stream(context.Background(), &provider.ChatRequest{Model: "glm-5.3", MaxTokens: in}) {
 		}
-		Expect(raw).NotTo(ContainSubstring("max_tokens"))
-	})
+		Expect(got).To(Equal(want))
+	},
+		Entry("unset uses the default", int64(0), 8192.0),
+		Entry("negative uses the default", int64(-5), 8192.0),
+		Entry("explicit small limit is sent as given", int64(20), 20.0),
+		Entry("explicit limit above the cap is capped", int64(500000), 131072.0),
+		Entry("lower boundary 1 is sent as given", int64(1), 1.0),
+		Entry("upper boundary 131072 is sent as given", int64(131072), 131072.0),
+	)
 })
 
 var _ = Describe("general route stream finish reason", func() {
@@ -313,6 +326,46 @@ var _ = Describe("general route stream finish reason", func() {
 		Entry("length", "length", "length"),
 		Entry("another value", "content_filter", "content_filter"),
 	)
+	DescribeTable("keeps a length reason sticky across choices and chunks",
+		func(sse string) {
+			events := stream(sse + "data: [DONE]\n")
+			Expect(events[len(events)-1].FinishReason).To(Equal("length"))
+		},
+		Entry("choice 0 length then choice 1 stop in one chunk",
+			`data: {"choices":[{"index":0,"delta":{},"finish_reason":"length"},{"index":1,"delta":{},"finish_reason":"stop"}]}`+"\n"),
+		Entry("length then stop in later chunks",
+			`data: {"choices":[{"delta":{},"finish_reason":"length"}]}`+"\n"+`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`+"\n"),
+		Entry("stop then length in later chunks",
+			`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`+"\n"+`data: {"choices":[{"delta":{},"finish_reason":"length"}]}`+"\n"),
+	)
+	It("yields one finish at [DONE] and all text when finish_reason precedes more content", func() {
+		events := stream(`data: {"choices":[{"delta":{"content":"a"},"finish_reason":"length"}]}` + "\n" +
+			`data: {"choices":[{"delta":{"content":"b"}}]}` + "\ndata: [DONE]\n")
+		Expect(finishes(events)).To(Equal([]provider.StreamEvent{{Kind: provider.StreamEventFinish, FinishReason: "length"}}))
+	})
+	It("delivers all the text when finish_reason precedes more content", func() {
+		events := stream(`data: {"choices":[{"delta":{"content":"a"},"finish_reason":"length"}]}` + "\n" +
+			`data: {"choices":[{"delta":{"content":"b"}}]}` + "\ndata: [DONE]\n")
+		var got string
+		for _, ev := range events {
+			got += ev.Content
+		}
+		Expect(got).To(Equal("ab"))
+	})
+	It("finishes with stop when every chunk has a null finish_reason", func() {
+		events := stream(`data: {"choices":[{"delta":{"content":"a"},"finish_reason":null}]}` + "\n" +
+			`data: {"choices":[{"delta":{"content":"b"},"finish_reason":null}]}` + "\ndata: [DONE]\n")
+		Expect(events[len(events)-1].FinishReason).To(Equal("stop"))
+	})
+	It("ignores a usage-only trailing chunk and adds no event", func() {
+		events := stream(text + `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}` + "\n" +
+			`data: {"choices":[],"usage":{"total_tokens":3}}` + "\ndata: [DONE]\n")
+		Expect(events).To(HaveLen(2))
+	})
+	It("emits exactly one finish event when [DONE] is sent twice", func() {
+		events := stream(text + "data: [DONE]\ndata: [DONE]\n")
+		Expect(finishes(events)).To(HaveLen(1))
+	})
 	It("finishes with stop when [DONE] arrives without a finish_reason", func() {
 		events := stream(text + "data: [DONE]\n")
 		Expect(events[len(events)-1].FinishReason).To(Equal("stop"))

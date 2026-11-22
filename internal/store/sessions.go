@@ -46,6 +46,7 @@ func (s *Store) ListSessions(ctx context.Context, status string) ([]Session, err
 		}
 		out = append(out, sess)
 	}
+	sortChronological(out, func(s Session) (time.Time, string) { return s.CreatedAt, s.ID })
 	return out, nil
 }
 

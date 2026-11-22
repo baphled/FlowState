@@ -97,7 +97,11 @@ func (s *Store) SwarmRunsFor(ctx context.Context, name string) ([]SwarmRun, erro
 			ID: row.ID, Name: row.Name, ManifestSHA256: row.ManifestSHA256,
 			Outcome: row.Outcome,
 		}
-		run.CreatedAt, _ = time.Parse(time.RFC3339Nano, row.CreatedAtUTC)
+		created, cerr := parseStored(row.ID, "created_at_utc", row.CreatedAtUTC)
+		if cerr != nil {
+			return nil, fmt.Errorf("load swarm runs for %s: %w", name, cerr)
+		}
+		run.CreatedAt = created
 		var packetRows []swarmRunPacketRow
 		perr := s.gdb.WithContext(ctx).
 			Where(map[string]any{"run_id": row.ID}).
@@ -114,6 +118,7 @@ func (s *Store) SwarmRunsFor(ctx context.Context, name string) ([]SwarmRun, erro
 		}
 		runs = append(runs, run)
 	}
+	sortChronological(runs, func(r SwarmRun) (time.Time, string) { return r.CreatedAt, r.ID })
 	return runs, nil
 }
 

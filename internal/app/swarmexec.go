@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/baphled/flowstate/internal/store"
 	"github.com/baphled/flowstate/internal/swarm"
@@ -48,16 +50,18 @@ func RunSwarm(ctx context.Context, st *Store, parent *store.Session, m swarm.Man
 	children, reservations, err := swarmChildren(ctx, st, parent, m, budgetPerChild)
 	res := SwarmExecResult{Children: children, Reservations: reservations, Manifest: m}
 	if err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return res, mapSwarmRunError(ctx.Err())
+		}
 		return res, err
 	}
-	run, err := swarmRunDurable(st, m, admitter, gates)
+	run, err := swarmRunDurable(ctx, st, m, admitter, gates)
 	res.Admitted, res.Gates = run.Admitted, run.Gates
 	if err != nil {
 		return res, err
 	}
 	if !run.Gates.Accepted {
-		return res, fmt.Errorf("app: run swarm %s not accepted: failed gates %v, admitted %d of %d packets",
-			m.Name, run.Gates.FailedGateNames(), len(run.Admitted), len(m.Packets))
+		return res, swarmNotAccepted(m, run)
 	}
 	return res, nil
 }
@@ -116,17 +120,59 @@ func attributeSwarmChild(ctx context.Context, st *Store, parentID, childID, pack
 // swarmRunDurable drives the admission-and-gate run with durable
 // receipts pinned to the executed manifest's digest, landing the run
 // record and its packet rows in the store.
-func swarmRunDurable(st *Store, m swarm.Manifest,
+func swarmRunDurable(ctx context.Context, st *Store, m swarm.Manifest,
 	admitter swarm.RunAdmitter, gates *swarm.GateRunner) (swarm.RunResult, error) {
 	sha, err := swarmManifestSHA(m)
 	if err != nil {
 		return swarm.RunResult{}, err
 	}
-	run, rerr := swarm.Run(m, admitter, gates, nil, swarm.NewDurableReceipts(st, sha))
+	run, rerr := swarm.Run(ctx, m, admitter, gates, nil, swarm.NewDurableReceipts(st, sha))
 	if rerr != nil {
-		return run, fmt.Errorf("app: run swarm: %w", rerr)
+		return run, mapSwarmRunError(rerr)
 	}
 	return run, nil
+}
+
+// ErrSwarmNotAccepted marks a swarm run that completed but was not
+// accepted: a gate failed or a packet was rejected. It is the caller's
+// own input failing its checks, so ErrorCode maps it onto
+// receipt_invalid (exit 8, HTTP 422), never onto internal. A cancelled
+// run is also not accepted but keeps ErrSessionCancelled's class.
+var ErrSwarmNotAccepted = errors.New("not accepted")
+
+// swarmNotAccepted is the one place a completed-but-rejected run
+// becomes an app error; RunSwarm and SwarmRunManifest both use it. The
+// message names the failed gates and the packets that were not
+// admitted.
+func swarmNotAccepted(m swarm.Manifest, run swarm.RunResult) error {
+	admitted := make(map[string]bool, len(run.Admitted))
+	for _, id := range run.Admitted {
+		admitted[id] = true
+	}
+	rejected := []string{}
+	for _, p := range m.Packets {
+		if !admitted[p.ID] {
+			rejected = append(rejected, p.ID)
+		}
+	}
+	sort.Strings(rejected)
+	return fmt.Errorf("app: run swarm %s: %w: failed gates %v, rejected packets %v, admitted %d of %d packets",
+		m.Name, ErrSwarmNotAccepted, run.Gates.FailedGateNames(), rejected, len(run.Admitted), len(m.Packets))
+}
+
+// mapSwarmRunError is the one place a swarm run failure becomes an app
+// error: a cancelled run maps onto ErrSessionCancelled (the CLI's
+// exit-130 interrupt contract) with the cause kept; any other failure
+// is wrapped with the run-swarm prefix. Both RunSwarm and
+// SwarmRunManifest use it.
+//
+// Only context.Canceled maps: no CLI or server path puts a deadline on a
+// swarm run today, so DeadlineExceeded keeps the generic wrapping.
+func mapSwarmRunError(err error) error {
+	if errors.Is(err, context.Canceled) {
+		return fmt.Errorf("app: run swarm: %w: %w", ErrSessionCancelled, err)
+	}
+	return fmt.Errorf("app: run swarm: %w", err)
 }
 
 // swarmManifestSHA pins the executed manifest content as the SHA-256

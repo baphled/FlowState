@@ -15,6 +15,19 @@ exclusive merge authority.
   `Lint & Format`, `Test (ubuntu-latest)`, `Build`); it is never read from
   PR-controlled data. Legacy commit statuses are not consulted: only the
   check-runs API carries the per-run `head_sha` binding this gate needs.
+- The evidence manifest (`local_candidate.paths`) maps every path a commit changes to its attestation. An added
+  or modified path carries exactly `{"sha256": <hex>, "bytes": <n>}` of the new blob. A deleted path carries
+  exactly `{"deleted": true}`: no other key, and no `false`, string or number in place of `true`. The manifest
+  paths must equal the commit's changed paths, so an omitted deletion, a deletion entry for a file that was not
+  removed, or a blob entry for a removed file fails admission. Records with other entry shapes are rejected.
+- A rename is a deletion of the old path plus an addition of the new path, and both must be attested. GitHub's
+  single `renamed` file is read as exactly that pair (`previous_filename` deleted, `filename` a matching blob),
+  the same pair the local pre-push reader sees with rename detection off, so for regular files both readers
+  accept the same manifests. A `renamed` file without `previous_filename` never passes. A copy is only an
+  addition of the new path; its source is not a changed path.
+- File modes are checked only by the local pre-push reader, which rejects a symlink, a gitlink and a type
+  change. GitHub's changed-file list carries no mode, so the publisher cannot see them: it binds the blob's
+  content but not its mode. This gap predates deletions; closing it needs a tree-mode read on the publisher.
 - Candidate commits must form a linear chain from the exact current base SHA.
   Admission snapshots the head, base ref/SHA, PR number, author, open/draft state
   and full description. A relevant change before the final decision fails.

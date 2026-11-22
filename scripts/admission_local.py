@@ -30,19 +30,24 @@ def local_commit(sha):
             'commit': {'message': message}}
 
 
+def raw_file(attrs, name):
+    """Describe one raw diff-tree row; a deletion has no new blob, other irregular modes fail."""
+    _, mode, _, blob, status = attrs.split()
+    entry = {'filename': name.decode('utf-8')}
+    if status == b'D':
+        return dict(entry, status='removed')
+    if mode not in (b'100644', b'100755'):
+        raise AdmissionError('candidate files must be regular blobs')
+    return dict(entry, sha=blob.decode(),
+                status={b'A': 'added', b'M': 'modified'}.get(status, 'unsupported'))
+
+
 class LocalGit:
     """Implement the admission manifest reader over local immutable Git blobs."""
     def commit_files(self, sha):
         rows = git('diff-tree', '--no-commit-id', '-r', '--raw', '-z',
                    '--no-renames', sha).split(b'\0')
-        files = []
-        for attrs, name in zip(rows[0::2], rows[1::2]):
-            _, mode, _, blob, status = attrs.split()
-            if mode not in (b'100644', b'100755'):
-                raise AdmissionError('candidate files must be regular blobs')
-            files.append({'filename': name.decode('utf-8'), 'sha': blob.decode(),
-                          'status': {b'A': 'added', b'M': 'modified'}.get(status, 'unsupported')})
-        return files
+        return [raw_file(attrs, name) for attrs, name in zip(rows[0::2], rows[1::2])]
 
     def blob(self, sha):
         return git('cat-file', 'blob', sha)

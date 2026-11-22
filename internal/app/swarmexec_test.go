@@ -3,6 +3,7 @@ package app_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -259,6 +260,100 @@ var _ = Describe("RunSwarm", func() {
 			}{true, []string{"p1", "p2"}, store.SwarmRunOutcomeFail}))
 	})
 
+	Context("when the caller cancels during a gate", func() {
+		var (
+			st  *store.Store
+			err error
+		)
+
+		BeforeEach(func() {
+			st = openSwarmExecStore()
+			parent := swarmExecParent(ctx, st)
+			cctx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			gates := swarm.NewGateRunnerWith(func(context.Context, string, []string) error {
+				cancel()
+				return nil
+			})
+			m := swarmExecManifest()
+			m.Gates = append(m.Gates, swarm.Gate{Name: "second", Command: "second"})
+			_, err = app.RunSwarm(cctx, st, parent, m, 0, admitAll{}, gates)
+		})
+
+		It("maps the cancellation onto the interrupt error", func() {
+			Expect(err).To(MatchError(app.ErrSessionCancelled))
+		})
+
+		It("records the run as failed", func() {
+			runs, listErr := st.SwarmRunsFor(ctx, "demo.swarm")
+			if listErr != nil || len(runs) != 1 {
+				panic("the cancelled run persisted no single record")
+			}
+			Expect(runs[0].Outcome).To(Equal(store.SwarmRunOutcomeFail))
+		})
+	})
+
+	It("maps a one-gate run cancelled mid-gate onto the interrupt error", func() {
+		st := openSwarmExecStore()
+		parent := swarmExecParent(ctx, st)
+		cctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		gates := swarm.NewGateRunnerWith(func(context.Context, string, []string) error {
+			cancel()
+			return errors.New("signal: killed")
+		})
+		_, err := app.RunSwarm(cctx, st, parent, swarmExecManifest(), 0, admitAll{}, gates)
+		Expect(err).To(MatchError(app.ErrSessionCancelled))
+	})
+
+	It("maps a cancellation during child creation onto the interrupt error", func() {
+		st := openSwarmExecStore()
+		parent := swarmExecParent(ctx, st)
+		cctx, cancel := context.WithCancel(ctx)
+		cancel()
+		_, err := app.RunSwarm(cctx, st, parent, swarmExecManifest(), 0, admitAll{}, swarm.NewGateRunner())
+		Expect(err).To(MatchError(app.ErrSessionCancelled))
+	})
+
+	It("matches ErrSwarmNotAccepted for a failed gate", func() {
+		st := openSwarmExecStore()
+		parent := swarmExecParent(ctx, st)
+		broken := swarmExecManifest()
+		broken.Gates = []swarm.Gate{{Name: "broken", Description: "b", Command: "false"}}
+		_, err := app.RunSwarm(ctx, st, parent, broken, 0, admitAll{}, swarm.NewGateRunner())
+		Expect(err).To(MatchError(app.ErrSwarmNotAccepted))
+	})
+
+	It("names the failed gate and classes it receipt_invalid", func() {
+		st := openSwarmExecStore()
+		parent := swarmExecParent(ctx, st)
+		broken := swarmExecManifest()
+		broken.Gates = []swarm.Gate{{Name: "broken", Description: "b", Command: "false"}}
+		_, err := app.RunSwarm(ctx, st, parent, broken, 0, admitAll{}, swarm.NewGateRunner())
+		Expect(struct {
+			Code  string
+			Named bool
+		}{app.ErrorCode(err), strings.Contains(err.Error(), "failed gates [broken]")}).
+			To(Equal(struct {
+				Code  string
+				Named bool
+			}{app.CodeReceiptInvalid, true}))
+	})
+
+	It("matches ErrSwarmNotAccepted for a rejected packet", func() {
+		st := openSwarmExecStore()
+		parent := swarmExecParent(ctx, st)
+		_, err := app.RunSwarm(ctx, st, parent, swarmExecManifest(), 0, rejectAll{}, swarm.NewGateRunner())
+		Expect(err).To(MatchError(app.ErrSwarmNotAccepted))
+	})
+
+	It("names the rejected packets in the error", func() {
+		st := openSwarmExecStore()
+		parent := swarmExecParent(ctx, st)
+		_, err := app.RunSwarm(ctx, st, parent, swarmExecManifest(), 0, rejectAll{}, swarm.NewGateRunner())
+		Expect(err).To(MatchError(ContainSubstring("rejected packets [p1 p2]")))
+	})
+
 	It("reports admission rejection without discarding children", func() {
 		st := openSwarmExecStore()
 		parent := swarmExecParent(ctx, st)
@@ -293,3 +388,21 @@ func packetIDsOf(children []app.SwarmChild) []string {
 	}
 	return out
 }
+
+var _ = Describe("ErrorCode for swarm outcomes", func() {
+	DescribeTable("maps the error onto its class",
+		func(err error, want string) {
+			Expect(app.ErrorCode(err)).To(Equal(want))
+		},
+		Entry("not accepted is receipt_invalid",
+			fmt.Errorf("run: %w", app.ErrSwarmNotAccepted), app.CodeReceiptInvalid),
+		Entry("cancelled wins over not accepted",
+			errors.Join(app.ErrSessionCancelled, app.ErrSwarmNotAccepted), app.CodeSessionCancelled),
+		Entry("budget stop wins over not accepted",
+			errors.Join(app.ErrBudgetExceeded, app.ErrSwarmNotAccepted), app.CodeBudgetExceeded),
+		Entry("usage wins over not accepted",
+			errors.Join(app.ErrUsage, app.ErrSwarmNotAccepted), app.CodeUsage),
+		Entry("a plain storage failure stays internal",
+			errors.New("disk I/O error"), app.CodeInternal),
+	)
+})

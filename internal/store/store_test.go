@@ -39,7 +39,7 @@ func evCreatedAt(s *Store, sid string) string {
 	var ts string
 	err := s.db.QueryRow(`SELECT created_at_utc FROM events WHERE session_id=? AND seq=0`, sid).Scan(&ts)
 	Expect(err).NotTo(HaveOccurred())
-	return timeParseResult(ts).UTC().Format(time.RFC3339Nano)
+	return iso(timeParseResult(ts))
 }
 
 func timeParseResult(ts string) time.Time {
@@ -582,6 +582,27 @@ var _ = Describe("Session listing", func() {
 	})
 })
 
+// seedTrimmedExport stores a one-event session whose created_at_utc is a
+// trimmed old-format value, and returns the store and session id.
+func seedTrimmedExport() (*Store, string) {
+	s := newTestStore()
+	sid := mustSession(s)
+	w, err := s.NewEventWriter(context.Background(), sid)
+	if err != nil {
+		panic(err)
+	}
+	if _, err = w.Append(context.Background(), "user", "turn.start", map[string]any{"a": 1}); err != nil {
+		panic(err)
+	}
+	if err = w.Close(); err != nil {
+		panic(err)
+	}
+	if _, err = s.db.Exec(`UPDATE events SET created_at_utc='2026-01-01T00:00:00.131Z' WHERE session_id=?`, sid); err != nil {
+		panic(err)
+	}
+	return s, sid
+}
+
 var _ = Describe("Export", func() {
 	It("exports a session as canonical JSONL", func() {
 		s := newTestStore()
@@ -598,5 +619,19 @@ var _ = Describe("Export", func() {
 			sha256HexStr(`{"a":1,"b":2}`)+`","seq":0,"session_id":%q,"type":"turn.start"}`+"\n",
 			evCreatedAt(s, sid), sid)
 		Expect(string(b)).To(Equal(want))
+	})
+
+	It("renders a trimmed old-format created_at_utc with nine fractional digits", func() {
+		s, sid := seedTrimmedExport()
+		b, err := s.ExportJSONL(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(b)).To(ContainSubstring(`"created_at_utc":"2026-01-01T00:00:00.131000000Z"`))
+	})
+
+	It("exports a trimmed old-format created_at_utc as the helper's fixed-width rendering", func() {
+		s, sid := seedTrimmedExport()
+		b, err := s.ExportJSONL(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(b)).To(ContainSubstring(fmt.Sprintf(`"created_at_utc":%q`, evCreatedAt(s, sid))))
 	})
 })

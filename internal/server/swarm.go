@@ -57,9 +57,10 @@ func (s *Server) swarmValidateHandler(w http.ResponseWriter, r *http.Request) {
 // non-positive budget — is 400 usage. Port failures flow through the
 // shared code table: an unknown parent is 404 session_not_found, a
 // terminal parent 409 session_terminal, budget stops 409
-// budget_exceeded, and a not-accepted gate outcome surfaces the app's
-// unwrapped not-accepted error (ErrorCode → internal → 500), the
-// same outcome the CLI exit path takes.
+// budget_exceeded, and a not-accepted run (failed gate or rejected
+// packet) is 422 receipt_invalid, the class the CLI exits 8 for. Only
+// the {code,message} error body is written; the gate outcomes are not
+// returned to the client.
 func (s *Server) swarmRunHandler(w http.ResponseWriter, r *http.Request) {
 	var req swarmRunRequest
 	if !s.decodeBody(w, r, &req, "invalid swarm run body") {
