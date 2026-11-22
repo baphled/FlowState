@@ -18,6 +18,13 @@ func NewDurableReceipts(sink RunSink, manifestSHA256 string) *DurableReceipts {
 	return &DurableReceipts{sink: sink, manifestSHA: manifestSHA256}
 }
 
+// WithChildren names the child sessions the run created, so the run
+// record lands with them; it returns d for chaining.
+func (d *DurableReceipts) WithChildren(children []store.SwarmRunChild) *DurableReceipts {
+	d.children = children
+	return d
+}
+
 // RecordAdmission buffers one admission decision; rows land in the
 // store only when the complete run flushes at RecordGates, so a run
 // that never reaches its gate decision leaves no partial record.
@@ -45,12 +52,12 @@ func (d *DurableReceipts) RecordGates(ctx context.Context, runID string, decisio
 		outcome = store.SwarmRunOutcomePass
 	}
 	run := store.SwarmRun{
-		Name: runID, ManifestSHA256: d.manifestSHA, Outcome: outcome, Packets: d.decisions,
+		Name: runID, ManifestSHA256: d.manifestSHA, Outcome: outcome, Packets: d.decisions, Children: d.children,
 	}
 	if _, err := d.sink.RecordSwarmRun(ctx, run); err != nil {
 		return fmt.Errorf("record swarm run %s: %w", runID, err)
 	}
-	d.decisions = nil
+	d.decisions, d.children = nil, nil
 	return nil
 }
 

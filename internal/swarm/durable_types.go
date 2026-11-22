@@ -22,4 +22,5 @@ type DurableReceipts struct {
 	sink        RunSink
 	manifestSHA string
 	decisions   []store.SwarmRunPacket
+	children    []store.SwarmRunChild
 }
