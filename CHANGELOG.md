@@ -2,6 +2,31 @@
 
 All notable changes to the FlowState project will be documented in this file.
 
+## [1.9.0](https://github.com/baphled/FlowState/compare/v1.8.1...v1.9.0) (2026-11-22)
+
+### Features
+
+* **config:** take provider settings from the environment only ([#385](https://github.com/baphled/FlowState/issues/385)) ([ef8084c](https://github.com/baphled/FlowState/commit/ef8084cc0227393a796ef6f5415092c3b16f5bac))
+
+### Bug Fixes
+
+* **engine:** cancel the unfinished children of a cancelled swarm run ([#402](https://github.com/baphled/FlowState/issues/402)) ([dae9321](https://github.com/baphled/FlowState/commit/dae9321201d0543d1eb1bec0fc2c0923b29f6ccc))
+* **engine:** stop a cancelled gate gracefully before killing it ([#396](https://github.com/baphled/FlowState/issues/396)) ([5890451](https://github.com/baphled/FlowState/commit/58904515c8c58e4a6f3158520f9056e98919d304))
+* **server:** record why the run route cancelled a run ([#390](https://github.com/baphled/FlowState/issues/390)) ([03d5916](https://github.com/baphled/FlowState/commit/03d5916459dcf7cbfee7726f8ea92b349da6bca9))
+* **server:** say that a session is cancelled when its settle failed ([#397](https://github.com/baphled/FlowState/issues/397)) ([e2fac89](https://github.com/baphled/FlowState/commit/e2fac89c2a3c3b6f6e7a2568f4d99b2a32716938))
+* **session:** record which signal cancelled a run ([#384](https://github.com/baphled/FlowState/issues/384)) ([e561ade](https://github.com/baphled/FlowState/commit/e561ade83a10feb2d21d83d463890421a6400777))
+* **store:** give an event append a definite outcome under cancellation ([#393](https://github.com/baphled/FlowState/issues/393)) ([359c609](https://github.com/baphled/FlowState/commit/359c609ca2e24960effce1ce21624ee6c22402ed))
+* **store:** keep the writer in step when a steering drain rolls back ([#394](https://github.com/baphled/FlowState/issues/394)) ([514ccbd](https://github.com/baphled/FlowState/commit/514ccbd20d753d7a0b63fac593f95f3a48e5a387))
+* **store:** record the child sessions a swarm run created ([#395](https://github.com/baphled/FlowState/issues/395)) ([d35e005](https://github.com/baphled/FlowState/commit/d35e005e177060fc73cc82c6a5f2dfe3138fd752))
+* **workflow:** cap admission statuses and give a missing check a deadline ([#387](https://github.com/baphled/FlowState/issues/387)) ([24969bd](https://github.com/baphled/FlowState/commit/24969bd5ba0722ef6bc339dc95cabfb678eeee13))
+* **workflow:** fail a misspelled review line instead of waiting for one ([#399](https://github.com/baphled/FlowState/issues/399)) ([f2103b5](https://github.com/baphled/FlowState/commit/f2103b5d6d91c300f4581edd14eff146962c5dba))
+* **workflow:** reject non-regular files in the admission publisher ([#386](https://github.com/baphled/FlowState/issues/386)) ([b947973](https://github.com/baphled/FlowState/commit/b947973a49b464d9db1ae8acde2fbc20c9e27992))
+
+### Code Refactoring
+
+* **store:** index receipts through the orm store ([#398](https://github.com/baphled/FlowState/issues/398)) ([fc79d88](https://github.com/baphled/FlowState/commit/fc79d880aa59b8a610ab18a2c400f78167c1a703))
+* **store:** remove the unused legacy event writer ([#392](https://github.com/baphled/FlowState/issues/392)) ([37fea78](https://github.com/baphled/FlowState/commit/37fea78cc3eafe12d81039f9a83879aae021beea))
+
 ## [1.8.1](https://github.com/baphled/FlowState/compare/v1.8.0...v1.8.1) (2026-11-22)
 
 ### Bug Fixes
