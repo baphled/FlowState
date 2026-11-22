@@ -20,6 +20,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/zai"
 	"github.com/baphled/flowstate/internal/store"
+	"github.com/baphled/flowstate/internal/swarm"
 )
 
 // fakeZaiServer serves an SSE stream of the given chunks.
@@ -101,6 +102,51 @@ func failDeltaAppends(db string) *scriptedStreamer {
 	}
 	return &scriptedStreamer{events: []provider.StreamEvent{{Content: "hello"}}}
 }
+
+// unsettledSwarmChild runs a swarm that is cancelled in its first gate
+// while a trigger blocks every reservation update, and returns the first
+// child's id with the error the real producer returned.
+func unsettledSwarmChildren(db string, n int) ([]string, error) {
+	ctx := context.Background()
+	st, err := app.OpenStore(db)
+	must(err)
+	defer func() { must(st.Close()) }()
+	parent, err := app.CreateSession(ctx, st, "zai", "glm-5.3", app.DefaultHarness, "sha", "parent")
+	must(err)
+	must(st.SetBudgetPool(ctx, parent.ID, 100))
+	m := swarm.Manifest{Name: "demo", Scope: "demo", Gates: []swarm.Gate{{Name: "one", Command: "one"}, {Name: "two", Command: "two"}}}
+	for i := 1; i <= n; i++ {
+		m.Packets = append(m.Packets, swarm.Packet{ID: fmt.Sprintf("p%d", i), Scope: fmt.Sprintf("demo.p%d", i),
+			Task: "plan", SourceSHA256: swarm.SHA256HexForTest([]byte("plan"))})
+	}
+	cctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	gates := swarm.NewGateRunnerWith(func(context.Context, string, []string) error {
+		raw, oerr := sql.Open("sqlite", "file:"+db)
+		must(oerr)
+		defer func() { must(raw.Close()) }()
+		_, oerr = raw.Exec(`CREATE TRIGGER no_settle BEFORE UPDATE ON budget_reservations ` +
+			`BEGIN SELECT RAISE(ABORT, 'settle blocked'); END`)
+		must(oerr)
+		cancel(&app.CancelCause{Reason: "sigint"})
+		return nil
+	})
+	res, rerr := app.RunSwarm(cctx, st, parent, m, 10, allowAll{}, gates)
+	if len(res.Children) != n {
+		panic("the swarm run did not create every child")
+	}
+	ids := []string{}
+	for _, c := range res.Children {
+		ids = append(ids, c.Session.ID)
+	}
+	return ids, rerr
+}
+
+// allowAll admits every packet.
+type allowAll struct{}
+
+// Admit accepts the packet.
+func (allowAll) Admit(swarm.Packet, []byte) error { return nil }
 
 // stderrMessage decodes the first stderr line's error message.
 func stderrMessage(out string) string {
@@ -980,6 +1026,84 @@ var _ = Describe("Session run failure classification", func() {
 		Entry("wrapped provider failure", fmt.Errorf("%w: %w", app.ErrProvider, errors.New("zai: api error 429")),
 			"provider_error"),
 	)
+
+	Context("a cancelled run whose reservation could not be settled", func() {
+		var (
+			exit   int
+			stderr string
+		)
+
+		BeforeEach(func() {
+			exit, stderr = finishRunOutcome(fmt.Errorf("%w: %w", app.ErrSessionCancelled,
+				&app.SettleError{SessionID: "s1", Cause: errors.New("settle blocked"), Cancelled: app.ErrSessionCancelled}))
+		})
+
+		It("keeps exit 130", func() { Expect(exit).To(Equal(130)) })
+		It("keeps the cancelled message", func() {
+			Expect(stderr).To(ContainSubstring("interrupted; session cancelled"))
+		})
+		It("prints the settle failure naming the session", func() {
+			Expect(stderr).To(ContainSubstring("reservation_settle_failed: session s1 is cancelled: settle blocked"))
+		})
+		It("prints one line more than a plain cancellation", func() {
+			Expect(strings.Count(stderr, "\n")).To(Equal(2))
+		})
+	})
+
+	Context("a swarm run cancelled while a child's reservation cannot be settled", func() {
+		var (
+			ids     []string
+			childID string
+			stderr  string
+		)
+
+		BeforeEach(func() {
+			var err error
+			ids, err = unsettledSwarmChildren(filepath.Join(GinkgoT().TempDir(), "swarm.db"), 1)
+			childID = ids[0]
+			if err == nil {
+				panic("the swarm run did not report a failed settle")
+			}
+			_, stderr = finishRunOutcome(err)
+		})
+
+		It("prints the settle line from the producer's error", func() {
+			Expect(stderr).To(ContainSubstring("reservation_settle_failed: session " + childID + ": "))
+		})
+		It("names the settle cause on that line", func() {
+			Expect(stderr).To(ContainSubstring("settle blocked"))
+		})
+	})
+
+	Context("a swarm run cancelled while two children's reservations cannot be settled", func() {
+		var (
+			ids    []string
+			stderr string
+		)
+
+		BeforeEach(func() {
+			var err error
+			ids, err = unsettledSwarmChildren(filepath.Join(GinkgoT().TempDir(), "swarm.db"), 2)
+			if err == nil {
+				panic("the swarm run did not report a failed settle")
+			}
+			_, stderr = finishRunOutcome(err)
+		})
+
+		It("prints one settle line per child", func() {
+			Expect(strings.Count(stderr, "reservation_settle_failed")).To(Equal(2))
+		})
+		It("names the first child before the second", func() {
+			first := strings.Index(stderr, "session "+ids[0]+": ")
+			second := strings.Index(stderr, "session "+ids[1]+": ")
+			Expect(first >= 0 && first < second).To(BeTrue())
+		})
+	})
+
+	It("prints no settle line for a plain cancellation", func() {
+		_, stderr := finishRunOutcome(app.ErrSessionCancelled)
+		Expect(stderr).NotTo(ContainSubstring("reservation_settle_failed"))
+	})
 
 	It("does not wrap a provider failure a second time", func() {
 		_, stderr := finishRunOutcome(fmt.Errorf("%w: %w", app.ErrProvider, errors.New("zai: api error 429")))

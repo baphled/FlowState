@@ -84,7 +84,7 @@ test-e2e: ## Run the CLI end-to-end matrix suite against the real built binary
 check-test-contract: ## Check changed tests (BASE_SHA=exact PR base)
 	python3 -B -m unittest discover -s scripts/tests -p test_test_contract.py
 	python3 -B -m unittest discover -s scripts/tests -p test_test_layout.py
-	python3 -B scripts/check_test_contract.py --base "$(BASE_SHA)"
+	python3 -B scripts/base_checkers.py run --base "$(BASE_SHA)" -- python3 -B scripts/check_test_contract.py --base "$(BASE_SHA)"
 
 test-coverage: ## Run tests with coverage
 	@echo "Running tests with coverage..."
@@ -138,22 +138,23 @@ preflight: preflight-guard $(GOLANGCI_LINT) $(GOSEC) ## Run most blocking CI che
 	GOOS=windows $(GOVET) ./...
 	GOOS=darwin $(GOVET) ./...
 	"$(CURDIR)/$(GOLANGCI_LINT)" run
-	"$(CURDIR)/$(GOLANGCI_LINT)" run --config .golangci-contract.yml --new-from-rev="$(BASE_SHA)" --whole-files
+	cfgdir=$$(mktemp -d) && { python3 -B scripts/base_checkers.py config --base "$(BASE_SHA)" --dest "$$cfgdir/golangci-contract.yml" && "$(CURDIR)/$(GOLANGCI_LINT)" run --config "$$cfgdir/golangci-contract.yml" --new-from-rev="$(BASE_SHA)" --whole-files; rc=$$?; rm -rf "$$cfgdir"; exit $$rc; }
 	out=$$(mktemp -d) && { python3 -B scripts/security_gate.py --base "$(BASE_SHA)" --scanner "$(CURDIR)/$(GOSEC)" --output "$$out/reports"; rc=$$?; rm -rf "$$out"; exit $$rc; }
 	@sh scripts/ensure_node_modules.sh
+	python3 -B -m unittest scripts.tests.test_admission_preflight.ToolPins scripts.tests.test_admission_preflight.UnrecognisedToolInstall
 	$(MAKE) check-documentation BASE_SHA="$(BASE_SHA)"
 	$(GOTEST) -race -count=1 ./...
 
 check-code-contract: ## Check committed changed Go structure (BASE_SHA=PR base)
 	python3 -B -m unittest discover -s scripts/tests -p 'test_*code_contract*.py'
-	python3 -B scripts/check_code_contract.py --base "$(BASE_SHA)"
+	python3 -B scripts/base_checkers.py run --base "$(BASE_SHA)" -- python3 -B scripts/check_code_contract.py --base "$(BASE_SHA)"
 
 check-python-contract: ## Check committed Python complexity and test ownership (BASE_SHA=PR base)
 	python3 -B -m unittest discover -s scripts/tests -p 'test_*python_contract*.py' -v
-	python3 -B -m scripts.check_python_contract --base "$(BASE_SHA)"
+	python3 -B scripts/base_checkers.py run --base "$(BASE_SHA)" -- python3 -B -m scripts.check_python_contract --base "$(BASE_SHA)"
 
 check-code-quality: check-code-contract ## Run pinned contract linter after installation
-	golangci-lint run --config .golangci-contract.yml --new-from-rev="$(BASE_SHA)" --whole-files
+	cfgdir=$$(mktemp -d) && { python3 -B scripts/base_checkers.py config --base "$(BASE_SHA)" --dest "$$cfgdir/golangci-contract.yml" && golangci-lint run --config "$$cfgdir/golangci-contract.yml" --new-from-rev="$(BASE_SHA)" --whole-files; rc=$$?; rm -rf "$$cfgdir"; exit $$rc; }
 
 
 check-documentation: ## Check committed documentation (BASE_SHA=PR base)

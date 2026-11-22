@@ -113,12 +113,17 @@ func sortMessageRows(rows []sessionMessageRow) error {
 // sessionID: each message becomes a session.steered event (actor user,
 // payload sender/body) and is marked delivered, all in one
 // transaction. An empty pending set appends nothing and is a no-op.
-// The caller supplies the seq-assignment event writer for the session.
+// The caller supplies the seq-assignment event writer for the session;
+// a sessionID other than the writer's own is rejected with
+// ErrDrainSessionMismatch before anything is read or written.
 // The writer advances only after the transaction commits, and by the
 // number of events it appended, so a rollback leaves it level with the log.
 func (w *EventWriter) DrainSteeringMessages(ctx context.Context, sessionID string) (int, error) {
 	if w.closed || w.store == nil || w.store.db == nil {
 		return 0, ErrClosed
+	}
+	if sessionID != w.session {
+		return 0, fmt.Errorf("%w: writer %s, drain %s", ErrDrainSessionMismatch, w.session, sessionID)
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()

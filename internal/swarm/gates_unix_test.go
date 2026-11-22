@@ -326,6 +326,16 @@ var _ = Describe("gate runner process groups", func() {
 			ctx, cancel := cancelledCtx()
 			done, result := start(swarm.NewGateRunnerWithGrace(grace), ctx, m)
 			recordedPID(pidfile, done, result)
+			// Cancellation ends the gate within the grace bound, so waiting for
+			// it in cleanup leaves no gate or child behind.
+			DeferCleanup(func() {
+				cancel()
+				select {
+				case <-done:
+				case <-time.After(10 * time.Second):
+					panic("the gate outlived its spec")
+				}
+			})
 			return done, cancel
 		}
 

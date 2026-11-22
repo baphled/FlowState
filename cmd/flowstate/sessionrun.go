@@ -145,9 +145,13 @@ func selfTestTranscript(ctx context.Context, fl *flags, id string) ([]byte, erro
 // completed (a truncated answer, finish reason length, is still 0 and
 // adds one stderr warning line); 1 unknown session or any other
 // unclassified failure, which reports code `internal`; 2 usage; 3
-// provider error; 4 gates closed (task mode); 5 budget stop; 6
-// already terminal; 7 replay_mismatch (corrupt replay found during
-// the turn); 130 interrupted.
+// provider error; 4 config_invalid (live gates closed in task mode,
+// or the database, crash recovery or the steering drain failed); 5
+// budget stop; 6 already terminal; 7 replay_mismatch (corrupt replay
+// found during the turn); 130 cancelled by SIGINT, SIGTERM or SIGHUP
+// (reason sigint, sigterm or sighup). Exit 8 (receipt_invalid) is not
+// reachable from here: it belongs to `swarm run` and `receipt
+// validate`.
 func cmdRun(ctx context.Context, st *app.Store, id string, fl *flags, stdout, stderr *os.File) int {
 	applyRunDefaults(fl)
 	if fl.task != "" {
@@ -263,8 +267,7 @@ func runSessionTurn(ctx context.Context, st *app.Store, sess *app.Session, fl *f
 	p, perr := providerResolver(sess.Provider)
 	if perr != nil {
 		if errors.Is(perr, app.ErrSessionCancelled) {
-			writeError(stderr, fmt.Errorf("%w: interrupted; session cancelled", app.ErrSessionCancelled))
-			return exitSigint
+			return reportInterrupt(perr, stderr)
 		}
 		writeError(stderr, providerFailure(perr))
 		return exitProviderError
@@ -283,7 +286,7 @@ func runSessionTurn(ctx context.Context, st *app.Store, sess *app.Session, fl *f
 			return exitCodeFor(recErr)
 		}
 	}
-	// Replay on a fresh context: after SIGINT the cancel path still
+	// Replay on a fresh context: after a signal the cancel path still
 	// needs to project the persisted events before exiting 130.
 	evts, rerr := st.Replay(context.WithoutCancel(ctx), id)
 	if rerr != nil {
@@ -314,9 +317,9 @@ func providerFailure(err error) error {
 	return fmt.Errorf("%w: %v", app.ErrProvider, err)
 }
 
-// finishRun maps the turn outcome onto its exit code: SIGINT
-// cancellation exits 130, budget stops 5, tool-surface usage
-// failures 2, and only errors that satisfy errors.Is(err,
+// finishRun maps the turn outcome onto its exit code: SIGINT, SIGTERM
+// or SIGHUP cancellation exits 130, budget stops 5, tool-surface
+// usage failures 2, and only errors that satisfy errors.Is(err,
 // app.ErrProvider) exit 3. Any other error (a storage failure while
 // recording the turn, a lease fence) keeps its own classification
 // through exitCodeFor, so an unclassified one is `internal`. The
@@ -325,8 +328,7 @@ func providerFailure(err error) error {
 func finishRun(err error, res *app.TurnResult, fl *flags, stderr *os.File) int {
 	if err != nil {
 		if errors.Is(err, app.ErrSessionCancelled) {
-			writeError(stderr, fmt.Errorf("%w: interrupted; session cancelled", app.ErrSessionCancelled))
-			return exitSigint
+			return reportInterrupt(err, stderr)
 		}
 		if errors.Is(err, app.ErrBudgetExceeded) {
 			writeError(stderr, err)
@@ -348,6 +350,19 @@ func finishRun(err error, res *app.TurnResult, fl *flags, stderr *os.File) int {
 	}
 	noteTruncation(res, stderr)
 	return exitOK
+}
+
+// reportInterrupt reports a cancelled run and returns exit 130. A
+// reservation settle failure joined to the cancellation is printed first,
+// one line per failing session in the order they occur, as `session cancel`
+// does, so none is hidden behind the fixed interrupt message; the exit
+// status never changes.
+func reportInterrupt(err error, stderr *os.File) int {
+	for _, se := range app.SettleErrors(err) {
+		writeError(stderr, fmt.Errorf("%w: %s", app.ErrReservationSettle, se.Detail()))
+	}
+	writeError(stderr, fmt.Errorf("%w: interrupted; session cancelled", app.ErrSessionCancelled))
+	return exitSigint
 }
 
 // noteTruncation tells the person running the command that the final

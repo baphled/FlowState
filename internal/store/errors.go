@@ -35,6 +35,10 @@ var (
 	// session is not currently paused.
 	ErrNotPaused = errors.New("store: session is not paused")
 
+	// ErrDrainSessionMismatch rejects a steering drain that names a
+	// session other than the one the event writer owns.
+	ErrDrainSessionMismatch = errors.New("store: drain session is not the writer's session")
+
 	// ErrEmptyActor rejects empty event attribution actors.
 	ErrEmptyActor = errors.New("store: event actor must not be empty")
 

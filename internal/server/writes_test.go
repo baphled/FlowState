@@ -62,6 +62,17 @@ var _ = Describe("Session cancel with an unsettled reservation", func() {
 		Expect(doBody(New(p), http.MethodPost, cancelPath, "").Body.String()).NotTo(ContainSubstring(`"session"`))
 	})
 
+	DescribeTable("does not claim the session is cancelled unless the row is this session and cancelled",
+		func(row Session) {
+			p := (&fakePorts{}).ports()
+			p.CancelSession = func(context.Context, string) (Session, error) {
+				return row, fmt.Errorf("%w: settle failed", ErrReservationUnsettled)
+			}
+			Expect(doBody(New(p), http.MethodPost, cancelPath, "").Body.String()).NotTo(ContainSubstring(`"session"`))
+		},
+		Entry("a row of this session that is still active", Session{ID: streamID, Status: "active"}),
+		Entry("a cancelled row of another session", Session{ID: "other", Status: "cancelled"}))
+
 	It("omits the session field from an unrelated cancel failure", func() {
 		s, f := sampleServer()
 		f.writeErr = errFakeUnmapped

@@ -12,6 +12,21 @@ CHECK_DEADLINE = 3600
 READ_INTERVAL = 10
 
 
+# GitHub keeps 140 characters of a status description; the issuer cuts at the same length.
+DESCRIPTION_LIMIT = 140
+
+
+def condensed(description):
+    """The description exactly as the issuer will post it: one printable line, at most 140 characters.
+
+    Deduplication compares what is published, so every publication of one finding must read the same
+    whichever caller formed it. Otherwise two spellings of one failure (a raw message and a bounded
+    log line) never match, and the head is re-published every cycle until its status budget is spent.
+    """
+    text = ''.join(c if c.isprintable() else ' ' for c in str(description))
+    return ' '.join(text.split())[:DESCRIPTION_LIMIT]
+
+
 class PublishedRecords(dict):
     """The process-lived record, head -> (state, description, time), plus per-head state that must
     outlive record expiry: `counts` (statuses GitHub holds, plus those published since), `final`
@@ -99,12 +114,18 @@ class ChangedStatusPublisher:
         return self.last.counts[sha]
 
     def status(self, sha, state, description):
+        """Publish what is true for the head and return the state that stands on it afterwards.
+
+        The state is the SUBSTITUTED one when a bound replaced the requested one (a failure for an
+        exhausted head or an unknown status count), so a caller can tell a published success from
+        a failure that took its place. It is None when the head is terminal and nothing was published.
+        """
         if self.last.final.get(sha):
-            return
-        state, description = self.deadline(sha, state, description)
+            return None
+        state, description = self.deadline(sha, state, condensed(description))
         spent = self.spent(sha)
         if self.last.final.get(sha):
-            return
+            return None
         if spent is None:
             state, description = 'failure', UNCOUNTED
         elif spent >= STATUS_BUDGET:
@@ -112,9 +133,9 @@ class ChangedStatusPublisher:
         record = self.record(sha)
         if state == 'pending' and description == IN_PROGRESS:
             if record is not None and record[0] != 'success':
-                return
+                return record[0]
         elif state != 'success' and record is not None and record[:2] == (state, description):
-            return
+            return state
         self.last.pop(sha, None)
         self.last.counts.pop(sha, None)
         self.issuer.status(sha, state, description)
@@ -123,3 +144,4 @@ class ChangedStatusPublisher:
         if description == EXHAUSTED:
             self.last.final[sha] = True
         self.last[sha] = (state, description, self.clock())
+        return state

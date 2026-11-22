@@ -66,8 +66,11 @@ unchanged);
 writes are detached from request cancellation, so neither shutdown nor a client
 disconnect stops one half way; the run endpoint is the deliberate exception:
 its turn follows the request context, so a disconnect or shutdown mid-run
-cancels the session, as SIGINT does for the CLI, and `session.cancelled` records the reason
-`client_disconnected` or `shutdown` (the CLI records `sigint`, `sigterm` or `sighup`). Every request body is capped at
+cancels the session, as a signal does for the CLI, and `session.cancelled` records the reason
+`client_disconnected` or `shutdown` (the CLI records `sigint`, `sigterm` or `sighup`). The CLI cancels a run on
+SIGINT, SIGTERM or SIGHUP (SIGHUP
+only when it was not ignored at start, as under `nohup`) and exits 130. SIGQUIT is deliberately not handled: Go's
+default (dump goroutines, exit 2) is kept as the debugging behaviour operators expect. Every request body is capped at
 1 MiB (a larger one is 400 `usage` naming the limit, and the connection is
 closed) and every POST body is decoded strictly (unknown fields and trailing
 data are 400 `usage`). The `after` cursor of the events endpoints must be one
@@ -86,7 +89,7 @@ event log; `{"budget","max_tokens"}` mirrors the CLI flags, provider failures
 other failure keeps its own class (a storage error while recording the turn is 500 `internal`, and `session
 run` exits 1), and the route's deadline extends 10 minutes; a client disconnect or shutdown mid-run cancels
 the session, as
-SIGINT does for the CLI.
+a signal does for the CLI.
 `POST /sessions` creates via the `session new` composition (a write, so it is
 detached from cancellation): body fields override serve config, secret-looking
 keys are 400 `usage` (client input, unlike the config's `config_invalid`).

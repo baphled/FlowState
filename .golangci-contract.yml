@@ -28,7 +28,7 @@ linters:
         cli:
           files: ["**/cmd/**/*.go", "!$test"]
           list-mode: original
-          allow: [$gostd, github.com/baphled/flowstate/internal/app$, github.com/baphled/flowstate/internal/app/, github.com/baphled/flowstate/internal/config$, github.com/baphled/flowstate/internal/config/, github.com/baphled/flowstate/internal/server$, github.com/baphled/flowstate/internal/server/]
+          allow: [$gostd, github.com/baphled/flowstate/internal/app$, github.com/baphled/flowstate/internal/app/, github.com/baphled/flowstate/internal/server$, github.com/baphled/flowstate/internal/server/]
         domain:
           files: ["**/internal/runtime/*.go", "**/internal/runtime/**/*.go", "**/internal/session/*.go", "**/internal/session/**/*.go", "**/internal/tool/*.go", "**/internal/tool/**/*.go", "**/internal/provider/*.go", "!$test"]
           list-mode: original
@@ -39,7 +39,7 @@ linters:
             - pkg: database/sql
               desc: Storage belongs behind consumer-owned ports.
         adapters:
-          files: ["**/internal/store/*.go", "**/internal/store/**/*.go", "**/internal/storage/*.go", "**/internal/storage/**/*.go", "**/internal/oauth/*.go", "**/internal/oauth/**/*.go", "**/internal/provider/*/*.go", "**/internal/provider/*/**/*.go", "!$test"]
+          files: ["**/internal/store/*.go", "**/internal/store/**/*.go", "**/internal/oauth/*.go", "**/internal/oauth/**/*.go", "**/internal/provider/*/*.go", "**/internal/provider/*/**/*.go", "!$test"]
           deny:
             - pkg: github.com/baphled/flowstate/internal/app$
               desc: Composition depends on adapters, not the reverse.

@@ -1,8 +1,6 @@
 package app
 
 import (
-	"database/sql"
-
 	"github.com/baphled/flowstate/internal/metadata"
 	"github.com/baphled/flowstate/internal/store"
 )
@@ -30,5 +28,5 @@ type (
 // receiptsDB is the narrow handle over the receipts database the
 // live self-test path needs (hides *sql.DB from cmd).
 type receiptsDB struct {
-	sqlDB *sql.DB
+	st *store.Store
 }

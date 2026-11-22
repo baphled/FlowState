@@ -56,6 +56,6 @@ type cliConfig struct {
 // formatting a usage message.
 type usageSentinel struct{}
 
-// sigintCancelledKey marks a context cancelled by SIGINT; its
+// sigintCancelledKey marks a context cancelled by SIGINT, SIGTERM or SIGHUP; its
 // presence routes session cancel to the exit-130 contract path.
 type sigintCancelledKey struct{}

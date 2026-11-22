@@ -37,6 +37,7 @@ class FakePublisher:
         self.statuses = github.statuses
     def status(self, sha, state, description):
         self.statuses.append((sha,state,description))
+        return state
 def execute(event, github, dropbox, required_checks=("Build", "Test (ubuntu-latest)")):
     return admission_execute(event, github, dropbox, FakePublisher(github),
                              public(REVIEW_PRIVATE),public(EXECUTION_PRIVATE),lambda:150,

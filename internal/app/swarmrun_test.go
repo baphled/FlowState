@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -10,6 +11,25 @@ import (
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/swarm"
 )
+
+// receiptRow reads the first row of query from the receipts database at
+// dbPath as strings; it panics on any setup failure.
+func receiptRow(dbPath, query string, cols int) []string {
+	db, err := sql.Open("sqlite", "file:"+dbPath)
+	if err != nil {
+		panic(err)
+	}
+	defer func() { _ = db.Close() }()
+	out := make([]string, cols)
+	dest := make([]any, cols)
+	for i := range out {
+		dest[i] = &out[i]
+	}
+	if err = db.QueryRow(query).Scan(dest...); err != nil {
+		panic(err)
+	}
+	return out
+}
 
 var _ = Describe("SwarmRun", func() {
 	var manifest swarm.Manifest
@@ -33,6 +53,33 @@ var _ = Describe("SwarmRun", func() {
 		res, runErr := app.SwarmRunManifest(context.Background(), dbPath, manifest)
 		Expect(runErr).NotTo(HaveOccurred())
 		Expect(res.Admitted).To(Equal([]string{"p1"}))
+	})
+
+	It("stores the admission row with its packet and outcome", func() {
+		dbPath := filepath.Join(GinkgoT().TempDir(), "run.db")
+		if _, err := app.SwarmRunManifest(context.Background(), dbPath, manifest); err != nil {
+			panic(err)
+		}
+		row := receiptRow(dbPath, "SELECT run_id, packet_id, outcome, reason FROM swarm_admissions", 4)
+		Expect(row).To(Equal([]string{"demo.swarm", "p1", "admit", ""}))
+	})
+
+	It("stores the gate row with its name and outcome", func() {
+		dbPath := filepath.Join(GinkgoT().TempDir(), "run.db")
+		if _, err := app.SwarmRunManifest(context.Background(), dbPath, manifest); err != nil {
+			panic(err)
+		}
+		row := receiptRow(dbPath, "SELECT run_id, gate_name, outcome FROM swarm_gate_receipts", 3)
+		Expect(row).To(Equal([]string{"demo.swarm", "go", "pass"}))
+	})
+
+	It("stores a failed gate as outcome fail", func() {
+		bad := manifest
+		bad.Gates = []swarm.Gate{{Name: "broken", Description: "b", Command: "false"}}
+		dbPath := filepath.Join(GinkgoT().TempDir(), "run.db")
+		_, _ = app.SwarmRunManifest(context.Background(), dbPath, bad)
+		row := receiptRow(dbPath, "SELECT gate_name, outcome FROM swarm_gate_receipts", 2)
+		Expect(row).To(Equal([]string{"broken", "fail"}))
 	})
 
 	It("accepts only when every gate passes", func() {

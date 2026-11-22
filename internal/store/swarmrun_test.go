@@ -113,6 +113,30 @@ var _ = Describe("durable swarm run records", func() {
 		Expect(got).To(Equal(swarmRunRejection{Err: ErrSwarmRunChildMissing}))
 	})
 
+	It("rolls back the run and its packet rows when a child insert fails", func() {
+		st := mustSwarmRunStore()
+		mustRawExec(st, `CREATE TRIGGER fail_child BEFORE INSERT ON swarm_run_children
+			BEGIN SELECT RAISE(ABORT, 'forced child failure'); END`)
+		run := sampleSwarmRun("demo.swarm", SwarmRunOutcomePass)
+		run.Children = []SwarmRunChild{{PacketID: "p1", SessionID: "s-1"}}
+		got := rejectSwarmRun(st, run)
+		Expect(got.Rows).To(Equal([2]int{0, 0}))
+	})
+
+	It("persists no child row when a child insert fails", func() {
+		st := mustSwarmRunStore()
+		mustRawExec(st, `CREATE TRIGGER fail_child BEFORE INSERT ON swarm_run_children
+			BEGIN SELECT RAISE(ABORT, 'forced child failure'); END`)
+		run := sampleSwarmRun("demo.swarm", SwarmRunOutcomePass)
+		run.Children = []SwarmRunChild{{PacketID: "p1", SessionID: "s-1"}}
+		rejectSwarmRun(st, run)
+		var children int
+		if err := st.db.QueryRow(`SELECT count(*) FROM swarm_run_children`).Scan(&children); err != nil {
+			panic(err)
+		}
+		Expect(children).To(Equal(0))
+	})
+
 	It("returns the runs of one swarm oldest first", func() {
 		st := mustSwarmRunStore()
 		first := recordSwarmRun(st, sampleSwarmRun("demo.swarm", SwarmRunOutcomeFail))

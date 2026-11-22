@@ -9,7 +9,6 @@ import (
 
 	"github.com/baphled/flowstate/internal/metadata"
 	"github.com/baphled/flowstate/internal/session"
-	"github.com/baphled/flowstate/internal/storage"
 	"github.com/baphled/flowstate/internal/store"
 )
 
@@ -35,24 +34,24 @@ func EmitAttemptReceipt(ctx context.Context, dbPath string, a metadata.Attempt) 
 }
 
 // db exposes the underlying *sql.DB for metadata.Emit.
-func (r receiptsDB) db() *sql.DB { return r.sqlDB }
+func (r receiptsDB) db() *sql.DB { return r.st.DB() }
 
 // Close releases the underlying database handle.
-func (r receiptsDB) Close() error { return r.sqlDB.Close() }
+func (r receiptsDB) Close() error { return r.st.Close() }
 
-// openReceipts opens and migrates the receipts database at path.
+// openReceipts opens the receipts database at path through the store,
+// which applies the pragmas and forward-only migrations, then creates
+// the swarm receipt tables when absent. The receipts live in the same
+// database file as the sessions, so a file the store already migrated
+// opens unchanged.
 func openReceipts(path string) (receiptsDB, error) {
-	db, _, err := storage.Open(path)
+	st, err := store.Open(path)
 	if err != nil {
 		return receiptsDB{}, err
 	}
-	if err := storage.Migrate(db); err != nil {
-		_ = db.Close()
+	if err := store.MigrateSwarmReceipts(st.DB()); err != nil {
+		_ = st.Close()
 		return receiptsDB{}, err
 	}
-	if err := storage.MigrateSwarmTables(db); err != nil {
-		_ = db.Close()
-		return receiptsDB{}, err
-	}
-	return receiptsDB{sqlDB: db}, nil
+	return receiptsDB{st: st}, nil
 }

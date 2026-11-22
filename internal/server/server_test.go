@@ -941,6 +941,9 @@ var _ = Describe("Serve S1 transport", func() {
 		},
 		Entry("create unknown field", "/sessions", `{"task":"t","tsak":"x"}`, "invalid create body"),
 		Entry("create trailing data", "/sessions", `{"task":"t"} {}`, "invalid create body"),
+		// A secret-looking key before trailing data must not reach the secret
+		// scan: only a strict whole-body parse reports the trailing data first.
+		Entry("create trailing data after a secret-looking key", "/sessions", `{"task":"t","api_key":"x"} {}`, "invalid create body"),
 		Entry("run unknown field", "/sessions/s1/run", `{"budgt":100}`, "invalid run body"),
 		Entry("run trailing data", "/sessions/s1/run", `{"budget":1} trailing`, "invalid run body"),
 		Entry("budget unknown field", "/sessions/s1/budget", `{"pool":5,"pol":1}`, "invalid budget body"),

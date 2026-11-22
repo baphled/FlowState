@@ -1,5 +1,6 @@
 """Validate claimed agent review; signed attestation is a separate qualification."""
 import re
+import unicodedata
 from scripts.admission_metadata import AdmissionError, AdmissionPending, REFERENCE
 from scripts.review_signature import verify_signature
 from scripts.review_execution import validate_review_scope, validate_execution
@@ -7,10 +8,18 @@ from scripts.review_execution import validate_review_scope, validate_execution
 # Anything that looks like a review line, however spelled: only the exact `Agent-Review: <reference>` is valid.
 REVIEW_LOOKALIKE = re.compile(r"^[ \t]*agent[-_ ]?review[ \t]*:", flags=re.I | re.M)
 
+def normalised(body):
+    """Fold look-alikes to ASCII for DETECTION only: compatibility forms, any dash or minus to `-`,
+    and invisible format characters (zero-width, soft hyphen) removed. Never used to accept a line."""
+    text = unicodedata.normalize("NFKC", body)
+    text = "".join("-" if unicodedata.category(c) == "Pd" or c == "\u2212" else c
+                   for c in text if unicodedata.category(c) != "Cf")
+    return text
+
 def agent_review_reference(body):
     """Return the one valid review reference; pending only if nothing resembles a review line."""
     body = body if isinstance(body, str) else ""
-    lookalikes = REVIEW_LOOKALIKE.findall(body)
+    lookalikes = REVIEW_LOOKALIKE.findall(normalised(body))
     if not lookalikes:
         raise AdmissionPending("Awaiting an independent exact-head agent review")
     if len(lookalikes) != len(re.findall(r"^Agent-Review:", body, flags=re.M)):

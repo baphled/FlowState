@@ -216,6 +216,31 @@ class Budget(Fixture, unittest.TestCase):
         self.admitted_cycle()
         self.assertEqual(self.issuer.posted, [(HEAD, 'failure', EXHAUSTED)])
 
+    def test_a_published_success_is_reported_as_the_state_that_stands(self):
+        self.publisher.status(HEAD, 'pending', IN_PROGRESS)
+        self.assertEqual(self.publisher.status(HEAD, 'success', 'ok'), 'success')
+
+    def test_a_success_replaced_by_the_exhaustion_failure_is_reported_as_a_failure(self):
+        self.reader.statuses = spent(STATUS_BUDGET)
+        self.assertEqual(self.publisher.status(HEAD, 'success', 'ok'), 'failure')
+
+    def test_a_success_on_a_terminal_head_is_reported_as_nothing_published(self):
+        self.reader.statuses = spent(STATUS_BUDGET)
+        self.admitted_cycle()
+        self.assertIsNone(self.publisher.status(HEAD, 'success', 'ok'))
+
+    def test_a_success_replaced_by_the_unknown_count_failure_is_reported_as_a_failure(self):
+        self.restarted(FakeReader(error=AdmissionError('GitHub down')))
+        self.assertEqual(self.publisher.status(HEAD, 'success', 'ok'), 'failure')
+
+    def test_an_unchanged_failure_that_is_not_repeated_is_still_reported_as_a_failure(self):
+        self.publisher.status(HEAD, 'failure', 'bad')
+        self.assertEqual(self.publisher.status(HEAD, 'failure', 'bad'), 'failure')
+
+    def test_a_skipped_marker_over_a_standing_failure_is_reported_as_that_failure(self):
+        self.publisher.status(HEAD, 'failure', 'bad')
+        self.assertEqual(self.publisher.status(HEAD, 'pending', IN_PROGRESS), 'failure')
+
     def test_a_success_evaluated_after_exhaustion_is_not_published(self):
         self.reader.statuses = spent(STATUS_BUDGET)
         self.admitted_cycle()

@@ -44,6 +44,60 @@ var _ = Describe("DrainSteeringMessages sequence accounting", func() {
 		Expect(w.NextSeq()).To(Equal(int64(2)))
 	})
 
+	It("assigns the next append seq 2 after a successful two-message drain", func() {
+		if _, err := w.DrainSteeringMessages(ctx, "chat"); err != nil {
+			panic(err)
+		}
+		seq, err := w.Append(ctx, "user", "after", nil)
+		if err != nil {
+			panic(err)
+		}
+		Expect(seq).To(Equal(int64(2)))
+	})
+
+	It("rejects a drain for a session other than the writer's", func() {
+		_, err := w.DrainSteeringMessages(ctx, "root")
+		Expect(err).To(MatchError(ErrDrainSessionMismatch))
+	})
+
+	Context("when a drain names a sibling session that has a pending message", func() {
+		BeforeEach(func() {
+			if _, err := s.CreateChildSession(ctx, "chat2", "root", "zai", "glm-5.3", "test-harness", "cfgsha"); err != nil {
+				panic(err)
+			}
+			if _, err := s.SendMessage(ctx, "chat2", "root", "for the sibling"); err != nil {
+				panic(err)
+			}
+			if _, err := w.DrainSteeringMessages(ctx, "chat2"); err == nil {
+				panic("drain unexpectedly succeeded")
+			}
+		})
+
+		It("writes none of the sibling's messages into the writer's log", func() {
+			evs, err := s.Replay(ctx, "chat")
+			if err != nil {
+				panic(err)
+			}
+			Expect(evs).To(BeEmpty())
+		})
+
+		It("leaves the sibling's message pending", func() {
+			pending, err := s.PendingSteeringMessages(ctx, "chat2")
+			if err != nil {
+				panic(err)
+			}
+			Expect(pending).To(HaveLen(1))
+		})
+
+		It("leaves the writer's own messages pending", func() {
+			n, err := w.DrainSteeringMessages(ctx, "chat")
+			if err != nil {
+				panic(err)
+			}
+			Expect(n).To(Equal(2))
+		})
+	})
+
 	It("leaves the writer where it was when the drain rolls back", func() {
 		failDelivery()
 		if _, err := w.DrainSteeringMessages(ctx, "chat"); err == nil {

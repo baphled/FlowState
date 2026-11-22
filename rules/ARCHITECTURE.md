@@ -15,10 +15,13 @@ for this backend.
 | `internal/session` | Session identity and state invariants | Domain/ports; no concrete store, HTTP or SQL |
 | `internal/provider` | Provider port and domain messages | Standard library/domain types; adapters live in subpackages |
 | `internal/tool` | Tool port, permission and loop policy | Domain/ports; storage behind a narrow consumer port |
-| `internal/store`, `internal/storage` | Persistence adapters | No application, CLI or engine lifecycle dependency |
+| `internal/store` | Persistence adapters | No application, CLI or engine lifecycle dependency |
 | `internal/provider/*`, `internal/oauth` | External transports/authentication | Implement ports; no application, CLI or lifecycle ownership |
 | `internal/server` | HTTP transport adapter (ratified ahead of implementation) | Standard library incl. `net/http`; no application, runtime or CLI dependency; cmd may import it, cmd production files ban the `net/http` subtree |
-| `internal/config` | Configuration values and validation | Configuration is passed into composition, not ambient domain wiring |
+
+`internal/config` no longer exists (removed in #391): provider settings come from the environment, read where the
+provider is resolved (`internal/provider/registry`). The CLI's own `flowstate.json` is parsed in
+`cmd/flowstate/config.go`.
 
 Production Go roots are `cmd/flowstate`, the classified `internal` areas, and
 `scripts` for reusable tooling. New roots/public packages need an explicit ownership
@@ -70,7 +73,7 @@ preserved behaviour. No merge is authorized by a source-contract PASS.
 All new or modified production code under `internal/` must use mapped ORM
 models and operations for persistence. This includes application, runtime,
 provider transports and persistence adapters. Relocating raw SQL from
-`internal/app` into `internal/storage` is **not** compliance.
+`internal/app` into `internal/store` is **not** compliance.
 
 The committed-source guard (`make check-code-contract BASE_SHA=<actual PR
 base>`) rejects recognisable SQL statement literals, including DDL, and common
