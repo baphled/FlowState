@@ -165,6 +165,21 @@ var _ = Describe("durable run receipts naming children", func() {
 		}
 		Expect(runs[0].Children).To(Equal(children))
 	})
+
+	It("records the children as they were named, whatever the caller does to its slice afterwards", func() {
+		st := mustDurableStore()
+		children := []store.SwarmRunChild{{PacketID: "p1", SessionID: "s-1"}}
+		receipts := swarm.NewDurableReceipts(st, durableManifestSHA()).WithChildren(children)
+		children[0].SessionID = "changed-later"
+		if _, err := swarm.Run(context.Background(), durableManifest(), hashFor(), swarm.NewGateRunner(), nil, receipts); err != nil {
+			panic(err)
+		}
+		runs, err := st.SwarmRunsFor(context.Background(), "demo.swarm")
+		if err != nil || len(runs) != 1 {
+			panic("the run persisted no single record")
+		}
+		Expect(runs[0].Children[0].SessionID).To(Equal("s-1"))
+	})
 })
 
 var _ = Describe("durable run receipts under cancellation", func() {

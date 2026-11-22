@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/app"
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/store"
 	"github.com/baphled/flowstate/internal/swarm"
 )
@@ -293,6 +295,121 @@ var _ = Describe("RunSwarm", func() {
 		})
 	})
 
+	Context("when the caller cancels a run whose children exist", func() {
+		var (
+			st       *store.Store
+			parent   *store.Session
+			res      app.SwarmExecResult
+			finished string
+		)
+
+		// runCancelled cancels the run during its first gate, with the
+		// sigint cause; finishFirst completes one child beforehand.
+		runCancelled := func(finishFirst bool) {
+			st = openSwarmExecStore()
+			parent = swarmExecParent(ctx, st)
+			cctx, cancel := context.WithCancelCause(ctx)
+			defer cancel(nil)
+			gates := swarm.NewGateRunnerWith(func(context.Context, string, []string) error {
+				if finishFirst {
+					finished = childIDsOf(ctx, st, parent.ID)[0]
+					if err := st.UpdateSessionStatus(ctx, finished, "completed"); err != nil {
+						panic(err)
+					}
+				}
+				cancel(&app.CancelCause{Reason: "sigint"})
+				return nil
+			})
+			m := swarmExecManifest()
+			m.Gates = append(m.Gates, swarm.Gate{Name: "second", Command: "second"})
+			var err error
+			res, err = app.RunSwarm(cctx, st, parent, m, 0, admitAll{}, gates)
+			if !errors.Is(err, app.ErrSessionCancelled) || len(res.Children) != 2 {
+				panic("the run did not cancel after creating its children")
+			}
+		}
+
+		Context("and none had finished", func() {
+			BeforeEach(func() { runCancelled(false) })
+
+			It("leaves every child cancelled", func() {
+				Expect(childStatuses(ctx, st, res.Children)).To(Equal([]string{"cancelled", "cancelled"}))
+			})
+
+			It("records each child's cancelled event no later than its cancelled status", func() {
+				Expect(statusNotBeforeLastEvent(ctx, st, res.Children)).To(Equal([]bool{true, true}))
+			})
+
+			It("appends the cancelled event with the parent's reason", func() {
+				Expect(lastEventPayloads(ctx, st, res.Children)).To(Equal([]string{
+					session.TypeSessionCancelled + `:{"reason":"sigint","status":"cancelled"}`,
+					session.TypeSessionCancelled + `:{"reason":"sigint","status":"cancelled"}`,
+				}))
+			})
+
+			It("names the created children on the stored run", func() {
+				runs, err := st.SwarmRunsFor(ctx, "demo.swarm")
+				if err != nil || len(runs) != 1 {
+					panic("the cancelled run persisted no single record")
+				}
+				Expect(runs[0].Children).To(Equal(storedChildren(res.Children)))
+			})
+		})
+
+		Context("and the cancellation lands while the children are being created", func() {
+			var runs []store.SwarmRun
+
+			BeforeEach(func() {
+				st = openSwarmExecStore()
+				parent = swarmExecParent(ctx, st)
+				// Cancelled once one child exists: the run is cut short with
+				// exactly that child, whether the cancellation is first seen
+				// while it is being attributed or as the second is refused.
+				cctx := newCancelledWhen(hasChild(st, parent.ID))
+				var err error
+				res, err = app.RunSwarm(cctx, st, parent, swarmExecManifest(), 0, admitAll{}, swarm.NewGateRunner())
+				if !errors.Is(err, app.ErrSessionCancelled) || len(res.Children) != 1 {
+					panic(fmt.Sprintf("the run was not cut short after its first child: %v, %d children", err, len(res.Children)))
+				}
+				if runs, err = st.SwarmRunsFor(ctx, "demo.swarm"); err != nil {
+					panic(err)
+				}
+			})
+
+			It("cancels the child that had been created", func() {
+				Expect(childStatuses(ctx, st, res.Children)).To(Equal([]string{"cancelled"}))
+			})
+
+			It("stores exactly one run", func() {
+				Expect(runs).To(HaveLen(1))
+			})
+
+			It("names the created child on the stored run", func() {
+				Expect(runs[0].Children).To(Equal(storedChildren(res.Children)))
+			})
+
+			It("stores the run as failed", func() {
+				Expect(runs[0].Outcome).To(Equal("fail"))
+			})
+		})
+
+		Context("and one had completed", func() {
+			BeforeEach(func() { runCancelled(true) })
+
+			It("keeps the completed child's status", func() {
+				got, err := st.GetSession(ctx, finished)
+				if err != nil {
+					panic(err)
+				}
+				Expect(got.Status).To(Equal("completed"))
+			})
+
+			It("cancels the unfinished child", func() {
+				Expect(unfinishedStatuses(ctx, st, res.Children, finished)).To(Equal([]string{"cancelled"}))
+			})
+		})
+	})
+
 	It("maps a one-gate run cancelled mid-gate onto the interrupt error", func() {
 		st := openSwarmExecStore()
 		parent := swarmExecParent(ctx, st)
@@ -376,6 +493,177 @@ func grantedOf(res app.SwarmExecResult) []int64 {
 	out := make([]int64, 0, len(res.Reservations))
 	for _, r := range res.Reservations {
 		out = append(out, r.Granted)
+	}
+	return out
+}
+
+var _ = Describe("child session creation under cancellation", func() {
+	var (
+		ctx    context.Context
+		st     *store.Store
+		parent *store.Session
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		st = openSwarmExecStore()
+		parent = swarmExecParent(ctx, st)
+	})
+
+	It("creates nothing when the context is already cancelled", func() {
+		cctx, cancel := context.WithCancel(ctx)
+		cancel()
+		_, _ = app.CreateChildSession(cctx, st, parent.ID, "zai", "glm-5.3", "", "cfg", "the task")
+		Expect(childIDsOf(ctx, st, parent.ID)).To(BeEmpty())
+	})
+
+	It("reports the cancellation, not a usage error, for a cancelled context", func() {
+		cctx, cancel := context.WithCancel(ctx)
+		cancel()
+		_, err := app.CreateChildSession(cctx, st, parent.ID, "zai", "glm-5.3", "", "cfg", "the task")
+		Expect(err).To(MatchError(context.Canceled))
+	})
+
+	It("gives the child its task even when the cancellation lands as its row is written", func() {
+		cctx := newCancelledWhen(hasChild(st, parent.ID))
+		_, _ = app.CreateChildSession(cctx, st, parent.ID, "zai", "glm-5.3", "", "cfg", "the task")
+		ids := childIDsOf(ctx, st, parent.ID)
+		if len(ids) != 1 {
+			panic("no child was created")
+		}
+		evs, err := st.EventsAfter(ctx, ids[0], 0)
+		if err != nil {
+			panic(err)
+		}
+		Expect(evs).To(ContainElement(HaveField("Type", session.TypeTurnStart)))
+	})
+})
+
+// hasChild reports whether the parent has a child session yet. It is the
+// ready function of a cancelledWhen context, which database/sql also
+// consults from its own goroutines, possibly after the spec has ended: it
+// holds the store and id by value and treats a failed read as "not yet".
+func hasChild(st *store.Store, parentID string) func() bool {
+	return func() bool {
+		all, err := st.ListSessions(context.Background(), "")
+		if err != nil {
+			return false
+		}
+		for _, s := range all {
+			if s.ParentID == parentID {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// cancelledWhen is a context that becomes cancelled the first time it is
+// asked for its error after ready reports true, and stays cancelled: a
+// cancellation that lands once a known state has been reached. Err is
+// called from the code under test and from database/sql's goroutines, so
+// ready must be safe to call from any goroutine at any time.
+type cancelledWhen struct {
+	context.Context
+	ready func() bool
+	once  sync.Once
+	done  chan struct{}
+}
+
+func newCancelledWhen(ready func() bool) *cancelledWhen {
+	return &cancelledWhen{Context: context.Background(), ready: ready, done: make(chan struct{})}
+}
+
+// Done is closed once the context has reported its cancellation.
+func (c *cancelledWhen) Done() <-chan struct{} { return c.done }
+
+// Err reports the cancellation from the first call after ready is true.
+func (c *cancelledWhen) Err() error {
+	select {
+	case <-c.done:
+		return context.Canceled
+	default:
+	}
+	if !c.ready() {
+		return nil
+	}
+	c.once.Do(func() { close(c.done) })
+	return context.Canceled
+}
+
+// statusNotBeforeLastEvent reports, per child, whether its stored status
+// was written no earlier than its final event.
+func statusNotBeforeLastEvent(ctx context.Context, st *store.Store, children []app.SwarmChild) []bool {
+	var out []bool
+	for _, c := range children {
+		evs, err := st.EventsAfter(ctx, c.Session.ID, 0)
+		if err != nil || len(evs) == 0 {
+			panic("child has no events")
+		}
+		got, err := st.GetSession(ctx, c.Session.ID)
+		if err != nil {
+			panic(err)
+		}
+		out = append(out, !got.UpdatedAt.Before(evs[len(evs)-1].CreatedAt))
+	}
+	return out
+}
+
+// childIDsOf lists the ids of the parent's child sessions.
+func childIDsOf(ctx context.Context, st *store.Store, parentID string) []string {
+	all, err := st.ListSessions(ctx, "")
+	if err != nil {
+		panic(err)
+	}
+	var ids []string
+	for _, s := range all {
+		if s.ParentID == parentID {
+			ids = append(ids, s.ID)
+		}
+	}
+	return ids
+}
+
+// childStatuses reads each child's current stored status.
+func childStatuses(ctx context.Context, st *store.Store, children []app.SwarmChild) []string {
+	return unfinishedStatuses(ctx, st, children, "")
+}
+
+// unfinishedStatuses reads the stored status of every child except skip.
+func unfinishedStatuses(ctx context.Context, st *store.Store, children []app.SwarmChild, skip string) []string {
+	var out []string
+	for _, c := range children {
+		if c.Session.ID == skip {
+			continue
+		}
+		got, err := st.GetSession(ctx, c.Session.ID)
+		if err != nil {
+			panic(err)
+		}
+		out = append(out, got.Status)
+	}
+	return out
+}
+
+// lastEventPayloads renders each child's final event as type:payload.
+func lastEventPayloads(ctx context.Context, st *store.Store, children []app.SwarmChild) []string {
+	var out []string
+	for _, c := range children {
+		evs, err := st.EventsAfter(ctx, c.Session.ID, 0)
+		if err != nil || len(evs) == 0 {
+			panic("child has no events")
+		}
+		last := evs[len(evs)-1]
+		out = append(out, last.Type+":"+last.PayloadJSON)
+	}
+	return out
+}
+
+// storedChildren maps the result's children onto the stored shape.
+func storedChildren(children []app.SwarmChild) []store.SwarmRunChild {
+	var out []store.SwarmRunChild
+	for _, c := range children {
+		out = append(out, store.SwarmRunChild{PacketID: c.PacketID, SessionID: c.Session.ID})
 	}
 	return out
 }

@@ -33,8 +33,9 @@ var (
 	ErrSwarmRunChildMissing = errors.New("store: swarm run child packet and session ids must not be empty")
 )
 
-// RecordSwarmRun persists one configured-swarm run and its packet
-// admission rows in a single transaction: the store assigns the run
+// RecordSwarmRun persists one configured-swarm run, its packet
+// admission rows and the child sessions it names in a single
+// transaction: the store assigns the run
 // id and record time; validation failures write nothing and return
 // their sentinel.
 func (s *Store) RecordSwarmRun(ctx context.Context, run SwarmRun) (SwarmRun, error) {
@@ -79,7 +80,8 @@ func (s *Store) RecordSwarmRun(ctx context.Context, run SwarmRun) (SwarmRun, err
 }
 
 // SwarmRunsFor loads the recorded runs of the named swarm, oldest
-// first, each with its packet rows in admission order. An unknown
+// first, each with its packet rows in admission order and the child
+// sessions it named. An unknown
 // name is not an error; it yields no runs.
 func (s *Store) SwarmRunsFor(ctx context.Context, name string) ([]SwarmRun, error) {
 	if err := s.checkOpen(); err != nil {
