@@ -92,9 +92,32 @@ is skipped and an unchanged verdict is not repeated, so a head that is not admit
 once per change.
 
 An admitted head is re-published every cycle as before: `pending` then `success`, two statuses
-every 15 seconds plus the evaluation time. The merge-time `pending` flap therefore remains. GitHub
-keeps at most 1000 statuses per commit and context, which a head left admitted and unmerged
-reaches after about 500 cycles, a little over two hours; merge or push it before then.
+every 15 seconds plus the evaluation time. The merge-time `pending` flap therefore remains.
+
+GitHub keeps at most 1000 statuses per commit and context, and at the limit it refuses a `pending`
+and a `failure` (HTTP 422), so a standing `success` could no longer be withdrawn. A head must never
+get near the limit holding a success, so the publisher keeps a status budget per head
+(`STATUS_BUDGET`, 800, below `STATUS_LIMIT`, 1000). On first sight of a head, including after a restart,
+it reads how many statuses the context already holds on the commit: `GET /commits/<sha>/statuses`,
+newest first, paged by 100 and filtered to the context locally because GitHub offers no filter. That is
+one request for a head with under 100 statuses in all, about nine at the budget and about eleven at the
+limit. Afterwards the publisher counts the publications that returned; the count is kept outside the
+record so the ten-minute expiry cannot reset it. A publication that raised is never counted from memory:
+the count is dropped and read from GitHub again before the next one, so an outage cannot use up a head.
+While the answer is unreadable, malformed or longer than 30 pages, every status for the head becomes
+`failure: Admission status count is unavailable; retrying` (published on change, never a `success`), and
+the count is read again each cycle; the head is not ended.
+
+The publication that would take a head past the budget is replaced by one final `failure`,
+`Admission window for this commit is exhausted; push a new commit to continue`. Once that failure is
+published, nothing more is published for that head and never a `success`, whatever the evaluation says,
+until the head's SHA changes or it leaves the open candidates. The 200 statuses of reserve cover the
+final failure; if it raises it is retried each cycle until it lands, and the head is not ended before it
+does. After a restart the same head is exhausted again from the GitHub count: nothing is published when
+the newest status of the context is already that failure from the publisher, otherwise one failure is. A
+head GitHub already holds at the limit is left alone, because nothing can be published to it. Below the
+budget nothing changes. A `--once` run on an exhausted head publishes nothing, so read the pull request
+page for the verdict.
 
 The record is invalidated before every publication and written only after it returned. Any
 exception, including one raised after GitHub applied the POST and KeyboardInterrupt, leaves no
@@ -102,7 +125,8 @@ record, so the next cycle publishes the marker and the verdict unconditionally; 
 `failure` is never skipped because of a publication that failed locally. A record older than
 ten minutes (`RECORD_TTL`) counts as absent, so the publisher re-asserts its status at least
 that often and reconciles with anything another writer posted to the context. Heads that are no
-longer the head of an open candidate PR are dropped at each scan, and a restart starts empty.
+longer the head of an open candidate PR are dropped at each scan (with their counts and clocks), and
+a restart starts empty.
 Every `success` still passes the live branch-protection check inside the issuer.
 
 The record is keyed by head because GitHub keeps one status per head and context, while
@@ -122,13 +146,26 @@ that finished without success is a `failure`. A waiting `pending` is a non-succe
 marker is skipped while it stands and it is published once per change. A pending candidate is
 not admitted: `--once`/`--pr` still exit nonzero.
 
+Waiting for a required check has a deadline. The publisher records when it first saw a head waiting for
+a given check; after 60 minutes (`CHECK_DEADLINE`) of continuous waiting for the SAME check it publishes
+`failure: required check <name> has not reported after 60 minutes` instead of the waiting `pending`, so
+a workflow that never triggers is visible. The failure is not sticky: when the check reports, or any
+other verdict is reached, the next evaluation publishes whatever is true and the clock is cleared; a
+different unfinished check starts its own clock. The clock is kept outside the record (it survives the
+ten-minute expiry) but only in the process, so a restart resets it. The review wait (`Awaiting an
+independent exact-head agent review`) never times out: a review can legitimately take long and is the
+operator's own action. Pending and failure both block the merge; the deadline only tells the truth.
+
 In service mode an `AdmissionError` raised by a scan (for example a transient GitHub
 API error while listing pull requests) is logged to stderr as
 `scan failed (<n> consecutive): <reason>`; the loop sleeps and tries again and the count
-resets after a scan completes. After 20 consecutive failed scans (`SCAN_FAILURE_LIMIT`, about
-five minutes) the service exits non-zero, so systemd restarts it, startup verification runs
-again and a persistent failure shows in the restart counter. Unexpected exceptions, SIGTERM
-and KeyboardInterrupt stop the service at once, and `--once`, `--pr`, `--check-config` and
+resets after a scan completes. A scan with at least one candidate in which every candidate raised
+(credential, GitHub or publication faults, as opposed to a PR that was simply not admitted and whose
+verdict was published) is a failed scan and raises, while one healthy candidate keeps it good. After
+20 consecutive failed scans (`SCAN_FAILURE_LIMIT`, about five minutes) the service exits non-zero, so
+systemd restarts it, startup verification runs again and a persistent failure shows in the restart
+counter. Unexpected exceptions, SIGTERM and KeyboardInterrupt stop the service at once, and `--once`,
+`--pr`, `--check-config` and
 `--watch` are unchanged.
 
 The separate CI `Merge Admission Result` job is a publisher liveness monitor. It runs only for

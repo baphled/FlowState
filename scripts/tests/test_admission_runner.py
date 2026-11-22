@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from scripts.admission_metadata import AdmissionError, AdmissionPending, IN_PROGRESS
-from scripts.admission_publish import ChangedStatusPublisher
+from scripts.admission_publish import ChangedStatusPublisher, PublishedRecords
 from scripts.admission_runner import (
     CandidatePublisher, SCAN_FAILURE_LIMIT, main, process, report, run_candidate, scan, serve, watch,
 )
@@ -77,7 +77,7 @@ class Runner(unittest.TestCase):
                                      'base': {'ref': 'next'}, 'body': ''} for n in (265, 267)]
         with patch('scripts.admission_runner.GitHub', return_value=reader), \
                 patch('scripts.admission_runner.process', side_effect=[RuntimeError(), False]) as run:
-            self.assertFalse(scan(CONFIG))
+            self.assertFalse(scan(CONFIG, None, PublishedRecords()))
             self.assertEqual([c.args[0] for c in run.call_args_list], [265, 267])
 
     def test_waiting_refusal_is_published_as_pending_and_other_errors_as_failure(self):
@@ -90,18 +90,20 @@ class Runner(unittest.TestCase):
     def cycle(self, github, issuer, published):
         config = dict(CONFIG, dropbox_read_token=FakeDropbox(), review_public_key=public(REVIEW_PRIVATE),
                       execution_public_key=public(EXECUTION_PRIVATE))
-        publisher = CandidatePublisher(ChangedStatusPublisher(issuer, published), HEAD)
+        github.request = lambda method, path: []
+        publisher = CandidatePublisher(ChangedStatusPublisher(issuer, published, github), HEAD)
         return run_candidate(225, github, publisher, config, lambda: 150)
 
     def unreviewed(self):
         github = FakeGitHub()
         original = github.pr
         github.pr = lambda number: dict(original(number), body='')
+        github.request = lambda method, path: []
         return github
 
     def test_admitted_candidate_publishes_the_marker_then_success_every_cycle(self):
         issuer, posted = issuing(protection())
-        github, published = FakeGitHub(), {}
+        github, published = FakeGitHub(), PublishedRecords()
         results = [self.cycle(github, issuer, published) for _ in range(3)]
         self.assertEqual((results, [state for state, _ in posted]), ([True] * 3, ['pending', 'success'] * 3))
 
@@ -109,7 +111,7 @@ class Runner(unittest.TestCase):
         """Admit a head, apply the drift, run one more cycle; return the statuses of that cycle."""
         policy = protection()
         issuer, posted = issuing(policy)
-        github, published = FakeGitHub(), {}
+        github, published = FakeGitHub(), PublishedRecords()
         self.cycle(github, issuer, published)
         before = len(posted)
         mutate(github, policy)
@@ -139,14 +141,14 @@ class Runner(unittest.TestCase):
 
     def test_unreviewed_candidate_publishes_a_constant_number_of_statuses(self):
         issuer, posted = issuing(protection())
-        github, published = self.unreviewed(), {}
+        github, published = self.unreviewed(), PublishedRecords()
         for _ in range(5):
             self.assertFalse(self.cycle(github, issuer, published))
         self.assertEqual(posted, [('pending', IN_PROGRESS), ('pending', WAITING)])
 
     def test_two_prs_on_one_head_publish_three_statuses_per_steady_cycle_and_the_last_wins(self):
         issuer, posted = issuing(protection())
-        admitted, refused, published = FakeGitHub(), self.unreviewed(), {}
+        admitted, refused, published = FakeGitHub(), self.unreviewed(), PublishedRecords()
         counts = []
         for _ in range(4):
             self.cycle(admitted, issuer, published)
@@ -166,7 +168,7 @@ class Runner(unittest.TestCase):
 
     def test_a_success_applied_then_raising_is_followed_by_a_failure_every_cycle(self):
         issuer, posted = self.raising_issuer()
-        github, published = FakeGitHub(), {}
+        github, published = FakeGitHub(), PublishedRecords()
         for _ in range(3):
             self.assertFalse(self.cycle(github, issuer, published))
             self.assertEqual(posted[-1][0], 'failure')
@@ -184,11 +186,11 @@ class Runner(unittest.TestCase):
         return posted
 
     def test_process_publishes_one_verdict_for_an_unreviewed_pr_across_two_calls(self):
-        posted = self.process_twice({})
+        posted = self.process_twice(PublishedRecords())
         self.assertEqual(posted, [('pending', IN_PROGRESS), ('pending', WAITING)])
 
     def test_process_routes_through_the_wrapper_and_fills_the_shared_record(self):
-        published = {}
+        published = PublishedRecords()
         self.process_twice(published)
         self.assertEqual(published[HEAD][:2], ('pending', WAITING))
 
@@ -196,7 +198,7 @@ class Runner(unittest.TestCase):
         reader = Mock()
         reader.pages.return_value = [{'number': 1, 'state': 'open', 'draft': False, 'base': {'ref': 'next'},
                                       'head': {'sha': HEAD}}]
-        published = {}
+        published = PublishedRecords()
         with patch('scripts.admission_runner.GitHub', return_value=reader), \
                 patch('scripts.admission_runner.process', return_value=True) as processed:
             scan(CONFIG, None, published)
@@ -206,11 +208,62 @@ class Runner(unittest.TestCase):
         reader = Mock()
         reader.pages.return_value = [{'number': 1, 'state': 'open', 'draft': False, 'base': {'ref': 'next'},
                                       'head': {'sha': HEAD}}]
-        published = {HEAD: ('failure', 'x'), '9' * 40: ('success', 'y')}
+        published = PublishedRecords()
+        published.update({HEAD: ('failure', 'x'), '9' * 40: ('success', 'y')})
+        published.counts['9' * 40] = 5
         with patch('scripts.admission_runner.GitHub', return_value=reader), \
                 patch('scripts.admission_runner.process', return_value=True):
             scan(CONFIG, None, published)
         self.assertEqual(list(published), [HEAD])
+
+    def test_scan_forgets_the_status_count_of_a_head_that_is_no_longer_a_candidate(self):
+        reader = Mock()
+        reader.pages.return_value = []
+        published = PublishedRecords()
+        published.counts[HEAD] = 5
+        with patch('scripts.admission_runner.GitHub', return_value=reader):
+            scan(CONFIG, None, published)
+        self.assertEqual(published.counts, {})
+
+    def scanning(self, outcomes):
+        """Scan open PRs numbered 1.. whose process() yields each outcome (an exception is raised)."""
+        reader = Mock()
+        reader.pages.return_value = [{'number': n, 'state': 'open', 'draft': False, 'base': {'ref': 'next'},
+                                      'head': {'sha': HEAD}} for n, _ in enumerate(outcomes, 1)]
+        with patch('scripts.admission_runner.GitHub', return_value=reader), \
+                patch('scripts.admission_runner.process', side_effect=outcomes), patch('sys.stderr', io.StringIO()):
+            return scan(CONFIG, None, PublishedRecords())
+
+    def test_a_scan_in_which_every_candidate_faulted_raises(self):
+        with self.assertRaises(AdmissionError):
+            self.scanning([AdmissionError('credentials'), RuntimeError('boom')])
+
+    def test_a_scan_with_one_candidate_that_faulted_raises(self):
+        with self.assertRaises(AdmissionError):
+            self.scanning([AdmissionError('credentials')])
+
+    def test_a_scan_with_one_healthy_candidate_is_not_a_failed_scan(self):
+        self.assertFalse(self.scanning([AdmissionError('credentials'), True]))
+
+    def test_a_scan_in_which_every_pr_is_simply_not_admitted_is_a_good_scan(self):
+        self.assertFalse(self.scanning([False, False]))
+
+    def test_a_scan_with_no_candidates_is_a_good_scan(self):
+        self.assertTrue(self.scanning([]))
+
+    def test_twenty_all_faulted_scans_stop_the_service(self):
+        reader = Mock()
+        reader.pages.return_value = [{'number': 1, 'state': 'open', 'draft': False, 'base': {'ref': 'next'},
+                                      'head': {'sha': HEAD}}]
+        errors = io.StringIO()
+        with patch('scripts.admission_runner.configuration', return_value=dict(CONFIG)), \
+                patch('scripts.admission_runner.startup'), patch('scripts.admission_runner.ready'), \
+                patch('scripts.admission_runner.GitHub', return_value=reader), \
+                patch('scripts.admission_runner.process', side_effect=AdmissionError('credentials')), \
+                patch('scripts.admission_runner.time.sleep', side_effect=[None] * 30 + [KeyboardInterrupt()]), \
+                patch('sys.stderr', errors):
+            code = main([])
+        self.assertEqual((code, errors.getvalue().count('scan failed')), (1, SCAN_FAILURE_LIMIT))
 
     def serve(self, scan_effects, sleeps):
         errors = io.StringIO()
@@ -271,12 +324,13 @@ class Runner(unittest.TestCase):
     def test_credentials_are_closed_and_cleanup_failure_revokes_success(self):
         credentials = Mock()
         credentials.close.side_effect = OSError()
-        issuer = Mock()
+        issuer, reader = Mock(), FakeGitHub()
+        reader.request = lambda method, path: []
         with patch('scripts.admission_runner.AppCredentials', return_value=credentials), \
                 patch('scripts.admission_runner.StatusIssuer', return_value=issuer), \
                 patch('scripts.admission_runner.run_candidate', return_value=True):
             with self.assertRaisesRegex(AdmissionError, 'cleanup'):
-                process(225, FakeGitHub(), CONFIG)
+                process(225, reader, CONFIG)
         issuer.status.assert_called_once_with(HEAD, 'failure', 'issuer credential cleanup failed')
         credentials.close.assert_called_once()
 
@@ -367,6 +421,8 @@ from scripts.admission_runner import process, terminate
 from scripts.tests.test_admission_runner import CONFIG
 from scripts.tests.test_admission_io import FakeGitHub
 signal.signal(signal.SIGTERM, terminate)
+reader = FakeGitHub()
+reader.request = lambda method, path: []
 issuer = Mock()
 issuer.status.side_effect = lambda head, state, text: print(state, flush=True)
 credentials = Mock()
@@ -375,7 +431,7 @@ def evaluate(event, reader, token, publisher, *args):
     publisher.status(reader.pr(225)['head']['sha'], 'pending', 'evaluating')
     signal.pause()
 with patch('scripts.admission_runner.AppCredentials', return_value=credentials), patch('scripts.admission_runner.StatusIssuer', return_value=issuer), patch('scripts.admission_runner.execute', side_effect=evaluate):
-    process(225, FakeGitHub(), CONFIG)
+    process(225, reader, CONFIG)
 '''
         child = subprocess.Popen([sys.executable, '-B', '-c', script], stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE, text=True)
