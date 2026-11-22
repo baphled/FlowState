@@ -32,12 +32,13 @@ import (
 //
 // Failure semantics (fail-closed, S2): an invalid manifest aborts
 // before any creation; any child-creation, reservation or steering
-// failure aborts the run with the partial result — children already
-// created stay active (compensated rollback is M2+). Budget failures
-// surface as ErrUsage through the ReserveChildBudget seam. A run
-// cancelled after children exist records each unfinished child as
-// cancelled (see cancelSwarmChildren) and names them on its stored
-// run. When a gate fails or admission rejects, the complete child set stays and
+// failure aborts the run with the partial result: the children already
+// created are cancelled as swarm_aborted, their reservations settled,
+// and a failed run naming them is stored (see abortSwarmCreation).
+// Budget failures surface as ErrUsage through the ReserveChildBudget
+// seam. A run cancelled after children exist records each unfinished
+// child as cancelled (see cancelSwarmChildren) and names them on its
+// stored run. When a gate fails or admission rejects, the complete child set stays and
 // the error reports the swarm as not accepted.
 func RunSwarm(ctx context.Context, st *Store, parent *store.Session, m swarm.Manifest,
 	budgetPerChild int64, admitter swarm.RunAdmitter, gates *swarm.GateRunner) (SwarmExecResult, error) {
@@ -57,7 +58,7 @@ func RunSwarm(ctx context.Context, st *Store, parent *store.Session, m swarm.Man
 			cerr := recordCancelledCreation(ctx, st, m, res, admitter, gates)
 			return res, settleCancelledSwarm(ctx, st, res, errors.Join(mapSwarmRunError(ctx.Err()), cerr))
 		}
-		return res, err
+		return res, abortSwarmCreation(ctx, st, m, res, admitter, gates, err)
 	}
 	run, err := swarmRunDurable(ctx, st, m, res, admitter, gates)
 	res.Admitted, res.Gates = run.Admitted, run.Gates
@@ -302,5 +303,34 @@ func cancelSwarmChild(ctx context.Context, st *Store, id, reason string) error {
 		map[string]any{"status": "cancelled", "reason": reason}); err != nil {
 		return err
 	}
-	return st.UpdateSessionStatus(ctx, id, "cancelled")
+	if err := st.UpdateSessionStatus(ctx, id, "cancelled"); err != nil {
+		return err
+	}
+	if err := st.SetReservationCharged(ctx, id); err != nil {
+		return fmt.Errorf("%w: %w", ErrReservationSettle, err)
+	}
+	return nil
+}
+
+// ReasonSwarmAborted is the cancellation reason recorded on children
+// whose swarm run stopped for a reason other than cancellation.
+const ReasonSwarmAborted = "swarm_aborted"
+
+// abortSwarmCreation closes out a run whose child creation failed for a
+// reason other than cancellation: the children already created are
+// cancelled with ReasonSwarmAborted, their reservations settled, and a
+// failed run naming them is stored, as for a cancelled run. It returns
+// err, the original failure, joined with any recording failure so its
+// class is kept.
+func abortSwarmCreation(ctx context.Context, st *Store, m swarm.Manifest, res SwarmExecResult,
+	admitter swarm.RunAdmitter, gates *swarm.GateRunner, err error) error {
+	if len(res.Children) == 0 {
+		return err
+	}
+	// A cancelled copy makes the run record without evaluating any gate.
+	actx, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
+	cancel(&CancelCause{Reason: ReasonSwarmAborted})
+	rec := recordCancelledCreation(actx, st, m, res, admitter, gates)
+	can := cancelSwarmChildren(context.WithoutCancel(ctx), st, res.Children, ReasonSwarmAborted)
+	return errors.Join(err, rec, can)
 }

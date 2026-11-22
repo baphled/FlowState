@@ -37,7 +37,8 @@ func CreateSession(ctx context.Context, st *Store, provider, modelID, harness, c
 // ErrUsage), the child id is a fresh UUIDv7, and the child log opens
 // with a session.delegated event (actor user, payload parent_id)
 // before the initial turn.start carrying the task. A context that is
-// already done creates nothing; once the child's row is written the
+// already done creates nothing and reports ErrSessionCancelled (the
+// context error stays in the chain); once the child's row is written the
 // creation completes whatever happens to the context, so a child either
 // does not exist or exists with its task.
 func CreateChildSession(ctx context.Context, st *Store, parentID, provider, modelID, harness, configSHA, task string) (*store.Session, error) {
@@ -45,7 +46,7 @@ func CreateChildSession(ctx context.Context, st *Store, parentID, provider, mode
 		return nil, fmt.Errorf("%w: parent, provider, model and task must not be empty", ErrUsage)
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("create child session: %w", err)
+		return nil, fmt.Errorf("%w: create child session: %w", ErrSessionCancelled, err)
 	}
 	parent, err := st.GetSession(ctx, parentID)
 	if err != nil {
