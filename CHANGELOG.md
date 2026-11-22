@@ -2,6 +2,23 @@
 
 All notable changes to the FlowState project will be documented in this file.
 
+## [1.8.1](https://github.com/baphled/FlowState/compare/v1.8.0...v1.8.1) (2026-11-22)
+
+### Bug Fixes
+
+* **app:** class a rejected swarm run as receipt_invalid ([#379](https://github.com/baphled/FlowState/issues/379)) ([d506e85](https://github.com/baphled/FlowState/commit/d506e85865227a5f958931d30ec54f5407ebd61b))
+* **app:** let a cancelled caller stop a swarm run ([#373](https://github.com/baphled/FlowState/issues/373)) ([7d8c959](https://github.com/baphled/FlowState/commit/7d8c959c684100f2da0560da60616327909ce74b))
+* **engine:** stop a cancelled gate's whole process group ([#380](https://github.com/baphled/FlowState/issues/380)) ([e24aa1e](https://github.com/baphled/FlowState/commit/e24aa1e515204266551ee34f48cbdd5a2628e598))
+* **provider:** keep a length finish reason once the stream reports it ([#383](https://github.com/baphled/FlowState/issues/383)) ([d81d1ed](https://github.com/baphled/FlowState/commit/d81d1ed616aaff22190174dd3dcaedc880d7ee09))
+* **provider:** send an explicit z.ai token limit as given ([#375](https://github.com/baphled/FlowState/issues/375)) ([61e8234](https://github.com/baphled/FlowState/commit/61e82345e0a54456524f70136897c1ace3f92eda))
+* **session:** cancel a run when the terminal hangs up ([#382](https://github.com/baphled/FlowState/issues/382)) ([87f5a50](https://github.com/baphled/FlowState/commit/87f5a505c61282627ac11d14f6b0d6469d0fdc27))
+* **store:** order sessions, messages and swarm runs chronologically ([#381](https://github.com/baphled/FlowState/issues/381)) ([4c1185f](https://github.com/baphled/FlowState/commit/4c1185f22b88e8091fc3df74e1502a783ed4458a))
+* **workflow:** let admission accept attested file deletions ([#374](https://github.com/baphled/FlowState/issues/374)) ([1bba090](https://github.com/baphled/FlowState/commit/1bba090805e3aafa06d79fbc57888eac63b3e42e))
+
+### Code Refactoring
+
+* **engine:** remove the unused legacy runtime package ([#377](https://github.com/baphled/FlowState/issues/377)) ([82f774d](https://github.com/baphled/FlowState/commit/82f774dfff2eb032a0a34d462b93a8a273af6ee9))
+
 ## [1.8.0](https://github.com/baphled/FlowState/compare/v1.7.1...v1.8.0) (2026-11-21)
 
 ### Features
