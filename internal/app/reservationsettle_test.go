@@ -55,4 +55,55 @@ var _ = Describe("SettleError", func() {
 		It("keeps the session id", func() { Expect(got.SessionID).To(Equal("c1")) })
 		It("keeps the cause", func() { Expect(got.SettleCause()).To(MatchError(cause)) })
 	})
+
+	Context("with no cause", func() {
+		var err *SettleError
+
+		BeforeEach(func() { err = &SettleError{SessionID: "s1"} })
+
+		It("prints no placeholder in the message", func() {
+			Expect(err.Error()).To(Equal("reservation_settle_failed: session s1"))
+		})
+		It("prints no placeholder after a cancellation", func() {
+			err.Cancelled = ErrSessionCancelled
+			Expect(err.Detail()).To(Equal("session s1 is cancelled"))
+		})
+		It("unwraps without a nil entry", func() {
+			Expect(err.Unwrap()).To(Equal([]error{ErrReservationSettle}))
+		})
+	})
+})
+
+var _ = Describe("SettleErrors", func() {
+	var a, b *SettleError
+
+	BeforeEach(func() {
+		a = &SettleError{SessionID: "a", Cause: errors.New("x")}
+		b = &SettleError{SessionID: "b", Cause: errors.New("y")}
+	})
+
+	ids := func(errs []*SettleError) []string {
+		out := []string{}
+		for _, e := range errs {
+			out = append(out, e.SessionID)
+		}
+		return out
+	}
+
+	It("returns every settle failure of a join in order", func() {
+		Expect(ids(SettleErrors(errors.Join(ErrSessionCancelled, a, b)))).To(Equal([]string{"a", "b"}))
+	})
+	It("finds failures under wrapping and nested joins", func() {
+		err := fmt.Errorf("run: %w", errors.Join(fmt.Errorf("child: %w", a), errors.Join(b)))
+		Expect(ids(SettleErrors(err))).To(Equal([]string{"a", "b"}))
+	})
+	It("returns one failure for a single error", func() {
+		Expect(ids(SettleErrors(a))).To(Equal([]string{"a"}))
+	})
+	It("returns nothing for an error without a settle failure", func() {
+		Expect(SettleErrors(errors.Join(ErrSessionCancelled, errors.New("other")))).To(BeEmpty())
+	})
+	It("returns nothing for a nil error", func() {
+		Expect(SettleErrors(nil)).To(BeEmpty())
+	})
 })
