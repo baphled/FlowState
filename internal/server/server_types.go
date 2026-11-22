@@ -324,3 +324,11 @@ type diagnosisBody struct {
 	FinishReason    string `json:"finish_reason,omitempty"`
 	Truncated       bool   `json:"truncated,omitempty"`
 }
+
+// cancelCause is a request cancellation cause that also names the reason a
+// cancelled run records; internal/app reads CancelReason through an
+// interface, as this package must not import it.
+type cancelCause struct {
+	message string
+	reason  string
+}

@@ -52,9 +52,36 @@ func (s *Server) writeError(w http.ResponseWriter, err error) {
 // errClientGone and errShuttingDown classify a read that was cut short
 // by cancellation; cancelAware produces them and writeError renders them.
 var (
-	errClientGone   = errors.New("client disconnected")
-	errShuttingDown = errors.New("server is shutting down")
+	errClientGone   error = &cancelCause{"client disconnected", "client_disconnected"}
+	errShuttingDown error = &cancelCause{"server is shutting down", "shutdown"}
 )
+
+// Error implements error.
+func (c *cancelCause) Error() string { return c.message }
+
+// CancelReason is the reason a run cancelled by this cause records.
+func (c *cancelCause) CancelReason() string { return c.reason }
+
+// runContext detaches the run route's context from the request's and
+// cancels it with errShuttingDown or errClientGone as its cause when the
+// request ends, so the run records why it was cancelled. A child of the
+// request context would inherit the request's cause instead, which is
+// empty for a disconnect.
+func runContext(r *http.Request) (context.Context, context.CancelFunc) {
+	parent := r.Context()
+	ctx, cancel := context.WithCancelCause(context.WithoutCancel(parent))
+	stop := context.AfterFunc(parent, func() { cancel(cancelledBy(parent)) })
+	return ctx, func() { stop(); cancel(nil) }
+}
+
+// cancelledBy is errShuttingDown when ctx was cancelled by shutdown and
+// errClientGone otherwise.
+func cancelledBy(ctx context.Context) error {
+	if errors.Is(context.Cause(ctx), errShuttingDown) {
+		return errShuttingDown
+	}
+	return errClientGone
+}
 
 // cancelAware wraps the read ports so a context error raised while the
 // request context is done becomes errShuttingDown (the serve context
@@ -84,10 +111,7 @@ func classifyCancel(ctx context.Context, err error) error {
 		(!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)) {
 		return err
 	}
-	if errors.Is(context.Cause(ctx), errShuttingDown) {
-		return errShuttingDown
-	}
-	return errClientGone
+	return cancelledBy(ctx)
 }
 
 func guardTwo[A, R any](f func(context.Context, A) (R, error)) func(context.Context, A) (R, error) {
