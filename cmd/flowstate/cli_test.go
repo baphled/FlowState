@@ -154,7 +154,19 @@ func e2eRunWith(baseURL, dir string, extraEnv []string, argv ...string) result {
 // output after it receives is race-free (the exec copiers finish
 // before Wait returns).
 func e2eStart(baseURL string, argv ...string) (*exec.Cmd, chan result) {
-	cmd := e2eExecCommand(e2eBin, argv...)
+	return e2eSpawn(e2eExecCommand(e2eBin, argv...), baseURL)
+}
+
+// e2eStartHangupIgnored starts the binary as nohup would: a POSIX shell
+// ignores SIGHUP and execs the binary, which inherits the ignored
+// disposition and keeps the shell's PID. Unix only.
+func e2eStartHangupIgnored(baseURL string, argv ...string) (*exec.Cmd, chan result) {
+	wrapped := append([]string{"-c", `trap '' HUP; exec "$@"`, "sh", e2eBin}, argv...)
+	return e2eSpawn(e2eExecCommand("/bin/sh", wrapped...), baseURL)
+}
+
+// e2eSpawn starts cmd with the e2e environment and reports its result.
+func e2eSpawn(cmd *exec.Cmd, baseURL string) (*exec.Cmd, chan result) {
 	cmd.Env = e2eEnv(baseURL)
 	var out, errs bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errs
@@ -1036,6 +1048,70 @@ var _ = Describe("CLI end-to-end contract matrix", Label("e2e"), func() {
 			})
 		})
 	}
+
+	Context("a run started with SIGHUP ignored (nohup)", func() {
+		if runtime.GOOS == "windows" {
+			return // no POSIX signals or sh wrapper; see the signal specs above
+		}
+		var cmd *exec.Cmd
+		var done chan result
+		var db, id string
+
+		BeforeEach(func() {
+			srv, arrived := e2eStallProvider()
+			db = filepath.Join(GinkgoT().TempDir(), "e2e.db")
+			id = e2eNewSession(srv.URL, db)
+			cmd, done = e2eStartHangupIgnored(srv.URL, "session", "run", "--db", db, id)
+			// Stop exactly the process started here, whether or not a spec failed.
+			DeferCleanup(func() { _ = cmd.Process.Kill() })
+			select {
+			case <-arrived:
+			case <-time.After(10 * time.Second):
+				panic("provider request not observed")
+			}
+			// A persisted event shows the run is live past handler installation.
+			deadline, ticker := time.After(10*time.Second), time.NewTicker(50*time.Millisecond)
+			defer ticker.Stop()
+			for live := false; !live; {
+				select {
+				case <-deadline:
+					panic("first persisted event not observed")
+				case <-ticker.C:
+					live = len(e2eEvents(srv.URL, db, id)) > 0
+				}
+			}
+			if err := cmd.Process.Signal(syscall.SIGHUP); err != nil {
+				panic(err)
+			}
+		})
+		It("keeps running after SIGHUP", func() {
+			Consistently(done).WithTimeout(2 * time.Second).WithPolling(100 * time.Millisecond).ShouldNot(Receive())
+		})
+		It("records no cancellation after SIGHUP", func() {
+			Consistently(func() string { return cancelledReason(db, id) }).
+				WithTimeout(2 * time.Second).WithPolling(100 * time.Millisecond).Should(BeEmpty())
+		})
+		It("exits 130 on a following SIGTERM", func() {
+			if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+				panic(err)
+			}
+			Eventually(func() int {
+				select {
+				case run := <-done:
+					return run.exit
+				default:
+					return -1 // still running
+				}
+			}).WithTimeout(30 * time.Second).WithPolling(100 * time.Millisecond).Should(Equal(130))
+		})
+		It("records the reason sigterm", func() {
+			if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+				panic(err)
+			}
+			Eventually(func() string { return cancelledReason(db, id) }).
+				WithTimeout(30 * time.Second).WithPolling(100 * time.Millisecond).Should(Equal("sigterm"))
+		})
+	})
 
 	Context("--json output validates against committed schemas", func() {
 		// The schemas in schemas/cli.json are hand-authored per
