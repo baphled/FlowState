@@ -142,13 +142,11 @@ class ShippedPolicy(unittest.TestCase):
     def test_repo_policy_tiers(self):
         policy = (Path(__file__).resolve().parents[2] / '.env.ci').read_text(encoding='utf-8')
         self.assertEqual(select(policy, 'feat(app): wide surface', 'feature/wide'), 1200)
-        # 800 is the temporary, owner-approved one-off recorded in .env.ci; the restoring change returns to 600.
-        self.assertEqual(select(policy, 'fix(store): replay text', 'fix/replay'), 800)
+        self.assertEqual(select(policy, 'fix(store): replay text', 'fix/replay'), 600)
         self.assertEqual(select(policy, 'docs(adr): notes', 'docs/notes'), 2000)
 
     def test_repo_files_policy_tiers(self):
         policy = (Path(__file__).resolve().parents[2] / '.env.ci').read_text(encoding='utf-8')
         self.assertEqual(select_files(policy, 'feat(app): wide surface', 'feature/wide'), 15)
-        # 14 is the temporary, owner-approved one-off recorded in .env.ci; the restoring change returns to 10.
-        self.assertEqual(select_files(policy, 'fix(store): replay text', 'fix/replay'), 14)
-        self.assertEqual(select_files(policy, 'docs(adr): notes', 'docs/notes'), 14)
+        self.assertEqual(select_files(policy, 'fix(store): replay text', 'fix/replay'), 10)
+        self.assertEqual(select_files(policy, 'docs(adr): notes', 'docs/notes'), 10)
