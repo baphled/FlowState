@@ -5,6 +5,7 @@ package swarm_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -30,8 +31,9 @@ var _ = Describe("gate runner process groups", func() {
 	}
 
 	// recordedPID blocks until the gate script writes its child's PID into
-	// the FIFO at pidfile, so no polling is needed; it panics on timeout.
-	recordedPID := func() int {
+	// the FIFO at pidfile, so no polling is needed; it panics on timeout,
+	// saying whether the gate had already finished (done holds its result).
+	recordedPID := func(done <-chan swarm.GatesDecision) int {
 		got := make(chan string, 1)
 		go func() {
 			raw, err := os.ReadFile(pidfile)
@@ -49,7 +51,7 @@ var _ = Describe("gate runner process groups", func() {
 			}
 			return pid
 		case <-time.After(10 * time.Second):
-			panic("the gate script never recorded its child PID")
+			panic(fmt.Sprintf("the gate script never recorded its child PID (gate finished: %t)", len(done) > 0))
 		}
 	}
 
@@ -58,13 +60,17 @@ var _ = Describe("gate runner process groups", func() {
 		DeferCleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
 	}
 
-	// script writes a gate script and returns a manifest that runs it.
+	// script writes a gate script and returns a manifest that runs it
+	// through /bin/sh. The script is read by the shell rather than executed
+	// itself: executing a file written a moment ago is where a hosted macOS
+	// runner sometimes stalled for longer than the PID wait (the first run of
+	// a new executable is assessed by the system, and can also fail as busy).
 	script := func(body string) swarm.Manifest {
 		path := filepath.Join(dir, "gate.sh")
-		if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o700); err != nil {
+		if err := os.WriteFile(path, []byte(body+"\n"), 0o600); err != nil {
 			panic(err)
 		}
-		return swarm.Manifest{Name: "s", Scope: "m2", Gates: []swarm.Gate{{Name: "g", Command: path}}}
+		return swarm.Manifest{Name: "s", Scope: "m2", Gates: []swarm.Gate{{Name: "g", Command: "/bin/sh " + path}}}
 	}
 
 	BeforeEach(func() {
@@ -87,7 +93,7 @@ var _ = Describe("gate runner process groups", func() {
 			defer cancel()
 			done := make(chan swarm.GatesDecision, 1)
 			go func() { done <- swarm.NewGateRunner().Evaluate(ctx, m) }()
-			child = recordedPID()
+			child = recordedPID(done)
 			track(child)
 			cancel()
 			select {
@@ -121,7 +127,7 @@ var _ = Describe("gate runner process groups", func() {
 			m := script("sleep 300 </dev/null >/dev/null 2>&1 &\necho $! > " + pidfile)
 			done := make(chan swarm.GatesDecision, 1)
 			go func() { done <- swarm.NewGateRunner().Evaluate(context.Background(), m) }()
-			child = recordedPID()
+			child = recordedPID(done)
 			track(child)
 			select {
 			case decision = <-done:
