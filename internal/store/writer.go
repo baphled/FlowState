@@ -75,7 +75,7 @@ func nullableParent(parentID string) *string {
 }
 
 // session projects the row onto the public Session record; stored
-// timestamps are RFC3339Nano UTC text.
+// timestamps are UTC text.
 func (r sessionRow) session() *Session {
 	sess := &Session{
 		ID: r.ID, Status: r.Status, Provider: r.Provider, ModelID: r.ModelID,
@@ -89,7 +89,9 @@ func (r sessionRow) session() *Session {
 	return sess
 }
 
-func iso(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+// iso renders t in the fixed-width stored layout; parsing with
+// time.RFC3339Nano accepts both it and older trimmed strings.
+func iso(t time.Time) string { return t.UTC().Format(timestampLayout) }
 
 // isUniqueConstraint reports whether err is a SQLite UNIQUE constraint
 // failure; the modernc driver reports the extended code (1555/2067) in

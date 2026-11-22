@@ -78,13 +78,35 @@ func (s *Store) PendingSteeringMessages(ctx context.Context, sessionID string) (
 	}
 	out := make([]SessionSteeringMessage, 0, len(rows))
 	for _, row := range rows {
-		created, _ := time.Parse(time.RFC3339Nano, row.CreatedAtUTC)
+		created, perr := parseStored(row.ID, "created_at_utc", row.CreatedAtUTC)
+		if perr != nil {
+			return nil, fmt.Errorf("load pending steering messages: %w", perr)
+		}
 		out = append(out, SessionSteeringMessage{
 			ID: row.ID, SessionID: row.SessionID, Sender: row.Sender,
 			Body: row.Body, CreatedAt: created,
 		})
 	}
+	sortChronological(out, messageKey)
 	return out, nil
+}
+
+// messageKey is the chronological sort key of a steering message.
+func messageKey(m SessionSteeringMessage) (time.Time, string) { return m.CreatedAt, m.ID }
+
+// sortMessageRows orders rows chronologically, or fails on the first row
+// whose created_at_utc does not parse.
+func sortMessageRows(rows []sessionMessageRow) error {
+	created := make(map[string]time.Time, len(rows))
+	for _, r := range rows {
+		t, err := parseStored(r.ID, "created_at_utc", r.CreatedAtUTC)
+		if err != nil {
+			return err
+		}
+		created[r.ID] = t
+	}
+	sortChronological(rows, func(r sessionMessageRow) (time.Time, string) { return created[r.ID], r.ID })
+	return nil
 }
 
 // DrainSteeringMessages atomically drains every pending message for
@@ -103,6 +125,11 @@ func (w *EventWriter) DrainSteeringMessages(ctx context.Context, sessionID strin
 		var rows []sessionMessageRow
 		if err := tx.Where(map[string]any{"session_id": sessionID, "delivered_at_utc": nil}).
 			Order("created_at_utc, id").Find(&rows).Error; err != nil {
+			return err
+		}
+		// Parse and order every row BEFORE the first insert or delivered
+		// mark, so a corrupt timestamp aborts with nothing written.
+		if err := sortMessageRows(rows); err != nil {
 			return err
 		}
 		for _, row := range rows {
