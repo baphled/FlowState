@@ -55,8 +55,8 @@ A session in the Go CLI transitions through exactly one status at a time:
 
 A run cancelled mid-turn appends `session.cancelled` with `{"status":"cancelled","reason":R}`, where R says what
 happened: `sigint`, `sigterm` or `sighup` for the command-line signal (carried as the root context's cancellation
-cause), and the neutral `cancelled` when the context carries no named cause. The explicit `session cancel`
-command and the tool-loop run record no reason.
+cause), `client_disconnected` or `shutdown` on `POST /sessions/{id}/run`, and the neutral `cancelled` when the
+context carries no named cause. The explicit `session cancel` command and the tool-loop run record no reason.
 
 An event append has a definite outcome under cancellation: a context that is already done refuses it before anything
 is written, and a write that has started is not interrupted. Otherwise a cancellation arriving during an append could

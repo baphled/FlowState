@@ -64,7 +64,8 @@ unchanged);
 writes are detached from request cancellation, so neither shutdown nor a client
 disconnect stops one half way; the run endpoint is the deliberate exception:
 its turn follows the request context, so a disconnect or shutdown mid-run
-cancels the session, as SIGINT does for the CLI. Every request body is capped at
+cancels the session, as SIGINT does for the CLI, and `session.cancelled` records the reason
+`client_disconnected` or `shutdown` (the CLI records `sigint`, `sigterm` or `sighup`). Every request body is capped at
 1 MiB (a larger one is 400 `usage` naming the limit, and the connection is
 closed) and every POST body is decoded strictly (unknown fields and trailing
 data are 400 `usage`). The `after` cursor of the events endpoints must be one

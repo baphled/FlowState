@@ -157,7 +157,9 @@ func (s *Server) runHandler(id string) http.HandlerFunc {
 		}
 		rc := http.NewResponseController(w)
 		_ = rc.SetWriteDeadline(time.Now().Add(runWriteWindow))
-		events, err := s.ports.RunSession(r.Context(), id, RunOptions(req))
+		ctx, release := runContext(r)
+		defer release()
+		events, err := s.ports.RunSession(ctx, id, RunOptions(req))
 		if err != nil {
 			s.writeError(w, err)
 			return
