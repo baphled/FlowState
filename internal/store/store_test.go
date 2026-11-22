@@ -102,6 +102,43 @@ var _ = Describe("Store open/migrations", func() {
 		Expect(err).To(HaveOccurred())
 	})
 
+	It("declares no foreign key on any table of a freshly created store schema", func() {
+		s := newTestStore()
+		var n int
+		err := s.db.QueryRow(`SELECT count(*) FROM sqlite_master m, pragma_foreign_key_list(m.name) WHERE m.type='table'`).Scan(&n)
+		if err != nil {
+			panic(err)
+		}
+		Expect(n).To(BeZero())
+	})
+
+	It("accepts a raw event insert for a session that does not exist in a freshly created store", func() {
+		s := newTestStore()
+		_, err := s.db.Exec(`INSERT INTO events (session_id,seq,created_at_utc,actor,type,payload_sha256,payload_json)
+			VALUES ('ghost',0,'t','user','x',?,?)`, sha256HexStr(`{}`), `{}`)
+		if err != nil {
+			panic(err)
+		}
+		var n int
+		if err := s.db.QueryRow(`SELECT count(*) FROM events WHERE session_id='ghost'`).Scan(&n); err != nil {
+			panic(err)
+		}
+		Expect(n).To(Equal(1))
+	})
+
+	It("reports a SQLite version of at least 3.40", func() {
+		s := newTestStore()
+		var v string
+		if err := s.db.QueryRow(`SELECT sqlite_version()`).Scan(&v); err != nil {
+			panic(err)
+		}
+		var major, minor int
+		if _, err := fmt.Sscanf(v, "%d.%d", &major, &minor); err != nil {
+			Fail("unparseable sqlite_version " + v + ": " + err.Error())
+		}
+		Expect(major*1000 + minor).To(BeNumerically(">=", 3*1000+40))
+	})
+
 	It("exposes the open handle for adapters that bind their own ORM", func() {
 		s := newTestStore()
 		Expect(s.DB().Ping()).To(Succeed())
