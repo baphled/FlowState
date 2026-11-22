@@ -69,6 +69,20 @@ class PRSize(unittest.TestCase):
         self.write('source.go', 'new\n' * (CI_MAX_LINES // 2 + 1))
         self.check(1)
 
+    def test_pure_deletion_counts_its_lines_against_the_budget(self):
+        self.write('doomed.go', 'line\n' * (CI_MAX_LINES + 1))
+        self.git('add', '-A'); self.git('commit', '-qm', 'fixture doomed file')
+        self.base = self.git('rev-parse', 'HEAD').strip()
+        (self.root / 'doomed.go').unlink()
+        self.check(1)
+
+    def test_deletion_at_the_line_boundary_passes(self):
+        self.write('doomed.go', 'line\n' * CI_MAX_LINES)
+        self.git('add', '-A'); self.git('commit', '-qm', 'fixture doomed file')
+        self.base = self.git('rev-parse', 'HEAD').strip()
+        (self.root / 'doomed.go').unlink()
+        self.check(0)
+
     def test_test_docs_lockfiles_and_attributes_cannot_hide_lines(self):
         for path in ('unit_test.go', 'guide.md', 'go.sum', 'deps.lock'):
             self.write(path, 'line\n' * (CI_MAX_LINES // 4 + 1))
