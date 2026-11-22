@@ -7,6 +7,12 @@ import (
 	"net/http"
 )
 
+// ErrReservationUnsettled is wrapped by a CancelSession port error when the
+// session was cancelled but settling its budget reservation failed; the port
+// returns the cancelled row with it. The cancel route answers 500
+// reservation_unsettled and names the cancelled status in a structured field.
+var ErrReservationUnsettled = errors.New("reservation_unsettled")
+
 // statusByCode maps the closed error-code set of
 // specs/CLI-AND-API-CONTRACT.md §2 onto HTTP statuses; internal is
 // explicit so the writeError guard resolves without a silent
@@ -15,7 +21,8 @@ var statusByCode = map[string]int{
 	"usage": http.StatusBadRequest, "session_not_found": http.StatusNotFound,
 	"session_terminal": http.StatusConflict, "session_cancelled": http.StatusConflict,
 	"budget_exceeded": http.StatusConflict, "receipt_invalid": http.StatusUnprocessableEntity,
-	"provider_error": http.StatusBadGateway, "internal": http.StatusInternalServerError}
+	"provider_error": http.StatusBadGateway, "internal": http.StatusInternalServerError,
+	"reservation_unsettled": http.StatusInternalServerError}
 
 func statusFor(code string) int {
 	if status, ok := statusByCode[code]; ok {
@@ -66,7 +73,8 @@ func (c *cancelCause) CancelReason() string { return c.reason }
 // cancels it with errShuttingDown or errClientGone as its cause when the
 // request ends, so the run records why it was cancelled. A child of the
 // request context would inherit the request's cause instead, which is
-// empty for a disconnect.
+// empty for a disconnect. A deadline on the request context is not visible
+// through ctx.Deadline() here (expiry still cancels the run).
 func runContext(r *http.Request) (context.Context, context.CancelFunc) {
 	parent := r.Context()
 	ctx, cancel := context.WithCancelCause(context.WithoutCancel(parent))
