@@ -11,7 +11,7 @@ for this backend.
 | --- | --- | --- |
 | `cmd/flowstate` | Input parsing, output and stable exits | Application/configuration; no direct engine, provider or store wiring |
 | `internal/app` | Composition and use cases | Wire domain ports to concrete adapters explicitly |
-| `internal/runtime` | Turn lifecycle and sequencing | Domain/ports; no HTTP, SQL or provider SDK |
+| `internal/runtime` | Reserved for turn lifecycle; no package today (the turn loop is in `internal/app`) | Domain/ports; no HTTP, SQL or provider SDK |
 | `internal/session` | Session identity and state invariants | Domain/ports; no concrete store, HTTP or SQL |
 | `internal/provider` | Provider port and domain messages | Standard library/domain types; adapters live in subpackages |
 | `internal/tool` | Tool port, permission and loop policy | Domain/ports; storage behind a narrow consumer port |

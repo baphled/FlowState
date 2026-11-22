@@ -14,8 +14,8 @@ lifecycle; transports and concrete storage remain outside that boundary.
 | Area | Source responsibility |
 | --- | --- |
 | `cmd/flowstate` | Parse input and render stable output/exits |
-| `internal/app` | Compose collaborators and application use cases |
-| `internal/runtime`, `internal/session` | Lifecycle, identity and ordering policy |
+| `internal/app` | Compose collaborators and application use cases, including the turn and tool loops |
+| `internal/session` | Lifecycle, identity and ordering policy |
 | `internal/server` | HTTP transport adapter — ratified ahead of implementation (ADR-007); owns the `net/http` surface cmd is banned from |
 | `internal/provider`, `internal/tool` | Replaceable ports and domain-facing values |
 | Provider/auth/storage adapters | Implement external effects through those ports |
