@@ -190,6 +190,8 @@ var _ = Describe("RunSwarm", func() {
 			}{2, false}))
 	})
 
+	// The aborted run's children are cancelled and their grants settled, so
+	// nothing stays reserved against the pool.
 	It("aborts with a usage error when the pool cannot fund a child", func() {
 		st := openSwarmExecStore()
 		parent := swarmExecParent(ctx, st)
@@ -212,7 +214,7 @@ var _ = Describe("RunSwarm", func() {
 				PacketIDs []string
 				Granted   []int64
 				Reserved  int64
-			}{true, []string{"p1", "p2"}, []int64{40}, 40}))
+			}{true, []string{"p1", "p2"}, []int64{40}, 0}))
 	})
 
 	It("aborts before creating children on an invalid manifest", func() {
@@ -301,13 +303,21 @@ var _ = Describe("RunSwarm", func() {
 			parent   *store.Session
 			res      app.SwarmExecResult
 			finished string
+			share    int64
 		)
+
+		BeforeEach(func() { share = 0 })
 
 		// runCancelled cancels the run during its first gate, with the
 		// sigint cause; finishFirst completes one child beforehand.
 		runCancelled := func(finishFirst bool) {
 			st = openSwarmExecStore()
 			parent = swarmExecParent(ctx, st)
+			if share > 0 {
+				if err := st.SetBudgetPool(ctx, parent.ID, 100); err != nil {
+					panic(err)
+				}
+			}
 			cctx, cancel := context.WithCancelCause(ctx)
 			defer cancel(nil)
 			gates := swarm.NewGateRunnerWith(func(context.Context, string, []string) error {
@@ -323,7 +333,7 @@ var _ = Describe("RunSwarm", func() {
 			m := swarmExecManifest()
 			m.Gates = append(m.Gates, swarm.Gate{Name: "second", Command: "second"})
 			var err error
-			res, err = app.RunSwarm(cctx, st, parent, m, 0, admitAll{}, gates)
+			res, err = app.RunSwarm(cctx, st, parent, m, share, admitAll{}, gates)
 			if !errors.Is(err, app.ErrSessionCancelled) || len(res.Children) != 2 {
 				panic("the run did not cancel after creating its children")
 			}
@@ -353,6 +363,17 @@ var _ = Describe("RunSwarm", func() {
 					panic("the cancelled run persisted no single record")
 				}
 				Expect(runs[0].Children).To(Equal(storedChildren(res.Children)))
+			})
+		})
+
+		Context("and each child holds a budget reservation", func() {
+			BeforeEach(func() {
+				share = 10
+				runCancelled(false)
+			})
+
+			It("settles every cancelled child's reservation", func() {
+				Expect(reservationStatuses(ctx, st, res.Children)).To(Equal([]string{"charged", "charged"}))
 			})
 		})
 
@@ -407,6 +428,63 @@ var _ = Describe("RunSwarm", func() {
 			It("cancels the unfinished child", func() {
 				Expect(unfinishedStatuses(ctx, st, res.Children, finished)).To(Equal([]string{"cancelled"}))
 			})
+		})
+	})
+
+	Context("when child creation fails part-way for a reason other than cancellation", func() {
+		var (
+			st   *store.Store
+			res  app.SwarmExecResult
+			err  error
+			runs []store.SwarmRun
+		)
+
+		BeforeEach(func() {
+			st = openSwarmExecStore()
+			parent := swarmExecParent(ctx, st)
+			// A pool of 15 holds one 10-unit share: the second reservation fails.
+			if perr := st.SetBudgetPool(ctx, parent.ID, 15); perr != nil {
+				panic(perr)
+			}
+			res, err = app.RunSwarm(ctx, st, parent, swarmExecManifest(), 10, admitAll{}, swarm.NewGateRunner())
+			if !errors.Is(err, app.ErrUsage) || len(res.Children) != 2 || len(res.Reservations) != 1 {
+				panic(fmt.Sprintf("the run did not fail at the second reservation: %v, %d children", err, len(res.Children)))
+			}
+			var rerr error
+			if runs, rerr = st.SwarmRunsFor(ctx, "demo.swarm"); rerr != nil {
+				panic(rerr)
+			}
+		})
+
+		It("keeps the original error class", func() {
+			Expect(app.ErrorCode(err)).To(Equal(app.CodeUsage))
+		})
+
+		It("cancels every child already created", func() {
+			Expect(childStatuses(ctx, st, res.Children)).To(Equal([]string{"cancelled", "cancelled"}))
+		})
+
+		It("records why they were cancelled", func() {
+			Expect(lastEventPayloads(ctx, st, res.Children)).To(Equal([]string{
+				session.TypeSessionCancelled + `:{"reason":"swarm_aborted","status":"cancelled"}`,
+				session.TypeSessionCancelled + `:{"reason":"swarm_aborted","status":"cancelled"}`,
+			}))
+		})
+
+		It("settles the reservation that was made", func() {
+			Expect(reservationStatuses(ctx, st, res.Children[:1])).To(Equal([]string{"charged"}))
+		})
+
+		It("stores a failed run naming the children", func() {
+			Expect(runs).To(HaveLen(1))
+		})
+
+		It("stores the run as failed", func() {
+			Expect(runs[0].Outcome).To(Equal("fail"))
+		})
+
+		It("names every child on the stored run", func() {
+			Expect(runs[0].Children).To(Equal(storedChildren(res.Children)))
 		})
 	})
 
@@ -605,6 +683,19 @@ func statusNotBeforeLastEvent(ctx context.Context, st *store.Store, children []a
 			panic(err)
 		}
 		out = append(out, !got.UpdatedAt.Before(evs[len(evs)-1].CreatedAt))
+	}
+	return out
+}
+
+// reservationStatuses reads each child's reservation status.
+func reservationStatuses(ctx context.Context, st *store.Store, children []app.SwarmChild) []string {
+	var out []string
+	for _, c := range children {
+		r, err := st.ReservationFor(ctx, c.Session.ID)
+		if err != nil {
+			panic(err)
+		}
+		out = append(out, r.Status)
 	}
 	return out
 }

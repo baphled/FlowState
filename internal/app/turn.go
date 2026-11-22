@@ -169,6 +169,11 @@ func cancelOnInterrupt(ctx context.Context, w *store.EventWriter, st *store.Stor
 	if serr := st.UpdateSessionStatus(cctx, sess.ID, "cancelled"); serr != nil {
 		return fmt.Errorf("mark session cancelled: %w", serr)
 	}
+	// The session is already cancelled: a settle failure is reported
+	// beside the cancelled class, never instead of it (exit 130).
+	if serr := st.SetReservationCharged(cctx, sess.ID); serr != nil {
+		return fmt.Errorf("%w: %w: session %s is cancelled: %v", ErrSessionCancelled, ErrReservationSettle, sess.ID, serr)
+	}
 	return ErrSessionCancelled
 }
 

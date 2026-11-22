@@ -118,6 +118,102 @@ var _ = Describe("cancelOnInterrupt", func() {
 	})
 })
 
+// reservedChildOf returns the child's reservation status; a panic is a
+// setup failure.
+func reservedChildOf(st *store.Store, childID string) string {
+	res, err := st.ReservationFor(context.Background(), childID)
+	if err != nil {
+		panic(err)
+	}
+	return res.Status
+}
+
+// reservedInterrupted seeds a pooled parent and a child holding a live
+// reservation, with the child's event writer for the interrupt path.
+func reservedInterrupted(st *store.Store) (*store.Session, *store.EventWriter) {
+	ctx := context.Background()
+	parent, err := session.Create(ctx, st, "fake", "fake-model", session.DefaultHarness, "sha", "parent")
+	if err != nil {
+		panic(err)
+	}
+	if err = st.SetBudgetPool(ctx, parent.ID, 100); err != nil {
+		panic(err)
+	}
+	child, err := CreateChildSession(ctx, st, parent.ID, "fake", "fake-model", DefaultHarness, "sha", "child")
+	if err != nil {
+		panic(err)
+	}
+	if err = ReserveChildBudget(ctx, st, parent.ID, child.ID, 40); err != nil {
+		panic(err)
+	}
+	w, err := st.NewEventWriter(ctx, child.ID)
+	if err != nil {
+		panic(err)
+	}
+	DeferCleanup(func() { _ = w.Close() })
+	return child, w
+}
+
+var _ = Describe("cancelOnInterrupt and the budget reservation", func() {
+	Context("when the session holds a reservation", func() {
+		It("settles it", func() {
+			st := newStore()
+			child, w := reservedInterrupted(st)
+			if err := cancelOnInterrupt(context.Background(), w, st, child); !errors.Is(err, ErrSessionCancelled) {
+				panic(err)
+			}
+			Expect(reservedChildOf(st, child.ID)).To(Equal("charged"))
+		})
+
+		It("settles it on a context that is already cancelled", func() {
+			st := newStore()
+			child, w := reservedInterrupted(st)
+			cctx, cancel := context.WithCancelCause(context.Background())
+			cancel(SignalCause(syscall.SIGTERM))
+			if err := cancelOnInterrupt(cctx, w, st, child); !errors.Is(err, ErrSessionCancelled) {
+				panic(err)
+			}
+			Expect(reservedChildOf(st, child.ID)).To(Equal("charged"))
+		})
+	})
+
+	Context("when the settle fails", func() {
+		var (
+			st    *store.Store
+			child *store.Session
+			err   error
+		)
+
+		BeforeEach(func() {
+			var childID string
+			st, _, childID = failingSettleStore()
+			sess, gerr := st.GetSession(context.Background(), childID)
+			if gerr != nil {
+				panic(gerr)
+			}
+			child = sess
+			w, werr := st.NewEventWriter(context.Background(), childID)
+			if werr != nil {
+				panic(werr)
+			}
+			DeferCleanup(func() { _ = w.Close() })
+			err = cancelOnInterrupt(context.Background(), w, st, child)
+		})
+
+		It("still reports the cancelled class", func() {
+			Expect(ErrorCode(err)).To(Equal(CodeSessionCancelled))
+		})
+
+		It("reports the settle failure beside it", func() {
+			Expect(err).To(MatchError(ErrReservationSettle))
+		})
+
+		It("leaves the session cancelled", func() {
+			Expect(statusOf(st, child.ID)).To(Equal("cancelled"))
+		})
+	})
+})
+
 // namedCause mimics a cause defined outside this package (the server's),
 // which names its reason only through CancelReason.
 type namedCause struct{ reason string }

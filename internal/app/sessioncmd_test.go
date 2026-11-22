@@ -475,3 +475,30 @@ var _ = Describe("Session events after", func() {
 		Expect(ErrorCode(err)).To(Equal(CodeSessionMissing))
 	})
 })
+
+var _ = Describe("CreateChildSession under a done context", func() {
+	var (
+		st  *store.Store
+		err error
+	)
+
+	BeforeEach(func() {
+		st = mustOpenStore()
+		parent := mustCreateSession(context.Background(), st, "probe.ai")
+		cctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err = CreateChildSession(cctx, st, parent.ID, "probe.ai", "probe-model", DefaultHarness, "sha", "task")
+	})
+
+	It("reports the cancelled class", func() {
+		Expect(err).To(MatchError(ErrSessionCancelled))
+	})
+
+	It("keeps the context error in the chain", func() {
+		Expect(err).To(MatchError(context.Canceled))
+	})
+
+	It("maps onto the interrupt error code", func() {
+		Expect(ErrorCode(err)).To(Equal(CodeSessionCancelled))
+	})
+})
