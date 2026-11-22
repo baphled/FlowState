@@ -167,15 +167,11 @@ func (d GatesDecision) FailedGateNames() []string {
 // launch: every token must be a recognised command word, flag,
 // path-like operand or quoted literal.
 //
-// Cancelling ctx stops only the gate's direct process. When the CLI is
-// interrupted from a terminal the whole foreground process group gets
-// the signal anyway, but a cancellation delivered another way leaves a
-// gate's own children (make, go test, a script) running, exactly as
-// before cancellation was threaded through. Stopping the whole process
-// group needs platform-specific code (Setpgid is not portable) and is a
-// follow-up. The gate's output is not piped (os/exec connects a nil
-// Stdout to the null device), so a surviving child cannot hold Run
-// open; WaitDelay bounds the wait regardless.
+// Cancelling ctx stops the gate's whole process group on Unix (see
+// isolateGate), so its children do not outlive the run; elsewhere only
+// the direct process is killed. The gate's output is not piped (os/exec
+// connects a nil Stdout to the null device), so a surviving child
+// cannot hold Run open; WaitDelay bounds the wait regardless.
 func runGate(ctx context.Context, name string, args []string) error {
 	if err := validateCommandTokens(append([]string{name}, args...)); err != nil {
 		return err
@@ -183,6 +179,7 @@ func runGate(ctx context.Context, name string, args []string) error {
 	candidate := exec.CommandContext
 	cmd := candidate(ctx, name, args...)
 	cmd.WaitDelay = gateWaitDelay
+	isolateGate(cmd)
 	return cmd.Run()
 }
 
