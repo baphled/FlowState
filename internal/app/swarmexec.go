@@ -315,11 +315,11 @@ func cancelSwarmChild(ctx context.Context, st *Store, id, reason string) error {
 	return settleChildReservation(ctx, st, id)
 }
 
-// settleChildReservation marks the child's reservation charged, tagging a
-// failure with ErrReservationSettle; a child without one is untouched.
+// settleChildReservation marks the child's reservation charged, reporting a
+// failure as a SettleError; a child without one is untouched.
 func settleChildReservation(ctx context.Context, st *Store, id string) error {
 	if err := st.SetReservationCharged(ctx, id); err != nil {
-		return fmt.Errorf("%w: %w", ErrReservationSettle, err)
+		return &SettleError{SessionID: id, Cause: err}
 	}
 	return nil
 }

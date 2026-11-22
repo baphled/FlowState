@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/baphled/flowstate/internal/app"
 )
@@ -358,9 +357,9 @@ func finishRun(err error, res *app.TurnResult, fl *flags, stderr *os.File) int {
 // as its own line, as `session cancel` does, so it is not hidden behind
 // the fixed interrupt message; the exit status never changes.
 func reportInterrupt(err error, stderr *os.File) int {
-	if errors.Is(err, app.ErrReservationSettle) {
-		_, detail, _ := strings.Cut(err.Error(), app.ErrReservationSettle.Error()+": ")
-		writeError(stderr, fmt.Errorf("%w: %s", app.ErrReservationSettle, detail))
+	var se *app.SettleError
+	if errors.As(err, &se) {
+		writeError(stderr, fmt.Errorf("%w: %s", app.ErrReservationSettle, se.Detail()))
 	}
 	writeError(stderr, fmt.Errorf("%w: interrupted; session cancelled", app.ErrSessionCancelled))
 	return exitSigint

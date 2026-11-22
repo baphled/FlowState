@@ -20,6 +20,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/zai"
 	"github.com/baphled/flowstate/internal/store"
+	"github.com/baphled/flowstate/internal/swarm"
 )
 
 // fakeZaiServer serves an SSE stream of the given chunks.
@@ -101,6 +102,46 @@ func failDeltaAppends(db string) *scriptedStreamer {
 	}
 	return &scriptedStreamer{events: []provider.StreamEvent{{Content: "hello"}}}
 }
+
+// unsettledSwarmChild runs a swarm that is cancelled in its first gate
+// while a trigger blocks every reservation update, and returns the first
+// child's id with the error the real producer returned.
+func unsettledSwarmChild(db string) (string, error) {
+	ctx := context.Background()
+	st, err := app.OpenStore(db)
+	must(err)
+	defer func() { must(st.Close()) }()
+	parent, err := app.CreateSession(ctx, st, "zai", "glm-5.3", app.DefaultHarness, "sha", "parent")
+	must(err)
+	must(st.SetBudgetPool(ctx, parent.ID, 100))
+	m := swarm.Manifest{Name: "demo", Scope: "demo",
+		Packets: []swarm.Packet{{ID: "p1", Scope: "demo.p1", Task: "plan",
+			SourceSHA256: swarm.SHA256HexForTest([]byte("plan"))}},
+		Gates: []swarm.Gate{{Name: "one", Command: "one"}, {Name: "two", Command: "two"}}}
+	cctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	gates := swarm.NewGateRunnerWith(func(context.Context, string, []string) error {
+		raw, oerr := sql.Open("sqlite", "file:"+db)
+		must(oerr)
+		defer func() { must(raw.Close()) }()
+		_, oerr = raw.Exec(`CREATE TRIGGER no_settle BEFORE UPDATE ON budget_reservations ` +
+			`BEGIN SELECT RAISE(ABORT, 'settle blocked'); END`)
+		must(oerr)
+		cancel(&app.CancelCause{Reason: "sigint"})
+		return nil
+	})
+	res, rerr := app.RunSwarm(cctx, st, parent, m, 10, allowAll{}, gates)
+	if len(res.Children) != 1 {
+		panic("the swarm run created no single child")
+	}
+	return res.Children[0].Session.ID, rerr
+}
+
+// allowAll admits every packet.
+type allowAll struct{}
+
+// Admit accepts the packet.
+func (allowAll) Admit(swarm.Packet, []byte) error { return nil }
 
 // stderrMessage decodes the first stderr line's error message.
 func stderrMessage(out string) string {
@@ -988,8 +1029,8 @@ var _ = Describe("Session run failure classification", func() {
 		)
 
 		BeforeEach(func() {
-			exit, stderr = finishRunOutcome(fmt.Errorf("%w: %w: session s1 is cancelled: settle blocked",
-				app.ErrSessionCancelled, app.ErrReservationSettle))
+			exit, stderr = finishRunOutcome(fmt.Errorf("%w: %w", app.ErrSessionCancelled,
+				&app.SettleError{SessionID: "s1", Cause: errors.New("settle blocked"), Cancelled: app.ErrSessionCancelled}))
 		})
 
 		It("keeps exit 130", func() { Expect(exit).To(Equal(130)) })
@@ -1001,6 +1042,29 @@ var _ = Describe("Session run failure classification", func() {
 		})
 		It("prints one line more than a plain cancellation", func() {
 			Expect(strings.Count(stderr, "\n")).To(Equal(2))
+		})
+	})
+
+	Context("a swarm run cancelled while a child's reservation cannot be settled", func() {
+		var (
+			childID string
+			stderr  string
+		)
+
+		BeforeEach(func() {
+			var err error
+			childID, err = unsettledSwarmChild(filepath.Join(GinkgoT().TempDir(), "swarm.db"))
+			if err == nil {
+				panic("the swarm run did not report a failed settle")
+			}
+			_, stderr = finishRunOutcome(err)
+		})
+
+		It("prints the settle line from the producer's error", func() {
+			Expect(stderr).To(ContainSubstring("reservation_settle_failed: session " + childID + ": "))
+		})
+		It("names the settle cause on that line", func() {
+			Expect(stderr).To(ContainSubstring("settle blocked"))
 		})
 	})
 
