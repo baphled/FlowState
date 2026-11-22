@@ -4,79 +4,60 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/registry"
 	"github.com/baphled/flowstate/internal/provider/zai"
 )
 
-// Old-shape config regression (owner policy 2026-11-03): any config
-// schema/format change must ship with a consumer update or stay
-// backward-compatible — two configs side by side until cutover.
-// The 2026-11-21 owner decision supersedes that for the file NAME
-// only: the CLI reads providers.yaml and never the harness's
-// config.yaml; the schema compatibility below still holds.
-// These specs pin that a provider config written BEFORE the
-// providers.zai.route key existed (plan only, no route, no host)
-// loads cleanly on the current binary and resolves to the
-// defaults-filled provider (coding plan -> openai coding endpoint
-// default, as merged in #176/#177).
-var _ = Describe("old config shape compatibility", func() {
-	var configDir string
-	var oldShapeConfig string
-
+// A coding-plan z.ai key without any route or base URL variable must
+// resolve to the openai coding endpoint default (merged in #176/#177), and an
+// unset ZAI_PLAN must mean the coding plan: the general endpoint 429s every
+// coding-plan key.
+var _ = Describe("zai plan defaults", func() {
 	BeforeEach(func() {
-		configDir = GinkgoT().TempDir()
-		GinkgoT().Setenv("FLOWSTATE_CONFIG_DIR", configDir)
-		GinkgoT().Setenv("ZAI_API_KEY", "")
+		GinkgoT().Setenv("ZAI_API_KEY", "k")
 		GinkgoT().Setenv("ZAI_BASE_URL", "")
 		GinkgoT().Setenv("ZAI_PLAN", "")
 		GinkgoT().Setenv("ZAI_CODING_ROUTE", "")
-		oldShapeConfig = "providers:\n" +
-			"  zai:\n" +
-			"    api_key: old-key\n" +
-			"    host: ''\n" +
-			"    model: glm-5.3\n" +
-			"    plan: coding\n"
 	})
 
-	// oldShapeConfig is assigned in BeforeEach with the exact
-	// pre-#176 shape: no route key, empty host, plan coding. Each
-	// spec writes it directly so behavioural expectations stay
-	// inside the specs per the changed-test contract.
-	writeOldConfig := func() {
-		if err := os.WriteFile(filepath.Join(configDir, config.FileName), []byte(oldShapeConfig), 0o600); err != nil {
+	resolveCoding := func() bool {
+		p, err := registry.Resolve("z.ai")
+		if err != nil {
 			panic(err)
-		}
-	}
-
-	It("loads the old shape without route key and defaults fill the gaps", func() {
-		writeOldConfig()
-		p, resolveErr := registry.Resolve("z.ai")
-		if resolveErr != nil {
-			panic(resolveErr)
 		}
 		zp, ok := p.(*zai.Provider)
 		if !ok {
 			panic("registry did not resolve a zai provider")
 		}
-		Expect(zp.Coding()).To(BeTrue(), "plan: coding must still select the coding route")
+		return zp.Coding()
+	}
+
+	It("defaults to the coding plan when ZAI_PLAN is unset", func() {
+		Expect(resolveCoding()).To(BeTrue())
 	})
 
-	It("sends old-shape coding traffic to the openai coding endpoint default", func() {
+	It("selects the coding plan for ZAI_PLAN=coding", func() {
+		GinkgoT().Setenv("ZAI_PLAN", "coding")
+		Expect(resolveCoding()).To(BeTrue())
+	})
+
+	It("honours ZAI_PLAN=general", func() {
+		GinkgoT().Setenv("ZAI_PLAN", "general")
+		Expect(resolveCoding()).To(BeFalse())
+	})
+
+	It("sends default coding traffic to the openai coding endpoint default", func() {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"content":[]}`))
 		}))
 		defer srv.Close()
 		zai.TestHookSetCodingBaseURL(srv.URL + "/api/coding/paas/v4")
-		writeOldConfig()
 		p, err := registry.Resolve("z.ai")
 		Expect(err).NotTo(HaveOccurred())
 		resp, err := p.Chat(context.Background(), &provider.ChatRequest{})

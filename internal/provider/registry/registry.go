@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/anthropic"
 	"github.com/baphled/flowstate/internal/provider/zai"
@@ -27,98 +26,49 @@ func Resolve(name string) (provider.Provider, error) {
 	}
 }
 
-// resolveAnthropic builds the anthropic adapter from providers.anthropic. An
-// empty or `oauth` auth_type selects the subscription route: the user's own
-// `claude` binary (FLOWSTATE_CLAUDE_BIN, default `claude`). Resolving never
-// runs the binary or checks sign-in; both happen on the first turn. A config
-// file that exists but cannot be read or parsed is an error, never a silent
-// fallback to the subscription route; an absent file is the default config.
+// resolveAnthropic builds the anthropic adapter. FLOWSTATE_ANTHROPIC_AUTH
+// selects the route: unset, empty or `oauth` is the subscription route, the
+// user's own `claude` binary (FLOWSTATE_CLAUDE_BIN, default `claude`);
+// `api_key` is the Anthropic API. The route is never inferred from
+// ANTHROPIC_API_KEY, which users export for other tools. Resolving never runs
+// the binary or checks sign-in; both happen on the first turn.
 func resolveAnthropic() (provider.Provider, error) {
-	cfg, err := providerConfig("anthropic")
-	if err != nil {
-		return nil, err
-	}
-	authType := ""
-	if cfg != nil {
-		authType = string(cfg.AuthType)
-	}
-	switch authType {
+	switch auth := os.Getenv("FLOWSTATE_ANTHROPIC_AUTH"); auth {
 	case "", "oauth":
 		return anthropic.NewSubscription(os.Getenv("FLOWSTATE_CLAUDE_BIN"), anthropic.ExecLauncher), nil
 	case "api_key":
-		return resolveAnthropicKey(cfg)
+		return resolveAnthropicKey()
 	default:
-		return nil, fmt.Errorf("registry: unknown anthropic auth_type %q (supported: oauth, api_key)", authType)
+		return nil, fmt.Errorf("registry: unknown FLOWSTATE_ANTHROPIC_AUTH %q (supported: oauth, api_key)", auth)
 	}
 }
 
-// providerConfig returns the providers.<name> section of providers.yaml, or
-// nil when there is none. A file that exists but cannot be read or parsed is an
-// error wrapping config.ErrInvalid, never a silent fall back to defaults; with
-// no config directory or no file the default configuration applies.
-func providerConfig(name string) (*config.ProviderConfig, error) {
-	path, err := config.Path()
-	if err != nil { // no config dir means no file
-		return nil, nil
-	}
-	doc, err := config.Load(path)
-	if err != nil {
-		return nil, fmt.Errorf("registry: %s: %w", name, err)
-	}
-	return doc.GetProvider(name), nil
-}
-
-// resolveAnthropicKey builds the API-key route. The key comes from
-// ANTHROPIC_API_KEY, else providers.anthropic.api_key; the base URL from
-// ANTHROPIC_BASE_URL, else providers.anthropic.host, else the Anthropic API.
-// The key is never included in an error.
-func resolveAnthropicKey(cfg *config.ProviderConfig) (provider.Provider, error) {
+// resolveAnthropicKey builds the API-key route from ANTHROPIC_API_KEY
+// (required) and ANTHROPIC_BASE_URL (default: the Anthropic API). The key is
+// never included in an error.
+func resolveAnthropicKey() (provider.Provider, error) {
 	key := os.Getenv("ANTHROPIC_API_KEY")
-	host := os.Getenv("ANTHROPIC_BASE_URL")
-	if cfg != nil {
-		if key == "" {
-			key = cfg.APIKey
-		}
-		if host == "" {
-			host = cfg.Host
-		}
-	}
 	if key == "" {
-		return nil, errors.New("registry: anthropic auth_type api_key needs a key: " +
-			"set ANTHROPIC_API_KEY or providers.anthropic.api_key in " + config.FileName)
+		return nil, errors.New("registry: FLOWSTATE_ANTHROPIC_AUTH=api_key needs a key: ANTHROPIC_API_KEY is not set")
 	}
-	return anthropic.NewAPIKey(key, host, nil), nil
+	return anthropic.NewAPIKey(key, os.Getenv("ANTHROPIC_BASE_URL"), nil), nil
 }
 
-// resolveZai builds the z.ai adapter from providers.yaml
-// (providers.zai.plan / host / route), with env vars still overriding:
-// ZAI_API_KEY, ZAI_BASE_URL, ZAI_PLAN and ZAI_CODING_ROUTE win over
-// config values. Precedence for the coding-plan host: explicit
-// config host / ZAI_BASE_URL > plan-tag default (openai coding
-// endpoint, selectable "anthropic" via providers.zai.route).
-// An unset plan defaults to coding (see zaiPlan). A providers.yaml that
-// exists but does not parse is an error; an absent file is the default config.
+// resolveZai builds the z.ai adapter from the environment only: ZAI_API_KEY
+// (required), ZAI_BASE_URL, ZAI_PLAN (unset means coding, see zaiPlan) and
+// ZAI_CODING_ROUTE (see codingRouteFor).
 func resolveZai() (provider.Provider, error) {
-	cfg, err := providerConfig("zai")
-	if err != nil {
-		return nil, err
-	}
 	opts := []zai.Option{}
 	if host := os.Getenv("ZAI_BASE_URL"); host != "" {
 		opts = append(opts, zai.WithBaseURL(host))
-	} else if cfg != nil && cfg.Host != "" {
-		opts = append(opts, zai.WithBaseURL(cfg.Host))
 	}
-	if zaiPlan(cfg) == "coding" {
+	if zaiPlan() == "coding" {
 		opts = append(opts, zai.WithCoding())
-		if route := codingRouteFor(cfg); route != "" {
+		if route := codingRouteFor(); route != "" {
 			opts = append(opts, zai.WithCodingRoute(route))
 		}
 	}
 	key := os.Getenv("ZAI_API_KEY")
-	if key == "" && cfg != nil {
-		key = cfg.APIKey
-	}
 	if key == "" {
 		return nil, errors.New("zai: ZAI_API_KEY is not set")
 	}

@@ -23,8 +23,6 @@ import (
 	. "github.com/onsi/gomega"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
-
-	"github.com/baphled/flowstate/internal/config"
 )
 
 // This suite productises the CLI contract end-to-end matrix: every
@@ -65,33 +63,32 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	e2eBin = string(data)
 })
 
-// Every spec runs the in-process CLI against an empty provider
-// configuration directory and with no ambient provider keys. Without
-// this a developer's own providers.yaml (or exported key) turned specs
-// into live provider calls with a real credential, and their outcome
-// depended on the machine. A spec that needs a configuration or a key
-// sets its own afterwards.
+// Every spec runs the in-process CLI with no ambient provider settings.
+// Without this a developer's own exported key turned specs into live
+// provider calls with a real credential, and their outcome depended on the
+// machine. A spec that needs a key or a route sets its own afterwards.
 var _ = BeforeEach(func() {
-	GinkgoT().Setenv("FLOWSTATE_CONFIG_DIR", GinkgoT().TempDir())
-	GinkgoT().Setenv("ZAI_API_KEY", "")
-	GinkgoT().Setenv("ANTHROPIC_API_KEY", "")
+	for _, name := range ambientProviderVars {
+		GinkgoT().Setenv(name, "")
+	}
 })
 
-var _ = Describe("provider configuration isolation", func() {
-	It("points the in-process CLI at a configuration outside the user's own", func() {
-		base, err := os.UserConfigDir()
-		if err != nil {
-			panic(err)
-		}
-		path, err := config.Path()
-		if err != nil {
-			panic(err)
-		}
-		Expect(path).NotTo(HavePrefix(base))
+// ambientProviderVars are every provider setting the CLI reads from the
+// environment; the suite clears them so no spec reaches a live provider.
+var ambientProviderVars = []string{"ZAI_API_KEY", "ZAI_BASE_URL", "ZAI_PLAN", "ZAI_CODING_ROUTE",
+	"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "FLOWSTATE_ANTHROPIC_AUTH", "FLOWSTATE_CLAUDE_BIN"}
+
+var _ = Describe("provider environment isolation", func() {
+	It("leaves the suite with no z.ai key, so no live provider is reachable", func() {
+		Expect(os.Getenv("ZAI_API_KEY")).To(BeEmpty())
 	})
 
-	It("points every subprocess at the empty build directory", func() {
-		Expect(e2eEnv("http://127.0.0.1:0")).To(ContainElement("FLOWSTATE_CONFIG_DIR=" + filepath.Dir(e2eBin)))
+	It("leaves the suite with no anthropic key, so no live provider is reachable", func() {
+		Expect(os.Getenv("ANTHROPIC_API_KEY")).To(BeEmpty())
+	})
+
+	It("leaves the suite on the default anthropic route", func() {
+		Expect(os.Getenv("FLOWSTATE_ANTHROPIC_AUTH")).To(BeEmpty())
 	})
 
 	It("drops ambient anthropic settings from the subprocess environment", func() {
@@ -102,9 +99,7 @@ var _ = Describe("provider configuration isolation", func() {
 
 // e2eEnv builds the subprocess environment: the ambient environment
 // minus ambient provider or FlowState live settings, plus the local
-// fake provider selection and an empty provider configuration
-// directory (the build directory holds only the binary), so the binary
-// never touches the live network or the developer's providers.yaml.
+// fake provider selection, so the binary never touches the live network.
 func e2eEnv(baseURL string, extra ...string) []string {
 	env := []string{}
 	for _, kv := range os.Environ() {
@@ -114,8 +109,7 @@ func e2eEnv(baseURL string, extra ...string) []string {
 		}
 	}
 	env = append(env, "ZAI_API_KEY=e2e-test-key", "ZAI_BASE_URL="+baseURL,
-		"ZAI_PLAN=coding", "ZAI_CODING_ROUTE=openai",
-		"FLOWSTATE_CONFIG_DIR="+filepath.Dir(e2eBin))
+		"ZAI_PLAN=coding", "ZAI_CODING_ROUTE=openai")
 	return append(env, extra...)
 }
 

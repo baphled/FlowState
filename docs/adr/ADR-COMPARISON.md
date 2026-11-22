@@ -92,7 +92,7 @@ The Go CLI is not a port of the prototype: it is a greenfield CLI sharing the pr
 | Three-Layer Tracker Architecture Refactor | Superseded | Go CLI uses the simpler exec loop |
 | Tool-Capability Allowlist Gate | Implemented | `internal/tool` deny-by-default gate |
 | TUI Big-Bang Decommissioning (May 2026) | Implemented (historical) | CLI/headless only; no TUI exists |
-| Z.AI Plan Routing as First-Class Field | Implemented | `ZAI_PLAN` env + provider config |
+| Z.AI Plan Routing as First-Class Field | Implemented | `ZAI_PLAN` environment variable |
 | (3 unlisted accepted ADRs) | M2+ scope | agent/coordination/skills concerns with no CLI equivalent yet |
 
 ### Proposed vault ADRs (22) — disposition
@@ -192,7 +192,7 @@ All cover TUI-era patterns (Bubble Tea, Vue, UIKit, intents, screens, views, mod
 - Obsidian vault `Architecture/ADR/` — 78 files; disposition table compiled from status frontmatter
   (accepted/proposed/superseded/absent) at 2026-11-18.
 - `docs/adr/` — the six Go CLI ADRs and this index.
-- `internal/provider/zai/zai.go:93`, `internal/provider/registry/registry.go:46` — `ZAI_PLAN` routing anchor.
+- `internal/provider/zai/zai.go:93`, `internal/provider/registry/registry_compat.go` (`zaiPlan`) — `ZAI_PLAN` routing anchor.
 - `internal/tool/exec.go:69-71`, `internal/tool/loop.go` — allowlist gate and control loop anchors.
 - `go.mod:9-11`, `Makefile:78-109` — testing-strategy anchors (Ginkgo/Gomega versions, race + e2e matrix + check
   aggregation).

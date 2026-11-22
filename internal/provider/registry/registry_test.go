@@ -13,7 +13,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/anthropic"
 	"github.com/baphled/flowstate/internal/provider/registry"
@@ -37,15 +36,18 @@ func TestRegistry(t *testing.T) {
 	RunSpecs(t, "Provider Registry Suite")
 }
 
-var _ = Describe("Registry", func() {
-	// The resolver reads providers.yaml (providers.zai.api_key), so
-	// specs that assume env-only state must pin an empty config
-	// dir; otherwise a developer machine's real key leaks in and
-	// flips the no-key expectations.
-	BeforeEach(func() {
-		GinkgoT().Setenv("FLOWSTATE_CONFIG_DIR", GinkgoT().TempDir())
-	})
+// The resolver reads the environment only, so EVERY spec in this package
+// starts with no ambient provider settings: a developer's exported key or
+// route must not flip an expectation, and no spec may reach a live
+// provider with it. A spec that needs a setting sets its own afterwards.
+var _ = BeforeEach(func() {
+	for _, name := range []string{"ZAI_API_KEY", "ZAI_BASE_URL", "ZAI_PLAN", "ZAI_CODING_ROUTE",
+		"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "FLOWSTATE_ANTHROPIC_AUTH", "FLOWSTATE_CLAUDE_BIN"} {
+		GinkgoT().Setenv(name, "")
+	}
+})
 
+var _ = Describe("Registry", func() {
 	It("resolves z.ai from env to the concrete provider type", func() {
 		GinkgoT().Setenv("ZAI_API_KEY", "k")
 		p, err := registry.Resolve("z.ai")
@@ -72,42 +74,38 @@ var _ = Describe("Registry", func() {
 	})
 })
 
-var _ = Describe("zai config wiring", func() {
-	var configDir string
+var _ = Describe("a providers.yaml left in the old locations", func() {
+	const legacy = "providers:\n  zai:\n    api_key: file-key\n    plan: general\n" +
+		"  anthropic:\n    auth_type: api_key\n    api_key: file-key\n"
 
+	// plantLegacyFile writes the file in every location the prototype read
+	// and points HOME, XDG_CONFIG_HOME and the old directory variable at it.
 	BeforeEach(func() {
-		configDir = GinkgoT().TempDir()
-		GinkgoT().Setenv("FLOWSTATE_CONFIG_DIR", configDir)
-		GinkgoT().Setenv("ZAI_API_KEY", "cfg-key")
+		dir := GinkgoT().TempDir()
+		for _, sub := range []string{"flowstate", ".config/flowstate", "."} {
+			target := filepath.Join(dir, sub)
+			if err := os.MkdirAll(target, 0o750); err != nil {
+				panic(err)
+			}
+			for _, name := range []string{"providers.yaml", "config.yaml"} {
+				if err := os.WriteFile(filepath.Join(target, name), []byte(legacy), 0o600); err != nil {
+					panic(err)
+				}
+			}
+		}
+		GinkgoT().Setenv("HOME", dir)
+		GinkgoT().Setenv("XDG_CONFIG_HOME", dir)
+		GinkgoT().Setenv("APPDATA", dir)
+		GinkgoT().Setenv("FLOWSTATE_CONFIG_DIR", dir)
 	})
 
-	writeConfig := func(yaml string) {
-		if err := os.WriteFile(filepath.Join(configDir, config.FileName), []byte(yaml), 0o600); err != nil {
-			panic(err)
-		}
-	}
-	It("reports a providers.yaml that does not parse instead of ignoring it", func() {
-		writeConfig("providers: [unclosed\n")
+	It("does not supply the z.ai key", func() {
 		_, err := registry.Resolve("z.ai")
-		Expect(err).To(MatchError(config.ErrInvalid))
+		Expect(err).To(MatchError(ContainSubstring("ZAI_API_KEY is not set")))
 	})
 
-	It("reports the unparsable providers.yaml even when ZAI_API_KEY is set", func() {
+	It("does not supply the z.ai plan", func() {
 		GinkgoT().Setenv("ZAI_API_KEY", "env-key")
-		writeConfig("providers: [unclosed\n")
-		_, err := registry.Resolve("zai")
-		Expect(err).To(MatchError(ContainSubstring("registry: zai")))
-	})
-
-	It("keeps the default configuration when providers.yaml is absent", func() {
-		p, err := registry.Resolve("z.ai")
-		if err != nil {
-			panic(err)
-		}
-		Expect(p.Name()).To(Equal("z.ai"))
-	})
-
-	resolveCoding := func() bool {
 		p, err := registry.Resolve("z.ai")
 		if err != nil {
 			panic(err)
@@ -116,85 +114,37 @@ var _ = Describe("zai config wiring", func() {
 		if !ok {
 			panic("registry did not resolve a zai provider")
 		}
-		return zp.Coding()
-	}
-
-	Context("with config plan coding and no ZAI_PLAN", func() {
-		var observedCoding bool
-		BeforeEach(func() {
-			GinkgoT().Setenv("ZAI_API_KEY", "")
-			GinkgoT().Setenv("ZAI_PLAN", "")
-			writeConfig("providers:\n  zai:\n    plan: coding\n    api_key: config-key\n")
-			observedCoding = resolveCoding()
-		})
-		It("selects the anthropic route from config", func() { Expect(observedCoding).To(BeTrue()) })
+		Expect(zp.Coding()).To(BeTrue())
 	})
 
-	Context("with no plan in config", func() {
-		var observedCoding bool
-		BeforeEach(func() {
-			writeConfig("providers:\n  zai:\n    model: glm-5.3\n")
-			observedCoding = resolveCoding()
-		})
-		It("defaults to the coding plan", func() { Expect(observedCoding).To(BeTrue()) })
+	It("does not select the anthropic API-key route", func() {
+		p, err := registry.Resolve("anthropic")
+		if err != nil {
+			panic(err)
+		}
+		Expect(p).To(BeAssignableToTypeOf(&anthropic.Subscription{}))
+	})
+})
+
+var _ = Describe("z.ai environment resolution", func() {
+	It("names ZAI_API_KEY when it is unset", func() {
+		_, err := registry.Resolve("zai")
+		Expect(err).To(MatchError(ContainSubstring("ZAI_API_KEY")))
 	})
 
-	Context("with no zai config at all", func() {
-		var observedCoding bool
-		BeforeEach(func() {
-			GinkgoT().Setenv("ZAI_API_KEY", "env-key")
-			writeConfig("providers:\n  anthropic:\n    auth_type: oauth\n")
-			observedCoding = resolveCoding()
-		})
-		It("defaults to the coding plan", func() { Expect(observedCoding).To(BeTrue()) })
-	})
-
-	Context("with plan explicitly general", func() {
-		var observedCoding bool
-		BeforeEach(func() {
-			writeConfig("providers:\n  zai:\n    plan: general\n")
-			observedCoding = resolveCoding()
-		})
-		It("honours the explicit general plan", func() { Expect(observedCoding).To(BeFalse()) })
-	})
-
-	Context("with ZAI_PLAN=coding and config plan general", func() {
-		var observedCoding bool
-		BeforeEach(func() {
-			GinkgoT().Setenv("ZAI_PLAN", "coding")
-			writeConfig("providers:\n  zai:\n    plan: general\n")
-			observedCoding = resolveCoding()
-		})
-		It("lets env override config to coding", func() { Expect(observedCoding).To(BeTrue()) })
-	})
-
-	Context("with ZAI_PLAN=general and config plan coding", func() {
-		var observedCoding bool
-		BeforeEach(func() {
-			GinkgoT().Setenv("ZAI_PLAN", "general")
-			writeConfig("providers:\n  zai:\n    plan: coding\n")
-			observedCoding = resolveCoding()
-		})
-		It("lets env override config away from coding", func() { Expect(observedCoding).To(BeFalse()) })
+	It("resolves the zai alias with a key", func() {
+		GinkgoT().Setenv("ZAI_API_KEY", "k")
+		p, err := registry.Resolve("zai")
+		if err != nil {
+			panic(err)
+		}
+		Expect(p.Name()).To(Equal("z.ai"))
 	})
 })
 
 var _ = Describe("anthropic resolution", func() {
-	var configDir string
-
-	BeforeEach(func() {
-		configDir = GinkgoT().TempDir()
-		GinkgoT().Setenv("FLOWSTATE_CONFIG_DIR", configDir)
-		GinkgoT().Setenv("FLOWSTATE_CLAUDE_BIN", "")
-	})
-
-	writeConfig := func(yaml string) {
-		if err := os.WriteFile(filepath.Join(configDir, config.FileName), []byte(yaml), 0o600); err != nil {
-			panic(err)
-		}
-	}
-	resolveWith := func(authType string) (provider.Provider, error) {
-		writeConfig("providers:\n  anthropic:\n    auth_type: " + authType + "\n")
+	resolveWith := func(auth string) (provider.Provider, error) {
+		GinkgoT().Setenv("FLOWSTATE_ANTHROPIC_AUTH", auth)
 		return registry.Resolve("anthropic")
 	}
 
@@ -214,7 +164,7 @@ var _ = Describe("anthropic resolution", func() {
 		Expect(p.Name()).To(Equal("anthropic"))
 	})
 
-	It("resolves auth_type oauth to the subscription type", func() {
+	It("resolves FLOWSTATE_ANTHROPIC_AUTH=oauth to the subscription type", func() {
 		p, err := resolveWith("oauth")
 		if err != nil {
 			panic(err)
@@ -222,14 +172,11 @@ var _ = Describe("anthropic resolution", func() {
 		Expect(p).To(BeAssignableToTypeOf(&anthropic.Subscription{}))
 	})
 
-	Describe("auth_type api_key", func() {
+	Describe("FLOWSTATE_ANTHROPIC_AUTH=api_key", func() {
 		const envKey = "sk-ant-synthetic-env-key"
-		const cfgKey = "sk-ant-synthetic-config-key"
 		var served chan http.Header
 
 		BeforeEach(func() {
-			GinkgoT().Setenv("ANTHROPIC_API_KEY", "")
-			GinkgoT().Setenv("ANTHROPIC_BASE_URL", "")
 			served = make(chan http.Header, 4)
 		})
 
@@ -250,7 +197,7 @@ var _ = Describe("anthropic resolution", func() {
 			return (<-served).Get("x-api-key")
 		}
 
-		It("keeps the oauth route on the subscription provider when ANTHROPIC_API_KEY is set", func() {
+		It("keeps FLOWSTATE_ANTHROPIC_AUTH=oauth on the subscription provider when ANTHROPIC_API_KEY is set", func() {
 			GinkgoT().Setenv("ANTHROPIC_API_KEY", envKey)
 			p, err := resolveWith("oauth")
 			if err != nil {
@@ -287,60 +234,9 @@ var _ = Describe("anthropic resolution", func() {
 			Expect(keyOf(p)).To(Equal(envKey))
 		})
 
-		It("sends the config key when the environment has none", func() {
-			srv := anthropicServer()
-			writeConfig("providers:\n  anthropic:\n    auth_type: api_key\n    api_key: " + cfgKey +
-				"\n    host: " + srv.URL + "\n")
-			p, err := registry.Resolve("anthropic")
-			if err != nil {
-				panic(err)
-			}
-			Expect(keyOf(p)).To(Equal(cfgKey))
-		})
-
-		It("prefers the environment key over the config key", func() {
-			srv := anthropicServer()
-			GinkgoT().Setenv("ANTHROPIC_API_KEY", envKey)
-			writeConfig("providers:\n  anthropic:\n    auth_type: api_key\n    api_key: " + cfgKey +
-				"\n    host: " + srv.URL + "\n")
-			p, err := registry.Resolve("anthropic")
-			if err != nil {
-				panic(err)
-			}
-			Expect(keyOf(p)).To(Equal(envKey))
-		})
-
 		It("fails without a key, naming the environment variable", func() {
 			_, err := resolveWith("api_key")
 			Expect(err).To(MatchError(ContainSubstring("ANTHROPIC_API_KEY")))
-		})
-
-		It("fails without a key, naming the config field", func() {
-			_, err := resolveWith("api_key")
-			Expect(err).To(MatchError(ContainSubstring("providers.anthropic.api_key")))
-		})
-
-		It("lets ANTHROPIC_BASE_URL win over the config host", func() {
-			srv := anthropicServer()
-			GinkgoT().Setenv("ANTHROPIC_API_KEY", envKey)
-			GinkgoT().Setenv("ANTHROPIC_BASE_URL", srv.URL)
-			writeConfig("providers:\n  anthropic:\n    auth_type: api_key\n    host: http://127.0.0.1:1\n")
-			p, err := registry.Resolve("anthropic")
-			if err != nil {
-				panic(err)
-			}
-			Expect(keyOf(p)).To(Equal(envKey))
-		})
-
-		It("uses the config host when no base-URL variable is set", func() {
-			srv := anthropicServer()
-			GinkgoT().Setenv("ANTHROPIC_API_KEY", envKey)
-			writeConfig("providers:\n  anthropic:\n    auth_type: api_key\n    host: " + srv.URL + "\n")
-			p, err := registry.Resolve("anthropic")
-			if err != nil {
-				panic(err)
-			}
-			Expect(keyOf(p)).To(Equal(envKey))
 		})
 
 		It("makes no network request while resolving", func() {
@@ -360,14 +256,31 @@ var _ = Describe("anthropic resolution", func() {
 		})
 	})
 
-	It("names both supported values for an unknown auth_type", func() {
+	It("resolves the subscription route when ANTHROPIC_API_KEY is set and the route is unset", func() {
+		GinkgoT().Setenv("ANTHROPIC_API_KEY", "sk-ant-synthetic-ambient-key")
+		p, err := registry.Resolve("anthropic")
+		if err != nil {
+			panic(err)
+		}
+		Expect(p).To(BeAssignableToTypeOf(&anthropic.Subscription{}))
+	})
+
+	It("treats an empty FLOWSTATE_ANTHROPIC_AUTH as the subscription route", func() {
+		p, err := resolveWith("")
+		if err != nil {
+			panic(err)
+		}
+		Expect(p).To(BeAssignableToTypeOf(&anthropic.Subscription{}))
+	})
+
+	It("names both supported values for an unknown FLOWSTATE_ANTHROPIC_AUTH", func() {
 		_, err := resolveWith("magic")
 		Expect(err).To(MatchError(ContainSubstring("supported: oauth, api_key")))
 	})
 
-	It("rejects an unknown auth_type", func() {
+	It("names the variable and the value for an unknown FLOWSTATE_ANTHROPIC_AUTH", func() {
 		_, err := resolveWith("magic")
-		Expect(err).To(MatchError(ContainSubstring(`unknown anthropic auth_type "magic"`)))
+		Expect(err).To(MatchError(ContainSubstring(`unknown FLOWSTATE_ANTHROPIC_AUTH "magic"`)))
 	})
 
 	It("does not resolve claude-code", func() {
@@ -410,24 +323,6 @@ var _ = Describe("anthropic resolution", func() {
 		}
 		Expect(marker).NotTo(BeAnExistingFile())
 	})
-
-	It("resolves the subscription route beside the older harness's config.yaml", func() {
-		harness := "providers:\n  default: zai\n  anthropic:\n    auth_type: api_key\n    api_key: harness-key\n"
-		if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(harness), 0o600); err != nil {
-			panic(err)
-		}
-		p, err := registry.Resolve("anthropic")
-		if err != nil {
-			panic(err)
-		}
-		Expect(p).To(BeAssignableToTypeOf(&anthropic.Subscription{}))
-	})
-
-	It("reports a malformed config file instead of falling back to the subscription route", func() {
-		writeConfig("providers: [unclosed\n")
-		_, err := registry.Resolve("anthropic")
-		Expect(err).To(MatchError(config.ErrInvalid))
-	})
 })
 
 var _ = Describe("resolved z.ai finish events", func() {
@@ -439,7 +334,6 @@ var _ = Describe("resolved z.ai finish events", func() {
 			_, _ = io.WriteString(w, body)
 		}))
 		DeferCleanup(srv.Close)
-		GinkgoT().Setenv("FLOWSTATE_CONFIG_DIR", GinkgoT().TempDir())
 		GinkgoT().Setenv("ZAI_API_KEY", "k")
 		GinkgoT().Setenv("ZAI_PLAN", "coding")
 		GinkgoT().Setenv("ZAI_CODING_ROUTE", route)
