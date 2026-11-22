@@ -1,5 +1,5 @@
 """Verify required CI checks succeeded on the exact candidate head."""
-from scripts.admission_metadata import AdmissionError, AdmissionPending, SHA
+from scripts.admission_metadata import AdmissionError, AdmissionPending, SHA, WAITING_CHECK
 
 MAX_CHECK_PAGES = 10
 # Verdicts meaning "not finished yet": not reported, queued or in progress.
@@ -66,5 +66,5 @@ def verify_required_checks(pr_head, github, required):
                 f"required check {name} did not succeed on the candidate head: {verdict}")
     for name, verdict in verdicts:
         if verdict in UNFINISHED:
-            raise AdmissionPending(f"Waiting for required check {name}")
+            raise AdmissionPending(WAITING_CHECK + name)
     return True
