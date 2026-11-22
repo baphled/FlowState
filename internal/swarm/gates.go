@@ -102,9 +102,29 @@ func validatePrerequisiteGraph(packets []Packet) error {
 // killed for its I/O to drain.
 const gateWaitDelay = 5 * time.Second
 
+// gateStopGrace is how long a cancelled gate's process group gets to exit
+// after SIGTERM (Unix) before the group is killed. It is shorter than
+// gateWaitDelay: os/exec abandons the wait and kills only the direct process
+// when gateWaitDelay expires, so the group kill has to land first.
+const gateStopGrace = 3 * time.Second
+
 // NewGateRunner builds a runner with the real shell executor.
 func NewGateRunner() *GateRunner {
-	return &GateRunner{execCommand: runGate}
+	return NewGateRunnerWithGrace(gateStopGrace)
+}
+
+// NewGateRunnerWithGrace builds a runner with the real shell executor whose
+// cancelled gates get grace to exit after SIGTERM before their process group
+// is killed (Unix only; elsewhere the gate is killed at once). A grace that is
+// not positive or exceeds the default of three seconds is replaced by the
+// default, so a cancelled run always returns within gateWaitDelay.
+func NewGateRunnerWithGrace(grace time.Duration) *GateRunner {
+	if grace <= 0 || grace > gateStopGrace {
+		grace = gateStopGrace
+	}
+	return &GateRunner{execCommand: func(ctx context.Context, name string, args []string) error {
+		return runGate(ctx, name, args, grace)
+	}}
 }
 
 // NewGateRunnerWith builds a runner around a caller-supplied executor,
@@ -168,18 +188,19 @@ func (d GatesDecision) FailedGateNames() []string {
 // path-like operand or quoted literal.
 //
 // Cancelling ctx stops the gate's whole process group on Unix (see
-// isolateGate), so its children do not outlive the run; elsewhere only
+// isolateGate): SIGTERM first, SIGKILL after grace; elsewhere only
 // the direct process is killed. The gate's output is not piped (os/exec
 // connects a nil Stdout to the null device), so a surviving child
 // cannot hold Run open; WaitDelay bounds the wait regardless.
-func runGate(ctx context.Context, name string, args []string) error {
+func runGate(ctx context.Context, name string, args []string, grace time.Duration) error {
 	if err := validateCommandTokens(append([]string{name}, args...)); err != nil {
 		return err
 	}
 	candidate := exec.CommandContext
 	cmd := candidate(ctx, name, args...)
 	cmd.WaitDelay = gateWaitDelay
-	isolateGate(cmd)
+	settle := isolateGate(cmd, grace)
+	defer settle()
 	return cmd.Run()
 }
 
