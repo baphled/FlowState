@@ -353,12 +353,12 @@ func finishRun(err error, res *app.TurnResult, fl *flags, stderr *os.File) int {
 }
 
 // reportInterrupt reports a cancelled run and returns exit 130. A
-// reservation settle failure joined to the cancellation is printed first
-// as its own line, as `session cancel` does, so it is not hidden behind
-// the fixed interrupt message; the exit status never changes.
+// reservation settle failure joined to the cancellation is printed first,
+// one line per failing session in the order they occur, as `session cancel`
+// does, so none is hidden behind the fixed interrupt message; the exit
+// status never changes.
 func reportInterrupt(err error, stderr *os.File) int {
-	var se *app.SettleError
-	if errors.As(err, &se) {
+	for _, se := range app.SettleErrors(err) {
 		writeError(stderr, fmt.Errorf("%w: %s", app.ErrReservationSettle, se.Detail()))
 	}
 	writeError(stderr, fmt.Errorf("%w: interrupted; session cancelled", app.ErrSessionCancelled))

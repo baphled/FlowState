@@ -106,7 +106,7 @@ func failDeltaAppends(db string) *scriptedStreamer {
 // unsettledSwarmChild runs a swarm that is cancelled in its first gate
 // while a trigger blocks every reservation update, and returns the first
 // child's id with the error the real producer returned.
-func unsettledSwarmChild(db string) (string, error) {
+func unsettledSwarmChildren(db string, n int) ([]string, error) {
 	ctx := context.Background()
 	st, err := app.OpenStore(db)
 	must(err)
@@ -114,10 +114,11 @@ func unsettledSwarmChild(db string) (string, error) {
 	parent, err := app.CreateSession(ctx, st, "zai", "glm-5.3", app.DefaultHarness, "sha", "parent")
 	must(err)
 	must(st.SetBudgetPool(ctx, parent.ID, 100))
-	m := swarm.Manifest{Name: "demo", Scope: "demo",
-		Packets: []swarm.Packet{{ID: "p1", Scope: "demo.p1", Task: "plan",
-			SourceSHA256: swarm.SHA256HexForTest([]byte("plan"))}},
-		Gates: []swarm.Gate{{Name: "one", Command: "one"}, {Name: "two", Command: "two"}}}
+	m := swarm.Manifest{Name: "demo", Scope: "demo", Gates: []swarm.Gate{{Name: "one", Command: "one"}, {Name: "two", Command: "two"}}}
+	for i := 1; i <= n; i++ {
+		m.Packets = append(m.Packets, swarm.Packet{ID: fmt.Sprintf("p%d", i), Scope: fmt.Sprintf("demo.p%d", i),
+			Task: "plan", SourceSHA256: swarm.SHA256HexForTest([]byte("plan"))})
+	}
 	cctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	gates := swarm.NewGateRunnerWith(func(context.Context, string, []string) error {
@@ -131,10 +132,14 @@ func unsettledSwarmChild(db string) (string, error) {
 		return nil
 	})
 	res, rerr := app.RunSwarm(cctx, st, parent, m, 10, allowAll{}, gates)
-	if len(res.Children) != 1 {
-		panic("the swarm run created no single child")
+	if len(res.Children) != n {
+		panic("the swarm run did not create every child")
 	}
-	return res.Children[0].Session.ID, rerr
+	ids := []string{}
+	for _, c := range res.Children {
+		ids = append(ids, c.Session.ID)
+	}
+	return ids, rerr
 }
 
 // allowAll admits every packet.
@@ -1047,13 +1052,15 @@ var _ = Describe("Session run failure classification", func() {
 
 	Context("a swarm run cancelled while a child's reservation cannot be settled", func() {
 		var (
+			ids     []string
 			childID string
 			stderr  string
 		)
 
 		BeforeEach(func() {
 			var err error
-			childID, err = unsettledSwarmChild(filepath.Join(GinkgoT().TempDir(), "swarm.db"))
+			ids, err = unsettledSwarmChildren(filepath.Join(GinkgoT().TempDir(), "swarm.db"), 1)
+			childID = ids[0]
 			if err == nil {
 				panic("the swarm run did not report a failed settle")
 			}
@@ -1065,6 +1072,31 @@ var _ = Describe("Session run failure classification", func() {
 		})
 		It("names the settle cause on that line", func() {
 			Expect(stderr).To(ContainSubstring("settle blocked"))
+		})
+	})
+
+	Context("a swarm run cancelled while two children's reservations cannot be settled", func() {
+		var (
+			ids    []string
+			stderr string
+		)
+
+		BeforeEach(func() {
+			var err error
+			ids, err = unsettledSwarmChildren(filepath.Join(GinkgoT().TempDir(), "swarm.db"), 2)
+			if err == nil {
+				panic("the swarm run did not report a failed settle")
+			}
+			_, stderr = finishRunOutcome(err)
+		})
+
+		It("prints one settle line per child", func() {
+			Expect(strings.Count(stderr, "reservation_settle_failed")).To(Equal(2))
+		})
+		It("names the first child before the second", func() {
+			first := strings.Index(stderr, "session "+ids[0]+": ")
+			second := strings.Index(stderr, "session "+ids[1]+": ")
+			Expect(first >= 0 && first < second).To(BeTrue())
 		})
 	})
 
