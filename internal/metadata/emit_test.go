@@ -15,7 +15,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/metadata"
-	"github.com/baphled/flowstate/internal/storage"
+	"github.com/baphled/flowstate/internal/store"
 )
 
 func TestMetadata(t *testing.T) {
@@ -35,12 +35,10 @@ func withRoot() string {
 
 func mustDB() *sql.DB {
 	root := GinkgoT().TempDir()
-	db, _, err := storage.Open(root + "/test.db")
+	st, err := store.Open(root + "/test.db")
 	Expect(err).NotTo(HaveOccurred())
-	err = storage.Migrate(db)
-	Expect(err).NotTo(HaveOccurred())
-	DeferCleanup(func() { _ = db.Close() })
-	return db
+	DeferCleanup(func() { _ = st.Close() })
+	return st.DB()
 }
 
 // emit runs an emission as fixture setup, failing the spec if it errors.

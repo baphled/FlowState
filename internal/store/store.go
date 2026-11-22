@@ -51,6 +51,17 @@ func OpenMemory() (*Store, error) {
 	return openDSN("file::memory:?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)")
 }
 
+// DB returns the open database handle, or nil after Close. Adapters
+// that bind their own ORM to the same file (the receipt logs and
+// metadata.Emit) use it; the Store keeps ownership, so callers must
+// not close the handle themselves. The pool holds one connection.
+func (s *Store) DB() *sql.DB {
+	if s == nil {
+		return nil
+	}
+	return s.db
+}
+
 // Close closes the underlying database handle. Operations after Close
 // fail with ErrClosed.
 func (s *Store) Close() error {
