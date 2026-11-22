@@ -106,7 +106,9 @@ record so the ten-minute expiry cannot reset it. A publication that raised is ne
 the count is dropped and read from GitHub again before the next one, so an outage cannot use up a head.
 While the answer is unreadable, malformed or longer than 30 pages, every status for the head becomes
 `failure: Admission status count is unavailable; retrying` (published on change, never a `success`), and
-the count is read again each cycle; the head is not ended.
+the count is read again each cycle (at most once per 10 seconds per head, `READ_INTERVAL`, so a retry loop or
+two calls in one cycle cost one read); a call inside that window with no held count is a failure, not a
+remembered number; the head is not ended.
 
 The publication that would take a head past the budget is replaced by one final `failure`,
 `Admission window for this commit is exhausted; push a new commit to continue`. Once that failure is
@@ -139,7 +141,9 @@ for part of a cycle exactly as before; the review record binds the PR number, so
 them can be admitted.
 
 Waiting is `pending`, a defect is `failure`. `pending: Awaiting an independent exact-head
-agent review` means the PR description has no `Agent-Review:` line at all.
+agent review` means nothing in the PR description resembles a review line. A line that looks like one
+(any case, spacing before the colon, `Agent Review:`, `Agent_Review:` or leading blanks) but is not exactly
+`Agent-Review: <reference>` is a `failure` naming the spelling, never the waiting `pending`.
 `pending: Waiting for required check <name>` means a required check is not reported, queued
 or in progress on the head. More than one line, a malformed reference, or a required check
 that finished without success is a `failure`. A waiting `pending` is a non-success record: the

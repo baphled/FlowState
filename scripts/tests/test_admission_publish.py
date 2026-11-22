@@ -3,7 +3,7 @@ import unittest
 
 from scripts.admission_metadata import AdmissionError, IN_PROGRESS
 from scripts.admission_budget import BOT_LOGIN, EXHAUSTED, STATUS_BUDGET, STATUS_LIMIT, UNCOUNTED
-from scripts.admission_publish import CHECK_DEADLINE, RECORD_TTL, ChangedStatusPublisher, PublishedRecords, retain_heads
+from scripts.admission_publish import CHECK_DEADLINE, READ_INTERVAL, RECORD_TTL, ChangedStatusPublisher, PublishedRecords, retain_heads
 from scripts.status_issuer import STATUS_CONTEXT
 
 HEAD, OTHER = '2' * 40, '3' * 40
@@ -160,9 +160,11 @@ class ChangedStatuses(Fixture, unittest.TestCase):
         self.issuer.errors.update({('success', 'ok'): AdmissionError('late'), ('failure', 'F'): AdmissionError('blip')})
         self.publisher.status(HEAD, 'pending', IN_PROGRESS)
         for step in (('success', 'ok'), ('failure', 'F')):
+            self.clock.now += READ_INTERVAL
             with self.assertRaises(AdmissionError):
                 self.publisher.status(HEAD, *step)
         self.issuer.errors.clear()
+        self.clock.now += READ_INTERVAL
         self.publisher.status(HEAD, 'pending', IN_PROGRESS)
         self.publisher.status(HEAD, 'failure', 'F')
         self.assertEqual(self.issuer.posted[-2:], [(HEAD, 'pending', IN_PROGRESS), (HEAD, 'failure', 'F')])
@@ -276,6 +278,7 @@ class Budget(Fixture, unittest.TestCase):
         self.restarted(FakeReader(error=AdmissionError('GitHub down')))
         self.admitted_cycle()
         self.reader.error = None
+        self.clock.now += READ_INTERVAL
         self.admitted_cycle()
         self.assertEqual(self.states(), ['failure', 'success'])
 
@@ -283,16 +286,52 @@ class Budget(Fixture, unittest.TestCase):
         self.issuer.errors[('pending', IN_PROGRESS)] = AdmissionError('blip')
         with self.assertRaises(AdmissionError):
             self.publisher.status(HEAD, 'pending', IN_PROGRESS)
+        self.clock.now += READ_INTERVAL
         self.publisher.status(HEAD, 'success', 'ok')
         self.assertEqual(len(self.reader.paths), 2)
+
+    def test_an_unreadable_count_is_read_once_per_interval_however_many_calls(self):
+        self.restarted(FakeReader(error=AdmissionError('GitHub down')))
+        for _ in range(4):
+            self.admitted_cycle()
+        self.assertEqual(len(self.reader.paths), 1)
+
+    def test_an_unreadable_count_is_read_again_after_the_interval(self):
+        self.restarted(FakeReader(error=AdmissionError('GitHub down')))
+        self.admitted_cycle()
+        self.clock.now += READ_INTERVAL
+        self.admitted_cycle()
+        self.assertEqual(len(self.reader.paths), 2)
+
+    def test_a_publication_that_raised_reads_the_count_once_per_interval(self):
+        self.issuer.errors[('pending', IN_PROGRESS)] = AdmissionError('blip')
+        with self.assertRaises(AdmissionError):
+            self.publisher.status(HEAD, 'pending', IN_PROGRESS)
+        for _ in range(3):
+            self.publisher.status(HEAD, 'pending', IN_PROGRESS)
+        self.assertEqual(len(self.reader.paths), 1)
+
+    def test_a_raise_inside_the_interval_never_lets_the_next_call_publish_a_success(self):
+        self.issuer.errors[('pending', IN_PROGRESS)] = AdmissionError('blip')
+        with self.assertRaises(AdmissionError):
+            self.publisher.status(HEAD, 'pending', IN_PROGRESS)
+        self.publisher.status(HEAD, 'success', 'ok')
+        self.assertEqual(self.issuer.posted[-1], (HEAD, 'failure', UNCOUNTED))
+
+    def test_the_read_time_is_forgotten_with_the_head(self):
+        self.last.reads.update({HEAD: 1.0, OTHER: 2.0})
+        retain_heads(self.last, [{'head': {'sha': HEAD}}])
+        self.assertEqual(self.last.reads, {HEAD: 1.0})
 
     def test_an_outage_of_the_final_failure_never_ends_a_head_holding_a_success(self):
         self.reader.statuses = spent(STATUS_BUDGET)
         self.issuer.errors[('failure', EXHAUSTED)] = AdmissionError('outage')
         for _ in range(STATUS_LIMIT - STATUS_BUDGET + 5):
+            self.clock.now += READ_INTERVAL
             with self.assertRaises(AdmissionError):
                 self.publisher.status(HEAD, 'pending', IN_PROGRESS)
         self.issuer.errors.clear()
+        self.clock.now += READ_INTERVAL
         self.admitted_cycle()
         self.assertEqual(self.issuer.posted[-1], (HEAD, 'failure', EXHAUSTED))
 

@@ -4,10 +4,17 @@ from scripts.admission_metadata import AdmissionError, AdmissionPending, REFEREN
 from scripts.review_signature import verify_signature
 from scripts.review_execution import validate_review_scope, validate_execution
 
+# Anything that looks like a review line, however spelled: only the exact `Agent-Review: <reference>` is valid.
+REVIEW_LOOKALIKE = re.compile(r"^[ \t]*agent[-_ ]?review[ \t]*:", flags=re.I | re.M)
+
 def agent_review_reference(body):
+    """Return the one valid review reference; pending only if nothing resembles a review line."""
     body = body if isinstance(body, str) else ""
-    if not re.search(r"^Agent-Review:", body, flags=re.M):
+    lookalikes = REVIEW_LOOKALIKE.findall(body)
+    if not lookalikes:
         raise AdmissionPending("Awaiting an independent exact-head agent review")
+    if len(lookalikes) != len(re.findall(r"^Agent-Review:", body, flags=re.M)):
+        raise AdmissionError("review line must be spelled exactly 'Agent-Review: <reference>' at the line start")
     refs = re.findall(r"^Agent-Review: (.+)$", body, flags=re.M)
     if len(refs) != 1 or not REFERENCE.fullmatch(refs[0]):
         raise AdmissionError("one external agent-review record required in PR description")

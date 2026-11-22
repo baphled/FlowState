@@ -8,21 +8,24 @@ from scripts.admission_metadata import IN_PROGRESS, WAITING_CHECK
 RECORD_TTL = 600
 # A required check that has not reported after this long is published as a failure, not as waiting.
 CHECK_DEADLINE = 3600
+# A head's status count is read from GitHub at most once per this many seconds (scan cycles are 15 s apart).
+READ_INTERVAL = 10
 
 
 class PublishedRecords(dict):
     """The process-lived record, head -> (state, description, time), plus per-head state that must
     outlive record expiry: `counts` (statuses GitHub holds, plus those published since), `final`
-    (heads that take no further status) and `waiting` (head -> (check, first time seen))."""
+    (heads that take no further status), `waiting` (head -> (check, first time seen)) and `reads`
+    (head -> time of the last count read, successful or not)."""
     def __init__(self):
         super().__init__()
-        self.counts, self.final, self.waiting = {}, {}, {}
+        self.counts, self.final, self.waiting, self.reads = {}, {}, {}, {}
 
 
 def retain_heads(last, candidates):
     """Bound the record: forget every head that is not the head of a listed candidate PR."""
     heads = {(pr.get('head') or {}).get('sha') for pr in candidates}
-    for table in (last, last.counts, last.final, last.waiting):
+    for table in (last, last.counts, last.final, last.waiting, last.reads):
         for head in [head for head in table if head not in heads]:
             del table[head]
 
@@ -45,6 +48,9 @@ class ChangedStatusPublisher:
     until its SHA changes. A publication that raised is never counted from memory: the count is
     read from GitHub again, so an outage cannot end a head whose success still stands. While the
     count cannot be read, every status becomes a failure saying so and the head is not terminal.
+    The count is read at most once per READ_INTERVAL per head, whether the read succeeded or not; a
+    call inside that window with no held count treats it as unknown (the failure above), never as a
+    remembered number, so a stale or unknown count cannot publish a success.
     Waiting for the same required check for CHECK_DEADLINE becomes a failure; the review wait
     has no deadline.
     """
@@ -76,8 +82,13 @@ class ChangedStatusPublisher:
 
     def spent(self, sha):
         """Statuses on the head, read from GitHub on first sight and again after any publication
-        that raised (the held count is dropped before each one); None while it cannot be read."""
+        that raised (the held count is dropped before each one); None while it cannot be read, and
+        None without a read while the last read of this head is under READ_INTERVAL old."""
         if sha not in self.last.counts:
+            read = self.last.reads.get(sha)
+            if read is not None and 0 <= self.clock() - read < READ_INTERVAL:
+                return None
+            self.last.reads[sha] = self.clock()
             try:
                 count, done = read_spent(self.reader, sha)
             except Exception:

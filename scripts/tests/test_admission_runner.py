@@ -170,6 +170,7 @@ class Runner(unittest.TestCase):
         issuer, posted = self.raising_issuer()
         github, published = FakeGitHub(), PublishedRecords()
         for _ in range(3):
+            published.reads.clear()  # a scan cycle is 15 s after the last read; the real clock does not advance here
             self.assertFalse(self.cycle(github, issuer, published))
             self.assertEqual(posted[-1][0], 'failure')
 
