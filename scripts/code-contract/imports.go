@@ -42,7 +42,7 @@ func allowedImport(path, name string) bool {
 	}
 	if strings.HasPrefix(path, "cmd/") {
 		if strings.HasPrefix(name, modulePath) {
-			return within(internal, "internal/app") || within(internal, "internal/config") || within(internal, "internal/server")
+			return within(internal, "internal/app") || within(internal, "internal/server")
 		}
 		if within(name, "net/http") {
 			return false

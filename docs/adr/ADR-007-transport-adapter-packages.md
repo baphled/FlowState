@@ -159,7 +159,7 @@ Scoped explicitly **out** of this amendment: the domain `net/http`/`database/sql
 `internal/config` was deleted in #391 (the unused provider file loader). Provider settings now come from the
 environment only, so cmd has no configuration package to import, and the references above describe the decision as
 it stood on 2026-11-19. The decision itself is unchanged: cmd may import `internal/app` and `internal/server`. The
-checker's allowlist entry for `internal/config` is dead and is left for a separate tooling change.
+checker's allowlist entry for `internal/config` was removed in #410.
 
 ## Related Plans
 
