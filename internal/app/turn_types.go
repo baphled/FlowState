@@ -20,6 +20,23 @@ const TypeTurnEnd = "turn.end"
 // TypeProviderError is the terminal provider-failure event type.
 const TypeProviderError = "provider.error"
 
+// CancelCause is a context cancellation cause that names the reason
+// recorded in `session.cancelled`. A command-line signal watcher
+// cancels the root context with one; internal/server cannot import
+// this package, so it defines its own cause carrying the same
+// CancelReason method, which CancelReason reads through an interface.
+type CancelCause struct {
+	// Reason is the recorded reason: sigint, sigterm, sighup,
+	// client_disconnected, shutdown or cancelled.
+	Reason string
+}
+
+// reasonedCause is what CancelReason looks for in a cancellation cause.
+type reasonedCause interface {
+	// CancelReason returns the reason to record for the cancellation.
+	CancelReason() string
+}
+
 // turnState accumulates one turn stream's content, consumption and
 // stop reason while events are consumed.
 type turnState struct {
