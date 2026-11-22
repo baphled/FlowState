@@ -136,6 +136,12 @@ var _ = Describe("APIKey", func() {
 		Expect(bodyField(request(hello()), "max_tokens")).To(BeEquivalentTo(8192))
 	})
 
+	It("sends an explicit small max_tokens as given", func() {
+		req := hello()
+		req.MaxTokens = 20
+		Expect(bodyField(request(req), "max_tokens")).To(BeEquivalentTo(20))
+	})
+
 	It("honours a larger max_tokens", func() {
 		req := hello()
 		req.MaxTokens = 20000

@@ -266,7 +266,9 @@ func (p *Provider) emitSSELine(ctx context.Context, out chan<- provider.StreamEv
 		return true
 	}
 	for _, c := range chunk.Choices {
-		if c.FinishReason != "" {
+		// "length" is sticky: a truncation on any choice must not be hidden by
+		// a later choice or chunk ending "stop".
+		if c.FinishReason != "" && *finish != provider.FinishLength {
 			*finish = c.FinishReason
 		}
 		if c.Delta.Content != "" {
