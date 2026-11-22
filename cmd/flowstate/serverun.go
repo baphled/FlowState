@@ -78,7 +78,8 @@ func serveRun(ctx context.Context, st *app.Store, fl *flags, id string, opts ser
 // serveRunTurn mirrors runSessionTurn for the transport: provider
 // resolution, one bounded turn, exit-class mapping and replay
 // projection; a client disconnect surfaces as session_cancelled (the
-// request context plays SIGINT's role).
+// request context plays the signal's role; the engine records
+// client_disconnected or shutdown).
 func serveRunTurn(ctx context.Context, st *app.Store, sess *app.Session, runFl *flags) ([]server.Event, error) {
 	p, perr := providerResolver(sess.Provider)
 	if perr != nil {

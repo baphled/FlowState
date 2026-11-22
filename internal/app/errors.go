@@ -24,7 +24,8 @@ const (
 	CodeReplayMismatch = "replay_mismatch"
 	// CodeBudgetExceeded marks budget-cap stops.
 	CodeBudgetExceeded = "budget_exceeded"
-	// CodeSessionCancelled marks interrupt-driven cancellation.
+	// CodeSessionCancelled marks cancellation by a signal, a client
+	// disconnect or a server shutdown.
 	CodeSessionCancelled = "session_cancelled"
 	// CodeReceiptInvalid marks receipts failing schema validation.
 	CodeReceiptInvalid = "receipt_invalid"
@@ -45,8 +46,8 @@ var ErrUsage = session.ErrUsage
 // exit 5 per CLI-AND-API-CONTRACT §1).
 var ErrBudgetExceeded = errors.New("budget_exceeded")
 
-// ErrSessionCancelled marks interrupt-driven cancellation (code
-// session_cancelled, exit 130).
+// ErrSessionCancelled marks cancellation by SIGINT, SIGTERM, SIGHUP, a
+// client disconnect or a shutdown (code session_cancelled, exit 130).
 var ErrSessionCancelled = errors.New("session_cancelled")
 
 // ErrorCode maps any error onto the closed error-code set of the

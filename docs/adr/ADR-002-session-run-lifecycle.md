@@ -58,6 +58,10 @@ happened: `sigint`, `sigterm` or `sighup` for the command-line signal (carried a
 cause), `client_disconnected` or `shutdown` on `POST /sessions/{id}/run`, and the neutral `cancelled` when the
 context carries no named cause. The explicit `session cancel` command and the tool-loop run record no reason.
 
+The command line cancels a run on SIGINT, SIGTERM or SIGHUP, except that SIGHUP is left alone when it was ignored at
+start (`nohup`); every one exits 130. SIGQUIT is deliberately not handled: Go's default (dump goroutines, exit 2) is
+kept as the debugging behaviour operators expect.
+
 An event append has a definite outcome under cancellation: a context that is already done refuses it before anything
 is written, and a write that has started is not interrupted. Otherwise a cancellation arriving during an append could
 report failure for a committed event, and the append recording the cancellation would collide with it, leaving the
@@ -85,7 +89,7 @@ PR #260 introduced the provider-driven execution loop (`app.RunSessionExecLoop`)
   The loop drives the provider stream, detects tool calls, executes them through the allowlist-gated tool registry
   (see [[ADR - Tool-Capability Allowlist Gate]] for the prototype-scale statement), and retries the provider with
   results appended until a terminal condition. Termination guards: max turns reached, budget exhausted, provider error
-  (terminal), context cancelled (SIGINT).
+  (terminal), context cancelled (SIGINT, SIGTERM or SIGHUP; on the serve run route, a client disconnect or shutdown).
 
 The loop was originally designed without resume or crash-recovery awareness: a rerun after pause or crash silently
   skipped the lifecycle event and started a fresh turn. This ADR makes the lifecycle explicit so the loop's entry
@@ -164,13 +168,16 @@ The turn outcome maps to the exit-code contract:
 | completed | 0 | yes |
 | budget stop | 5 | no (paused) |
 | provider error | 3 | yes (failed) |
-| SIGINT, SIGTERM, SIGHUP | 130 | yes (cancelled) |
+| SIGINT, SIGTERM, SIGHUP (SIGHUP unless ignored at start) | 130 | yes (cancelled) |
 | unknown tool | 2 | no (pre-flight) |
 | config invalid | 4 | no (pre-flight) |
 | terminal rejection | 6 | — |
 | replay corruption found during a turn (`replay_mismatch`) | 7 | no |
 | unknown session | 1 | — |
 | internal failure (code `internal`; HTTP 500 on the serve run endpoint) | 1 | no |
+
+Exit 8 (`receipt_invalid`) is not a turn outcome and `session run` cannot return it: it is returned by `swarm run`
+when a run is not accepted (a failed gate or a rejected packet) and by `receipt validate`.
 
 An unclassified error (for example a storage failure while recording the turn) is code `internal` and exits 1 — the
 same number as an unknown session; the stderr `code` tells them apart. Exit 1 is the CLI contract's number, not a
