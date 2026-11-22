@@ -247,9 +247,9 @@ func swarmValidatePort(ctx context.Context, manifestPath string) (server.SwarmVa
 // loadRunnableSession resolves the parent (unknown →
 // session_not_found, terminal → session_terminal) and app.RunSwarmFile
 // anchors the pool for a positive budget, creates the delegated
-// children and drives the durable gate run. The app's gate
-// not-accepted error carries no sentinel, so it maps through
-// ErrorCode onto internal — the endpoint documents that as-built.
+// children and drives the durable gate run. The app's not-accepted
+// error wraps app.ErrSwarmNotAccepted, so it maps through ErrorCode
+// onto receipt_invalid (422); the CLI exits 8 for the same class.
 func swarmRunPort(ctx context.Context, st *app.Store, parentID, manifestPath string, budget int64) (server.SwarmRun, error) {
 	parent, err := loadRunnableSession(ctx, st, parentID)
 	if err != nil {

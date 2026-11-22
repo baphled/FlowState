@@ -38,7 +38,7 @@ func SwarmRunManifest(ctx context.Context, dbPath string, m swarm.Manifest) (swa
 		return res, mapSwarmRunError(err)
 	}
 	if !res.Gates.Accepted {
-		return res, fmt.Errorf("app: gates failed: %v", res.Gates.FailedGateNames())
+		return res, swarmNotAccepted(m, res)
 	}
 	return res, nil
 }

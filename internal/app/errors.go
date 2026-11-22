@@ -62,6 +62,8 @@ func ErrorCode(err error) string {
 		return CodeBudgetExceeded
 	case errors.Is(err, ErrSessionCancelled):
 		return CodeSessionCancelled
+	case errors.Is(err, ErrSwarmNotAccepted):
+		return CodeReceiptInvalid
 	case errors.Is(err, session.ErrTerminal):
 		return CodeSessionTerminal
 	case errors.Is(err, store.ErrUnknownSession):

@@ -281,9 +281,8 @@ var _ = Describe("Serve swarm port wiring", func() {
 		Expect(app.ErrorCode(err)).To(Equal("session_terminal"))
 	})
 
-	// Actual mapping: the app's not-accepted gate error carries no
-	// sentinel, so the shared table answers internal — the endpoint
-	// renders 500, mirroring the CLI exit path.
+	// The app's not-accepted error maps onto receipt_invalid: the
+	// endpoint renders 422, mirroring the CLI's exit 8.
 	It("reports the gate not-accepted error from the run port", func() {
 		st, parent := seedSwarmParent()
 		failing := strings.Replace(passingManifest, "command: true", "command: false", 1)
@@ -291,11 +290,11 @@ var _ = Describe("Serve swarm port wiring", func() {
 		Expect(err).To(MatchError(ContainSubstring("not accepted")))
 	})
 
-	It("maps a gate-not-accepted run onto internal", func() {
+	It("maps a gate-not-accepted run onto receipt_invalid", func() {
 		st, parent := seedSwarmParent()
 		failing := strings.Replace(passingManifest, "command: true", "command: false", 1)
 		_, err := swarmRunPort(context.Background(), st, parent.ID, writeManifest(failing), 100)
-		Expect(app.ErrorCode(err)).To(Equal("internal"))
+		Expect(app.ErrorCode(err)).To(Equal("receipt_invalid"))
 	})
 })
 
