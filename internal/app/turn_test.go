@@ -463,3 +463,96 @@ var _ = Describe("TurnWithOptions finish reason", func() {
 		})
 	})
 })
+
+// payloadOf returns the payload of the first event of one type in a
+// session's log; a panic is a setup failure.
+func payloadOf(st *store.Store, id, typ string) string {
+	evts, err := st.Replay(context.Background(), id)
+	if err != nil {
+		panic(err)
+	}
+	for _, e := range evts {
+		if e.Type == typ {
+			return e.PayloadJSON
+		}
+	}
+	panic("no " + typ + " event recorded")
+}
+
+// actorOf returns the actor of the first event of one type in a
+// session's log; a panic is a setup failure.
+func actorOf(st *store.Store, id, typ string) string {
+	evts, err := st.Replay(context.Background(), id)
+	if err != nil {
+		panic(err)
+	}
+	for _, e := range evts {
+		if e.Type == typ {
+			return e.Actor
+		}
+	}
+	panic("no " + typ + " event recorded")
+}
+
+var _ = Describe("TurnWithOptions attribution and content", func() {
+	var (
+		st   *store.Store
+		sess *store.Session
+	)
+
+	BeforeEach(func() {
+		st = newStore()
+		var err error
+		sess, err = session.Create(context.Background(), st, "fake", "fake-model", session.DefaultHarness, "sha", "say hi")
+		if err != nil {
+			panic(err)
+		}
+	})
+
+	Context("when a turn completes over several chunks", func() {
+		var res *TurnResult
+
+		BeforeEach(func() {
+			var err error
+			res, err = TurnWithOptions(context.Background(), st, sess, &fakeStreamer{events: []provider.StreamEvent{{Content: "Hel"}, {Content: "lo, "}, {Content: "world"}}}, TurnOptions{})
+			if err != nil {
+				panic(err)
+			}
+		})
+
+		DescribeTable("the actor of each recorded event",
+			func(typ, actor string) {
+				Expect(actorOf(st, sess.ID, typ)).To(Equal(actor))
+			},
+			Entry("user.message", TypeUserMessage, session.ActorUser),
+			Entry("assistant.delta", TypeAssistantDelta, session.ActorEngine),
+			Entry("assistant.message", TypeAssistantMessage, session.ActorEngine),
+			Entry("turn.end", TypeTurnEnd, session.ActorEngine),
+		)
+
+		It("concatenates the chunks into FinalContent", func() {
+			Expect(res.FinalContent).To(Equal("Hello, world"))
+		})
+
+		It("concatenates the chunks into the assistant.message content", func() {
+			Expect(payloadOf(st, sess.ID, TypeAssistantMessage)).To(MatchJSON(`{"content":"Hello, world"}`))
+		})
+	})
+
+	Context("when the provider fails", func() {
+		BeforeEach(func() {
+			_, err := TurnWithOptions(context.Background(), st, sess, &fakeStreamer{events: []provider.StreamEvent{{Err: errors.New("boom")}}}, TurnOptions{})
+			if err == nil {
+				panic("expected a provider error")
+			}
+		})
+
+		It("attributes provider.error to the engine", func() {
+			Expect(actorOf(st, sess.ID, TypeProviderError)).To(Equal(session.ActorEngine))
+		})
+
+		It("carries the error text in the provider.error payload", func() {
+			Expect(lastPayload(st, sess.ID)).To(MatchJSON(`{"error":"boom","terminal":true}`))
+		})
+	})
+})

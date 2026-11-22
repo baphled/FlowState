@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -920,116 +921,126 @@ var _ = Describe("CLI end-to-end contract matrix", Label("e2e"), func() {
 		It("completes the resumed turn", func() { Expect(observedFinalType).To(Equal("turn.end")) })
 	})
 
-	Context("SIGINT mid-run cancels the session", func() {
-		if runtime.GOOS == "windows" {
-			// Windows has no POSIX interrupt signal to send, so the
-			// SIGINT oracle is POSIX-only; the specs stay in the tree
-			// everywhere signals exist.
-			return
-		}
-		var observedExit int
-		var observedCancelledReason string
-		var observedEventsExit int
-		var observedRerunExit int
-		var observedRerunCode string
-		var setupErr error
-		BeforeEach(func() {
-			// A SIGINT delivered while the child is still installing its signal
-			// handler kills it without persisting session.cancelled (observed on
-			// macOS runners). Retry the whole scenario on a fresh session so the
-			// assertion measures the cancel contract, not startup timing.
-			for attempt := 0; attempt < 3 && setupErr == nil && observedCancelledReason == ""; attempt++ {
-				setupErr = nil
-				srv, arrived := e2eStallProvider()
-				db := filepath.Join(GinkgoT().TempDir(), "e2e.db")
-				id := e2eNewSession(srv.URL, db)
-				cmd, done := e2eStart(srv.URL, "session", "run", "--db", db, id)
-				DeferCleanup(func() {
-					select {
-					case <-done:
-					default:
-						_ = cmd.Process.Kill()
-					}
-				})
-				select {
-				case <-arrived:
-				case <-time.After(10 * time.Second):
-					setupErr = errors.New("provider request not observed")
-				}
-				if setupErr != nil {
-					continue
-				}
-				// The stdout projection is written at end of run, so the
-				// deterministic pre-signal observable is the first event row:
-				// once one is persisted the run loop is live past signal-handler
-				// installation. Poll the store through `session events`.
-				deadline := time.After(10 * time.Second)
-				ticker := time.NewTicker(50 * time.Millisecond)
-				for live := false; !live; {
-					select {
-					case <-deadline:
-						setupErr = errors.New("first persisted event not observed")
-					case <-ticker.C:
-						if len(e2eEvents(srv.URL, db, id)) > 0 {
-							live = true
+	for _, tc := range []struct {
+		name string
+		sig  os.Signal
+	}{
+		{"SIGINT", os.Interrupt},
+		{"SIGTERM", syscall.SIGTERM},
+		{"SIGHUP", syscall.SIGHUP},
+	} {
+		sig := tc.sig
+		Context(tc.name+" mid-run cancels the session", func() {
+			if runtime.GOOS == "windows" {
+				// Windows has no POSIX interrupt signal to send, so the
+				// SIGINT oracle is POSIX-only; the specs stay in the tree
+				// everywhere signals exist.
+				return
+			}
+			var observedExit int
+			var observedCancelledReason string
+			var observedEventsExit int
+			var observedRerunExit int
+			var observedRerunCode string
+			var setupErr error
+			BeforeEach(func() {
+				// A SIGINT delivered while the child is still installing its signal
+				// handler kills it without persisting session.cancelled (observed on
+				// macOS runners). Retry the whole scenario on a fresh session so the
+				// assertion measures the cancel contract, not startup timing.
+				for attempt := 0; attempt < 3 && setupErr == nil && observedCancelledReason == ""; attempt++ {
+					setupErr = nil
+					srv, arrived := e2eStallProvider()
+					db := filepath.Join(GinkgoT().TempDir(), "e2e.db")
+					id := e2eNewSession(srv.URL, db)
+					cmd, done := e2eStart(srv.URL, "session", "run", "--db", db, id)
+					DeferCleanup(func() {
+						select {
+						case <-done:
+						default:
+							_ = cmd.Process.Kill()
 						}
+					})
+					select {
+					case <-arrived:
+					case <-time.After(10 * time.Second):
+						setupErr = errors.New("provider request not observed")
 					}
 					if setupErr != nil {
-						break
+						continue
 					}
+					// The stdout projection is written at end of run, so the
+					// deterministic pre-signal observable is the first event row:
+					// once one is persisted the run loop is live past signal-handler
+					// installation. Poll the store through `session events`.
+					deadline := time.After(10 * time.Second)
+					ticker := time.NewTicker(50 * time.Millisecond)
+					for live := false; !live; {
+						select {
+						case <-deadline:
+							setupErr = errors.New("first persisted event not observed")
+						case <-ticker.C:
+							if len(e2eEvents(srv.URL, db, id)) > 0 {
+								live = true
+							}
+						}
+						if setupErr != nil {
+							break
+						}
+					}
+					ticker.Stop()
+					if setupErr != nil {
+						continue
+					}
+					if serr := cmd.Process.Signal(sig); serr != nil {
+						panic(serr)
+					}
+					var run result
+					select {
+					case run = <-done:
+					case <-time.After(30 * time.Second):
+						setupErr = errors.New("run not observed")
+					}
+					if setupErr != nil {
+						continue
+					}
+					events := e2eEvents(srv.URL, db, id)
+					found, ferr := e2eFindEvent(events, "session.cancelled")
+					if ferr != nil {
+						continue
+					}
+					rerun := e2eRun(srv.URL, "session", "run", "--db", db, id)
+					observedExit = run.exit
+					observedCancelledReason, _ = e2ePayloadField(found.Payload, "reason").(string)
+					observedEventsExit = e2eRun(srv.URL, "session", "events", "--json", "--db", db, id).exit
+					observedRerunExit = rerun.exit
+					observedRerunCode = stderrCode(rerun.stderr)
 				}
-				ticker.Stop()
-				if setupErr != nil {
-					continue
+				if observedCancelledReason == "" {
+					setupErr = errors.New("session.cancelled not persisted after retries")
 				}
-				if serr := cmd.Process.Signal(os.Interrupt); serr != nil {
-					panic(serr)
-				}
-				var run result
-				select {
-				case run = <-done:
-				case <-time.After(30 * time.Second):
-					setupErr = errors.New("run not observed")
-				}
-				if setupErr != nil {
-					continue
-				}
-				events := e2eEvents(srv.URL, db, id)
-				found, ferr := e2eFindEvent(events, "session.cancelled")
-				if ferr != nil {
-					continue
-				}
-				rerun := e2eRun(srv.URL, "session", "run", "--db", db, id)
-				observedExit = run.exit
-				observedCancelledReason, _ = e2ePayloadField(found.Payload, "reason").(string)
-				observedEventsExit = e2eRun(srv.URL, "session", "events", "--json", "--db", db, id).exit
-				observedRerunExit = rerun.exit
-				observedRerunCode = stderrCode(rerun.stderr)
-			}
-			if observedCancelledReason == "" {
-				setupErr = errors.New("session.cancelled not persisted after retries")
-			}
+			})
+			It("exits 130", func() {
+				Expect(setupErr).NotTo(HaveOccurred())
+				Expect(observedExit).To(Equal(130))
+			})
+			It("persists session.cancelled with reason sigint", func() {
+				Expect(setupErr).NotTo(HaveOccurred())
+				Expect(observedCancelledReason).To(Equal("sigint"))
+			})
+			It("leaves a verifiable log with no partial writes", func() {
+				Expect(setupErr).NotTo(HaveOccurred())
+				Expect(observedEventsExit).To(Equal(0))
+			})
+			It("rejects the rerun with exit 6", func() {
+				Expect(setupErr).NotTo(HaveOccurred())
+				Expect(observedRerunExit).To(Equal(6))
+			})
+			It("reports session_terminal on the rerun", func() {
+				Expect(observedRerunCode).To(Equal("session_terminal"))
+			})
 		})
-		It("exits 130", func() {
-			Expect(setupErr).NotTo(HaveOccurred())
-			Expect(observedExit).To(Equal(130))
-		})
-		It("persists session.cancelled with reason sigint", func() {
-			Expect(setupErr).NotTo(HaveOccurred())
-			Expect(observedCancelledReason).To(Equal("sigint"))
-		})
-		It("leaves a verifiable log with no partial writes", func() {
-			Expect(setupErr).NotTo(HaveOccurred())
-			Expect(observedEventsExit).To(Equal(0))
-		})
-		It("rejects the rerun with exit 6", func() {
-			Expect(setupErr).NotTo(HaveOccurred())
-			Expect(observedRerunExit).To(Equal(6))
-		})
-		It("reports session_terminal on the rerun", func() {
-			Expect(observedRerunCode).To(Equal("session_terminal"))
-		})
-	})
+	}
 
 	Context("--json output validates against committed schemas", func() {
 		// The schemas in schemas/cli.json are hand-authored per
@@ -1283,5 +1294,41 @@ var _ = Describe("swarm run", func() {
 			panic("swarm run failed: " + r.stderr)
 		}
 		Expect(strings.Contains(r.stdout, `"packet":"p1"`)).To(BeTrue())
+	})
+
+	Context("when a gate fails", func() {
+		var r result
+
+		BeforeEach(func() {
+			db := filepath.Join(GinkgoT().TempDir(), "swarmfail.db")
+			n := runArgv([]string{"session", "new", "--db", db, "--budget", "100",
+				"--provider", "z.ai", "--model", "glm-5.3", "--task", "parent task"})
+			if n.exit != 0 {
+				panic("parent session new failed: " + n.stderr)
+			}
+			var rec map[string]any
+			if err := json.Unmarshal([]byte(n.stdout), &rec); err != nil {
+				panic(err)
+			}
+			mf := filepath.Join(GinkgoT().TempDir(), "swarm.yaml")
+			yaml := "name: fail-swarm\nscope: m2.runtime\npackets:\n  - id: p1\n    scope: m2.runtime\n    task: do the thing\n    source_sha256: " + strings.Repeat("b", 64) + "\ngates:\n  - name: bad\n    description: always fails\n    command: false\n"
+			if err := os.WriteFile(mf, []byte(yaml), 0o644); err != nil {
+				panic(err)
+			}
+			r = runArgv([]string{"swarm", "run", "--db", db, "--manifest", mf,
+				"--parent", rec["id"].(string), "--budget", "100"})
+		})
+
+		It("exits 8", func() {
+			Expect(r.exit).To(Equal(8))
+		})
+
+		It("reports the receipt_invalid code", func() {
+			Expect(r.stderr).To(ContainSubstring(`"code":"receipt_invalid"`))
+		})
+
+		It("names the failed gate", func() {
+			Expect(r.stderr).To(ContainSubstring("failed gates [bad]"))
+		})
 	})
 })

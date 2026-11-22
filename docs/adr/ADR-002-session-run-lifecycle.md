@@ -49,7 +49,7 @@ A session in the Go CLI transitions through exactly one status at a time:
 |---|---|---|
 | `active` | Created or resumed, ready for a run | `session new`, `app.ResumePausedSession`, recovery path |
 | `paused` | Budget exhausted, awaiting explicit resume | Budget stop during `session run` (exit 5) |
-| `cancelled` | SIGINT or explicit `session cancel` | SIGINT handler or `session cancel` command |
+| `cancelled` | SIGINT, SIGTERM, SIGHUP or explicit `session cancel` | Signal handler or `session cancel` command |
 | `completed` | Turn finished without error | Turn loop completion |
 | `failed` | Provider error with terminal=true | Provider stream failure |
 
@@ -154,7 +154,7 @@ The turn outcome maps to the exit-code contract:
 | completed | 0 | yes |
 | budget stop | 5 | no (paused) |
 | provider error | 3 | yes (failed) |
-| SIGINT | 130 | yes (cancelled) |
+| SIGINT, SIGTERM, SIGHUP | 130 | yes (cancelled) |
 | unknown tool | 2 | no (pre-flight) |
 | config invalid | 4 | no (pre-flight) |
 | terminal rejection | 6 | — |
