@@ -27,4 +27,25 @@ var _ = Describe("SwarmEmitMemberReceipt", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(rec.Identity.PacketID).To(Equal("p1"))
 	})
+
+	It("stores the member receipt row with its outcome and evidence digest", func() {
+		dbPath := filepath.Join(GinkgoT().TempDir(), "run.db")
+		rec, err := app.SwarmEmitMemberReceipt(dbPath, "demo.swarm", []string{"p1"}, claim)
+		if err != nil {
+			panic(err)
+		}
+		row := receiptRow(dbPath,
+			"SELECT run_name, packet_id, gate_outcome, evidence_sha256 FROM swarm_member_receipts", 4)
+		Expect(row).To(Equal([]string{"demo.swarm", "p1", "pass", rec.EvidenceSHA256}))
+	})
+
+	It("stores a failing member outcome as fail", func() {
+		claim.GateOutcome = "fail"
+		dbPath := filepath.Join(GinkgoT().TempDir(), "run.db")
+		if _, err := app.SwarmEmitMemberReceipt(dbPath, "demo.swarm", []string{"p1"}, claim); err != nil {
+			panic(err)
+		}
+		row := receiptRow(dbPath, "SELECT gate_outcome FROM swarm_member_receipts", 1)
+		Expect(row).To(Equal([]string{"fail"}))
+	})
 })

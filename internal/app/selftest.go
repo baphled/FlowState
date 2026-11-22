@@ -50,7 +50,7 @@ func openReceipts(path string) (receiptsDB, error) {
 		_ = db.Close()
 		return receiptsDB{}, err
 	}
-	if err := storage.MigrateSwarmTables(db); err != nil {
+	if err := store.MigrateSwarmReceipts(db); err != nil {
 		_ = db.Close()
 		return receiptsDB{}, err
 	}

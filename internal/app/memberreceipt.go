@@ -1,9 +1,10 @@
 package app
 
 import (
+	"context"
 	"fmt"
 
-	"github.com/baphled/flowstate/internal/storage"
+	"github.com/baphled/flowstate/internal/store"
 	"github.com/baphled/flowstate/internal/swarm"
 )
 
@@ -16,7 +17,7 @@ func SwarmEmitMemberReceipt(dbPath, runName string, admitted []string, claim swa
 		return swarm.MemberReceipt{}, err
 	}
 	defer func() { _ = db.Close() }()
-	rec, err := storage.NewSwarmReceipts(db.db())
+	rec, err := store.NewSwarmReceiptLog(db.db())
 	if err != nil {
 		return swarm.MemberReceipt{}, fmt.Errorf("app: initialise swarm persistence: %w", err)
 	}
@@ -24,7 +25,13 @@ func SwarmEmitMemberReceipt(dbPath, runName string, admitted []string, claim swa
 	return swarm.EmitMemberReceipt(auth, claim, swarmMemberReceipts{rec: rec})
 }
 
-// RecordMemberReceipt forwards the member receipt to the persistence adapter.
+// RecordMemberReceipt maps the receipt onto the store record and persists
+// it. swarm.MemberReceiptSink carries no context and SwarmEmitMemberReceipt
+// has none to pass (cmd calls it without one), so the write runs under
+// context.Background().
 func (s swarmMemberReceipts) RecordMemberReceipt(r swarm.MemberReceipt) error {
-	return s.rec.RecordMemberReceipt(r)
+	return s.rec.RecordMemberReceipt(context.Background(), store.MemberReceiptRecord{
+		RunName: r.Identity.RunName, PacketID: r.Identity.PacketID,
+		GateOutcome: r.GateOutcome, EvidenceSHA256: r.EvidenceSHA256,
+	})
 }

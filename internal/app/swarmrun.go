@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/baphled/flowstate/internal/storage"
+	"github.com/baphled/flowstate/internal/store"
 	"github.com/baphled/flowstate/internal/swarm"
 )
 
@@ -28,10 +28,11 @@ func SwarmRunManifest(ctx context.Context, dbPath string, m swarm.Manifest) (swa
 		return swarm.RunResult{}, fmt.Errorf("app: open run store: %w", err)
 	}
 	defer func() { _ = db.Close() }()
-	rec, err := storage.NewSwarmReceipts(db.db())
+	log, err := store.NewSwarmReceiptLog(db.db())
 	if err != nil {
 		return swarm.RunResult{}, fmt.Errorf("app: initialise swarm persistence: %w", err)
 	}
+	rec := &runReceiptLog{log: log}
 	ev := &runEventsTo{rec: rec, runID: m.Name}
 	res, err := swarm.Run(ctx, m, swarm.NewAdmissionLog(), swarm.NewGateRunner(), ev, rec)
 	if err != nil {
@@ -41,6 +42,20 @@ func SwarmRunManifest(ctx context.Context, dbPath string, m swarm.Manifest) (swa
 		return res, swarmNotAccepted(m, res)
 	}
 	return res, nil
+}
+
+// RecordAdmission persists one admission decision for the packet.
+func (r *runReceiptLog) RecordAdmission(ctx context.Context, runID string, p swarm.Packet, admitted bool, reason string) error {
+	return r.log.RecordAdmission(ctx, runID, p.ID, admitted, reason)
+}
+
+// RecordGates persists the gate outcomes of the decision in manifest order.
+func (r *runReceiptLog) RecordGates(ctx context.Context, runID string, d swarm.GatesDecision) error {
+	results := make([]store.GateResult, 0, len(d.Outcomes))
+	for _, o := range d.Outcomes {
+		results = append(results, store.GateResult{Name: o.Gate.Name, Passed: o.Passed})
+	}
+	return r.log.RecordGates(ctx, runID, results)
 }
 
 // PacketAdmitted persists one admitted packet.
@@ -56,5 +71,5 @@ func (e *runEventsTo) PacketRejected(ctx context.Context, id, reason string) {
 // Compile-time interface checks for the run-loop sinks.
 var (
 	_ swarm.RunEvents   = (*runEventsTo)(nil)
-	_ swarm.RunReceipts = (*storage.SwarmReceipts)(nil)
+	_ swarm.RunReceipts = (*runReceiptLog)(nil)
 )
