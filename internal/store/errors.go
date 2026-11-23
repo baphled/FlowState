@@ -6,6 +6,10 @@ var (
 	// ErrClosed is returned by operations on a closed Store.
 	ErrClosed = errors.New("store: database is closed")
 
+	// ErrNoDatabase is returned by OpenReadOnly for a path that holds
+	// no database file; nothing is created.
+	ErrNoDatabase = errors.New("store: database does not exist")
+
 	// ErrFutureSchema is returned when the database holds a migration
 	// version newer than the code understands (downgrades forbidden).
 	ErrFutureSchema = errors.New("store: database schema is newer than this build")

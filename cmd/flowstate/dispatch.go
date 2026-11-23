@@ -29,6 +29,8 @@ func routeTopLevel(ctx context.Context, args []string, stdout, stderr *os.File) 
 		return routeSwarm(ctx, args, stdout, stderr), true
 	case "serve":
 		return routeServe(ctx, args, stdout, stderr), true
+	case "store":
+		return routeStore(args, stdout, stderr)
 	}
 	return 0, false
 }
@@ -339,6 +341,7 @@ session cancel <id> [--db path]
 session replay <id> [--db path]
 receipt validate <file...>
 session tool   <id> --tool <name> [--tool-arg <json>] [--allow <name>]... [--allow-file <manifest>] [--db path]
+store info [--db path]
 
 common flags: --db <path> (default ./flowstate.db), --config <path> (default ./flowstate.json), --json
 `)
