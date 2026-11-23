@@ -76,14 +76,27 @@ var _ = Describe("Agent profile loading", func() {
 		}
 		Expect(names(got)).To(Equal([]string{"p:project"}))
 	})
-	It("reports a project profile overriding a user profile", func() {
+	It("refuses a name found in both directories as config_invalid", func() {
 		putAgent(userDir, "a.md", agentText("a"))
 		putAgent(filepath.Join(workdir, ".flowstate", "agents"), "a.md", agentText("a"))
+		_, err := LoadProfiles("both", workdir)
+		Expect(err).To(MatchError(ErrConfigInvalid))
+	})
+	It("lists both directories when no name conflicts", func() {
+		putAgent(userDir, "u.md", agentText("u"))
+		putAgent(filepath.Join(workdir, ".flowstate", "agents"), "p.md", agentText("p"))
 		got, err := LoadProfiles("both", workdir)
 		if err != nil {
 			panic(err)
 		}
-		Expect(got[0].Overrides).To(Equal(agent.SourceUser))
+		Expect(names(got)).To(Equal([]string{"p:project", "u:user"}))
+	})
+	It("reports a missing user config directory as config_invalid", func() {
+		for _, env := range []string{"XDG_CONFIG_HOME", "HOME", "APPDATA"} {
+			GinkgoT().Setenv(env, "")
+		}
+		_, err := LoadProfiles("user", workdir)
+		Expect(err).To(MatchError(ErrConfigInvalid))
 	})
 	It("returns an empty, non-nil list when nothing is found", func() {
 		got, err := LoadProfiles("both", workdir)

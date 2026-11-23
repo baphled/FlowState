@@ -21,7 +21,7 @@ const (
 	ScopeUser Scope = "user"
 	// ScopeProject loads only project profiles.
 	ScopeProject Scope = "project"
-	// ScopeBoth loads both; a project profile overrides a user profile of the same name.
+	// ScopeBoth loads both; a name found in both is refused.
 	ScopeBoth Scope = "both"
 
 	// DelegateTool is the reserved tool name accepted before the delegate tool exists.
@@ -34,6 +34,8 @@ const (
 	MaxTurnsLimit = 100
 	// MaxFileBytes is the largest profile file accepted.
 	MaxFileBytes = 64 << 10
+	// MaxModelChars is the longest model name a profile may set.
+	MaxModelChars = 200
 )
 
 // Profile is one validated agent profile.
@@ -54,17 +56,6 @@ type Profile struct {
 	Path string `json:"path"`
 	// SHA256 is the hex digest of the file's bytes.
 	SHA256 string `json:"sha256"`
-	// Overrides is SourceUser when this project profile replaced a user profile of the same name.
-	Overrides Source `json:"overrides,omitempty"`
 	// Body is the system prompt: the non-empty text after the frontmatter.
 	Body string `json:"-"`
-}
-
-// frontmatter is the strict YAML shape of a profile header.
-type frontmatter struct {
-	Name        *string  `yaml:"name"`
-	Description *string  `yaml:"description"`
-	Tools       []string `yaml:"tools"`
-	Model       *string  `yaml:"model"`
-	MaxTurns    *int     `yaml:"max_turns"`
 }
