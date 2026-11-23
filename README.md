@@ -1,76 +1,231 @@
 # FlowState
 
-FlowState is a Go backend under development. The current milestone is a native,
-CLI/headless session engine with replaceable provider/tool ports and ordered
-SQLite events. This repository contains reusable implementation and tests;
-current product scope and agent execution authority live in Dropbox Dev.
+FlowState is a headless agent harness written in Go. It runs agent sessions from the command line or over a local
+HTTP API, records every step as an ordered, hash-chained event in SQLite, and can replay, inspect and recover any
+session from that log. Providers and tools sit behind small ports, so a session does not depend on which model or
+tool set it uses.
 
-## Start work
+This repository is the greenfield rewrite. It contains the implementation, its tests, schemas and the rules that
+govern how it is changed. There is no TUI yet: the command line and the HTTP API are the interfaces.
 
-Read [the agent bootstrap](AGENTS.md), then the actual current Dropbox
-`/FlowState/Dev/00-AGENT-READ-FIRST.md` and `/FlowState/Metadata/ACTIVE.json`.
-Resolve the assigned bounded packet before editing. Do not infer readiness or
-qualification from a repository description, branch name or old report.
+## What works today
 
-Development uses registered feature worktrees inside the actual bare root and
-PRs to `next`. Read [the source ownership contract](rules/ARCHITECTURE.md) and
-[current architecture guide](docs/architecture/OVERVIEW.md). No prototype/TUI
-architecture is an execution input for this milestone.
+- **Sessions.** Create, run, pause on a budget, resume, cancel, close and list sessions. A session's whole history
+  is an append-only event log that can be streamed, replayed and verified.
+- **Providers.** `z.ai` (OpenAI-compatible and Anthropic-compatible routes, with tool calls) and `anthropic` (through
+  your own signed-in `claude` binary, or the Anthropic API with a key). Both are resolved from the environment only.
+- **Tools.** A bounded tool loop with an explicit allowlist: `echo`, `fs.read`, `fs.write`, `fs.edit` and, only when
+  `FLOWSTATE_EXEC_ENABLED=1` and the binary is allowlisted, `exec.run`. Registering a tool grants no permission; the
+  allowlist, workdir confinement and byte caps do.
+- **Budgets.** A per-run budget, plus shared budget pools that reserve a share for each child session. A budget stop
+  pauses the session instead of failing it.
+- **Delegation.** Child sessions with a parent, a depth limit, and steering messages from a parent to its children
+  (a message is accepted only from an ancestor).
+- **Swarm manifests.** Validate a manifest, and run one: it creates a child session per packet in dependency order,
+  reserves budget, admits packets, runs the gates and records the outcome. A cancelled run cancels its unfinished
+  children.
+- **Recovery and diagnosis.** A crashed run is detected from its log, and the next `session run` (or the server's
+  run endpoint) recovers it automatically. `session doctor` reports
+  whether a session crashed, its pending messages and budget, the last finish reason and whether an answer was
+  truncated; `session replay` re-verifies the log.
+- **HTTP API.** `flowstate serve` exposes the same operations, with server-sent events for a live log.
 
-## Build and verify
+**Not built yet:** a swarm run does not yet execute provider turns for its children (it creates, budgets and gates
+them; each child is then driven by an ordinary `session run`). Agent definition files, skills, hooks, MCP, context
+compaction, provider failover and a frontend are also outstanding. Nothing here is claimed to be production ready;
+see [the architecture overview](docs/architecture/OVERVIEW.md) for the exact current behaviour.
 
-Use the Go version recorded in `go.mod`. Run commands from the repository root.
-Node.js 22 or newer and the pinned npm dependencies support documentation checks.
-Install the pinned golangci-lint version used by Actions for the code-quality gate.
+## Quick start
+
+You need the Go version recorded in `go.mod`. `make build` writes the binary to `build/flowstate`; the examples
+below call it as `flowstate`, so put `build` on your `PATH` or substitute the path.
 
 ```sh
-npm ci
 make build
-make check
-make check-code-quality BASE_SHA=<actual-pr-base-sha>
-make check-documentation BASE_SHA=<actual-pr-base-sha>
+export ZAI_API_KEY=...           # or see "Credentials" below; add ZAI_PLAN=general for a pay-per-token key
+flowstate session new --provider z.ai --model glm-4.5-flash --task "Say hello in one sentence"
+# prints {"id":"<id>","parent_id":"","status":"active"}; the provider is only contacted by `session run`
+flowstate session run <id>     # prints the session's events as JSON lines
+flowstate session events <id>  # the log again; add --follow to tail it
+flowstate session replay <id>  # re-verifies the log's hash chain
+flowstate session doctor <id>  # crash state, pending messages, budget, finish reason, truncation
 ```
 
-`make check` covers formatting, available lint and the test route. The explicit
-contract commands also validate committed candidate structure, whole changed code
-quality, Markdown and local navigation. Required Actions jobs run the same gates;
-no model/Copilot quota is needed. Use [the Ginkgo contract](rules/BDD_WORKFLOW.md)
-for new and modified tests and [documentation standards](rules/DOCUMENTATION.md)
-for public interfaces and guides.
+By default everything is stored in `./flowstate.db`; pass `--db <path>` to any subcommand to use another file.
 
-## Evidence and scope
+Run with tools by allowing them explicitly, and say where they operate:
 
-Keep project packets, AI attribution, outputs, qualifications and review evidence
-in Dropbox `/FlowState/Metadata`, outside the checkout and Dev input pack.
-Reusable source, tests, schemas and synthetic fixtures belong in Git. Runtime
-application data belongs in configured user storage, not the code checkout.
-
-A green source check does not certify complete product implementation, live model
-availability, T019 qualification or merge permission. Current decisions and
-candidate-bound acceptance evidence determine the next eligible work item.
-
-## Security regression gate
-
-CI pins gosec v2.30.0 and scans immutable Git snapshots of the candidate and
-its actual PR base (or the push event's before SHA). New findings at every severity
-fail the build; inherited findings are reported as unresolved debt. This gate is
-not a security clearance or proof that each scanner alert is exploitable.
-
-With Go from `go.mod`, Python 3.11+ and pinned gosec on `PATH`, run from the
-repository root (use an actual full ancestor commit SHA and a fresh output path):
-
-```bash
-python3 -B scripts/security_gate.py --base "$BASE_SHA" --output /tmp/security-results
+```sh
+flowstate session run <id> --allow fs.read --allow fs.write --workdir ./work
 ```
 
-The gate retains full native JSON and SARIF reports for both revisions, plus
-scanner exits and logs. Missing bases, scanner/import errors and invalid reports
-fail closed. Snapshots include all tracked regular blobs regardless of archive
-attributes; tracked symlinks and gitlinks are rejected. Reports must be outside the
-Git worktree and common directory.
-Matching uses file, rule, details, offending code, severity and
-confidence with duplicate counts; line shifts alone do not create a new finding.
-Renames or changed offending code require review as new findings. Detection remains
-limited to gosec's active-build analysis. Both scans ignore source `#nosec`
-suppressions so new annotations cannot hide alerts; inherited debt requires
-separate security review and remediation.
+To use your Claude subscription instead of an API key, set no key at all: the `anthropic` provider runs your own
+signed-in `claude` binary and never reads or forwards a Claude credential.
+
+```sh
+flowstate session new --provider anthropic --model haiku --task "Say hello"
+```
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| `session new` | Create a session: `--provider`, `--model`, `--task <text\|@file>`, `--parent`, `--reserve` |
+| `session run <id>` | One turn or tool loop: `--budget`, `--max-tokens`, `--allow`, `--allow-file`, `--workdir` |
+| `session list [--status <s>]` | List sessions |
+| `session events <id> [--follow]` | Print or follow the event log |
+| `session replay <id>` | Replay and verify the log |
+| `session doctor <id>` | Read-only diagnosis of a session |
+| `session budget <id>` | Show a session's budget and reservations |
+| `session message <id>` | Send a steering message from a parent to a child |
+| `session cancel <id>` / `session close <id>` | End a session |
+| `session tool <id>` | Run one allowed tool directly |
+| `swarm validate <manifest>` | Validate a swarm manifest (YAML) |
+| `swarm run <manifest>` | Run one: requires `--parent <id>` and `--budget <n>` |
+| `receipt validate <file...>` | Validate acceptance receipts against their schema |
+| `serve` | Start the HTTP API |
+
+Common flags: `--db <path>` and `--config <path>`. Output is JSON; errors are a `{code, message}` object on
+standard error. The machine-readable shapes are in [schemas/cli.json](schemas/cli.json).
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Completed (a truncated answer is still 0, with one warning line on standard error) |
+| 1 | Unknown session, or any other failure without its own class (code `internal`) |
+| 2 | Usage error |
+| 3 | Provider error |
+| 4 | `config_invalid`: bad configuration, an unopenable database, or a failed crash recovery or steering drain |
+| 5 | Budget stop: the session is paused, never failed |
+| 6 | The session is already terminal |
+| 7 | Replay found a corrupt log |
+| 8 | A swarm run was not accepted (failed gate or rejected packet), or a receipt is invalid |
+| 130 | Cancelled by SIGINT, SIGTERM or SIGHUP (SIGHUP is left alone when ignored, as under `nohup`) |
+
+## Configuration
+
+**Provider settings come from the environment only.** The command line reads no provider file and never stores a
+secret.
+
+| Provider | Variable | Meaning |
+| --- | --- | --- |
+| `z.ai` | `ZAI_API_KEY` | API key (required) |
+| `z.ai` | `ZAI_PLAN` | `coding` (the default) or `general`, which pay-per-token keys need |
+| `z.ai` | `ZAI_BASE_URL`, `ZAI_CODING_ROUTE` | Endpoint and coding-plan wire format (`openai` or `anthropic`) |
+| `anthropic` | `FLOWSTATE_ANTHROPIC_AUTH` | `oauth` (default: your `claude` binary) or `api_key` |
+| `anthropic` | `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` | Key and endpoint for the `api_key` route only |
+| `anthropic` | `FLOWSTATE_CLAUDE_BIN` | Which `claude` binary to run |
+
+`ANTHROPIC_API_KEY` alone never selects the API route: many tools export that key, and you may still want the
+subscription. Only `FLOWSTATE_ANTHROPIC_AUTH=api_key` does.
+
+**Session defaults** come from an optional `flowstate.json` (the working directory's file, or `--config <path>`):
+
+```json
+{
+  "default_provider": "z.ai",
+  "default_model": "glm-4.5-flash",
+  "default_budget": 20000,
+  "storage_path": "./flowstate.db",
+  "tool_allowlist": ["fs.read"]
+}
+```
+
+Explicit flags override the file. `--allow` and `--allow-file` replace `tool_allowlist`; `--workdir` only says where the
+tools operate. A file holding anything that looks like a secret is rejected.
+
+### Credentials
+
+Keep keys in a secret manager and inject them for one command, so they never sit in a file or your shell history.
+With 1Password, for example, put a reference (not the key) in a file and use `op run`:
+
+```sh
+# zai.env
+ZAI_API_KEY=op://<vault>/<item>/credential
+
+op run --env-file zai.env -- flowstate session run <id>
+```
+
+## HTTP API
+
+`flowstate serve` listens on `127.0.0.1:7600` (`--addr` to change it). It refuses to bind a non-loopback address
+unless `FLOWSTATE_SERVE_TOKEN` is set, which then becomes a required bearer token. Request bodies are capped at 1 MiB
+and decoded strictly. Errors use the same `{code, message}` body as the command line, with the status for each code.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /health` | Liveness |
+| `POST /sessions`, `GET /sessions[?status=]` | Create and list |
+| `GET /sessions/{id}` | One session with its events |
+| `GET /sessions/{id}/events?after=N` | Events past a cursor |
+| `GET /sessions/{id}/events/stream?after=N` | Follow the log as server-sent events |
+| `POST /sessions/{id}/run` | Run one synchronous turn |
+| `POST /sessions/{id}/cancel`, `.../close` | End a session |
+| `GET /sessions/{id}/doctor` | Diagnosis |
+| `GET`/`POST /sessions/{id}/budget`, `POST .../message` | Shared budget and steering |
+| `POST /swarm/validate`, `POST /swarm/run`, `POST /receipt/validate` | Manifests and receipts |
+
+## How it fits together
+
+Dependencies point one way: the command and the HTTP adapter call application use cases, which compose ports for
+storage, providers and tools, so the rest of the code does not depend on a particular model or provider SDK.
+
+| Package | Responsibility |
+| --- | --- |
+| `cmd/flowstate` | Parse input, render output and exit codes, wire the listener |
+| `internal/app` | Application use cases: the turn and tool loops, budgets, recovery, swarm runs |
+| `internal/session` | Session lifecycle, identity and ordering rules |
+| `internal/store` | SQLite persistence through an ORM: sessions, ordered events, budgets, leases, swarm runs |
+| `internal/provider` | The provider port and the `z.ai` and `anthropic` adapters |
+| `internal/tool` | The tool port, the built-in tools and the permission and loop policy |
+| `internal/swarm` | Manifests, packet admission, gates, receipts |
+| `internal/metadata` | Writes acceptance receipts into the external metadata root |
+| `internal/oauth` | Token handling for provider authentication |
+| `internal/server` | The HTTP transport (it may not import the application layer) |
+
+The exact import rules are enforced by a checker: see [the source ownership contract](rules/ARCHITECTURE.md). Design
+decisions are recorded as numbered notes in [docs/adr](docs/adr/README.md).
+
+## Developing
+
+Work happens in feature worktrees branched from `next`, one scoped pull request at a time; `main` is release-only.
+Read [AGENTS.md](AGENTS.md) first: it is the bootstrap for people and agents alike, and the rules it links are
+binding (behaviour-first tests, the architecture contract, commit and branch naming, pull request size budgets).
+Project packets, review evidence and receipts live outside the checkout, in the project's external metadata.
+
+You need the Go version in `go.mod` and Node.js 22 or newer for the documentation checks. `make preflight` installs
+the pinned golangci-lint and gosec under `bin/tools` the first time it runs.
+
+```sh
+npm ci                          # documentation checks
+make build
+make test                       # unit and Ginkgo suites
+make check                      # formatting, lint and tests
+make preflight BASE_SHA=<base>  # the blocking CI checks, on the committed HEAD
+make help                       # the main targets
+```
+
+A pull request is judged by the checkers as they are on its base commit, so it cannot weaken its own review. Tests
+follow [the Ginkgo contract](rules/BDD_WORKFLOW.md), documentation follows [the standards](rules/DOCUMENTATION.md),
+and what CI enforces is described in [rules/CI_QUALITY.md](rules/CI_QUALITY.md). Merging goes through an independent
+review and a merge-admission check (see [rules/MERGE_ADMISSION.md](rules/MERGE_ADMISSION.md)).
+
+### Security regression gate
+
+CI scans immutable snapshots of the candidate and of its base with a pinned gosec. New findings at any severity fail
+the build; inherited ones are reported as debt. Source `#nosec` annotations are ignored, so they cannot hide an
+alert. The gate is not a security clearance. To run it locally, from the repository root, give it the full 40-character
+SHA of an ancestor commit, an output path outside the worktree and the pinned scanner that `make preflight` installs:
+
+```sh
+python3 -B scripts/security_gate.py --base "$BASE_SHA" --scanner bin/tools/gosec-<version> \
+  --output "$(mktemp -d)/security-results"
+```
+
+## More documentation
+
+- [Architecture overview](docs/architecture/OVERVIEW.md): the current behaviour of every surface
+- [Architecture decision records](docs/adr/README.md)
+- [Pull request budgets](docs/development/PR-BUDGETS.md) and [review handoff](docs/development/REVIEW-HANDOFF.md)
+- [Rules](rules/ARCHITECTURE.md): source ownership, tests, documentation, CI and merge admission
