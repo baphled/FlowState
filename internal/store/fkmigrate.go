@@ -10,12 +10,12 @@ import (
 // foreignKeySpecs lists every reference a current database enforces.
 func foreignKeySpecs() []fkSpec {
 	return []fkSpec{
-		{table: "sessions", column: "parent_id", parent: "sessions", idColumns: []string{"id"}, blankIsRoot: true},
-		{table: "events", column: "session_id", parent: "sessions", idColumns: []string{"session_id", "seq"}},
-		{table: "budget_reservations", column: "parent_id", parent: "sessions", idColumns: []string{"id"}},
-		{table: "session_messages", column: "session_id", parent: "sessions", idColumns: []string{"id"}},
-		{table: "swarm_run_packets", column: "run_id", parent: "swarm_runs", idColumns: []string{"id"}},
-		{table: "swarm_run_children", column: "run_id", parent: "swarm_runs", idColumns: []string{"id"}},
+		{model: &sessionRow{}, table: "sessions", relation: "Parent", column: "parent_id", parent: "sessions", idColumns: []string{"id"}, blankIsRoot: true},
+		{model: &eventRow{}, table: "events", relation: "Session", column: "session_id", parent: "sessions", idColumns: []string{"session_id", "seq"}},
+		{model: &budgetReservationRow{}, table: "budget_reservations", relation: "Parent", column: "parent_id", parent: "sessions", idColumns: []string{"id"}},
+		{model: &sessionMessageRow{}, table: "session_messages", relation: "Session", column: "session_id", parent: "sessions", idColumns: []string{"id"}},
+		{model: &swarmRunPacketRow{}, table: "swarm_run_packets", relation: "Run", column: "run_id", parent: "swarm_runs", idColumns: []string{"id"}},
+		{model: &swarmRunChildRow{}, table: "swarm_run_children", relation: "Run", column: "run_id", parent: "swarm_runs", idColumns: []string{"id"}},
 	}
 }
 
@@ -31,29 +31,20 @@ func (s *Store) refuseOrphans() error {
 		if !migrator.HasTable(spec.table) || !migrator.HasColumn(spec.table, spec.column) {
 			continue
 		}
-		keyed, err := declaresKey(s.gdb, spec.table)
-		if err != nil {
-			return err
-		}
-		if !keyed {
+		if !declaresKey(s.gdb, spec) {
 			unkeyed = append(unkeyed, spec)
 		}
 	}
 	return findOrphans(s.gdb, unkeyed)
 }
 
-// declaresKey reports whether the stored definition of table declares a
-// foreign key, which is how a database created since #421 differs from
-// an older one. It reads sqlite_master through the ORM.
-func declaresKey(db *gorm.DB, table string) (bool, error) {
-	var keyed int64
-	err := db.Table("sqlite_master").
-		Where("type = ? AND name = ? AND sql LIKE ?", "table", table, "%REFERENCES%").
-		Count(&keyed).Error
-	if err != nil {
-		return false, fmt.Errorf("inspect %s definition: %w", table, err)
-	}
-	return keyed > 0, nil
+// declaresKey reports whether the table of spec declares the foreign
+// key of its relation, which is how a database created since #421
+// differs from an older one. It asks the migrator for the exact
+// constraint of the one relation, so neither the word REFERENCES in a
+// default or comment nor a key on another column counts.
+func declaresKey(db *gorm.DB, spec fkSpec) bool {
+	return db.Migrator().HasConstraint(spec.model, spec.relation)
 }
 
 // findOrphans returns a ReferentialIntegrityError naming the orphans and

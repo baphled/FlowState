@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	sqlite "github.com/libtnb/sqlite"
@@ -147,16 +148,6 @@ var _ = Describe("Referential-integrity check of a database without foreign keys
 		It("preserves every row of every table", func() {
 			Expect(dumpTables(path)).To(Equal(before))
 		})
-
-		It("adds no foreign key yet", func() {
-			Expect(keyCounts(path)).To(Equal([]int64{0, 0, 0, 0, 0, 0}))
-		})
-
-		It("keeps the recorded schema version", func() {
-			v, err := s.SchemaVersion()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(v).To(Equal(int64(8)))
-		})
 	})
 
 	It("accepts '' stored as a root's parent", func() {
@@ -229,6 +220,28 @@ var _ = Describe("Referential-integrity check of a database without foreign keys
 		})
 	}
 
+	for _, fragile := range []struct{ name, plant string }{
+		{"a default containing the word REFERENCES", `DROP TABLE session_messages;
+			CREATE TABLE session_messages (id TEXT PRIMARY KEY, session_id TEXT NOT NULL DEFAULT 'REFERENCES',
+				sender TEXT NOT NULL, body TEXT NOT NULL, created_at_utc TEXT NOT NULL, delivered_at_utc TEXT);
+			INSERT INTO session_messages VALUES ('m9','ghost','root','x','t',NULL)`},
+		{"a key only on child_id", `DROP TABLE budget_reservations;
+			CREATE TABLE budget_reservations (id TEXT PRIMARY KEY, parent_id TEXT NOT NULL,
+				child_id TEXT NOT NULL REFERENCES sessions(id), granted INTEGER NOT NULL,
+				consumed INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, created_at_utc TEXT NOT NULL);
+			INSERT INTO budget_reservations VALUES ('r9','ghost','child',1,0,'reserved','t')`},
+	} {
+		It("refuses its orphan before any backup with "+fragile.name, func() {
+			path = seedV8(false)
+			rawExec(path, fragile.plant)
+			if _, err := Open(path); !errors.Is(err, ErrReferentialIntegrity) {
+				panic(err)
+			}
+			_, err := os.Stat(path + ".pre-v9.bak")
+			Expect(os.IsNotExist(err)).To(BeTrue())
+		})
+	}
+
 	It("names the table, row and missing parent of an orphan", func() {
 		path = seedV8(false)
 		rawExec(path, `INSERT INTO events VALUES ('ghost',7,'t','a','t','h','{}')`)
@@ -263,5 +276,121 @@ var _ = Describe("Referential-integrity check of a database without foreign keys
 			panic(err)
 		}
 		Expect([]int{len(refusal.Orphans), refusal.Total}).To(Equal([]int{maxReportedOrphans, 30}))
+	})
+})
+
+var _ = Describe("Foreign-key migration of a v8 database", func() {
+	var path string
+
+	Context("with rows in every table", func() {
+		var before map[string]string
+		var s *Store
+
+		BeforeEach(func() {
+			path = seedV8(false)
+			before = dumpTables(path)
+			var err error
+			if s, err = Open(path); err != nil {
+				panic(err)
+			}
+			DeferCleanup(func() { _ = s.Close() })
+		})
+
+		It("records schema version 9", func() {
+			v, err := s.SchemaVersion()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(v).To(Equal(int64(9)))
+		})
+
+		It("preserves every row of every table", func() {
+			Expect(dumpTables(path)).To(Equal(before))
+		})
+
+		It("gives every table exactly one foreign key", func() {
+			Expect(keyCounts(path)).To(Equal([]int64{1, 1, 1, 1, 1, 1}))
+		})
+
+		It("leaves foreign_key_check clean", func() {
+			Expect(rawInt(path, `SELECT count(*) FROM pragma_foreign_key_check`)).To(BeZero())
+		})
+
+		It("leaves foreign_keys ON on the store handle", func() {
+			var on int
+			if err := s.db.QueryRow(`SELECT foreign_keys FROM pragma_foreign_keys`).Scan(&on); err != nil {
+				panic(err)
+			}
+			Expect(on).To(Equal(1))
+		})
+
+		It("keeps the events index the models declare", func() {
+			Expect(rawInt(path, `SELECT count(*) FROM pragma_index_list('events') WHERE name='idx_events_session_type'`)).
+				To(Equal(int64(1)))
+		})
+
+		It("leaves no temporary table behind", func() {
+			Expect(rawInt(path, `SELECT count(*) FROM sqlite_master WHERE name LIKE '%\_\_old' ESCAPE '\'`)).To(BeZero())
+		})
+
+		It("writes a backup holding the pre-migration rows", func() {
+			Expect(dumpTables(path + ".pre-v9.bak")).To(Equal(before))
+		})
+
+		It("writes the backup at its pre-migration schema version", func() {
+			Expect(rawInt(path+".pre-v9.bak", `SELECT max(version) FROM schema_migrations`)).To(Equal(int64(8)))
+		})
+
+		It("does not run again on a second open", func() {
+			if err := os.Remove(path + ".pre-v9.bak"); err != nil {
+				panic(err)
+			}
+			if err := s.Close(); err != nil {
+				panic(err)
+			}
+			again, err := Open(path)
+			if err != nil {
+				panic(err)
+			}
+			DeferCleanup(func() { _ = again.Close() })
+			_, statErr := os.Stat(path + ".pre-v9.bak")
+			Expect(os.IsNotExist(statErr)).To(BeTrue())
+		})
+
+		It("enforces the new key on the store handle", func() {
+			_, err := s.db.Exec(`INSERT INTO events VALUES ('ghost',0,'t','a','t','h','{}')`)
+			Expect(err).To(HaveOccurred())
+		})
+	})
+
+	Context("with '' stored as a root's parent", func() {
+		var s *Store
+
+		BeforeEach(func() {
+			path = seedV8(true)
+			var err error
+			if s, err = Open(path); err != nil {
+				panic(err)
+			}
+			DeferCleanup(func() { _ = s.Close() })
+		})
+
+		It("stores NULL instead", func() {
+			Expect(rawInt(path, `SELECT parent_id IS NULL FROM sessions WHERE id='blank'`)).To(Equal(int64(1)))
+		})
+
+		It("still reports an empty ParentID through the Session API", func() {
+			sess, err := s.GetSession(GinkgoT().Context(), "blank")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(sess.ParentID).To(BeEmpty())
+		})
+	})
+
+	It("writes no backup when an orphan refuses the open", func() {
+		path = seedV8(false)
+		rawExec(path, `INSERT INTO events VALUES ('ghost',0,'t','a','t','h','{}')`)
+		if _, err := Open(path); err == nil {
+			panic("open should refuse")
+		}
+		_, err := os.Stat(path + ".pre-v9.bak")
+		Expect(os.IsNotExist(err)).To(BeTrue())
 	})
 })

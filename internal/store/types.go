@@ -15,6 +15,10 @@ import (
 type Store struct {
 	db  *sql.DB
 	gdb *gorm.DB
+
+	// path is the database file, empty for an in-memory database; the
+	// v9 rebuild needs it to open its dedicated connection and backup.
+	path string
 }
 
 // Session is the persisted session record per DATA-MODEL §2.

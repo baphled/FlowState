@@ -49,4 +49,11 @@ var (
 	// rows reference parents that do not exist, so the store
 	// refuses to open it. Nothing has been changed.
 	ErrReferentialIntegrity = errors.New("store: database holds rows that reference missing rows")
+
+	// ErrBackupExists is returned when the v9 pre-migration backup
+	// path is already taken; the file is never overwritten.
+	ErrBackupExists = errors.New("store: pre-v9 backup already exists")
+
+	// ErrRowCountMismatch is returned when a rebuilt table loses or gains rows.
+	ErrRowCountMismatch = errors.New("store: rebuilt table row count differs")
 )
