@@ -13,6 +13,7 @@ var _ = Describe("Owning-package structure", func() {
 		Entry("nested known owner", "internal/runtime/nested/types.go", "package nested; type event struct{}", 0),
 		Entry("transport adapter area is a registered owner", "internal/server/types.go", "package server; type event struct{}", 0),
 		Entry("removed config area is not a registered owner", "internal/config/types.go", "package config; type event struct{}", 1),
+		Entry("agent profile area is a registered owner", "internal/agent/types.go", "package agent; type profile struct{}", 0),
 		Entry("persistence adapter area is a registered owner", "internal/store/types.go", "package store; type event struct{}", 0),
 		Entry("removed storage area is not a registered owner", "internal/storage/types.go", "package storage; type event struct{}", 1),
 		Entry("unregistered public root", "pkg/engine/engine.go", "package engine;func work(){}", 1),
@@ -59,6 +60,9 @@ var _ = Describe("Layer dependencies", func() {
 		Entry("server adapter serves HTTP", "internal/server/a.go", "net/http", true),
 		Entry("server adapter cannot import application", "internal/server/a.go", modulePath+"internal/app", false),
 		Entry("server adapter cannot import command", "internal/server/a.go", modulePath+"cmd/flowstate", false),
+		Entry("agent profile adapter cannot import application", "internal/agent/a.go", modulePath+"internal/app", false),
+		Entry("agent profile adapter cannot import command", "internal/agent/a.go", modulePath+"cmd/flowstate", false),
+		Entry("agent profile adapter may parse YAML", "internal/agent/a.go", "gopkg.in/yaml.v3", true),
 	)
 	It("rejects inline rule suppression", func() {
 		Expect(inspectSource("scripts/fixture/service.go", []byte("package service\n//nolint:depguard\nfunc work(){}"))).To(HaveLen(1))
