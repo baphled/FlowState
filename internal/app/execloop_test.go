@@ -451,6 +451,77 @@ var _ = Describe("Execution loop finish reason", func() {
 	})
 })
 
+// systemRoles lists the role of the first message of each captured request.
+func systemRoles(reqs []*provider.ChatRequest) []string {
+	roles := make([]string, 0, len(reqs))
+	for _, r := range reqs {
+		roles = append(roles, r.Messages[0].Role)
+	}
+	return roles
+}
+
+// replayedHistory runs cfg to completion and returns the history replay builds
+// from its transcript.
+func replayedHistory(ctx context.Context, cfg ExecLoopConfig) []provider.Message {
+	runExec(ctx, cfg)
+	history := []provider.Message{}
+	execMust(replayInto(ctx, cfg.Store, cfg.Session.ID, &history))
+	return history
+}
+
+var _ = Describe("Execution loop system prompt", func() {
+	var ctx context.Context
+
+	BeforeEach(func() { ctx = context.Background() })
+
+	It("sends the prompt first as a system message", func() {
+		cfg := toolTurnLoopFixture()
+		cfg.SystemPrompt = "You review."
+		runExec(ctx, cfg)
+		Expect(cfg.Streamer.(*execLoopStreamer).reqs[0].Messages[0]).To(Equal(provider.Message{Role: "system", Content: "You review."}))
+	})
+	It("keeps the task right after the prompt", func() {
+		cfg := toolTurnLoopFixture()
+		cfg.SystemPrompt = "You review."
+		runExec(ctx, cfg)
+		Expect(cfg.Streamer.(*execLoopStreamer).reqs[0].Messages[1]).To(Equal(provider.Message{Role: "user", Content: "do the thing"}))
+	})
+	It("sends no system message when the prompt is empty", func() {
+		cfg := toolTurnLoopFixture()
+		runExec(ctx, cfg)
+		Expect(systemRoles(cfg.Streamer.(*execLoopStreamer).reqs)).To(Equal([]string{"user", "user"}))
+	})
+	It("sends the prompt on every turn of a two-turn loop", func() {
+		cfg := toolTurnLoopFixture()
+		cfg.SystemPrompt = "You review."
+		runExec(ctx, cfg)
+		Expect(systemRoles(cfg.Streamer.(*execLoopStreamer).reqs)).To(Equal([]string{"system", "system"}))
+	})
+	It("sends the prompt once per request, not accumulated", func() {
+		cfg := toolTurnLoopFixture()
+		cfg.SystemPrompt = "You review."
+		runExec(ctx, cfg)
+		Expect(cfg.Streamer.(*execLoopStreamer).reqs[1].Messages).To(HaveLen(4))
+	})
+	It("does not persist the prompt as an event", func() {
+		plain, prompted := toolTurnLoopFixture(), toolTurnLoopFixture()
+		prompted.SystemPrompt = "You review."
+		Expect(runExec(ctx, prompted).EventLog).To(Equal(runExec(ctx, plain).EventLog))
+	})
+	It("leaves the replayed history the same whatever the prompt", func() {
+		plain, prompted := toolTurnLoopFixture(), toolTurnLoopFixture()
+		prompted.SystemPrompt = "You review."
+		Expect(replayedHistory(ctx, prompted)).To(Equal(replayedHistory(ctx, plain)))
+	})
+	It("sends the prompt on the live turn that follows a replay", func() {
+		cfg := replayLoopFixture(ctx)
+		resume := &execLoopStreamer{turns: [][]provider.StreamEvent{{provText("resumed")}}}
+		cfg.Streamer, cfg.MaxTurns, cfg.SystemPrompt = resume, 4, "You review."
+		runExec(ctx, cfg)
+		Expect(resume.lastRequest().Messages[0]).To(Equal(provider.Message{Role: "system", Content: "You review."}))
+	})
+})
+
 // anthropicLoopServer is a loopback fake Messages API: it answers the first
 // request with a streamed tool_use and every later one with a streamed answer,
 // and records each request body.
