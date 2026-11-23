@@ -32,9 +32,6 @@ vendor/
 .DS_Store
 Thumbs.db
 
-# Local config (keep .flowstate/config.json.example)
-.flowstate/config.json
-
 # Build artifacts
 dist/
 
@@ -64,5 +61,9 @@ __pycache__/
 # Developer-specific environment; commit only reviewed, non-secret templates.
 .env
 
-# Local agent workspace state (session receipts, token evidence)
+# Local agent tool state and retired prototype directories. None of these is part of FlowState:
+# the repository keeps no agent-tool configuration or evidence (see rules/ and Dropbox metadata).
 .omo/
+.opencode/
+.sisyphus/
+.flowstate/
