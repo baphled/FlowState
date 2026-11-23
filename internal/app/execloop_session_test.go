@@ -228,3 +228,28 @@ var _ = Describe("Loop completion finish reason", func() {
 		})
 	})
 })
+
+var _ = Describe("Loop allowlist requirement", func() {
+	var (
+		st     *store.Store
+		sess   *store.Session
+		dbPath string
+	)
+
+	BeforeEach(func() {
+		st, sess = execLoopSeed()
+		DeferCleanup(func() { _ = st.Close() })
+		dbPath = filepath.Join(GinkgoT().TempDir(), "allow.db")
+	})
+
+	DescribeTable("RequireAllowlist decides whether an empty allowlist is a usage error",
+		func(require, wantUsage bool) {
+			streamer := &execLoopStreamer{turns: [][]provider.StreamEvent{{provText("ok"), provFinish()}}}
+			_, err := RunSessionExecLoop(context.Background(), st, dbPath, sess, streamer,
+				SessionExecLoopRequest{MaxTurns: 2, RequireAllowlist: require})
+			Expect(errors.Is(err, ErrUsage)).To(Equal(wantUsage))
+		},
+		Entry("required and empty", true, true),
+		Entry("not required and empty", false, false),
+	)
+})

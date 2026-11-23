@@ -298,7 +298,12 @@ environment only, never the config file. Every config failure exits 4 with code
 
 Explicit flags strictly override config values; a config `tool_allowlist`
 activates the same bounded execution loop as `--allow` when no tool-surface flag
-is given, with unchanged permission gates. `session new` pins the composition:
+is given, with unchanged permission gates. `--allow` and `--allow-file` replace
+the config allowlist; `--workdir` does not select an allowlist, it only sets
+where the tools operate, so alone it keeps the config `tool_allowlist`. A loop
+run whose effective allowlist is empty (for example `--workdir` with no config
+allowlist, or an empty `--allow-file` manifest) fails with a usage error (exit
+2, code `usage`) rather than running with no tools. `session new` pins the composition:
 it persists `config_sha256`, the SHA-256 of the canonical effective composition —
 a sorted-key, whitespace-free JSON object `{db_path, config_source, harness,
 model, provider, tool_allowlist}` (allowlist sorted, `config_source` one of the

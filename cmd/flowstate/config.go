@@ -168,10 +168,12 @@ func effectiveModel(fl *flags) string {
 }
 
 // effectiveAllowlist resolves the composition's tool allowlist:
-// explicit --allow values when any tool-surface flag was given, else
-// the config-derived default.
+// explicit --allow values when an allowlist flag (--allow or
+// --allow-file) was given, which replaces the config list, else the
+// config-derived default. --workdir only says where the tools operate
+// and never selects an allowlist.
 func effectiveAllowlist(fl *flags) []string {
-	if toolSurfaceFlagged(fl) {
+	if allowlistFlagged(fl) {
 		return fl.allow
 	}
 	return fl.config.ToolAllowlist

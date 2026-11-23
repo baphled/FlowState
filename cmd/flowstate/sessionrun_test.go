@@ -839,10 +839,10 @@ var _ = Describe("Session run tool-surface loop", func() {
 		var observedLastType string
 		var observedHasUserMessage bool
 		BeforeEach(func() {
-			srv := fakeZaiServer(`{"choices":[{"delta":{"content":"wired"}}]}`)
+			srv := fakeZaiServer(`{"choices":[{"delta":{"content":"wired"},"finish_reason":"stop"}]}`)
 			withFakeZai(srv)
 			id := newLoopSession()
-			run := runCLILoop(id, "--workdir", GinkgoT().TempDir())
+			run := runCLILoop(id, "--workdir", GinkgoT().TempDir(), "--allow", "echo")
 			types := stdoutEventTypes(run.stdout)
 			observedExit = run.exit
 			observedLastType = types[len(types)-1]
@@ -1201,4 +1201,94 @@ var _ = Describe("Session run truncation notice", func() {
 		res := toTurnResult(&app.Session{ID: "s1"}, &app.ExecLoopResult{})
 		Expect(res.FinishReason).To(BeEmpty())
 	})
+})
+
+// writeManifestFixture writes an --allow-file manifest and returns its path.
+func writeManifestFixture(body string) string {
+	path := filepath.Join(GinkgoT().TempDir(), "allow.json")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		panic(err)
+	}
+	return path
+}
+
+var _ = Describe("Session run --workdir and the config allowlist", func() {
+	Context("with --workdir alone and a config tool_allowlist", func() {
+		var observedExit int
+		var observedAdvertisesEcho bool
+		BeforeEach(func() {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					panic(err)
+				}
+				observedAdvertisesEcho = strings.Contains(string(body), `"name":"echo"`)
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n"))
+				_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			}))
+			DeferCleanup(srv.Close)
+			withFakeZai(srv)
+			cfg := writeConfigFixture(`{"tool_allowlist":["echo"]}`)
+			run := runCLILoop(newLoopSession(), "--config", cfg, "--workdir", GinkgoT().TempDir())
+			observedExit = run.exit
+		})
+		It("runs the loop", func() { Expect(observedExit).To(Equal(0)) })
+		It("advertises the configured tool to the provider", func() { Expect(observedAdvertisesEcho).To(BeTrue()) })
+	})
+
+	Context("with --allow-file and a config tool_allowlist", func() {
+		var observedAdvertisesEcho bool
+		var observedAdvertisesRead bool
+		BeforeEach(func() {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					panic(err)
+				}
+				observedAdvertisesEcho = strings.Contains(string(body), `"name":"echo"`)
+				observedAdvertisesRead = strings.Contains(string(body), `"name":"fs.read"`)
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n"))
+				_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			}))
+			DeferCleanup(srv.Close)
+			withFakeZai(srv)
+			cfg := writeConfigFixture(`{"tool_allowlist":["echo"]}`)
+			manifest := writeManifestFixture(`["fs.read"]`)
+			_ = runCLILoop(newLoopSession(), "--config", cfg, "--allow-file", manifest)
+		})
+		It("advertises the manifest tool", func() { Expect(observedAdvertisesRead).To(BeTrue()) })
+		It("does not merge the config tool", func() { Expect(observedAdvertisesEcho).To(BeFalse()) })
+	})
+
+	for _, tc := range []struct {
+		name       string
+		withConfig bool
+		extra      func() []string
+	}{
+		{"--workdir alone, no config", false, func() []string { return []string{"--workdir", GinkgoT().TempDir()} }},
+		{"--workdir with a config that has no allowlist", true, func() []string { return []string{"--workdir", GinkgoT().TempDir()} }},
+		{"--allow-file with an empty manifest", false, func() []string { return []string{"--allow-file", writeManifestFixture(`[]`)} }},
+	} {
+		Context("refuses to run with no tools: "+tc.name, func() {
+			var run result
+			var id string
+			BeforeEach(func() {
+				withFakeZai(fakeZaiServer(`{"choices":[{"delta":{"content":"invented"},"finish_reason":"stop"}]}`))
+				id = newLoopSession()
+				args := tc.extra()
+				if tc.withConfig {
+					args = append(args, "--config", writeConfigFixture(`{"default_provider":"z.ai"}`))
+				}
+				run = runCLILoop(id, args...)
+			})
+			It("exits with the usage status", func() { Expect(run.exit).To(Equal(2)) })
+			It("emits the usage error code", func() { Expect(stderrCode(run.stderr)).To(Equal("usage")) })
+			It("names --allow, --allow-file and tool_allowlist", func() {
+				Expect(run.stderr).To(MatchRegexp(`--allow, --allow-file or .*tool_allowlist`))
+			})
+			It("does not complete the session", func() { Expect(sessionStatusViaList(id)).NotTo(Equal("completed")) })
+		})
+	}
 })

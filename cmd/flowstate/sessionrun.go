@@ -377,10 +377,11 @@ func noteTruncation(res *app.TurnResult, stderr *os.File) {
 }
 
 // runTurnOrLoop selects the execution surface for one run: a
-// tool-surface invocation (explicit --allow/--allow-file/--workdir,
-// or a config-derived allowlist when no such flag was given) drives
-// the bounded provider execution loop; a plain invocation keeps the
-// single-turn path.
+// tool-surface invocation (--allow, --allow-file, --workdir, or a
+// config-derived allowlist) drives the bounded provider execution
+// loop; a plain invocation keeps the single-turn path. The loop
+// refuses an empty effective allowlist with a usage error instead of
+// running with no tools.
 func runTurnOrLoop(ctx context.Context, st *app.Store, sess *app.Session, s app.Streamer, fl *flags) (*app.TurnResult, error) {
 	allow := effectiveAllowlist(fl)
 	if !hasToolSurface(fl) {
@@ -391,26 +392,28 @@ func runTurnOrLoop(ctx context.Context, st *app.Store, sess *app.Session, s app.
 		})
 	}
 	loopRes, err := app.RunSessionExecLoop(ctx, st, fl.db, sess, s, app.SessionExecLoopRequest{
-		Allow:     allow,
-		AllowFile: fl.allowFile,
-		Workdir:   fl.workdir,
-		Budget:    fl.budget,
-		MaxTokens: fl.maxTokens,
+		Allow:            allow,
+		AllowFile:        fl.allowFile,
+		Workdir:          fl.workdir,
+		Budget:           fl.budget,
+		MaxTokens:        fl.maxTokens,
+		RequireAllowlist: true,
 	})
 	return toTurnResult(sess, loopRes), err
 }
 
-// toolSurfaceFlagged reports whether the invocation supplied any
-// explicit tool-surface flag (--allow, --allow-file, --workdir).
-func toolSurfaceFlagged(fl *flags) bool {
-	return len(fl.allow) > 0 || fl.allowFile != "" || fl.workdir != ""
+// allowlistFlagged reports whether the invocation supplied an explicit
+// allowlist flag (--allow or --allow-file). --workdir is not one: it
+// only relocates where the tools operate.
+func allowlistFlagged(fl *flags) bool {
+	return len(fl.allow) > 0 || fl.allowFile != ""
 }
 
 // hasToolSurface reports whether the invocation activates the tool
-// execution loop: an explicit tool-surface flag or a config-derived
-// allowlist.
+// execution loop: an explicit tool-surface flag (--allow, --allow-file,
+// --workdir) or a config-derived allowlist.
 func hasToolSurface(fl *flags) bool {
-	return toolSurfaceFlagged(fl) || len(fl.config.ToolAllowlist) > 0
+	return allowlistFlagged(fl) || fl.workdir != "" || len(fl.config.ToolAllowlist) > 0
 }
 
 // toTurnResult projects a loop result onto the shared turn result
