@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
-	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -202,18 +201,27 @@ var _ = Describe("Legacy v3 database upgrade", func() {
 		store = s
 	})
 
-	It("records schema version 8 after the first migrated open", func() {
+	It("records schema version 9 after the first migrated open", func() {
 		v, err := store.SchemaVersion()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(v).To(Equal(int64(8)))
+		Expect(v).To(Equal(int64(9)))
 	})
 
-	It("appends versions 4 through 8 to the recorded schema_migrations", func() {
-		// version is INTEGER PRIMARY KEY, so count 8 with max 8 pins {1..8}.
+	It("takes the backup before any schema change", func() {
+		db, err := sql.Open("sqlite", "file:"+f.path+".pre-v9.bak")
+		if err != nil {
+			panic(err)
+		}
+		DeferCleanup(func() { _ = db.Close() })
+		Expect(tableDDL(db, "sessions")).To(Equal(f.before["sessions"]))
+	})
+
+	It("appends versions 4 through 9 to the recorded schema_migrations", func() {
+		// version is INTEGER PRIMARY KEY, so count 9 with max 9 pins {1..9}.
 		var n, maxV int64
 		err := store.db.QueryRow(`SELECT count(*), max(version) FROM schema_migrations`).Scan(&n, &maxV)
 		Expect(err).NotTo(HaveOccurred())
-		Expect([2]int64{n, maxV}).To(Equal([2]int64{8, 8}))
+		Expect([2]int64{n, maxV}).To(Equal([2]int64{9, 9}))
 	})
 
 	It("creates the swarm_run_children table on a migrated legacy database", func() {
@@ -265,35 +273,32 @@ var _ = Describe("Legacy v3 database upgrade", func() {
 		Expect(parentID).To(BeNil())
 	})
 
-	It("gains only parent_id and budget_pool in the sessions DDL", func() {
-		legacy := f.before["sessions"]
-		appended := tableDDL(store.db, "sessions")[strings.LastIndex(legacy, ")"):]
-		want := ", `parent_id` text"
-		if !strings.Contains(appended, "budget_pool") {
-			want += ", `budget_pool` integer"
-		}
-		Expect(appended + "|" + want).To(ContainSubstring("|" + want))
+	It("keeps every legacy sessions column and adds parent_id and budget_pool", func() {
+		var names string
+		err := store.db.QueryRow(`SELECT group_concat(name) FROM pragma_table_info('sessions')`).Scan(&names)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(names).To(Equal("id,created_at_utc,updated_at_utc,status,provider,model_id,harness,config_sha256," +
+			"parent_id,budget_pool"))
 	})
 
-	It("keeps the events DDL untouched and WITHOUT ROWID", func() {
-		Expect(tableDDL(store.db, "events")).To(And(
-			Equal(f.before["events"]), ContainSubstring("WITHOUT ROWID")))
+	// The v9 migration cannot tell an unnamed legacy key from none, so it rebuilds events with the named
+	// key the model declares; the row layout stays WITHOUT ROWID.
+	It("keeps events WITHOUT ROWID", func() {
+		Expect(tableDDL(store.db, "events")).To(ContainSubstring("WITHOUT ROWID"))
 	})
 
-	// A database created by an earlier release keeps the events foreign key it was created with; SQLite
-	// cannot add one to an existing table without a rebuild, so tables that already exist gain none.
-	It("keeps the foreign key on events that the earlier release created", func() {
+	It("keeps exactly one foreign key on events", func() {
 		var n int
 		err := store.db.QueryRow(`SELECT count(*) FROM pragma_foreign_key_list('events')`).Scan(&n)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(n).To(Equal(1))
 	})
 
-	It("adds no foreign key to the existing sessions table", func() {
+	It("gives the rebuilt sessions table its parent_id key", func() {
 		var n int
 		err := store.db.QueryRow(`SELECT count(*) FROM pragma_foreign_key_list('sessions')`).Scan(&n)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(n).To(BeZero())
+		Expect(n).To(Equal(1))
 	})
 
 	It("declares the session foreign key on the session_messages table created by the upgrade", func() {

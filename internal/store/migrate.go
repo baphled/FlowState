@@ -2,7 +2,6 @@ package store
 
 import (
 	"fmt"
-	"time"
 
 	"gorm.io/gorm"
 )
@@ -11,15 +10,16 @@ import (
 // v4 adds the sessions.parent_id column for child-session delegation;
 // v5 adds sessions.budget_pool and the budget_reservations table for
 // durable shared budgets; v7 adds the swarm run tables; v8 adds
-// swarm_run_children, the child sessions a swarm run created.
-const knownSchemaVersion = int64(8)
+// swarm_run_children, the child sessions a swarm run created; v9 adds
+// the foreign keys older databases lack (see migrateForeignKeys).
+const knownSchemaVersion = foreignKeyVersion
 
 // migrate applies forward-only schema management through the ORM:
 // idempotent AutoMigrate (v4 parent_id, v5 budget_pool and
 // budget_reservations, missing tables/indexes; never drops or
-// rewrites rows), then v1..v8 bookkeeping. A database whose
-// recorded version exceeds knownSchemaVersion fails with
-// ErrFutureSchema, checked before any migration touches the schema.
+// rewrites rows), then v1..v8 bookkeeping and the v9 foreign-key
+// rebuild. A database whose recorded version exceeds knownSchemaVersion
+// fails with ErrFutureSchema, checked before any migration touches the schema.
 // A database with orphan rows in tables that declare no foreign key is
 // refused with ErrReferentialIntegrity before anything is changed.
 func (s *Store) migrate() error {
@@ -27,6 +27,9 @@ func (s *Store) migrate() error {
 		return err
 	}
 	if err := s.refuseOrphans(); err != nil {
+		return err
+	}
+	if err := s.backupExistingDatabase(); err != nil {
 		return err
 	}
 	if err := s.autoMigrateModels(); err != nil {
@@ -39,16 +42,18 @@ func (s *Store) migrate() error {
 	if maxApplied > knownSchemaVersion {
 		return fmt.Errorf("%w: db at %d, code knows %d", ErrFutureSchema, maxApplied, knownSchemaVersion)
 	}
-	for v := int64(1); v <= knownSchemaVersion; v++ {
+	for v := int64(1); v < foreignKeyVersion; v++ {
 		if v <= maxApplied {
 			continue
 		}
-		row := schemaMigrationRow{Version: v, AppliedAtUTC: iso(time.Now().UTC())}
-		if err := s.gdb.Create(&row).Error; err != nil {
-			return fmt.Errorf("record schema version %d: %w", v, err)
+		if err := s.recordVersion(s.gdb, v); err != nil {
+			return err
 		}
 	}
-	return nil
+	if maxApplied >= foreignKeyVersion {
+		return nil
+	}
+	return s.migrateForeignKeys()
 }
 
 // autoMigrateModels migrates the models parents-first. A table that

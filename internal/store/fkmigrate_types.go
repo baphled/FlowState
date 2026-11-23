@@ -1,14 +1,24 @@
 package store
 
+// foreignKeyVersion is the schema version that declares every store
+// reference as a foreign key on databases created before #421.
+const foreignKeyVersion = int64(9)
+
+// rebuildBatch is how many copied rows one insert carries.
+const rebuildBatch = 500
+
 // maxReportedOrphans bounds how many orphan rows a refusal names.
 const maxReportedOrphans = 10
 
 // fkSpec describes one reference the store enforces: table.column must
-// name an existing parent.id. idColumns are the primary key columns that
+// name an existing parent.id; relation is the model field that declares
+// that key, which the migrator looks up by name. idColumns are the primary key columns that
 // name a row in a report; blankIsRoot marks sessions.parent_id, where
 // legacy rows stored ” for a root, which is not an orphan.
 type fkSpec struct {
+	model       any
 	table       string
+	relation    string
 	column      string
 	parent      string
 	idColumns   []string
