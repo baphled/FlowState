@@ -84,11 +84,16 @@ var _ = Describe("Agents CLI", func() {
 		_, rows := listAgents("--agents=project", "--workdir", workdir)
 		Expect(rows[0]["source"]).To(Equal("project"))
 	})
-	It("reports an override with --agents both", func() {
+	It("exits 4 for a name found in both sources with --agents both", func() {
 		writeAgent(userDir, "reviewer.md", agentProfile)
 		writeAgent(filepath.Join(workdir, ".flowstate", "agents"), "p.md", agentProfile)
-		_, rows := listAgents("--agents", "both", "--workdir", workdir)
-		Expect(rows[0]["overrides"]).To(Equal("user"))
+		r := runArgv([]string{"agents", "list", "--agents", "both", "--workdir", workdir})
+		Expect(r.exit).To(Equal(4))
+	})
+	It("accepts and ignores --json on list", func() {
+		writeAgent(userDir, "reviewer.md", agentProfile)
+		_, rows := listAgents("--json", "--workdir", workdir)
+		Expect(rows[0]["name"]).To(Equal("reviewer"))
 	})
 	It("refuses an unknown scope with the usage exit", func() {
 		r := runArgv([]string{"agents", "list", "--agents", "all"})
@@ -98,6 +103,14 @@ var _ = Describe("Agents CLI", func() {
 		r := runArgv([]string{"agents", "list", "--bogus"})
 		Expect(r.exit).To(Equal(2))
 	})
+	DescribeTable("refuses a near-miss of --json with the usage exit",
+		func(flag string) {
+			r := runArgv([]string{"agents", "list", flag})
+			Expect(r.exit).To(Equal(2))
+		},
+		Entry("--jsonx", "--jsonx"),
+		Entry("--json=true", "--json=true"),
+	)
 	It("refuses a flag without a value with the usage exit", func() {
 		r := runArgv([]string{"agents", "list", "--workdir"})
 		Expect(r.exit).To(Equal(2))
@@ -122,9 +135,28 @@ var _ = Describe("Agents CLI", func() {
 			r := runArgv([]string{"agents", "validate", path})
 			Expect(r.stdout).To(Equal(`{"ok":true,"path":` + quoted(path) + "}\n"))
 		})
+		It("accepts and ignores --json on validate", func() {
+			path := writeAgent(workdir, "reviewer.md", agentProfile)
+			r := runArgv([]string{"agents", "validate", "--json", path})
+			Expect(r.stdout).To(Equal(`{"ok":true,"path":` + quoted(path) + "}\n"))
+		})
+		DescribeTable("refuses an unknown flag with the usage exit",
+			func(flag string) {
+				r := runArgv([]string{"agents", "validate", flag, "x"})
+				Expect(r.exit).To(Equal(2))
+			},
+			Entry("--bogus", "--bogus"),
+			Entry("--jsonx", "--jsonx"),
+			Entry("--json=true", "--json=true"),
+		)
 		It("conforms to the agents-validate schema", func() {
 			r := runArgv([]string{"agents", "validate", writeAgent(workdir, "reviewer.md", agentProfile)})
 			Expect(validateAgainst("agents-validate", firstLine(r.stdout))).To(Succeed())
+		})
+		It("prints no raw C1 byte for a tag holding U+009B", func() {
+			bad := writeAgent(workdir, "bad.md", "---\nname: a\ndescription: d\nmodel: !<tag:%c2%9b31m> v\n---\nbody\n")
+			r := runArgv([]string{"agents", "validate", bad})
+			Expect(r.stdout + r.stderr).NotTo(ContainSubstring("\u009b"))
 		})
 		It("exits 0 for a valid file", func() {
 			r := runArgv([]string{"agents", "validate", writeAgent(workdir, "reviewer.md", agentProfile)})

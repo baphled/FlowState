@@ -103,7 +103,9 @@ You review. You do not edit. Begin your final message with VERDICT: pass or VERD
   system prompt only as a message of role `system`: a new `SystemPrompt` field, delivered as that message, is a
   prerequisite change of the agent-profile packet.
 - Locations: user `~/.config/flowstate/agents/*.md`; project `.flowstate/agents/*.md`. Project profiles load only on
-  an explicit `--agents project|both`: Pi gates them with an `agentScope` parameter and an interactive confirmation,
+  an explicit `--agents project|both`; `both` refuses a profile name that exists in both
+  locations (`config_invalid`, naming both files) and has no override, so a repository cannot replace a trusted user
+  profile. Pi gates them with an `agentScope` parameter and an interactive confirmation,
   and FlowState has no interactive prompt, so the opt-in is a flag. This repository keeps no agent-tool configuration
   (`AGENTS.md`) and ignores `.flowstate/`; a project that wants committed profiles unignores `.flowstate/agents/`
   (`.flowstate/*` then `!.flowstate/agents/`).

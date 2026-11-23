@@ -112,14 +112,24 @@ You review. You do not edit. Begin your final message with VERDICT: pass or VERD
   Names must be registered (`echo`, `fs.read`, `fs.write`, `fs.edit`, `exec.run`) or the reserved `delegate`, and may
   not repeat. `model` is a model name or `inherit` (the default). `max_turns` is 1 to 100 and defaults to 25.
 - An unknown field fails the load. So does an empty body: a profile with no instructions is a mistake.
+- The frontmatter is strict. Refused: an explicit YAML tag; a non-string text value or a `max_turns` that is not a
+  plain decimal integer; a second YAML document or content after `...`; a control, format or separator character
+  (DEL, C1, ZWSP, RLO, U+2028 and the like) in `description` or `model` (a tab is fine); a block scalar (`>` or `|`),
+  because `description` and `model` are one line; NUL, ESC, DEL or C1 characters in the body (a zero-width joiner is
+  allowed there); and, under `--agents both`, a name in both the user and project directories.
+- A null or empty value counts as omitted (a null `tools` entry is refused). `model` is trimmed and at most 200
+  characters.
+- `agents validate` takes only file names and `--json`: any other argument starting with `-` is a usage error (exit 2).
+  Write `./-name.md` for such a file.
 - A profile file is at most 64 KiB, must start with `---` at byte 0, and must be a regular file: a symlink, a
   directory or a fifo is refused.
 - User profiles live in `flowstate/agents/*.md` below the operating system's user config directory
   (`$XDG_CONFIG_HOME` or `~/.config` on Linux); this is the OS convention, not FlowState config discovery. Project
   profiles live in `<workdir>/.flowstate/agents/*.md` and load only with `--agents project` or `--agents both`,
-  because they are prompts, with tools, controlled by the repository. With `both`, a project profile replaces a user
-  profile of the same name and the listing shows `"overrides": "user"`. Only `*.md` files directly in a directory
-  count (no hidden files, no recursion); two files with one name in a directory fail the load.
+  because they are prompts, with tools, controlled by the repository. With `both`, a name found in both directories
+  is refused (`config_invalid`, exit 4, naming both files): a repository profile never replaces a user profile.
+  Only `*.md` files directly in a directory count (no hidden files, no recursion); two files with one name in a
+  directory fail the load.
 - This repository's `.gitignore` ignores `.flowstate/`. A project that wants committed profiles unignores them
   (`.flowstate/*` then `!.flowstate/agents/`).
 

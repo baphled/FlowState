@@ -15,7 +15,14 @@ func routeAgents(args []string, stdout, stderr *os.File) int {
 		return exitUsage
 	}
 	if args[0] == "validate" {
-		return cmdAgentsValidate(args[1:], stdout, stderr)
+		paths := withoutJSON(args[1:])
+		for _, a := range paths {
+			if strings.HasPrefix(a, "-") {
+				writeError(stderr, fmt.Errorf("%w: unexpected argument %q (a file name may not start with -)", errUsageCmd, a))
+				return exitUsage
+			}
+		}
+		return cmdAgentsValidate(paths, stdout, stderr)
 	}
 	scope, workdir, err := parseAgentsFlags(args[1:])
 	if err != nil {
@@ -34,9 +41,21 @@ func routeAgents(args []string, stdout, stderr *os.File) int {
 	return exitOK
 }
 
+// withoutJSON drops --json: the output of the agents commands is always JSON.
+func withoutJSON(args []string) []string {
+	out := make([]string, 0, len(args))
+	for _, a := range args {
+		if a != "--json" {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
 // parseAgentsFlags reads --agents and --workdir (`--flag value` or
-// `--flag=value`); any other argument is a usage error.
+// `--flag=value`) and ignores --json; any other argument is a usage error.
 func parseAgentsFlags(args []string) (scope, workdir string, err error) {
+	args = withoutJSON(args)
 	for i := 0; i < len(args); i++ {
 		name, value, hasValue := strings.Cut(args[i], "=")
 		if name != "--agents" && name != "--workdir" {

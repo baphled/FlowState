@@ -341,8 +341,7 @@
         "max_turns": { "type": "integer" },
         "source": { "type": "string", "enum": ["user", "project"] },
         "path": { "type": "string" },
-        "sha256": { "type": "string" },
-        "overrides": { "type": "string", "enum": ["user"] }
+        "sha256": { "type": "string" }
       }
     }
   },
