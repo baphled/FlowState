@@ -2,8 +2,10 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
+	"path/filepath"
 	"sync/atomic"
 	"syscall"
 
@@ -711,5 +713,44 @@ var _ = Describe("TurnWithOptions attribution and content", func() {
 		It("carries the error text in the provider.error payload", func() {
 			Expect(lastPayload(st, sess.ID)).To(MatchJSON(`{"error":"boom","terminal":true}`))
 		})
+	})
+})
+
+var _ = Describe("OpenStore on a database with orphan rows", func() {
+	var openErr error
+
+	BeforeEach(func() {
+		path := filepath.Join(GinkgoT().TempDir(), "orphans.db")
+		fresh, err := store.Open(path)
+		if err != nil {
+			panic(err)
+		}
+		if err := fresh.Close(); err != nil {
+			panic(err)
+		}
+		db, err := sql.Open("sqlite", "file:"+path)
+		if err != nil {
+			panic(err)
+		}
+		defer func() { _ = db.Close() }()
+		for _, q := range []string{
+			`DROP TABLE swarm_run_children`,
+			`CREATE TABLE swarm_run_children (id text PRIMARY KEY, run_id text NOT NULL, packet_id text NOT NULL,
+				session_id text NOT NULL, created_at_utc text NOT NULL)`,
+			`INSERT INTO swarm_run_children VALUES ('c','ghost','p','s','t')`,
+		} {
+			if _, err := db.Exec(q); err != nil {
+				panic(err)
+			}
+		}
+		_, openErr = OpenStore(path)
+	})
+
+	It("is a config_invalid failure", func() {
+		Expect(ErrorCode(openErr)).To(Equal(CodeConfigInvalid))
+	})
+
+	It("still names the referential-integrity refusal", func() {
+		Expect(openErr).To(MatchError(store.ErrReferentialIntegrity))
 	})
 })

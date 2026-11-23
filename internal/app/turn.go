@@ -33,7 +33,13 @@ func OpenStore(path string) (*Store, error) {
 			return nil, err
 		}
 	}
-	return store.Open(path)
+	st, err := store.Open(path)
+	if errors.Is(err, store.ErrReferentialIntegrity) {
+		// The database holds rows that name missing parents: an operator
+		// repair, reported as config_invalid (exit 4) with nothing changed.
+		return nil, fmt.Errorf("%w: %w", ErrConfigInvalid, err)
+	}
+	return st, err
 }
 
 // payloadTask extracts the task text from a stored turn.start
