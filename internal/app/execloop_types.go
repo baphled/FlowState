@@ -21,6 +21,10 @@ type ExecLoopConfig struct {
 	// MaxTokens caps each provider turn's response tokens; <= 0 uses
 	// the provider default.
 	MaxTokens int64
+	// SystemPrompt, when non-empty, is sent as a message of role system first
+	// in every provider request of the loop. It is not persisted as an event
+	// and is not part of replayed history.
+	SystemPrompt string
 }
 
 // ExecLoopResult reports one completed bounded run.

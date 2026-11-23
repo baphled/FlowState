@@ -31,6 +31,8 @@ func routeTopLevel(ctx context.Context, args []string, stdout, stderr *os.File) 
 		return routeServe(ctx, args, stdout, stderr), true
 	case "store":
 		return routeStore(args, stdout, stderr)
+	case "agents":
+		return routeAgents(args[1:], stdout, stderr), true
 	}
 	return 0, false
 }
@@ -342,6 +344,8 @@ session replay <id> [--db path]
 receipt validate <file...>
 session tool   <id> --tool <name> [--tool-arg <json>] [--allow <name>]... [--allow-file <manifest>] [--db path]
 store info [--db path]
+agents list [--agents user|project|both] [--workdir path]
+agents validate <file...>
 
 common flags: --db <path> (default ./flowstate.db), --config <path> (default ./flowstate.json), --json
 `)

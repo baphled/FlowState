@@ -17,6 +17,7 @@ lifecycle; transports and concrete storage remain outside that boundary.
 | `internal/app` | Compose collaborators and application use cases, including the turn and tool loops |
 | `internal/session` | Lifecycle, identity and ordering policy |
 | `internal/server` | HTTP transport adapter — ratified ahead of implementation (ADR-007); owns the `net/http` surface cmd is banned from |
+| `internal/agent` | Agent profiles: pure, filesystem-only loading and validation (the application layer supplies the tool catalog) |
 | `internal/provider`, `internal/tool` | Replaceable ports and domain-facing values |
 | Provider/auth/storage adapters | Implement external effects through those ports |
 
@@ -98,7 +99,8 @@ keys are 400 `usage` (client input, unlike the config's `config_invalid`).
 
 `internal/app` owns the M2 execution loop (`RunExecLoop`): a leased, fenced run replays
 verified history and drives bounded provider turns; replay skips uncorrelated denial
-results.
+results. `ExecLoopConfig.SystemPrompt`, when set, is sent as a role-`system` message first in every
+provider request; it is neither an event nor part of replayed history.
 `internal/provider` owns `ToolDefinition`, complete `ToolCall` values and message
 result correlation through `ToolCallID`. `ChatRequest.Validate` rejects malformed
 identifiers, non-object JSON arguments/parameters, duplicate call IDs and unmatched

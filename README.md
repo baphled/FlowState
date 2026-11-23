@@ -84,10 +84,44 @@ flowstate session new --provider anthropic --model haiku --task "Say hello"
 | `swarm run <manifest>` | Run one: requires `--parent <id>` and `--budget <n>` |
 | `receipt validate <file...>` | Validate acceptance receipts against their schema |
 | `store info` | Database facts; the file is not modified (WAL sidecars may appear): schema, journal mode, foreign keys |
+| `agents list` | List agent profiles as a JSON array: `--agents user\|project\|both` (default `user`), `--workdir` |
+| `agents validate <file...>` | Validate profile files: one `{path, ok, error?}` per file; exit 4 if any is invalid |
 | `serve` | Start the HTTP API |
 
 Common flags: `--db <path>` and `--config <path>`. Output is JSON; errors are a `{code, message}` object on
 standard error. The machine-readable shapes are in [schemas/cli.json](schemas/cli.json).
+
+### Agent profiles
+
+An agent profile is a markdown file: YAML frontmatter, then the system prompt for a child agent
+(ADR-009, the delegation design record). This release loads, validates and lists profiles; the `delegate` tool
+that runs them comes next.
+
+```markdown
+---
+name: reviewer
+description: Reads a change and reports defects
+tools: [fs.read]
+model: inherit
+max_turns: 25
+---
+You review. You do not edit. Begin your final message with VERDICT: pass or VERDICT: fail.
+```
+
+- `name` (`^[a-z][a-z0-9-]{0,63}$`) and `description` are required. `tools` is the allowlist; omitted means no tools.
+  Names must be registered (`echo`, `fs.read`, `fs.write`, `fs.edit`, `exec.run`) or the reserved `delegate`, and may
+  not repeat. `model` is a model name or `inherit` (the default). `max_turns` is 1 to 100 and defaults to 25.
+- An unknown field fails the load. So does an empty body: a profile with no instructions is a mistake.
+- A profile file is at most 64 KiB, must start with `---` at byte 0, and must be a regular file: a symlink, a
+  directory or a fifo is refused.
+- User profiles live in `flowstate/agents/*.md` below the operating system's user config directory
+  (`$XDG_CONFIG_HOME` or `~/.config` on Linux); this is the OS convention, not FlowState config discovery. Project
+  profiles live in `<workdir>/.flowstate/agents/*.md` and load only with `--agents project` or `--agents both`,
+  because they are prompts, with tools, controlled by the repository. With `both`, a project profile replaces a user
+  profile of the same name and the listing shows `"overrides": "user"`. Only `*.md` files directly in a directory
+  count (no hidden files, no recursion); two files with one name in a directory fail the load.
+- This repository's `.gitignore` ignores `.flowstate/`. A project that wants committed profiles unignores them
+  (`.flowstate/*` then `!.flowstate/agents/`).
 
 ### Exit codes
 

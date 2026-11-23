@@ -125,7 +125,7 @@ func runExecTurn(ctx context.Context, cfg ExecLoopConfig, definitions []provider
 	}
 	defer func() { _ = w.Close() }()
 	var turn execTurn
-	req := &provider.ChatRequest{Tools: definitions, Messages: history, Model: cfg.Session.ModelID, MaxTokens: cfg.MaxTokens}
+	req := &provider.ChatRequest{Tools: definitions, Messages: withSystemPrompt(cfg.SystemPrompt, history), Model: cfg.Session.ModelID, MaxTokens: cfg.MaxTokens}
 	for ev := range cfg.Streamer.Stream(ctx, req) {
 		switch {
 		case ev.Err != nil:
@@ -146,6 +146,17 @@ func runExecTurn(ctx context.Context, cfg ExecLoopConfig, definitions []provider
 	}
 	return turn, nil
 }
+
+// withSystemPrompt returns the request messages: a role-system message first
+// when prompt is non-empty, then the history. The prompt is per-request only; it
+// is never appended to history, persisted, or reconstructed by replay.
+func withSystemPrompt(prompt string, history []provider.Message) []provider.Message {
+	if prompt == "" {
+		return history
+	}
+	return append([]provider.Message{{Role: "system", Content: prompt}}, history...)
+}
+
 func allowSet(names []string) map[string]bool {
 	set := make(map[string]bool, len(names))
 	for _, name := range names {
