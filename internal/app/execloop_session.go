@@ -31,6 +31,10 @@ func RunSessionExecLoop(ctx context.Context, st *store.Store, dbPath string, ses
 	if err != nil {
 		return nil, err
 	}
+	if req.RequireAllowlist && len(allowlist) == 0 {
+		return nil, fmt.Errorf("%w: the run has no tool allowlist; provide one with --allow, --allow-file or "+
+			"tool_allowlist in the config", session.ErrUsage)
+	}
 	workdir := req.Workdir
 	if workdir == "" {
 		workdir = sessionWorkdir(dbPath, sess.ID)

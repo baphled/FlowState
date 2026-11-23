@@ -99,3 +99,24 @@ var _ = Describe("Config parsing and canonical composition", func() {
 		Expect(left).NotTo(Equal(right))
 	})
 })
+
+var _ = DescribeTable("effectiveAllowlist (explicit allowlist flags replace config; --workdir does not)",
+	func(fl flags, want []string) {
+		Expect(effectiveAllowlist(&fl)).To(Equal(want))
+	},
+	Entry("no tool flag, config allowlist present: the config list",
+		flags{config: cliConfig{ToolAllowlist: []string{"echo"}}}, []string{"echo"}),
+	Entry("no tool flag, config allowlist absent: empty",
+		flags{}, []string(nil)),
+	Entry("--allow, config allowlist present: the flags replace the config",
+		flags{allow: []string{"fs.read"}, config: cliConfig{ToolAllowlist: []string{"echo"}}}, []string{"fs.read"}),
+	Entry("--allow-file, config allowlist present: the config is replaced, not merged",
+		flags{allowFile: "m.json", config: cliConfig{ToolAllowlist: []string{"echo"}}}, []string(nil)),
+	Entry("--workdir alone, config allowlist present: the config list",
+		flags{workdir: "/w", config: cliConfig{ToolAllowlist: []string{"echo"}}}, []string{"echo"}),
+	Entry("--workdir alone, config allowlist absent: empty",
+		flags{workdir: "/w"}, []string(nil)),
+	Entry("--workdir with --allow, config allowlist present: the flags",
+		flags{workdir: "/w", allow: []string{"fs.read"}, config: cliConfig{ToolAllowlist: []string{"echo"}}},
+		[]string{"fs.read"}),
+)

@@ -52,6 +52,9 @@ type SessionExecLoopRequest struct {
 	Allow []string
 	// AllowFile is the --allow-file manifest path.
 	AllowFile string
+	// RequireAllowlist makes an empty loaded allowlist (inline plus
+	// manifest) a usage error instead of a tool-less loop run.
+	RequireAllowlist bool
 	// Workdir is the --workdir override; empty defaults beside the db.
 	Workdir string
 	// Budget is the total loop budget pool; <= 0 means unlimited turns.

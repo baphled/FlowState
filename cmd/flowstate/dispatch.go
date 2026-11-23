@@ -331,6 +331,8 @@ session doctor <id> [--db path]
 session message <id> --from <parent> --body <text|@file> [--db path]
 session list   [--status <s>] [--db path]
 session run    <id> [--budget <n>] [--max-tokens <n>] [--allow <name>]... [--allow-file <manifest>] [--workdir <path>] [--db path]
+               (--allow/--allow-file replace the config tool_allowlist; --workdir only sets where tools
+               run and needs an allowlist from --allow, --allow-file or tool_allowlist)
 session events <id> [--follow] [--db path]
 session close  <id> [--db path]
 session cancel <id> [--db path]
