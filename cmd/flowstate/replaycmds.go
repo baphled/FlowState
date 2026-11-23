@@ -10,7 +10,8 @@ import (
 
 // cmdReplay implements `flowstate replay <id>`: verifies the stored
 // event log and prints the JSONL transcript. 0 deterministic; 1
-// unknown session; 7 replay mismatch; 2 usage.
+// unknown session; 7 replay mismatch; 2 usage. The transcript is raw on
+// files and pipes (its payload hashes cover the bytes) and escaped on a terminal.
 func cmdReplay(ctx context.Context, st *app.Store, id string, stdout, stderr *os.File) int {
 	if id == "" {
 		writeError(stderr, fmt.Errorf("%w: session id required", app.ErrUsage))
@@ -25,7 +26,7 @@ func cmdReplay(ctx context.Context, st *app.Store, id string, stdout, stderr *os
 		writeError(stderr, err)
 		return exitCodeFor(err)
 	}
-	if _, err := stdout.Write(lines); err != nil {
+	if _, err := stdout.Write(transcriptFor(stdout, lines)); err != nil {
 		writeError(stderr, fmt.Errorf("%w: cannot write transcript: %v", app.ErrConfigInvalid, err))
 		return exitConfigInvalid
 	}

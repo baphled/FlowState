@@ -200,7 +200,7 @@ func sessionJSON(s app.Session) map[string]any {
 
 // writeJSON marshals v as one line of JSON on w.
 func writeJSON(w *os.File, v any) error {
-	b, err := json.Marshal(v)
+	b, err := terminalSafeJSON(v)
 	if err != nil {
 		return fmt.Errorf("encode output: %w", err)
 	}
