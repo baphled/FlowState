@@ -83,6 +83,7 @@ flowstate session new --provider anthropic --model haiku --task "Say hello"
 | `swarm validate <manifest>` | Validate a swarm manifest (YAML) |
 | `swarm run <manifest>` | Run one: requires `--parent <id>` and `--budget <n>` |
 | `receipt validate <file...>` | Validate acceptance receipts against their schema |
+| `store info` | Database facts; the file is not modified (WAL sidecars may appear): schema, journal mode, foreign keys |
 | `serve` | Start the HTTP API |
 
 Common flags: `--db <path>` and `--config <path>`. Output is JSON; errors are a `{code, message}` object on

@@ -128,7 +128,7 @@ func (s *Store) backupTaken(dst string) error {
 
 // copyDatabase runs the driver's online backup to dst on its own connection.
 func (s *Store) copyDatabase(dst string) error {
-	conn, err := (&msqlite.Driver{}).Open("file:" + s.path + "?_pragma=busy_timeout(5000)")
+	conn, err := (&msqlite.Driver{}).Open(fileDSN(s.path, "_pragma=busy_timeout(5000)"))
 	if err != nil {
 		return err
 	}
@@ -139,7 +139,7 @@ func (s *Store) copyDatabase(dst string) error {
 	if !ok {
 		return errors.New("sqlite driver offers no online backup")
 	}
-	bk, err := b.NewBackup(dst)
+	bk, err := b.NewBackup(fileDSN(dst, ""))
 	if err != nil {
 		return err
 	}
@@ -155,7 +155,7 @@ func (s *Store) copyDatabase(dst string) error {
 // openRebuildHandle opens a second connection with foreign keys OFF (set in
 // the DSN: it cannot change inside a transaction); the Store's own stays ON.
 func (s *Store) openRebuildHandle() (*gorm.DB, *sql.DB, error) {
-	dsn := "file:" + s.path + "?_pragma=foreign_keys(OFF)&_pragma=legacy_alter_table(ON)&_pragma=busy_timeout(5000)"
+	dsn := fileDSN(s.path, "_pragma=foreign_keys(OFF)&_pragma=legacy_alter_table(ON)&_pragma=busy_timeout(5000)")
 	raw, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open rebuild connection: %w", err)

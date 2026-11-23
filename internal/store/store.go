@@ -14,7 +14,8 @@ import (
 	_ "modernc.org/sqlite" // CGO-free SQLite driver (T019-qualified)
 )
 
-func openDSN(dsn, path string) (*Store, error) {
+// openDSN opens dsn and, when migrate is set, brings the schema up to date.
+func openDSN(dsn, path string, migrate bool) (*Store, error) {
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
@@ -31,6 +32,9 @@ func openDSN(dsn, path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if !migrate {
+		return s, nil
+	}
 	if err := s.migrate(); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -42,13 +46,13 @@ func openDSN(dsn, path string) (*Store, error) {
 // applies pragmas: WAL journal mode, synchronous=NORMAL and
 // foreign_keys=ON, per DATA-MODEL §1. Callers must Close when done.
 func Open(path string) (*Store, error) {
-	return openDSN("file:"+path+"?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)", path)
+	return openDSN(fileDSN(path, "_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)"), path, true)
 }
 
 // OpenMemory opens an in-memory database using the same pragmas and
 // migrations; useful for tests.
 func OpenMemory() (*Store, error) {
-	return openDSN("file::memory:?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)", "")
+	return openDSN("file::memory:?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)", "", true)
 }
 
 // DB returns the open database handle, or nil after Close. Adapters

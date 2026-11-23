@@ -327,6 +327,43 @@
       }
     }
   },
+  "store-info": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "schema_version",
+      "journal_mode",
+      "foreign_keys_enforced",
+      "driver",
+      "driver_version",
+      "sqlite_version",
+      "path",
+      "go_version",
+      "tables"
+    ],
+    "properties": {
+      "schema_version": { "type": "integer" },
+      "journal_mode": { "type": "string" },
+      "foreign_keys_enforced": { "type": "boolean" },
+      "driver": { "type": "string" },
+      "driver_version": { "type": "string" },
+      "sqlite_version": { "type": "string" },
+      "path": { "type": "string" },
+      "go_version": { "type": "string" },
+      "tables": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "foreign_keys"],
+          "properties": {
+            "name": { "type": "string" },
+            "foreign_keys": { "type": "integer" }
+          }
+        }
+      }
+    }
+  },
   "session-doctor": {
     "type": "object",
     "additionalProperties": false,
