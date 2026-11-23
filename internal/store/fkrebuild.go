@@ -1,7 +1,9 @@
 package store
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -69,8 +71,14 @@ func (s *Store) recordVersion(tx *gorm.DB, v int64) error {
 
 func (s *Store) backupPath() string { return s.path + ".pre-v9.bak" }
 
-// backupBeforeRebuild copies the database, WAL included, to backupPath with
-// the driver's online backup API into a file created exclusively, mode 0600.
+// backupBeforeRebuild copies the database, WAL included, with the driver's
+// online backup API into a temporary file of its own (<backup>.tmp-<random>,
+// created exclusively with mode 0600) and links it to backupPath only once
+// the copy succeeded, so a crash never leaves a truncated file under the
+// final name. It removes only its own temporary file: another opener's may
+// be in progress, and a crash leftover is harmless and left alone. A file
+// under the final name is never overwritten: that is ErrBackupExists, or
+// ErrMigratedElsewhere when another process has meanwhile recorded v9.
 func (s *Store) backupBeforeRebuild() error {
 	dst := s.backupPath()
 	dir, err := os.OpenRoot(filepath.Dir(dst))
@@ -78,18 +86,44 @@ func (s *Store) backupBeforeRebuild() error {
 		return fmt.Errorf("open the directory for the pre-v9 backup %s: %w", dst, err)
 	}
 	defer func() { _ = dir.Close() }()
-	f, err := dir.OpenFile(filepath.Base(dst), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if errors.Is(err, os.ErrExist) {
-		return fmt.Errorf("%w: %s; move it away to retry", ErrBackupExists, dst)
+	name := filepath.Base(dst)
+	if _, err := dir.Lstat(name); err == nil {
+		return s.backupTaken(dst)
 	}
+	var salt [8]byte
+	if _, err := rand.Read(salt[:]); err != nil {
+		return fmt.Errorf("name the pre-v9 backup temporary file: %w", err)
+	}
+	tmp := name + ".tmp-" + hex.EncodeToString(salt[:])
+	f, err := dir.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
-		return fmt.Errorf("create pre-v9 backup %s: %w", dst, err)
+		return fmt.Errorf("create pre-v9 backup %s: %w", filepath.Join(filepath.Dir(dst), tmp), err)
 	}
-	if err := errors.Join(f.Close(), s.copyDatabase(dst)); err != nil {
-		_ = dir.Remove(filepath.Base(dst))
+	defer func() { _ = dir.Remove(tmp) }()
+	if err := errors.Join(f.Close(), s.copyDatabase(filepath.Join(filepath.Dir(dst), tmp))); err != nil {
 		return fmt.Errorf("write pre-v9 backup %s: %w", dst, err)
 	}
+	if err := dir.Link(tmp, name); errors.Is(err, os.ErrExist) {
+		return s.backupTaken(dst)
+	} else if err != nil {
+		return fmt.Errorf("publish pre-v9 backup %s (the filesystem may not support hard links): %w", dst, err)
+	}
 	return nil
+}
+
+// backupTaken explains why the backup name is occupied: another process
+// that recorded v9 meanwhile migrated the database; otherwise another
+// process may still be migrating, or the file is an old backup, so the
+// operator retries and moves the file away only if the refusal persists.
+func (s *Store) backupTaken(dst string) error {
+	v, err := s.maxAppliedVersion()
+	if err != nil {
+		return err
+	}
+	if v >= foreignKeyVersion {
+		return fmt.Errorf("%w: %s", ErrMigratedElsewhere, s.path)
+	}
+	return fmt.Errorf("%w: %s; another process may be migrating: retry, and move it away only if this persists", ErrBackupExists, dst)
 }
 
 // copyDatabase runs the driver's online backup to dst on its own connection.
@@ -182,7 +216,7 @@ func rebuildTable(tx *gorm.DB, spec fkSpec) error {
 	if err := created.Migrator().CreateTable(spec.model); err != nil {
 		return fmt.Errorf("create keyed table: %w", err)
 	}
-	copied, err := copyRows(tx, spec, old)
+	copied, err := copyRows(tx, spec, old, withoutRowID)
 	if err != nil {
 		return err
 	}
@@ -247,8 +281,14 @@ func dropDeclaredIndexes(tx *gorm.DB, spec fkSpec) error {
 
 // copyRows copies every row of old into the keyed table, turning ” in a
 // root-marked parent column into NULL; it returns how many it read.
-func copyRows(tx *gorm.DB, spec fkSpec, old string) (int64, error) {
-	rows, err := tx.Table(old).Order(strings.Join(spec.idColumns, ", ")).Rows()
+// Rows are read in rowid order when the table has one, so copied rows keep
+// their rowid order (swarm admission order relies on it), else in key order.
+func copyRows(tx *gorm.DB, spec fkSpec, old string, withoutRowID bool) (int64, error) {
+	order := "rowid"
+	if withoutRowID {
+		order = strings.Join(spec.idColumns, ", ")
+	}
+	rows, err := tx.Table(old).Order(order).Rows()
 	if err != nil {
 		return 0, fmt.Errorf("read rows: %w", err)
 	}
