@@ -20,8 +20,13 @@ const knownSchemaVersion = int64(8)
 // rewrites rows), then v1..v8 bookkeeping. A database whose
 // recorded version exceeds knownSchemaVersion fails with
 // ErrFutureSchema, checked before any migration touches the schema.
+// A database with orphan rows in tables that declare no foreign key is
+// refused with ErrReferentialIntegrity before anything is changed.
 func (s *Store) migrate() error {
 	if err := s.rejectFutureSchema(); err != nil {
+		return err
+	}
+	if err := s.refuseOrphans(); err != nil {
 		return err
 	}
 	if err := s.autoMigrateModels(); err != nil {

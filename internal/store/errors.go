@@ -44,4 +44,9 @@ var (
 
 	// ErrEmptyType rejects empty event types.
 	ErrEmptyType = errors.New("store: event type must not be empty")
+
+	// ErrReferentialIntegrity is returned when opening a database whose
+	// rows reference parents that do not exist, so the store
+	// refuses to open it. Nothing has been changed.
+	ErrReferentialIntegrity = errors.New("store: database holds rows that reference missing rows")
 )
