@@ -1,30 +1,43 @@
 package zai
 
-import "github.com/baphled/flowstate/internal/provider"
+import "encoding/json"
 
 // anthropicRequest is the Messages API request body.
 type anthropicRequest struct {
-	Model     string             `json:"model"`
-	MaxTokens int64              `json:"max_tokens"`
-	Stream    bool               `json:"stream,omitempty"`
-	System    string             `json:"system,omitempty"`
-	Messages  []provider.Message `json:"messages"`
+	Model     string          `json:"model"`
+	MaxTokens int64           `json:"max_tokens"`
+	Stream    bool            `json:"stream,omitempty"`
+	System    string          `json:"system,omitempty"`
+	Messages  any             `json:"messages"`
+	Tools     []anthropicTool `json:"tools,omitempty"`
 }
 
 // anthropicResponse is a non-streaming Messages API response.
 type anthropicResponse struct {
 	Content []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type  string          `json:"type"`
+		Text  string          `json:"text"`
+		ID    string          `json:"id"`
+		Name  string          `json:"name"`
+		Input json.RawMessage `json:"input"`
 	} `json:"content"`
 }
 
 // anthropicEvent is one SSE event from a streaming Messages response.
 type anthropicEvent struct {
 	Type  string `json:"type"`
+	Index int    `json:"index"`
+	// ContentBlock is set on content_block_start events.
+	ContentBlock struct {
+		Type string `json:"type"`
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	} `json:"content_block"`
 	Delta struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
+		// PartialJSON is a fragment of a tool_use input on input_json_delta events.
+		PartialJSON string `json:"partial_json"`
 		// StopReason is set on message_delta events.
 		StopReason string `json:"stop_reason"`
 	} `json:"delta"`

@@ -144,6 +144,12 @@ func ClampMaxTokens(n int64) int64 {
 // z.ai route is unchanged.
 func WithAnthropicSystem() Option { return func(p *Provider) { p.systemTopLevel = true } }
 
+// WithAnthropicTools makes the anthropic coding route carry structured tools:
+// the request advertises tools with input_schema, assistant calls and tool
+// results use tool_use and tool_result blocks, and tool_use blocks in the reply
+// become tool calls. Off by default, so the z.ai anthropic route keeps refusing.
+func WithAnthropicTools() Option { return func(p *Provider) { p.anthropicTools = true } }
+
 // WithFinishEvents makes a completed stream on every route end with one finish
 // event whose reason maps the wire reason: OpenAI finish_reason, or the
 // anthropic message_delta.stop_reason (end_turn and stop_sequence: "stop";

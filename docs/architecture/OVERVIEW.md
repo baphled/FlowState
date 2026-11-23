@@ -125,7 +125,9 @@ duplicate IDs, invalid complete arguments and truncated streams terminate with
 stream completes. Context cancellation unblocks event sends and closes the body.
 
 The selectable Anthropic coding route rejects structured tools/history before
-HTTP. Nonstream coding `Chat` encodes tool requests but rejects tool responses
+HTTP, except for the Anthropic API-key route, which translates them (see below), sending the dots of
+tool names such as `fs.read` as `_` and mapping reply names back.
+Nonstream coding `Chat` on the OpenAI route encodes tool requests but rejects tool responses
 with `ToolProtocolError`; use `Stream` for tool calls. Legacy text coding streams
 remain supported, while unsolicited tool deltas fail closed. Other adapters and
 the engine retain their existing behavior. Consumers still validate structured
@@ -190,8 +192,9 @@ others reach it would route their requests through the owner's plan, which the p
 The `api_key` route (`anthropic.APIKey`) is ordinary Anthropic API billing, independent of the subscription route. It
 sends the key (`ANTHROPIC_API_KEY`) as `x-api-key` to `<base>/v1/messages` (`ANTHROPIC_BASE_URL`, else
 `https://api.anthropic.com`), reusing the Messages wire client in `internal/provider/zai`. It never reads the Claude
-Code sign-in or runs `claude`. It supports text chat and streaming, system messages and `MaxTokens`; structured tools
-are refused, a truncated stream is an error, and nothing is retried.
+Code sign-in or runs `claude`. It supports text chat and streaming, system messages, `MaxTokens` and structured tools
+(`tool_use` / `tool_result` blocks); a truncated stream is an error, and nothing is retried. The subscription route
+still refuses structured tools.
 See ADR-008.
 
 ## Session tool catalog

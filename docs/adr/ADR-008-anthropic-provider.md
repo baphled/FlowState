@@ -135,15 +135,29 @@ runs `claude`, and sends no OAuth, `Authorization` or `anthropic-beta` header, o
    and `WithAnthropicFinish` (a completed stream ends with a finish event carrying the stop reason). `APIKey` adds
    the default model and `anthropic`-named errors (`anthropic: api error <status> <type>: <message>`). With no
    injected client it does not follow redirects, so a 3xx is an API error and `x-api-key` is never re-sent to
-   another host. Tool refusal is `ErrUnsupportedTools`, as on the OAuth route.
+   another host. Structured tools are supported (item 6); the OAuth route still refuses them with
+   `ErrUnsupportedTools`.
 4. Models: `claude-sonnet-5-5`, `claude-haiku-5-5`, `claude-opus-5-5` are advisory and never validated.
 5. Stream failures: the shared client turns an SSE `error` event, a body read error, an EOF before `message_stop`
    and an empty or non-event-stream 200 body into one terminal error event and no finish event. This also applies to
    the z.ai anthropic route, which previously reported those cases as a completed turn. `stop_reason` maps to the
    finish reason: `end_turn`, `stop_sequence` or absent: `stop`; `max_tokens`: `length`; others unchanged.
-6. Unsupported: structured tools and tool-role history (refused before any request); non-text blocks are ignored;
-   token usage is not reported; an unset `max_tokens` becomes 8192 and an explicit one is sent as given, capped at
-   131072 (a small limit can be spent on hidden reasoning, giving finish reason `length`); no retries.
+6. Structured tools: a third opt-in option, `WithAnthropicTools`, which only `APIKey` sets, so the z.ai anthropic
+   route still refuses tools. The request carries `tools` (`name`, `description`, `input_schema` from the neutral
+   parameters); an assistant call is a `tool_use` block and consecutive tool-role results are `tool_result` blocks
+   of one user message. A `tool_use` reply block becomes a tool call, complete, from `Chat`; `Stream` assembles
+   `input_json_delta` fragments per content block and emits the call at `content_block_stop`. `stop_reason`
+   `tool_use` maps to the finish reason `tool_calls`. Invalid ids, names or non-object input are a
+   `*zai.ToolProtocolError`. Anthropic only accepts tool names matching `^[a-zA-Z0-9_-]{1,128}$`, so the dots of
+   `fs.read` or `exec.run` are sent as `_` (`fs_read`), in definitions and in history `tool_use` blocks, and each
+   reply name is mapped back through a per-request table; an unknown reply name, or two neutral names with one wire
+   name (`a.b` and `a_b`, refused before any request), is a `*zai.ToolProtocolError`. A repeated tool id or content
+   block index, a tool input above 1 MiB and a `message_stop` with an unfinished `tool_use` (unless `max_tokens`)
+   are the same error; whitespace-only assistant text is not re-sent as a text block.
+   Not verified against the live API (no account credit); the shapes follow the documented
+   Messages API. Unsupported: token usage is not reported; an unset `max_tokens` becomes 8192 and an explicit one
+   is sent as given, capped at 131072 (a small limit can be spent on hidden reasoning, giving finish reason
+   `length`); no retries.
 
 ## Consequences
 
@@ -177,7 +191,7 @@ runs `claude`, and sends no OAuth, `Authorization` or `anthropic-beta` header, o
 
 ### Negative (API-key route)
 
-1. Text only: no structured tools, no usage reporting, no retries, redirects not followed.
+1. No usage reporting, no retries, redirects not followed.
 2. A truncated stream is an error; truncation at `max_tokens` is finish reason `length`.
 
 ### Follow-ups
