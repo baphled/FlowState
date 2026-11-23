@@ -54,6 +54,11 @@ var (
 	// path is already taken; the file is never overwritten.
 	ErrBackupExists = errors.New("store: pre-v9 backup already exists")
 
+	// ErrMigratedElsewhere is returned when the backup name is taken and
+	// the database now records v9: another process migrated it first.
+	// Opening again succeeds.
+	ErrMigratedElsewhere = errors.New("store: another process migrated the database to v9")
+
 	// ErrRowCountMismatch is returned when a rebuilt table loses or gains rows.
 	ErrRowCountMismatch = errors.New("store: rebuilt table row count differs")
 )

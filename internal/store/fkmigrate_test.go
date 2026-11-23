@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 
 	sqlite "github.com/libtnb/sqlite"
 	. "github.com/onsi/ginkgo/v2"
@@ -91,6 +93,16 @@ func rawInt(path, q string) (n int64) {
 		}
 	})
 	return n
+}
+
+// rawText reads one string from the database file at path.
+func rawText(path, q string) (out string) {
+	withRaw(path, func(db *sql.DB) {
+		if err := db.QueryRow(q).Scan(&out); err != nil {
+			panic(err)
+		}
+	})
+	return out
 }
 
 // dumpTables renders every row of every data table, in primary key order.
@@ -384,6 +396,97 @@ var _ = Describe("Foreign-key migration of a v8 database", func() {
 		})
 	})
 
+	Context("when the migration fails after rebuilding the first table", func() {
+		var before map[string]string
+		var openErr error
+
+		BeforeEach(func() {
+			path = seedV8(false)
+			// A table the second rebuild cannot rename onto makes it fail.
+			rawExec(path, `CREATE TABLE events__old (x TEXT)`)
+			before = dumpTables(path)
+			var s *Store
+			s, openErr = Open(path)
+			if s != nil {
+				_ = s.Close()
+			}
+		})
+
+		It("fails the open", func() {
+			Expect(openErr).To(HaveOccurred())
+		})
+
+		It("rolls back every row", func() {
+			Expect(dumpTables(path)).To(Equal(before))
+		})
+
+		It("rolls back the first table's key", func() {
+			Expect(keyCounts(path)[0]).To(BeZero())
+		})
+
+		It("does not record version 9", func() {
+			Expect(rawInt(path, `SELECT max(version) FROM schema_migrations`)).To(Equal(int64(8)))
+		})
+
+		It("leaves the backup in place", func() {
+			Expect(dumpTables(path + ".pre-v9.bak")).To(Equal(before))
+		})
+	})
+
+	It("refuses to overwrite an existing backup", func() {
+		path = seedV8(false)
+		if err := os.WriteFile(path+".pre-v9.bak", []byte("keep"), 0o600); err != nil {
+			panic(err)
+		}
+		_, err := Open(path)
+		Expect(err).To(MatchError(ErrBackupExists))
+	})
+
+	It("rejects a rebuilt table whose row count differs", func() {
+		Expect(verifyRowCount("events", 3, 2)).To(MatchError(ErrRowCountMismatch))
+	})
+
+	It("does not back up a v8 database that already declares every key", func() {
+		path = filepath.Join(GinkgoT().TempDir(), "keyed.db")
+		fresh, err := Open(path)
+		if err != nil {
+			panic(err)
+		}
+		if err := fresh.Close(); err != nil {
+			panic(err)
+		}
+		rawExec(path, `DELETE FROM schema_migrations WHERE version = 9`)
+		again, err := Open(path)
+		if err != nil {
+			panic(err)
+		}
+		DeferCleanup(func() { _ = again.Close() })
+		_, statErr := os.Stat(path + ".pre-v9.bak")
+		Expect(os.IsNotExist(statErr)).To(BeTrue())
+	})
+
+	It("keeps the rowid order of the rows it copies", func() {
+		path = seedV8(false)
+		rawExec(path, `INSERT INTO swarm_run_packets VALUES ('b','run','pk',2,'r','t'), ('a','run','pk',3,'r','t')`)
+		s, err := Open(path)
+		if err != nil {
+			panic(err)
+		}
+		DeferCleanup(func() { _ = s.Close() })
+		Expect(rawText(path, `SELECT group_concat(id) FROM (SELECT id FROM swarm_run_packets ORDER BY rowid)`)).
+			To(Equal("p1,b,a"))
+	})
+
+	It("accepts on an upgraded database a status a fresh one accepts", func() {
+		path = seedV8(false)
+		s, err := Open(path)
+		if err != nil {
+			panic(err)
+		}
+		DeferCleanup(func() { _ = s.Close() })
+		Expect(s.UpdateSessionStatus(GinkgoT().Context(), "root", "archived")).To(Succeed())
+	})
+
 	It("writes no backup when an orphan refuses the open", func() {
 		path = seedV8(false)
 		rawExec(path, `INSERT INTO events VALUES ('ghost',0,'t','a','t','h','{}')`)
@@ -392,5 +495,119 @@ var _ = Describe("Foreign-key migration of a v8 database", func() {
 		}
 		_, err := os.Stat(path + ".pre-v9.bak")
 		Expect(os.IsNotExist(err)).To(BeTrue())
+	})
+})
+
+var _ = Describe("Pre-v9 backup file", func() {
+	var garbage *Store
+
+	BeforeEach(func() {
+		bad := filepath.Join(GinkgoT().TempDir(), "bad.db")
+		if err := os.WriteFile(bad, []byte(strings.Repeat("x", 8192)), 0o600); err != nil {
+			panic(err)
+		}
+		garbage = &Store{path: bad}
+		if err := garbage.backupBeforeRebuild(); err == nil {
+			panic("copying a file that is no database should fail")
+		}
+	})
+
+	It("is absent under the final name when the copy fails", func() {
+		_, err := os.Stat(garbage.backupPath())
+		Expect(os.IsNotExist(err)).To(BeTrue())
+	})
+
+	It("leaves no temporary file when the copy fails", func() {
+		left, err := filepath.Glob(garbage.backupPath() + ".tmp-*")
+		if err != nil {
+			panic(err)
+		}
+		Expect(left).To(BeEmpty())
+	})
+
+	Context("when another opener's temporary file is in progress", func() {
+		var path, live string
+		var before map[string]string
+
+		BeforeEach(func() {
+			path = seedV8(false)
+			before = dumpTables(path)
+			live = path + ".pre-v9.bak.tmp-0123456789abcdef"
+			if err := os.WriteFile(live, []byte("in progress"), 0o600); err != nil {
+				panic(err)
+			}
+			s, err := Open(path)
+			if err != nil {
+				panic(err)
+			}
+			DeferCleanup(func() { _ = s.Close() })
+		})
+
+		It("writes a complete backup of its own", func() {
+			Expect(dumpTables(path + ".pre-v9.bak")).To(Equal(before))
+		})
+
+		It("leaves the other opener's file untouched", func() {
+			body, err := os.ReadFile(live)
+			if err != nil {
+				panic(err)
+			}
+			Expect(string(body)).To(Equal("in progress"))
+		})
+
+		It("keeps the backup private to its owner", func() {
+			want := os.FileMode(0o600)
+			if runtime.GOOS == "windows" {
+				want = 0o666 // Windows reports no POSIX permission bits
+			}
+			info, err := os.Stat(path + ".pre-v9.bak")
+			if err != nil {
+				panic(err)
+			}
+			Expect(info.Mode().Perm()).To(Equal(want))
+		})
+	})
+
+	It("reports another process's migration when v9 is recorded and the backup exists", func() {
+		path := filepath.Join(GinkgoT().TempDir(), "other.db")
+		s, err := Open(path)
+		if err != nil {
+			panic(err)
+		}
+		DeferCleanup(func() { _ = s.Close() })
+		if err := os.WriteFile(path+".pre-v9.bak", []byte("theirs"), 0o600); err != nil {
+			panic(err)
+		}
+		Expect(s.backupBeforeRebuild()).To(MatchError(ErrMigratedElsewhere))
+	})
+
+	It("keeps refusing with ErrBackupExists when v9 is not recorded", func() {
+		path := seedV8(false)
+		s, err := Open(path)
+		if err != nil {
+			panic(err)
+		}
+		DeferCleanup(func() { _ = s.Close() })
+		rawExec(path, `DELETE FROM schema_migrations WHERE version = 9`)
+		Expect(s.backupBeforeRebuild()).To(MatchError(ErrBackupExists))
+	})
+})
+
+var _ = Describe("An in-memory store", func() {
+	It("declares all six foreign keys", func() {
+		s, err := OpenMemory()
+		if err != nil {
+			panic(err)
+		}
+		DeferCleanup(func() { _ = s.Close() })
+		var counts []int64
+		for _, t := range keyedTables {
+			var n int64
+			if err := s.db.QueryRow(`SELECT count(*) FROM pragma_foreign_key_list('` + t + `')`).Scan(&n); err != nil {
+				panic(err)
+			}
+			counts = append(counts, n)
+		}
+		Expect(counts).To(Equal([]int64{1, 1, 1, 1, 1, 1}))
 	})
 })
