@@ -148,7 +148,7 @@ func (s *Store) ReserveBudget(ctx context.Context, parentID, childID string, gra
 			return fmt.Errorf("mint reservation id: %w", merr)
 		}
 		row := budgetReservationRow{
-			ID: id.String(), ParentID: parentID, ChildID: childID,
+			ID: id.String(), ParentSessionID: parentID, ChildID: childID,
 			Granted: grant, Status: ReservationStatusReserved, CreatedAtUTC: iso(time.Now().UTC()),
 		}
 		if cerr := tx.Create(&row).Error; cerr != nil {
@@ -177,7 +177,7 @@ func (s *Store) ReservationFor(ctx context.Context, childID string) (BudgetReser
 		return BudgetReservation{}, err
 	}
 	res := BudgetReservation{
-		ID: row.ID, ParentID: row.ParentID, ChildID: row.ChildID,
+		ID: row.ID, ParentID: row.ParentSessionID, ChildID: row.ChildID,
 		Granted: row.Granted, Consumed: row.Consumed, Status: row.Status,
 	}
 	res.CreatedAt, _ = time.Parse(time.RFC3339Nano, row.CreatedAtUTC)

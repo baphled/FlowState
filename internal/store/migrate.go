@@ -3,6 +3,8 @@ package store
 import (
 	"fmt"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 // knownSchemaVersion is the highest schema version this code manages.
@@ -22,8 +24,8 @@ func (s *Store) migrate() error {
 	if err := s.rejectFutureSchema(); err != nil {
 		return err
 	}
-	if err := s.gdb.AutoMigrate(migrateModels()...); err != nil {
-		return fmt.Errorf("automigrate schema: %w", err)
+	if err := s.autoMigrateModels(); err != nil {
+		return err
 	}
 	maxApplied, err := s.maxAppliedVersion()
 	if err != nil {
@@ -39,6 +41,32 @@ func (s *Store) migrate() error {
 		row := schemaMigrationRow{Version: v, AppliedAtUTC: iso(time.Now().UTC())}
 		if err := s.gdb.Create(&row).Error; err != nil {
 			return fmt.Errorf("record schema version %d: %w", v, err)
+		}
+	}
+	return nil
+}
+
+// autoMigrateModels migrates the models parents-first. A table that
+// does not exist yet is created with CreateTable, which emits the
+// declared foreign keys inline and, unlike AutoMigrate, does not pull
+// in (and re-migrate) the tables it references. A table that already
+// exists is migrated with constraint creation disabled, because SQLite
+// can only add a foreign key by rebuilding the table, which would drop
+// the WITHOUT ROWID shape of the legacy events table and rewrite rows.
+func (s *Store) autoMigrateModels() error {
+	existing := s.gdb.Session(&gorm.Session{NewDB: true})
+	cfg := *existing.Config
+	cfg.DisableForeignKeyConstraintWhenMigrating = true
+	existing.Config = &cfg
+	for _, model := range migrateModels() {
+		var err error
+		if s.gdb.Migrator().HasTable(model) {
+			err = existing.AutoMigrate(model)
+		} else {
+			err = s.gdb.Migrator().CreateTable(model)
+		}
+		if err != nil {
+			return fmt.Errorf("automigrate schema: %w", err)
 		}
 	}
 	return nil

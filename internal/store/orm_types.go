@@ -23,6 +23,10 @@ type sessionRow struct {
 	ConfigSHA    string  `gorm:"column:config_sha256;not null;type:text"`
 	ParentID     *string `gorm:"column:parent_id;type:text"`
 	BudgetPool   *int64  `gorm:"column:budget_pool;type:integer"`
+
+	// Parent declares the parent_id -> sessions.id foreign key; roots
+	// persist a NULL parent_id, which a foreign key does not check.
+	Parent *sessionRow `gorm:"foreignKey:ParentID;references:ID"`
 }
 
 // eventRow mirrors the events table (v2 DDL): composite PK
@@ -35,6 +39,9 @@ type eventRow struct {
 	Type         string `gorm:"column:type;not null;type:text;index:idx_events_session_type"`
 	PayloadSHA   string `gorm:"column:payload_sha256;not null;type:text"`
 	PayloadJSON  string `gorm:"column:payload_json;not null;type:text"`
+
+	// Session declares the session_id -> sessions.id foreign key.
+	Session *sessionRow `gorm:"foreignKey:SessionID;references:ID"`
 }
 
 // receiptRow mirrors the receipts table (v2 DDL); no DB-level
@@ -68,13 +75,22 @@ type leaseHistoryRow struct {
 // declared pool. The status whitelist ('reserved','charged') is
 // domain-layer; no DB CHECK (see sessionRow comment).
 type budgetReservationRow struct {
-	ID           string `gorm:"column:id;primaryKey;not null;type:text"`
-	ParentID     string `gorm:"column:parent_id;not null;type:text"`
-	ChildID      string `gorm:"column:child_id;not null;type:text;uniqueIndex:idx_budget_reservations_child_id"`
-	Granted      int64  `gorm:"column:granted;not null;type:integer"`
-	Consumed     int64  `gorm:"column:consumed;not null;default:0;type:integer"`
-	Status       string `gorm:"column:status;not null;type:text"`
-	CreatedAtUTC string `gorm:"column:created_at_utc;not null;type:text"`
+	ID              string `gorm:"column:id;primaryKey;not null;type:text"`
+	ParentSessionID string `gorm:"column:parent_id;not null;type:text"`
+	ChildID         string `gorm:"column:child_id;not null;type:text;uniqueIndex:idx_budget_reservations_child_id"`
+	Granted         int64  `gorm:"column:granted;not null;type:integer"`
+	Consumed        int64  `gorm:"column:consumed;not null;default:0;type:integer"`
+	Status          string `gorm:"column:status;not null;type:text"`
+	CreatedAtUTC    string `gorm:"column:created_at_utc;not null;type:text"`
+
+	// Parent declares the parent_id -> sessions.id foreign key. The Go
+	// field is ParentSessionID, not ParentID: GORM resolves the relation
+	// by field name and would otherwise read sessions.parent_id as the
+	// key of a has-one relation in the opposite direction.
+	// ReserveBudget loads the parent session in the same transaction.
+	// child_id stays unconstrained: a reservation names a child id the
+	// caller may not have created yet and ReserveBudget never checks it.
+	Parent *sessionRow `gorm:"foreignKey:ParentSessionID;references:ID"`
 }
 
 // sessionMessageRow mirrors the session_messages table (v6): one
@@ -87,6 +103,11 @@ type sessionMessageRow struct {
 	Body         string  `gorm:"column:body;not null;type:text"`
 	CreatedAtUTC string  `gorm:"column:created_at_utc;not null;type:text"`
 	DeliveredAt  *string `gorm:"column:delivered_at_utc;type:text"`
+
+	// Session declares the session_id -> sessions.id foreign key:
+	// SendMessage resolves the delegation chain of the addressee first.
+	// sender stays unconstrained: it is checked against that chain.
+	Session *sessionRow `gorm:"foreignKey:SessionID;references:ID"`
 }
 
 // SessionSteeringMessage is the wire shape of one steering message.
@@ -110,19 +131,24 @@ type swarmRunRow struct {
 }
 
 // swarmRunChildRow mirrors the swarm_run_children table: one child
-// session per packet a run delegated; like the packet rows it carries
-// no FK (run and rows persist together).
+// session per packet a run delegated; run_id is a foreign key to
+// swarm_runs (written in the run's transaction). session_id stays
+// unconstrained: the run record is a historical receipt and the
+// referenced child session may be an id the caller supplied.
 type swarmRunChildRow struct {
 	ID           string `gorm:"column:id;primaryKey;not null;type:text"`
 	RunID        string `gorm:"column:run_id;not null;type:text;index:idx_swarm_run_children_run_id"`
 	PacketID     string `gorm:"column:packet_id;not null;type:text"`
 	SessionID    string `gorm:"column:session_id;not null;type:text"`
 	CreatedAtUTC string `gorm:"column:created_at_utc;not null;type:text"`
+
+	// Run declares the run_id -> swarm_runs.id foreign key.
+	Run *swarmRunRow `gorm:"foreignKey:RunID;references:ID"`
 }
 
 // swarmRunPacketRow mirrors the swarm_run_packets table (v7): one
 // admission decision per packet; SQLite stores the boolean as 1/0
-// and the run link carries no FK (run and rows persist together).
+// and run_id is a foreign key to swarm_runs (same transaction).
 type swarmRunPacketRow struct {
 	ID           string `gorm:"column:id;primaryKey;not null;type:text"`
 	RunID        string `gorm:"column:run_id;not null;type:text;index:idx_swarm_run_packets_run_id"`
@@ -130,4 +156,7 @@ type swarmRunPacketRow struct {
 	Admitted     int64  `gorm:"column:admitted;not null;type:integer"`
 	Reason       string `gorm:"column:reason;not null;type:text"`
 	CreatedAtUTC string `gorm:"column:created_at_utc;not null;type:text"`
+
+	// Run declares the run_id -> swarm_runs.id foreign key.
+	Run *swarmRunRow `gorm:"foreignKey:RunID;references:ID"`
 }

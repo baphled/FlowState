@@ -280,11 +280,25 @@ var _ = Describe("Legacy v3 database upgrade", func() {
 			Equal(f.before["events"]), ContainSubstring("WITHOUT ROWID")))
 	})
 
-	// A database created by an earlier release keeps the events foreign key it was created with, while a
-	// freshly created store declares none (see the store specs): the two now differ.
+	// A database created by an earlier release keeps the events foreign key it was created with; SQLite
+	// cannot add one to an existing table without a rebuild, so tables that already exist gain none.
 	It("keeps the foreign key on events that the earlier release created", func() {
 		var n int
 		err := store.db.QueryRow(`SELECT count(*) FROM pragma_foreign_key_list('events')`).Scan(&n)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(1))
+	})
+
+	It("adds no foreign key to the existing sessions table", func() {
+		var n int
+		err := store.db.QueryRow(`SELECT count(*) FROM pragma_foreign_key_list('sessions')`).Scan(&n)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(BeZero())
+	})
+
+	It("declares the session foreign key on the session_messages table created by the upgrade", func() {
+		var n int
+		err := store.db.QueryRow(`SELECT count(*) FROM pragma_foreign_key_list('session_messages')`).Scan(&n)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(n).To(Equal(1))
 	})

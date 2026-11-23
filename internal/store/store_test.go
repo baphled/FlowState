@@ -102,28 +102,58 @@ var _ = Describe("Store open/migrations", func() {
 		Expect(err).To(HaveOccurred())
 	})
 
-	It("declares no foreign key on any table of a freshly created store schema", func() {
-		s := newTestStore()
-		var n int
-		err := s.db.QueryRow(`SELECT count(*) FROM sqlite_master m, pragma_foreign_key_list(m.name) WHERE m.type='table'`).Scan(&n)
-		if err != nil {
-			panic(err)
-		}
-		Expect(n).To(BeZero())
-	})
-
-	It("accepts a raw event insert for a session that does not exist in a freshly created store", func() {
+	It("rejects a raw event insert for a session that does not exist in a freshly created store", func() {
 		s := newTestStore()
 		_, err := s.db.Exec(`INSERT INTO events (session_id,seq,created_at_utc,actor,type,payload_sha256,payload_json)
 			VALUES ('ghost',0,'t','user','x',?,?)`, sha256HexStr(`{}`), `{}`)
-		if err != nil {
-			panic(err)
-		}
+		Expect(err).To(MatchError(ContainSubstring("FOREIGN KEY constraint failed")))
+	})
+
+	It("rejects a raw session insert naming a parent that does not exist in a freshly created store", func() {
+		s := newTestStore()
+		_, err := s.db.Exec(`INSERT INTO sessions (id,created_at_utc,updated_at_utc,status,provider,model_id,harness,config_sha256,parent_id)
+			VALUES ('orphan','t','t','active','p','m','h','c','ghost')`)
+		Expect(err).To(MatchError(ContainSubstring("FOREIGN KEY constraint failed")))
+	})
+
+	It("accepts a root session whose parent_id is NULL in a freshly created store", func() {
+		s := newTestStore()
+		_, err := s.db.Exec(`INSERT INTO sessions (id,created_at_utc,updated_at_utc,status,provider,model_id,harness,config_sha256,parent_id)
+			VALUES ('root','t','t','active','p','m','h','c',NULL)`)
+		Expect(err).NotTo(HaveOccurred())
 		var n int
-		if err := s.db.QueryRow(`SELECT count(*) FROM events WHERE session_id='ghost'`).Scan(&n); err != nil {
+		if err := s.db.QueryRow(`SELECT count(*) FROM sessions WHERE id='root'`).Scan(&n); err != nil {
 			panic(err)
 		}
 		Expect(n).To(Equal(1))
+	})
+
+	It("rejects a raw steering message for a session that does not exist in a freshly created store", func() {
+		s := newTestStore()
+		_, err := s.db.Exec(`INSERT INTO session_messages (id,session_id,sender,body,created_at_utc)
+			VALUES ('m1','ghost','s','b','t')`)
+		Expect(err).To(MatchError(ContainSubstring("FOREIGN KEY constraint failed")))
+	})
+
+	It("rejects a raw budget reservation for a parent session that does not exist in a freshly created store", func() {
+		s := newTestStore()
+		_, err := s.db.Exec(`INSERT INTO budget_reservations (id,parent_id,child_id,granted,consumed,status,created_at_utc)
+			VALUES ('r1','ghost','c1',1,0,'reserved','t')`)
+		Expect(err).To(MatchError(ContainSubstring("FOREIGN KEY constraint failed")))
+	})
+
+	It("rejects a raw swarm run packet for a run that does not exist in a freshly created store", func() {
+		s := newTestStore()
+		_, err := s.db.Exec(`INSERT INTO swarm_run_packets (id,run_id,packet_id,admitted,reason,created_at_utc)
+			VALUES ('p1','ghost','pk',1,'r','t')`)
+		Expect(err).To(MatchError(ContainSubstring("FOREIGN KEY constraint failed")))
+	})
+
+	It("rejects a raw swarm run child for a run that does not exist in a freshly created store", func() {
+		s := newTestStore()
+		_, err := s.db.Exec(`INSERT INTO swarm_run_children (id,run_id,packet_id,session_id,created_at_utc)
+			VALUES ('c1','ghost','pk','s','t')`)
+		Expect(err).To(MatchError(ContainSubstring("FOREIGN KEY constraint failed")))
 	})
 
 	It("reports a SQLite version of at least 3.40", func() {
