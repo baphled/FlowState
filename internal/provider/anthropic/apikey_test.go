@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -160,30 +161,306 @@ var _ = Describe("APIKey", func() {
 		Expect(bodyField(request(req), "messages")).To(HaveLen(1))
 	})
 
-	toolRequest := func() *provider.ChatRequest {
-		req := hello()
-		req.Tools = []provider.ToolDefinition{{Name: "t", Parameters: json.RawMessage(`{}`)}}
-		return req
-	}
-
-	It("refuses structured tools with ErrUnsupportedTools, as the oauth route does", func() {
-		_, err := chat(toolRequest())
-		Expect(errors.Is(err, anthropic.ErrUnsupportedTools)).To(BeTrue())
-	})
-
-	It("refuses structured tools on a stream with ErrUnsupportedTools", func() {
-		var last provider.StreamEvent
-		for ev := range p.Stream(context.Background(), toolRequest()) {
-			last = ev
+	Describe("structured tools", func() {
+		const sseTool = `data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use",` +
+			`"id":"toolu_01","name":"echo","input":{}}}` + "\n\n" +
+			`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"mess"}}` + "\n\n" +
+			`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"age\":\"hi\"}"}}` + "\n\n" +
+			`data: {"type":"content_block_stop","index":0}` + "\n\n" +
+			`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}` + "\n\n" +
+			`data: {"type":"message_stop"}` + "\n\n"
+		var echoCall provider.ToolCall
+		BeforeEach(func() {
+			echoCall = provider.ToolCall{ID: "toolu_01", Name: "echo", Arguments: json.RawMessage(`{"message":"hi"}`)}
+		})
+		toolRequest := func() *provider.ChatRequest {
+			req := hello()
+			req.Tools = []provider.ToolDefinition{{Name: "echo", Description: "Echo a message",
+				Parameters: json.RawMessage(`{"type":"object","properties":{"message":{"type":"string"}}}`)}}
+			return req
 		}
-		Expect(errors.Is(last.Err, anthropic.ErrUnsupportedTools)).To(BeTrue())
-	})
+		historyRequest := func(results ...provider.Message) *provider.ChatRequest {
+			req := toolRequest()
+			req.Messages = append(req.Messages, provider.Message{Role: "assistant", Content: "calling",
+				ToolCalls: []provider.ToolCall{echoCall, {ID: "toolu_02", Name: "echo", Arguments: json.RawMessage(`{}`)}}})
+			req.Messages = append(req.Messages, results...)
+			return req
+		}
+		bodyJSON := func(c capturedRequest, name string) string {
+			b, err := json.Marshal(bodyField(c, name))
+			if err != nil {
+				panic(err)
+			}
+			return string(b)
+		}
+		streamTool := func(body string) []provider.StreamEvent {
+			reply = body
+			var events []provider.StreamEvent
+			for ev := range p.Stream(context.Background(), toolRequest()) {
+				events = append(events, ev)
+			}
+			return events
+		}
 
-	It("sends no request for a rejected tool call", func() {
-		req := hello()
-		req.Tools = []provider.ToolDefinition{{Name: "t", Parameters: json.RawMessage(`{}`)}}
-		_, _ = chat(req)
-		Expect(seen).To(BeEmpty())
+		It("sends the tools with name, description and input_schema", func() {
+			Expect(bodyJSON(request(toolRequest()), "tools")).To(MatchJSON(
+				`[{"name":"echo","description":"Echo a message","input_schema":` +
+					`{"type":"object","properties":{"message":{"type":"string"}}}}]`))
+		})
+
+		It("omits the tools field when the request has none", func() {
+			Expect(bodyField(request(hello()), "tools")).To(BeNil())
+		})
+
+		It("returns a tool_use block as a tool call with its arguments intact", func() {
+			reply = `{"content":[{"type":"tool_use","id":"toolu_01","name":"echo","input":{"message":"hi"}}],"stop_reason":"tool_use"}`
+			resp, err := chat(toolRequest())
+			if err != nil {
+				panic(err)
+			}
+			Expect(resp.ToolCalls).To(Equal([]provider.ToolCall{echoCall}))
+		})
+
+		It("keeps the text that precedes a tool_use block", func() {
+			reply = `{"content":[{"type":"text","text":"checking"},` +
+				`{"type":"tool_use","id":"toolu_01","name":"echo","input":{}}]}`
+			resp, err := chat(toolRequest())
+			if err != nil {
+				panic(err)
+			}
+			Expect(resp.Content).To(Equal("checking"))
+		})
+
+		It("rejects a tool_use block with an invalid id as a tool protocol error", func() {
+			reply = `{"content":[{"type":"tool_use","id":"","name":"echo","input":{}}]}`
+			_, err := chat(toolRequest())
+			var protocol *zai.ToolProtocolError
+			Expect(errors.As(err, &protocol)).To(BeTrue())
+		})
+
+		It("sends an assistant call as text then tool_use blocks", func() {
+			Expect(bodyJSON(request(historyRequest()), "messages")).To(MatchJSON(`[
+				{"role":"user","content":"hi"},
+				{"role":"assistant","content":[{"type":"text","text":"calling"},
+					{"type":"tool_use","id":"toolu_01","name":"echo","input":{"message":"hi"}},
+					{"type":"tool_use","id":"toolu_02","name":"echo","input":{}}]}]`))
+		})
+
+		It("sends tool results as tool_result blocks of one user message", func() {
+			req := historyRequest(
+				provider.Message{Role: "tool", ToolCallID: "toolu_01", Content: `{"echo":"hi"}`},
+				provider.Message{Role: "tool", ToolCallID: "toolu_02", Content: "error: nope"})
+			Expect(bodyJSON(request(req), "messages")).To(MatchJSON(`[
+				{"role":"user","content":"hi"},
+				{"role":"assistant","content":[{"type":"text","text":"calling"},
+					{"type":"tool_use","id":"toolu_01","name":"echo","input":{"message":"hi"}},
+					{"type":"tool_use","id":"toolu_02","name":"echo","input":{}}]},
+				{"role":"user","content":[
+					{"type":"tool_result","tool_use_id":"toolu_01","content":"{\"echo\":\"hi\"}"},
+					{"type":"tool_result","tool_use_id":"toolu_02","content":"error: nope"}]}]`))
+		})
+
+		It("assembles a streamed tool_use from partial JSON deltas into one tool call", func() {
+			var calls []provider.ToolCall
+			for _, ev := range streamTool(sseTool) {
+				if ev.Kind == provider.StreamEventToolCall {
+					calls = append(calls, *ev.ToolCall)
+				}
+			}
+			Expect(calls).To(Equal([]provider.ToolCall{echoCall}))
+		})
+
+		It("gives a streamed tool_use with no input an empty object", func() {
+			events := streamTool(`data: {"type":"content_block_start","index":1,"content_block":` +
+				`{"type":"tool_use","id":"toolu_09","name":"echo","input":{}}}` + "\n\n" +
+				`data: {"type":"content_block_stop","index":1}` + "\n\n" +
+				`data: {"type":"message_stop"}` + "\n\n")
+			Expect(string(events[0].ToolCall.Arguments)).To(Equal("{}"))
+		})
+
+		It("maps the tool_use stop reason to the tool_calls finish reason", func() {
+			events := streamTool(sseTool)
+			Expect(events[len(events)-1].FinishReason).To(Equal(provider.FinishToolCalls))
+		})
+
+		It("emits the tool call before the finish event", func() {
+			events := streamTool(sseTool)
+			Expect(events[0].Kind).To(Equal(provider.StreamEventToolCall))
+		})
+
+		It("passes a streamed tool turn through the stream validator", func() {
+			var v provider.StreamValidator
+			var first error
+			for _, ev := range streamTool(sseTool) {
+				if err := v.Accept(ev); err != nil && first == nil {
+					first = err
+				}
+			}
+			Expect(first).NotTo(HaveOccurred())
+		})
+
+		It("emits no tool call for a tool_use cut before its content_block_stop", func() {
+			events := streamTool(strings.Split(sseTool, `data: {"type":"content_block_stop"`)[0])
+			Expect(events).NotTo(ContainElement(HaveField("Kind", provider.StreamEventToolCall)))
+		})
+
+		It("ends a streamed tool_use with malformed input in a tool protocol error", func() {
+			events := streamTool(strings.Replace(sseTool, `age\":\"hi\"}`, `age\":`, 1))
+			var protocol *zai.ToolProtocolError
+			Expect(errors.As(events[len(events)-1].Err, &protocol)).To(BeTrue())
+		})
+
+		Describe("tool names", func() {
+			dotted := func(names ...string) *provider.ChatRequest {
+				req := hello()
+				for _, n := range names {
+					req.Tools = append(req.Tools, provider.ToolDefinition{Name: n, Parameters: json.RawMessage(`{"type":"object"}`)})
+				}
+				return req
+			}
+			startStop := func(index int, id, name string) string {
+				return `data: {"type":"content_block_start","index":` + strconv.Itoa(index) +
+					`,"content_block":{"type":"tool_use","id":"` + id + `","name":"` + name + `","input":{}}}` + "\n\n"
+			}
+			stopBlock := func(index int) string {
+				return `data: {"type":"content_block_stop","index":` + strconv.Itoa(index) + `}` + "\n\n"
+			}
+			const stopMsg = `data: {"type":"message_stop"}` + "\n\n"
+			lastErr := func(events []provider.StreamEvent) error { return events[len(events)-1].Err }
+			protocolErr := func(err error) bool {
+				var protocol *zai.ToolProtocolError
+				return errors.As(err, &protocol)
+			}
+
+			It("sends a dotted tool name with an underscore", func() {
+				Expect(bodyJSON(request(dotted("fs.read")), "tools")).To(ContainSubstring(`"name":"fs_read"`))
+			})
+
+			It("returns the dotted name for a wire name in a Chat reply", func() {
+				reply = `{"content":[{"type":"tool_use","id":"toolu_01","name":"fs_read","input":{}}]}`
+				resp, err := chat(dotted("fs.read"))
+				if err != nil {
+					panic(err)
+				}
+				Expect(resp.ToolCalls[0].Name).To(Equal("fs.read"))
+			})
+
+			It("returns the dotted name for a wire name in a streamed reply", func() {
+				reply = startStop(0, "toolu_01", "fs_read") + stopBlock(0) + stopMsg
+				events := []provider.StreamEvent{}
+				for ev := range p.Stream(context.Background(), dotted("fs.read")) {
+					events = append(events, ev)
+				}
+				Expect(events[0].ToolCall.Name).To(Equal("fs.read"))
+			})
+
+			It("sends a dotted history call name with an underscore", func() {
+				req := dotted("exec.run")
+				req.Messages = append(req.Messages, provider.Message{Role: "assistant",
+					ToolCalls: []provider.ToolCall{{ID: "toolu_01", Name: "exec.run", Arguments: json.RawMessage(`{}`)}}})
+				Expect(bodyJSON(request(req), "messages")).To(ContainSubstring(`"name":"exec_run"`))
+			})
+
+			It("refuses two tool names with one wire name in Chat", func() {
+				_, err := chat(dotted("a.b", "a_b"))
+				Expect(protocolErr(err)).To(BeTrue())
+			})
+
+			It("refuses two tool names with one wire name in Stream", func() {
+				events := []provider.StreamEvent{}
+				for ev := range p.Stream(context.Background(), dotted("a.b", "a_b")) {
+					events = append(events, ev)
+				}
+				Expect(protocolErr(lastErr(events))).To(BeTrue())
+			})
+
+			It("sends no request for a colliding pair", func() {
+				_, _ = chat(dotted("a.b", "a_b"))
+				Expect(seen).To(BeEmpty())
+			})
+
+			It("refuses a history call whose wire name collides with a tool", func() {
+				req := dotted("a_b")
+				req.Messages = append(req.Messages, provider.Message{Role: "assistant",
+					ToolCalls: []provider.ToolCall{{ID: "toolu_01", Name: "a.b", Arguments: json.RawMessage(`{}`)}}})
+				_, err := chat(req)
+				Expect(protocolErr(err)).To(BeTrue())
+			})
+
+			It("refuses an unknown wire name in a Chat reply", func() {
+				reply = `{"content":[{"type":"tool_use","id":"toolu_01","name":"other","input":{}}]}`
+				_, err := chat(dotted("fs.read"))
+				Expect(protocolErr(err)).To(BeTrue())
+			})
+
+			It("refuses a neutral spelling in a Chat reply", func() {
+				reply = `{"content":[{"type":"tool_use","id":"toolu_01","name":"fs.read","input":{}}]}`
+				_, err := chat(dotted("fs.read"))
+				Expect(protocolErr(err)).To(BeTrue())
+			})
+
+			It("refuses an unknown wire name in a streamed reply", func() {
+				reply = startStop(0, "toolu_01", "other") + stopBlock(0) + stopMsg
+				events := []provider.StreamEvent{}
+				for ev := range p.Stream(context.Background(), dotted("fs.read")) {
+					events = append(events, ev)
+				}
+				Expect(protocolErr(lastErr(events))).To(BeTrue())
+			})
+
+			It("ends a message with an unfinished tool_use in a tool protocol error", func() {
+				events := streamTool(startStop(0, "toolu_01", "echo") +
+					`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}` + "\n\n" + stopMsg)
+				Expect(protocolErr(lastErr(events))).To(BeTrue())
+			})
+
+			It("lets a max_tokens message end with an unfinished tool_use without an error", func() {
+				events := streamTool(startStop(0, "toolu_01", "echo") +
+					`data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"}}` + "\n\n" + stopMsg)
+				Expect(lastErr(events)).NotTo(HaveOccurred())
+			})
+
+			It("refuses a duplicate content block index in a stream", func() {
+				events := streamTool(startStop(0, "toolu_01", "echo") + startStop(0, "toolu_02", "echo") + stopBlock(0) + stopMsg)
+				Expect(protocolErr(lastErr(events))).To(BeTrue())
+			})
+
+			It("refuses a duplicate tool id in a stream", func() {
+				events := streamTool(startStop(0, "toolu_01", "echo") + stopBlock(0) +
+					startStop(1, "toolu_01", "echo") + stopBlock(1) + stopMsg)
+				Expect(protocolErr(lastErr(events))).To(BeTrue())
+			})
+
+			It("refuses a duplicate tool id in a Chat reply", func() {
+				reply = `{"content":[{"type":"tool_use","id":"toolu_01","name":"echo","input":{}},` +
+					`{"type":"tool_use","id":"toolu_01","name":"echo","input":{}}]}`
+				_, err := chat(toolRequest())
+				Expect(protocolErr(err)).To(BeTrue())
+			})
+
+			It("refuses a streamed tool input above one mebibyte", func() {
+				delta := func(fragment string) string {
+					return `data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"` +
+						fragment + `"}}` + "\n\n"
+				}
+				fill := strings.Repeat("x", 1<<19)
+				events := streamTool(startStop(0, "toolu_01", "echo") + delta(`{\"a\":\"`+fill) + delta(fill) + delta(fill) +
+					delta(`\"}`) + stopBlock(0) + stopMsg)
+				Expect(protocolErr(lastErr(events))).To(BeTrue())
+			})
+
+			It("does not send whitespace-only assistant text as a text block", func() {
+				req := toolRequest()
+				req.Messages = append(req.Messages, provider.Message{Role: "assistant", Content: "\n\n", ToolCalls: []provider.ToolCall{echoCall}})
+				Expect(bodyJSON(request(req), "messages")).NotTo(ContainSubstring(`"type":"text"`))
+			})
+		})
+
+		It("never puts the key in a tool error", func() {
+			reply = `{"content":[{"type":"tool_use","id":"` + key + `!","name":"echo","input":{}}]}`
+			_, err := chat(toolRequest())
+			Expect(err).To(MatchError(Not(ContainSubstring(key))))
+		})
 	})
 
 	Describe("streaming", func() {
@@ -296,7 +573,8 @@ var _ = Describe("APIKey", func() {
 			Entry("end_turn", "end_turn", "stop"),
 			Entry("stop_sequence", "stop_sequence", "stop"),
 			Entry("max_tokens", "max_tokens", "length"),
-			Entry("another value", "tool_use", "tool_use"),
+			Entry("tool_use", "tool_use", "tool_calls"),
+			Entry("another value", "refusal", "refusal"),
 			Entry("absent", "", "stop"),
 		)
 	})

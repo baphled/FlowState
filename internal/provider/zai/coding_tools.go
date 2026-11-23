@@ -28,7 +28,7 @@ func (p *Provider) validateCoding(req *provider.ChatRequest) error {
 	if err := req.Validate(); err != nil {
 		return &ToolProtocolError{Reason: err.Error()}
 	}
-	if p.codingRoute == codingRouteAnthropic && codingStructured(req) {
+	if p.codingRoute == codingRouteAnthropic && codingStructured(req) && !p.anthropicTools {
 		return &ToolProtocolError{Reason: "Anthropic coding route does not support structured tools"}
 	}
 	return nil

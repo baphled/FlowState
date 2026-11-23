@@ -34,6 +34,8 @@ type Provider struct {
 	// anthropicFinish, historically anthropic-route only, now ends a completed
 	// stream on every route with a finish event (WithFinishEvents); off by default.
 	anthropicFinish bool
+	// anthropicTools enables structured tools on the anthropic route (WithAnthropicTools).
+	anthropicTools bool
 }
 
 // Option customises the adapter.

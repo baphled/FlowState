@@ -40,6 +40,10 @@ func TestHookSetAnthropicBaseURL(u string) { codingBaseURL = u }
 
 // codingChatAnthropic performs one non-streaming anthropic-route turn.
 func (p *Provider) codingChatAnthropic(ctx context.Context, req *provider.ChatRequest) (*provider.ChatResponse, error) {
+	names, err := p.requestToolNames(req)
+	if err != nil {
+		return nil, err
+	}
 	body, err := p.codingPost(ctx, req, false)
 	if err != nil {
 		return nil, err
@@ -50,12 +54,25 @@ func (p *Provider) codingChatAnthropic(ctx context.Context, req *provider.ChatRe
 		return nil, fmt.Errorf("zai: decode coding response: %w", err)
 	}
 	var sb strings.Builder
+	out := &provider.ChatResponse{}
+	ids := make(map[string]bool)
 	for _, c := range resp.Content {
-		if c.Type == "text" {
+		switch {
+		case c.Type == "text":
 			sb.WriteString(c.Text)
+		case c.Type == "tool_use" && p.anthropicTools:
+			if err := claimToolID(ids, c.ID); err != nil {
+				return nil, err
+			}
+			call, err := newToolCall(c.ID, c.Name, c.Input, names)
+			if err != nil {
+				return nil, err
+			}
+			out.ToolCalls = append(out.ToolCalls, call)
 		}
 	}
-	return &provider.ChatResponse{Content: sb.String()}, nil
+	out.Content = sb.String()
+	return out, nil
 }
 
 // codingStreamAnthropic streams text deltas from content_block_delta events.
@@ -64,13 +81,18 @@ func (p *Provider) codingStreamAnthropic(ctx context.Context, req *provider.Chat
 	out := make(chan provider.StreamEvent)
 	go func() {
 		defer close(out)
+		names, err := p.requestToolNames(req)
+		if err != nil {
+			out <- provider.StreamEvent{Kind: provider.StreamEventError, Err: err}
+			return
+		}
 		body, err := p.codingPost(ctx, req, true)
 		if err != nil {
 			out <- provider.StreamEvent{Err: err}
 			return
 		}
 		defer body.Close()
-		if err := p.readAnthropicStream(ctx, body, out); err != nil && ctx.Err() == nil {
+		if err := p.readAnthropicStream(ctx, body, names, out); err != nil && ctx.Err() == nil {
 			out <- provider.StreamEvent{Kind: provider.StreamEventError, Err: err}
 		}
 	}()
@@ -78,13 +100,13 @@ func (p *Provider) codingStreamAnthropic(ctx context.Context, req *provider.Chat
 }
 
 // readAnthropicStream returns nil at message_stop, else the first failure.
-func (p *Provider) readAnthropicStream(ctx context.Context, body io.Reader, out chan<- provider.StreamEvent) error {
+func (p *Provider) readAnthropicStream(ctx context.Context, body io.Reader, names *toolNames, out chan<- provider.StreamEvent) error {
 	rd := bufio.NewReader(body)
-	stop := ""
+	st := &anthropicStream{pending: make(map[int]*pendingToolUse), ids: make(map[string]bool), names: names}
 	for {
 		line, rerr := rd.ReadString('\n')
 		if ev, ok := parseAnthropicEvent(line); ok {
-			done, err := p.handleAnthropicEvent(ctx, ev, &stop, out)
+			done, err := p.handleAnthropicEvent(ctx, ev, st, out)
 			if err != nil || done {
 				return err
 			}
@@ -111,7 +133,12 @@ func parseAnthropicEvent(line string) (anthropicEvent, bool) {
 
 // handleAnthropicEvent forwards text, remembers the stop reason, fails on an
 // error event and finishes on message_stop (done is true).
-func (p *Provider) handleAnthropicEvent(ctx context.Context, ev anthropicEvent, stop *string, out chan<- provider.StreamEvent) (bool, error) {
+func (p *Provider) handleAnthropicEvent(ctx context.Context, ev anthropicEvent, st *anthropicStream, out chan<- provider.StreamEvent) (bool, error) {
+	if p.anthropicTools {
+		if handled, err := st.toolEvent(ctx, ev, out); handled {
+			return false, err
+		}
+	}
 	switch ev.Type {
 	case "content_block_delta":
 		if ev.Delta.Text == "" {
@@ -120,15 +147,18 @@ func (p *Provider) handleAnthropicEvent(ctx context.Context, ev anthropicEvent, 
 		return false, sendAnthropic(ctx, out, provider.StreamEvent{Content: ev.Delta.Text})
 	case "message_delta":
 		if ev.Delta.StopReason != "" {
-			*stop = ev.Delta.StopReason
+			st.stop = ev.Delta.StopReason
 		}
 	case "error":
 		return false, fmt.Errorf("zai: stream error %s: %s", ev.Error.Type, ev.Error.Message)
 	case "message_stop":
+		if err := st.unfinished(); err != nil {
+			return true, err
+		}
 		if !p.anthropicFinish {
 			return true, nil
 		}
-		fin := provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: finishReason(*stop)}
+		fin := provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: finishReason(st.stop)}
 		return true, sendAnthropic(ctx, out, fin)
 	}
 	return false, nil
@@ -151,9 +181,19 @@ func finishReason(stopReason string) string {
 	case "", "end_turn", "stop_sequence":
 		return "stop"
 	case "max_tokens":
-		return "length"
+		return provider.FinishLength
+	case "tool_use":
+		return provider.FinishToolCalls
 	}
 	return stopReason
+}
+
+// requestToolNames is the wire name map of req, or nil when the route sends no tools.
+func (p *Provider) requestToolNames(req *provider.ChatRequest) (*toolNames, error) {
+	if !p.anthropicTools {
+		return nil, nil
+	}
+	return newToolNames(req)
 }
 
 // codingPost sends one request to the Anthropic-compatible endpoint; the host honours codingBase() so explicit config hosts still win.
@@ -165,12 +205,17 @@ func (p *Provider) codingPost(ctx context.Context, req *provider.ChatRequest, st
 	if model == "" {
 		model = p.model
 	}
-	wire := anthropicRequest{Model: model, MaxTokens: ClampMaxTokens(req.MaxTokens), Stream: stream, Messages: req.Messages}
+	wire := anthropicRequest{Model: model, MaxTokens: ClampMaxTokens(req.MaxTokens), Stream: stream}
+	msgs := req.Messages
 	if p.systemTopLevel {
-		wire.System, wire.Messages = splitSystem(req.Messages)
-		if wire.System != "" && len(wire.Messages) == 0 {
+		wire.System, msgs = splitSystem(req.Messages)
+		if wire.System != "" && len(msgs) == 0 {
 			return nil, ErrSystemOnly
 		}
+	}
+	wire.Messages = msgs
+	if p.anthropicTools {
+		wire.Messages, wire.Tools = anthropicToolsWire(msgs, req.Tools)
 	}
 	buf, err := json.Marshal(wire)
 	if err != nil {

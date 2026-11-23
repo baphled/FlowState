@@ -4,12 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/provider/anthropic"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/store"
 	"github.com/baphled/flowstate/internal/tool"
@@ -441,5 +448,115 @@ var _ = Describe("Execution loop finish reason", func() {
 		It("leaves the reason empty", func() {
 			Expect(out.Result.FinishReason).To(BeEmpty())
 		})
+	})
+})
+
+// anthropicLoopServer is a loopback fake Messages API: it answers the first
+// request with a streamed tool_use and every later one with a streamed answer,
+// and records each request body.
+type anthropicLoopServer struct {
+	mu     sync.Mutex
+	bodies []string
+	tool   string // the wire name of the tool the first reply calls
+	input  string // the JSON string literal holding the tool input
+}
+
+func (f *anthropicLoopServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	b, _ := io.ReadAll(r.Body)
+	f.mu.Lock()
+	f.bodies = append(f.bodies, string(b))
+	n := len(f.bodies)
+	f.mu.Unlock()
+	if n == 1 {
+		_, _ = io.WriteString(w, `data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use",`+
+			`"id":"toolu_01","name":"`+f.tool+`","input":{}}}`+"\n\n"+
+			`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":`+f.input+`}}`+"\n\n"+
+			`data: {"type":"content_block_stop","index":0}`+"\n\n"+
+			`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}`+"\n\n"+
+			`data: {"type":"message_stop"}`+"\n\n")
+		return
+	}
+	_, _ = io.WriteString(w, `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"all done"}}`+"\n\n"+
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}`+"\n\n"+
+		`data: {"type":"message_stop"}`+"\n\n")
+}
+
+func (f *anthropicLoopServer) body(i int) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if i >= len(f.bodies) {
+		return ""
+	}
+	return f.bodies[i]
+}
+
+var _ = Describe("Execution loop on the Anthropic API-key route", func() {
+	var (
+		srv *anthropicLoopServer
+		out execLoopOutcome
+	)
+
+	BeforeEach(func() {
+		srv = &anthropicLoopServer{tool: "echo", input: `"{\"message\":\"hi\"}"`}
+		ts := httptest.NewServer(srv)
+		DeferCleanup(ts.Close)
+		cfg := execLoopFixture(&execLoopStreamer{})
+		cfg.Streamer = anthropic.NewAPIKey("sk-ant-synthetic-test-key", ts.URL, nil)
+		out = runExec(context.Background(), cfg)
+	})
+
+	It("records the turn, the tool call, the tool result and the final answer in order", func() {
+		Expect(out.EventLog).To(Equal("turn.start,assistant.message,tool.call,tool.result,assistant.delta,assistant.message"))
+	})
+
+	It("counts two turns and one tool call with the final answer", func() {
+		Expect(out.Result).To(Equal(&ExecLoopResult{Turns: 2, ToolCalls: 1, FinalContent: "all done", FinishReason: "stop"}))
+	})
+
+	It("sends the tool result back to the model as a tool_result block", func() {
+		Expect(srv.body(1)).To(ContainSubstring(`"type":"tool_result","tool_use_id":"toolu_01"`))
+	})
+
+	It("advertises the allowlisted tool with an input_schema on the first request", func() {
+		Expect(srv.body(0)).To(ContainSubstring(`"name":"echo"`))
+	})
+})
+
+var _ = Describe("Execution loop with a dotted tool on the Anthropic API-key route", func() {
+	var (
+		srv *anthropicLoopServer
+		out execLoopOutcome
+	)
+
+	BeforeEach(func() {
+		dir := GinkgoT().TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "note.txt"), []byte("dotted-secret"), 0o600); err != nil {
+			panic(err)
+		}
+		srv = &anthropicLoopServer{tool: "fs_read", input: `"{\"path\":\"note.txt\"}"`}
+		ts := httptest.NewServer(srv)
+		DeferCleanup(ts.Close)
+		cfg := execLoopFixture(&execLoopStreamer{})
+		registry, err := NewSessionToolRegistry(dir)
+		execMust(err)
+		cfg.Registry, cfg.Allowlist = registry, []string{"fs.read"}
+		cfg.Streamer = anthropic.NewAPIKey("sk-ant-synthetic-test-key", ts.URL, nil)
+		out = runExec(context.Background(), cfg)
+	})
+
+	It("advertises the allowlisted tool as fs_read", func() {
+		Expect(srv.body(0)).To(ContainSubstring(`"name":"fs_read"`))
+	})
+
+	It("runs the tool the reply named by its wire name", func() {
+		Expect(srv.body(1)).To(ContainSubstring("dotted-secret"))
+	})
+
+	It("sends the call in the history as fs_read", func() {
+		Expect(srv.body(1)).To(ContainSubstring(`"name":"fs_read"`))
+	})
+
+	It("finishes the turn with the final answer", func() {
+		Expect(out.Result).To(Equal(&ExecLoopResult{Turns: 2, ToolCalls: 1, FinalContent: "all done", FinishReason: "stop"}))
 	})
 })

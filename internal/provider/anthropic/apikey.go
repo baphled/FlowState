@@ -4,8 +4,9 @@ package anthropic
 // api_key). It is a thin adapter over the Anthropic Messages wire client that
 // already lives in internal/provider/zai (anthropic coding route): that client
 // sends x-api-key, anthropic-version and content headers only. This file adds
-// what the Anthropic API needs on top: top-level system prompt, a finish event,
-// default model, a finish event carrying the stop reason, redacted
+// what the Anthropic API needs on top: top-level system prompt, structured tools
+// (the subscription route still refuses them), default model, a finish event
+// carrying the stop reason, redacted
 // anthropic-named errors, and a client that never follows redirects.
 
 import (
@@ -34,7 +35,7 @@ func NewAPIKey(key, baseURL string, client *http.Client) *APIKey {
 	}
 	return &APIKey{key: key, client: zai.New(key,
 		zai.WithCoding(), zai.WithCodingRoute("anthropic"), zai.WithBaseURL(baseURL),
-		zai.WithModel(APIKeyModel), zai.WithAnthropicSystem(), zai.WithAnthropicFinish(),
+		zai.WithModel(APIKeyModel), zai.WithAnthropicSystem(), zai.WithAnthropicFinish(), zai.WithAnthropicTools(),
 		zai.WithClient(client))}
 }
 
@@ -64,9 +65,6 @@ func (e *routeError) Unwrap() error { return e.cause }
 
 // Chat performs one non-streaming turn.
 func (a *APIKey) Chat(ctx context.Context, req *provider.ChatRequest) (*provider.ChatResponse, error) {
-	if err := refuseTools(req); err != nil {
-		return nil, err
-	}
 	resp, err := a.client.Chat(ctx, req)
 	if err != nil {
 		return nil, a.wrapErr(err)
@@ -89,10 +87,6 @@ func (a *APIKey) Stream(ctx context.Context, req *provider.ChatRequest) <-chan p
 				return false
 			}
 		}
-		if err := refuseTools(req); err != nil {
-			send(provider.StreamEvent{Kind: provider.StreamEventError, Err: err})
-			return
-		}
 		for ev := range a.client.Stream(ctx, req) {
 			if ev.Err != nil {
 				send(provider.StreamEvent{Kind: provider.StreamEventError, Err: a.wrapErr(ev.Err)})
@@ -102,20 +96,18 @@ func (a *APIKey) Stream(ctx context.Context, req *provider.ChatRequest) <-chan p
 				send(ev)
 				return
 			}
+			if ev.Kind == provider.StreamEventToolCall {
+				if !send(ev) {
+					return
+				}
+				continue
+			}
 			if ev.Content != "" && !send(provider.StreamEvent{Kind: provider.StreamEventText, Content: ev.Content}) {
 				return
 			}
 		}
 	}()
 	return out
-}
-
-// refuseTools returns ErrUnsupportedTools, as the OAuth route does.
-func refuseTools(req *provider.ChatRequest) error {
-	if req == nil {
-		return nil
-	}
-	return rejectTools(req)
 }
 
 // wrapErr renames client errors to the anthropic provider and redacts the key.
@@ -132,6 +124,10 @@ func (a *APIKey) wrapErr(err error) error {
 		if errors.Is(err, cause) {
 			return &routeError{msg: msg, cause: cause}
 		}
+	}
+	var protocol *zai.ToolProtocolError
+	if errors.As(err, &protocol) {
+		return &routeError{msg: msg, cause: protocol}
 	}
 	return &routeError{msg: msg}
 }
