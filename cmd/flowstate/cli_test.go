@@ -12,12 +12,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sort"
 	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -1401,5 +1403,226 @@ var _ = Describe("swarm run", func() {
 		It("names the failed gate", func() {
 			Expect(r.stderr).To(ContainSubstring("failed gates [bad]"))
 		})
+	})
+})
+
+var _ = DescribeTable("terminalSafeJSON",
+	func(in any, want string) {
+		b, err := terminalSafeJSON(in)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(b)).To(Equal(want))
+	},
+	Entry("DEL", "a\x7fb", `"a\u007fb"`),
+	Entry("U+009B", "a\u009bb", `"a\u009bb"`),
+	Entry("U+0085", "a\u0085b", `"a\u0085b"`),
+	Entry("U+202E", "a\u202eb", `"a\u202eb"`),
+	Entry("U+200B", "a\u200bb", `"a\u200bb"`),
+	Entry("U+FEFF", "a\ufeffb", `"a\ufeffb"`),
+	Entry("U+E0041 tag character as a surrogate pair", "a\U000E0041b", `"a\udb40\udc41b"`),
+	Entry("U+1D173 astral format character as a surrogate pair", "a\U0001D173b", `"a\ud834\udd73b"`),
+	Entry("U+2028, which encoding/json already escapes", "a\u2028b", `"a\u2028b"`),
+	Entry("a plain string", "plain", `"plain"`),
+	Entry("invalid UTF-8 inside a raw JSON payload", json.RawMessage("\"a\x9bb\xffc\""), `"a\ufffdb\ufffdc"`),
+	Entry("a genuine U+FFFD is kept as is", "a\ufffdb", "\"a\ufffdb\""),
+	Entry("accented and CJK letters", "é日本語", `"é日本語"`),
+)
+
+// allCfAndControlRunes lists every unicode.Cf and unicode.Cc rune.
+func allCfAndControlRunes() string {
+	var sb strings.Builder
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			sb.WriteRune(r)
+		}
+	}
+	return sb.String()
+}
+
+var _ = Describe("terminalSafeJSON fidelity", func() {
+	It("decodes every control and format rune back to the original string", func() {
+		in := allCfAndControlRunes()
+		b, err := terminalSafeJSON(in)
+		if err != nil {
+			panic(err)
+		}
+		var out string
+		if err := json.Unmarshal(b, &out); err != nil {
+			panic(err)
+		}
+		Expect(out).To(Equal(in))
+	})
+
+	It("matches json.Marshal byte for byte on ASCII", func() {
+		var sb strings.Builder
+		for r := rune(0); r < 0x80; r++ {
+			if r != 0x7f {
+				sb.WriteRune(r)
+			}
+		}
+		want, err := json.Marshal(sb.String())
+		if err != nil {
+			panic(err)
+		}
+		got, err := terminalSafeJSON(sb.String())
+		if err != nil {
+			panic(err)
+		}
+		Expect(got).To(Equal(want))
+	})
+})
+
+var _ = Describe("terminal-safe output wiring", func() {
+	const hostile = "a\u202eb\x7fc"
+
+	It("writeJSON escapes a bidi override in session events stdout", func() {
+		nr := runCLINew("--provider", "p", "--model", "m", "--task", hostile)
+		if nr.exit != 0 {
+			panic("session new failed: " + nr.stderr)
+		}
+		ev := runCLIEvents(decodeNew(nr.stdout).ID)
+		Expect(ev.stdout).To(ContainSubstring(`a\u202eb`))
+	})
+
+	It("writeJSON escapes DEL in session events stdout", func() {
+		nr := runCLINew("--provider", "p", "--model", "m", "--task", hostile)
+		if nr.exit != 0 {
+			panic("session new failed: " + nr.stderr)
+		}
+		ev := runCLIEvents(decodeNew(nr.stdout).ID)
+		Expect(ev.stdout).To(ContainSubstring(`b\u007fc`))
+	})
+
+	It("writeError escapes a bidi override on stderr", func() {
+		f, err := os.CreateTemp(GinkgoT().TempDir(), "stderr")
+		if err != nil {
+			panic(err)
+		}
+		defer func() { _ = f.Close() }()
+		writeError(f, errors.New(hostile))
+		b, err := os.ReadFile(f.Name())
+		if err != nil {
+			panic(err)
+		}
+		Expect(string(b)).To(ContainSubstring(`a\u202eb`))
+	})
+})
+
+var _ = Describe("replay transcript", func() {
+	const transcript = "{\"payload\":\"a\u202eb\x7fc\U000E0041\"}\n"
+
+	It("leaves a regular file's bytes untouched", func() {
+		f, err := os.CreateTemp(GinkgoT().TempDir(), "out")
+		if err != nil {
+			panic(err)
+		}
+		defer func() { _ = f.Close() }()
+		Expect(string(transcriptFor(f, []byte(transcript)))).To(Equal(transcript))
+	})
+
+	It("leaves a pipe's bytes untouched", func() {
+		r, w, err := os.Pipe()
+		if err != nil {
+			panic(err)
+		}
+		defer func() { _ = r.Close(); _ = w.Close() }()
+		Expect(string(transcriptFor(w, []byte(transcript)))).To(Equal(transcript))
+	})
+
+	It("escapes control and format characters for a character device", func() {
+		f, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+		if err != nil {
+			panic(err)
+		}
+		defer func() { _ = f.Close() }()
+		want := "{\"payload\":\"a\\u202eb\\u007fc\\udb40\\udc41\"}\n"
+		Expect(string(transcriptFor(f, []byte(transcript)))).To(Equal(want))
+	})
+
+	It("writes the raw transcript through a pipe from the replay command", func() {
+		nr := runCLINew("--provider", "p", "--model", "m", "--task", "a\u202eb")
+		if nr.exit != 0 {
+			panic("session new failed: " + nr.stderr)
+		}
+		rr := runArgv([]string{"replay", decodeNew(nr.stdout).ID, "--db", dbFor()})
+		Expect(rr.stdout).To(ContainSubstring("a\u202eb"))
+	})
+
+	It("treats a file that cannot be inspected as a terminal", func() {
+		f, err := os.CreateTemp(GinkgoT().TempDir(), "closed")
+		if err != nil {
+			panic(err)
+		}
+		if err := f.Close(); err != nil {
+			panic(err)
+		}
+		Expect(isTerminal(f)).To(BeTrue())
+	})
+
+	Describe("the replay command with a terminal stand-in", func() {
+		var sessionID string
+
+		// replayToFile runs the real replay command with stdout a temp file.
+		replayToFile := func() string {
+			out, err := os.CreateTemp(GinkgoT().TempDir(), "replay")
+			if err != nil {
+				panic(err)
+			}
+			defer func() { _ = out.Close() }()
+			errf, err := os.CreateTemp(GinkgoT().TempDir(), "replay-err")
+			if err != nil {
+				panic(err)
+			}
+			defer func() { _ = errf.Close() }()
+			if code := dispatch([]string{"replay", sessionID, "--db", dbFor()}, out, errf); code != 0 {
+				panic("replay failed")
+			}
+			b, err := os.ReadFile(out.Name())
+			if err != nil {
+				panic(err)
+			}
+			return string(b)
+		}
+
+		setTerminal := func(v bool) {
+			orig := stdoutIsTerminal
+			DeferCleanup(func() { stdoutIsTerminal = orig })
+			stdoutIsTerminal = func(*os.File) bool { return v }
+		}
+
+		BeforeEach(func() {
+			nr := runCLINew("--provider", "p", "--model", "m", "--task", "a\u202eb\x7fc")
+			if nr.exit != 0 {
+				panic("session new failed: " + nr.stderr)
+			}
+			sessionID = decodeNew(nr.stdout).ID
+		})
+
+		It("writes a bidi override escaped when stdout is a terminal", func() {
+			setTerminal(true)
+			Expect(replayToFile()).To(ContainSubstring(`a\u202eb`))
+		})
+
+		It("writes DEL escaped when stdout is a terminal", func() {
+			setTerminal(true)
+			Expect(replayToFile()).To(ContainSubstring(`b\u007fc`))
+		})
+
+		It("writes the bidi override raw when stdout is not a terminal", func() {
+			setTerminal(false)
+			Expect(replayToFile()).To(ContainSubstring("a\u202eb"))
+		})
+
+		It("restores the terminal check after a spec replaces it", func() {
+			Expect(reflect.ValueOf(stdoutIsTerminal).Pointer()).To(Equal(reflect.ValueOf(isTerminal).Pointer()))
+		})
+	})
+
+	It("replaces invalid UTF-8 in a replay line with \\ufffd on a terminal", func() {
+		f, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+		if err != nil {
+			panic(err)
+		}
+		defer func() { _ = f.Close() }()
+		Expect(string(transcriptFor(f, []byte("{\"p\":\"a\x9bb\"}\n")))).To(Equal("{\"p\":\"a\\ufffdb\"}\n"))
 	})
 })

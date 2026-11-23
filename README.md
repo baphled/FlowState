@@ -88,6 +88,12 @@ flowstate session new --provider anthropic --model haiku --task "Say hello"
 | `agents validate <file...>` | Validate profile files: one `{path, ok, error?}` per file; exit 4 if any is invalid |
 | `serve` | Start the HTTP API |
 
+`replay <id>` writes its raw JSONL transcript to files and pipes, because each event's `payload_sha256` hashes the
+payload bytes, and escapes control and format characters (as `\uXXXX`) only when writing to a terminal. All other
+command-line JSON output is always terminal-safe. `session events` and `session run` embed each payload as JSON that
+`encoding/json` re-compacts, so their output bytes already differ from the stored payload bytes; verify with `replay`,
+not by re-hashing that output.
+
 Common flags: `--db <path>` and `--config <path>`. Output is JSON; errors are a `{code, message}` object on
 standard error. The machine-readable shapes are in [schemas/cli.json](schemas/cli.json).
 
