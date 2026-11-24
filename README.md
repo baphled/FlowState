@@ -122,7 +122,8 @@ You review. You do not edit. Begin your final message with VERDICT: pass or VERD
   plain decimal integer; a second YAML document or content after `...`; a control, format or separator character
   (DEL, C1, ZWSP, RLO, U+2028 and the like) in `description` or `model` (a tab is fine); a block scalar (`>` or `|`),
   because `description` and `model` are one line; NUL, ESC, DEL or C1 characters in the body (a zero-width joiner is
-  allowed there); and, under `--agents both`, a name in both the user and project directories.
+  allowed there); a description over 500 characters; and, under `--agents both`, a name in both the user and project
+  directories.
 - A null or empty value counts as omitted (a null `tools` entry is refused). `model` is trimmed and at most 200
   characters.
 - `agents validate` takes only file names and `--json`: any other argument starting with `-` is a usage error (exit 2).

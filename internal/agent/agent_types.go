@@ -36,6 +36,8 @@ const (
 	MaxFileBytes = 64 << 10
 	// MaxModelChars is the longest model name a profile may set.
 	MaxModelChars = 200
+	// MaxDescriptionChars is the longest description a profile may set.
+	MaxDescriptionChars = 500
 )
 
 // Profile is one validated agent profile.
