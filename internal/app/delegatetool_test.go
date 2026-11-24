@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -143,8 +144,22 @@ func badArgEntries() []TableEntry {
 		Entry("extra JSON after the object", `{"agent":"reviewer","task":"t"} {}`, "extra data"),
 		Entry("arguments that are not an object", `"reviewer"`, "invalid arguments"),
 		Entry("empty arguments", ``, "invalid arguments"),
-		Entry("parallel tasks", `{"tasks":[{"agent":"reviewer","task":"t"}]}`, "tasks and resume are not available yet"),
-		Entry("a resume", `{"resume":"abc"}`, "tasks and resume are not available yet"),
+		Entry("empty tasks", `{"tasks":[]}`, "tasks must not be empty"),
+		Entry("null tasks", `{"tasks":null}`, "tasks must not be empty"),
+		Entry("tasks that are not an array", `{"tasks":"x"}`, "invalid tasks"),
+		Entry("nine tasks", tasksJSON(9), "too many tasks: 9, the limit is 8"),
+		Entry("tasks with agent and task", `{"agent":"reviewer","task":"t","tasks":[{"agent":"reviewer","task":"t"}]}`,
+			"tasks cannot be combined"),
+		Entry("tasks with a cwd", `{"cwd":".","tasks":[{"agent":"reviewer","task":"t"}]}`, "tasks cannot be combined"),
+		Entry("tasks with a resume", `{"resume":"abc","tasks":[{"agent":"reviewer","task":"t"}]}`, "resume is not available yet"),
+		Entry("a task entry with an unknown field", `{"tasks":[{"agent":"reviewer","task":"t","x":1}]}`, "unknown field"),
+		Entry("a task entry without an agent", `{"tasks":[{"agent":"reviewer","task":"t"},{"task":"t"}]}`, "tasks[1]: agent is required"),
+		Entry("a blank task in entry 2", `{"tasks":[{"agent":"reviewer","task":"t"},{"agent":"reviewer","task":"t"},`+
+			`{"agent":"reviewer","task":" "}]}`, "tasks[2]: task is required"),
+		Entry("a NUL in an entry's task", `{"tasks":[{"agent":"reviewer","task":"a\u0000b"}]}`, "tasks[0]: task must not contain NUL"),
+		Entry("an unknown agent in entry 1", `{"tasks":[{"agent":"reviewer","task":"t"},{"agent":"ghost","task":"t"}]}`,
+			`tasks[1]: unknown agent "ghost"; available agents: reviewer, writer`),
+		Entry("a resume", `{"resume":"abc"}`, "resume is not available yet"),
 		Entry("an unknown agent", `{"agent":"ghost","task":"t"}`, `unknown agent "ghost"; available agents: reviewer, writer`),
 		Entry("a cwd outside the parent's", `{"agent":"reviewer","task":"t","cwd":"../"}`, "inside the parent's"),
 		Entry("a task with NUL", `{"agent":"reviewer","task":"a\u0000b"}`, "NUL, ESC or C1"),
@@ -153,6 +168,15 @@ func badArgEntries() []TableEntry {
 		Entry("a task with the highest C1 control", `{"agent":"reviewer","task":"a\u009fb"}`, "NUL, ESC or C1"),
 		Entry("a task with a C1 control", `{"agent":"reviewer","task":"a\u009bb"}`, "NUL, ESC or C1"),
 	}
+}
+
+// tasksJSON is a tasks argument holding n valid entries.
+func tasksJSON(n int) string {
+	entries := make([]string, n)
+	for i := range entries {
+		entries[i] = `{"agent":"reviewer","task":"task-` + strconv.Itoa(i) + `"}`
+	}
+	return `{"tasks":[` + strings.Join(entries, ",") + `]}`
 }
 
 func hasTypes(want ...string) gtypes.GomegaMatcher { return Equal(want) }
@@ -177,8 +201,14 @@ var _ = Describe("The delegate tool", func() {
 			Expect(newToolFixture().tool.Definition().Description).To(ContainSubstring(
 				"Available agents:\n- reviewer: reviews\n- writer: writes"))
 		})
-		It("requires agent and task", func() {
-			Expect(string(newToolFixture().tool.Definition().Parameters)).To(ContainSubstring(`"required":["agent","task"]`))
+		It("bounds tasks at 8 entries in its schema", func() {
+			Expect(string(newToolFixture().tool.Definition().Parameters)).To(ContainSubstring(`"tasks":{"type":"array","minItems":1,"maxItems":8`))
+		})
+		It("requires agent and task in each tasks entry", func() {
+			Expect(string(newToolFixture().tool.Definition().Parameters)).To(ContainSubstring(`"required":["agent","task"],"additionalProperties":false}}}`))
+		})
+		It("says up to 8 tasks run 4 at a time", func() {
+			Expect(newToolFixture().tool.Definition().Description).To(ContainSubstring("up to 8 entries"))
 		})
 		It("says no agent is available when no profile was loaded", func() {
 			def := NewDelegateTool(DelegateToolConfig{}).Definition()

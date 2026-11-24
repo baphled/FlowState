@@ -75,6 +75,9 @@ type DelegateRequest struct {
 	// the parent's event writer (the store allows one per session); nil opens a
 	// writer on the parent for the append.
 	ParentEvents tool.EventSink
+	// BatchIndex is the entry's position in a parallel `tasks` call; when set the
+	// receipt carries it as "index". Nil for a single delegation.
+	BatchIndex *int
 }
 
 // DelegateResult is the outcome the caller turns into tool output. A failed or

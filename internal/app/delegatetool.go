@@ -30,11 +30,14 @@ const (
 	delegateListMax = 32
 )
 
-// delegateSchema is the JSON schema of the delegate arguments. `tasks` and
-// `resume` are deliberately absent: they are not available yet.
+// delegateSchema is the JSON schema of the delegate arguments: either agent and
+// task (one child) or tasks (up to 8, exclusive with the others). `resume` is
+// deliberately absent: it is not available yet.
 const delegateSchema = `{"type":"object","properties":{"agent":{"type":"string","minLength":1},` +
-	`"task":{"type":"string","minLength":1},"cwd":{"type":"string"}},"required":["agent","task"],` +
-	`"additionalProperties":false}`
+	`"task":{"type":"string","minLength":1},"cwd":{"type":"string"},` +
+	`"tasks":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"object","properties":{` +
+	`"agent":{"type":"string","minLength":1},"task":{"type":"string","minLength":1},"cwd":{"type":"string"}},` +
+	`"required":["agent","task"],"additionalProperties":false}}},"additionalProperties":false}`
 
 // NewDelegateTool builds the delegate tool for one parent run. The profiles are
 // copied and kept in name order, so the description is stable.
@@ -71,8 +74,11 @@ func (*DelegateTool) Name() string { return agent.DelegateTool }
 // agent is available.
 func (t *DelegateTool) Definition() provider.ToolDefinition {
 	var b strings.Builder
-	b.WriteString("Delegate one task to a child agent that runs in its own session with its own tools and turn cap, " +
-		"and return its final message. A failed or cancelled child comes back as an error you can act on.")
+	b.WriteString("Delegate one task (agent and task) to a child agent that runs in its own session with its own tools " +
+		"and turn cap, and return its final message. A failed or cancelled child comes back as an error you can act on. " +
+		"Or pass tasks, up to 8 entries of agent, task and optional cwd (not with agent or task): they run 4 at a time " +
+		"and return {results: [...]} in input order; a child that did not complete is an entry with its status and " +
+		"reason, not an error.")
 	if len(t.cfg.Profiles) == 0 {
 		b.WriteString("\nNo agents are available: no profile was loaded.")
 	} else {
@@ -97,6 +103,9 @@ func (t *DelegateTool) Invoke(ctx context.Context, raw json.RawMessage) (any, er
 	args, err := parseDelegateArgs(raw)
 	if err != nil {
 		return nil, err
+	}
+	if args.batch != nil {
+		return t.invokeParallel(ctx, args.batch)
 	}
 	profile, err := t.profile(args.Agent)
 	if err != nil {
@@ -135,8 +144,9 @@ func (t *DelegateTool) profile(name string) (agent.Profile, error) {
 }
 
 // parseDelegateArgs decodes the argument object strictly: unknown fields, extra
-// JSON, a missing agent or a blank task are errors, and so are `tasks` and
-// `resume`, which this build does not offer.
+// JSON, a missing agent or a blank task are errors, and so is `resume`, which
+// this build does not offer. `tasks` is decoded and validated whole, so a bad
+// entry refuses the call before any child starts.
 func parseDelegateArgs(raw json.RawMessage) (delegateArgs, error) {
 	var args delegateArgs
 	dec := json.NewDecoder(bytes.NewReader(raw))
@@ -148,19 +158,54 @@ func parseDelegateArgs(raw json.RawMessage) (delegateArgs, error) {
 		return args, errors.New("invalid arguments: extra data after the JSON object")
 	}
 	switch {
-	case args.Tasks != nil, args.Resume != nil:
-		return args, errors.New("tasks and resume are not available yet: " +
-			"this build runs one child per call with agent, task and optional cwd")
-	case args.Agent == "":
-		return args, errors.New("agent is required")
-	case strings.TrimSpace(args.Task) == "":
-		return args, errors.New("task is required and must not be empty")
-	case len(args.Task) > delegateTaskMaxBytes:
-		return args, fmt.Errorf("task is too long: %d bytes, the limit is %d", len(args.Task), delegateTaskMaxBytes)
-	case strings.IndexFunc(args.Task, isForbiddenTaskRune) >= 0:
-		return args, errors.New("task must not contain NUL, ESC or C1 control characters")
+	case args.Resume != nil:
+		return args, errors.New("resume is not available yet: this build runs one child per call with agent, task " +
+			"and optional cwd, or up to 8 with tasks")
+	case args.Tasks != nil:
+		return parseDelegateBatch(args)
+	}
+	return args, validateDelegateTask(args.Agent, args.Task)
+}
+
+// parseDelegateBatch decodes and validates the `tasks` array: it is exclusive
+// with agent, task and cwd, holds 1 to delegateTasksMax entries, and every entry
+// passes the single form's checks; an error names the entry's index.
+func parseDelegateBatch(args delegateArgs) (delegateArgs, error) {
+	if args.Agent != "" || args.Task != "" || args.Cwd != "" {
+		return args, errors.New("tasks cannot be combined with agent, task or cwd")
+	}
+	dec := json.NewDecoder(bytes.NewReader(args.Tasks))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&args.batch); err != nil {
+		return args, fmt.Errorf("invalid tasks: %w", err)
+	}
+	switch {
+	case len(args.batch) == 0:
+		return args, errors.New("tasks must not be empty")
+	case len(args.batch) > delegateTasksMax:
+		return args, fmt.Errorf("too many tasks: %d, the limit is %d; no child was started", len(args.batch), delegateTasksMax)
+	}
+	for i, e := range args.batch {
+		if err := validateDelegateTask(e.Agent, e.Task); err != nil {
+			return args, fmt.Errorf("tasks[%d]: %w", i, err)
+		}
 	}
 	return args, nil
+}
+
+// validateDelegateTask checks the agent name and the task text of one child.
+func validateDelegateTask(agentName, task string) error {
+	switch {
+	case agentName == "":
+		return errors.New("agent is required")
+	case strings.TrimSpace(task) == "":
+		return errors.New("task is required and must not be empty")
+	case len(task) > delegateTaskMaxBytes:
+		return fmt.Errorf("task is too long: %d bytes, the limit is %d", len(task), delegateTaskMaxBytes)
+	case strings.IndexFunc(task, isForbiddenTaskRune) >= 0:
+		return errors.New("task must not contain NUL, ESC or C1 control characters")
+	}
+	return nil
 }
 
 // isForbiddenTaskRune reports NUL, ESC and the C1 controls, which a terminal

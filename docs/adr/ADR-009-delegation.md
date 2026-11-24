@@ -79,7 +79,11 @@ from copying the agreed design and adding only what FlowState already has.
 A completed single child returns JSON, `{child, status, turns, text}`: `text` is the child's final message, capped at
 50 KB / 2000 lines with a truncation notice, and `turns` stands in for tokens until child token accounting lands (as in
 the receipt). A child that did not complete is marked `is_error` and carries
-its reason. Parallel results are one block per task, each with its own cap.
+its reason. Parallel results are one block per task, each with its own cap: a call with `tasks` returns one JSON object,
+`{results: [{index, agent, child, status, turns, text?, reason?}, ...]}`, in input order, in which a failed, cancelled
+or refused child is an entry with its status and reason (not an `is_error` result, so the model keeps its siblings'
+results); only invalid arguments, validated before any child starts, and infrastructure failures are errors.
+The cap of 4 running children applies per call: the calls of one turn are executed one after another.
 
 ### Agent profiles
 
@@ -123,7 +127,7 @@ You review. You do not edit. Begin your final message with VERDICT: pass or VERD
 
 | # | Decision |
 |---|---|
-| D1 | Order and parallelism are the model's: several `delegate` calls in a turn run concurrently, capped at 4 running and 8 per call. There is no engine scheduler and no dependency graph. |
+| D1 | Order and parallelism are the model's: the tasks of one `delegate` call run concurrently, capped at 4 running and 8 per call (the calls of a turn run in sequence). There is no engine scheduler and no dependency graph. |
 | D2 | The parent session is the coordinator and is a model with the `delegate` tool. |
 | D3 | Profiles are declarative files as above; an unknown field, a tool name that is not registered, or a missing `name` or `description` fails the load. |
 | D4 | The profile body is the child's system prompt. |
@@ -160,7 +164,8 @@ None of these exists today; each is part of a packet in the plan, and the ADR do
 
 - A `SystemPrompt` field on `ExecLoopConfig`, delivered as a system message (see Agent profiles).
 - Concurrent tool calls: `executeCalls` runs calls one after another, so several `delegate` calls in one turn running at
-  once (D1) is new. The cap of 4 running and 8 per call applies per parent, so two overlapping calls share it.
+  once (D1) is new. The cap of 4 running and 8 per call applies per call: the loop still executes a turn's calls one
+  after another, so concurrency exists only inside one `delegate` call.
 - A working directory for the child that defaults to the parent's (D9): the registry's workdir today is a per-session
   directory beside the database.
 - Consumption recorded against the parent's reservation, a token or turn count in the result, and settlement on
