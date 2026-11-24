@@ -30,7 +30,8 @@ import (
 // terminal parent, depth, `delegate` among the tools, an unknown tool, a
 // working directory outside the parent's) and an infrastructure failure are
 // errors. A child that reaches MaxTurns while the model still asks for tools
-// completes today (the loop is unchanged; ADR-009 D13 is a later packet).
+// fails with max_turns (ADR-009 D13): its session is failed, and like any
+// failed child it comes back as a result with a nil error.
 // The child runs under ctx: a cancelled ctx cancels it with ctx's reason, and
 // the settlement runs on a detached context.
 func RunDelegatedChild(ctx context.Context, req DelegateRequest) (DelegateResult, error) {
@@ -262,6 +263,9 @@ func finishDelegatedChild(ctx context.Context, req *DelegateRequest, child *stor
 		errs = append(errs, completeExecLoopRun(dctx, req.Store, child.ID, res.FinishReason))
 	default:
 		out.Status, out.Reason = DelegateStatusFailed, runErr.Error()
+		if errors.Is(runErr, ErrMaxTurns) {
+			out.Reason = CodeMaxTurns
+		}
 		errs = append(errs, failDelegatedChild(dctx, req.Store, child.ID, runErr))
 		if !delegateFailureIsChild(ctx, runErr) {
 			errs = append(errs, runErr)
@@ -276,12 +280,12 @@ func finishDelegatedChild(ctx context.Context, req *DelegateRequest, child *stor
 }
 
 // delegateFailureIsChild reports whether a loop error is the child's own failure
-// (a provider failure, an exhausted budget or an expired deadline), which the
+// (a provider failure, an exhausted budget, the turn limit or an expired deadline), which the
 // model sees, rather than an infrastructure failure, which the caller sees. A
 // deadline can expire inside a store read before the provider is reached, so an
 // expired ctx counts even when the error does not wrap the deadline.
 func delegateFailureIsChild(ctx context.Context, err error) bool {
-	return errors.Is(err, ErrProvider) || errors.Is(err, ErrExecLoopBudget) ||
+	return errors.Is(err, ErrProvider) || errors.Is(err, ErrExecLoopBudget) || errors.Is(err, ErrMaxTurns) ||
 		errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded)
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -424,8 +425,8 @@ var _ = Describe("Execution loop finish reason", func() {
 		})
 	})
 
-	// A run cut off at MaxTurns records the last turn's reason, which is
-	// tool_calls, on a completed turn.end.
+	// A run cut off at MaxTurns still reports the last turn's reason, which is
+	// tool_calls; the run itself ends failed with ErrMaxTurns.
 	Context("when the run ends at MaxTurns still asking for tools", func() {
 		BeforeEach(func() {
 			tools := provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: provider.FinishToolCalls}
@@ -629,5 +630,157 @@ var _ = Describe("Execution loop with a dotted tool on the Anthropic API-key rou
 
 	It("finishes the turn with the final answer", func() {
 		Expect(out.Result).To(Equal(&ExecLoopResult{Turns: 2, ToolCalls: 1, FinalContent: "all done", FinishReason: "stop"}))
+	})
+})
+
+// toolsEveryTurn scripts n turns that each say "turn i" and ask for an echo.
+func toolsEveryTurn(n int) [][]provider.StreamEvent {
+	turns := make([][]provider.StreamEvent, 0, n)
+	for i := 1; i <= n; i++ {
+		id := fmt.Sprintf("c%d", i)
+		turns = append(turns, []provider.StreamEvent{provText(fmt.Sprintf("turn %d", i)), provCall(echoCall(id)), provFinish()})
+	}
+	return turns
+}
+
+// eventsOf replays the seed session's events.
+func eventsOf(cfg ExecLoopConfig) []store.RecordedEvent {
+	events, err := cfg.Store.Replay(context.Background(), cfg.Session.ID)
+	execMust(err)
+	return events
+}
+
+// finalPayloadField reads one field of the last recorded event's payload.
+func finalPayloadField(cfg ExecLoopConfig, field string) any {
+	events := eventsOf(cfg)
+	return payloadMap(events[len(events)-1].PayloadJSON)[field]
+}
+
+// cancelOnStream cancels its context when the n-th request arrives.
+type cancelOnStream struct {
+	execLoopStreamer
+	n      int
+	cancel context.CancelFunc
+}
+
+func (c *cancelOnStream) Stream(ctx context.Context, req *provider.ChatRequest) <-chan provider.StreamEvent {
+	if len(c.reqs)+1 == c.n {
+		c.cancel()
+	}
+	return c.execLoopStreamer.Stream(ctx, req)
+}
+
+var _ = Describe("The turn limit of the execution loop", func() {
+	var (
+		ctx context.Context
+		cfg ExecLoopConfig
+		res *ExecLoopResult
+		err error
+	)
+
+	BeforeEach(func() { ctx = context.Background() })
+
+	Context("when the model asks for tools on every turn and MaxTurns is 3", func() {
+		BeforeEach(func() {
+			cfg = execLoopFixture(&execLoopStreamer{turns: toolsEveryTurn(4)})
+			cfg.MaxTurns = 3
+			res, err = RunExecLoop(ctx, cfg)
+		})
+
+		It("fails with ErrMaxTurns", func() { Expect(err).To(MatchError(ErrMaxTurns)) })
+		It("classifies the error as max_turns", func() { Expect(ErrorCode(err)).To(Equal("max_turns")) })
+		It("marks the session failed", func() { Expect(statusOf(cfg.Store, cfg.Session.ID)).To(Equal("failed")) })
+		It("ends the log with the provider.error event, before the status", func() {
+			Expect(lastType(cfg.Store, cfg.Session.ID)).To(Equal(TypeProviderError))
+		})
+		It("records reason max_turns on the final event", func() {
+			Expect(finalPayloadField(cfg, "reason")).To(Equal("max_turns"))
+		})
+		It("marks the final event terminal", func() { Expect(finalPayloadField(cfg, "terminal")).To(BeTrue()) })
+		It("runs exactly 3 turns", func() { Expect(res.Turns).To(Equal(int64(3))) })
+		It("keeps the last assistant text as the partial result", func() { Expect(res.FinalContent).To(Equal("turn 3")) })
+		It("records the last turn's tool result", func() {
+			Expect(annotatedCallIDs(ctx, cfg)).To(ContainElement("c3"))
+		})
+		It("leaves a history that replays with every call answered", func() {
+			history := []provider.Message{}
+			execMust(replayInto(ctx, cfg.Store, cfg.Session.ID, &history))
+			Expect(history).To(HaveLen(7))
+		})
+		It("is terminal, so the session cannot be run or closed again", func() {
+			_, lerr := session.Close(ctx, cfg.Store, cfg.Session.ID)
+			Expect(lerr).To(MatchError(session.ErrTerminal))
+		})
+	})
+
+	It("fails MaxTurns 1 with a tool call", func() {
+		cfg = execLoopFixture(&execLoopStreamer{turns: toolsEveryTurn(1)})
+		cfg.MaxTurns = 1
+		_, err = RunExecLoop(ctx, cfg)
+		Expect(err).To(MatchError(ErrMaxTurns))
+	})
+
+	It("completes a model that answers on its last allowed turn", func() {
+		turns := append(toolsEveryTurn(2), []provider.StreamEvent{provText("answer"), provFinish()})
+		cfg = execLoopFixture(&execLoopStreamer{turns: turns})
+		cfg.MaxTurns = 3
+		_, err = RunExecLoop(ctx, cfg)
+		Expect(err).To(Succeed())
+	})
+
+	It("leaves the session unfailed for a model that answers on its last allowed turn", func() {
+		turns := append(toolsEveryTurn(2), []provider.StreamEvent{provText("answer"), provFinish()})
+		cfg = execLoopFixture(&execLoopStreamer{turns: turns})
+		cfg.MaxTurns = 3
+		_, _ = RunExecLoop(ctx, cfg)
+		Expect(statusOf(cfg.Store, cfg.Session.ID)).To(Equal("active"))
+	})
+
+	It("completes a model that answers earlier", func() {
+		cfg = execLoopFixture(&execLoopStreamer{turns: [][]provider.StreamEvent{{provText("quick"), provFinish()}}})
+		cfg.MaxTurns = 3
+		_, err = RunExecLoop(ctx, cfg)
+		Expect(err).To(Succeed())
+	})
+
+	Context("when the budget pool runs out before MaxTurns", func() {
+		BeforeEach(func() {
+			cfg = execLoopFixture(&execLoopStreamer{turns: toolsEveryTurn(4)})
+			cfg.MaxTurns, cfg.Pool, cfg.TurnBudget = 5, NewBudgetPool(2), 1
+			_, err = RunExecLoop(ctx, cfg)
+		})
+
+		It("stops with the budget error, not ErrMaxTurns", func() { Expect(err).To(MatchError(ErrExecLoopBudget)) })
+		It("pauses the session instead of failing it", func() {
+			_ = finishExecLoopState(ctx, cfg.Store, cfg.Session, err)
+			Expect(statusOf(cfg.Store, cfg.Session.ID)).To(Equal("paused"))
+		})
+	})
+
+	Context("when the run is cancelled during the last turn", func() {
+		BeforeEach(func() {
+			cctx, cancel := context.WithCancel(ctx)
+			DeferCleanup(cancel)
+			cfg = execLoopFixture(&execLoopStreamer{})
+			cfg.Streamer = &cancelOnStream{execLoopStreamer: execLoopStreamer{turns: toolsEveryTurn(3)}, n: 3, cancel: cancel}
+			cfg.MaxTurns = 3
+			_, err = RunExecLoop(cctx, cfg)
+			err = finishExecLoopState(cctx, cfg.Store, cfg.Session, err)
+		})
+
+		It("reports the cancellation, not max_turns", func() { Expect(err).To(MatchError(ErrSessionCancelled)) })
+		It("marks the session cancelled", func() { Expect(statusOf(cfg.Store, cfg.Session.ID)).To(Equal("cancelled")) })
+	})
+})
+
+var _ = Describe("failExecMaxTurns", func() {
+	It("leaves the status untouched when the final event cannot be recorded", func() {
+		st, sess := execLoopSeed()
+		DeferCleanup(func() { _ = st.Close() })
+		w, werr := st.NewEventWriter(context.Background(), sess.ID)
+		execMust(werr)
+		execMust(w.Close())
+		_ = failExecMaxTurns(context.Background(), w, st, sess.ID, 3)
+		Expect(statusOf(st, sess.ID)).To(Equal("active"))
 	})
 })

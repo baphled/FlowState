@@ -139,7 +139,7 @@ You review. You do not edit. Begin your final message with VERDICT: pass or VERD
 | D10 | Released as v1.10.0 after the delegate packets (the packet list is in the project records, not in the repository). |
 | D11 | No run-level lease: each child is an ordinary session with the existing per-session protection. |
 | D12 | There is no "skipped" child: nothing is scheduled, so nothing is skipped. |
-| D13 | A child that reaches `max_turns` mid-tool-use ends `failed` with reason `max_turns` and returns its partial text marked partial. Today the loop falls out after the last turn's tool calls and completes the session with no `max_turns` marker (`turn.end` records only the last finish reason). This adds a cause to the `failed` row of ADR-002's status table. |
+| D13 | A child that reaches `max_turns` mid-tool-use ends `failed` with reason `max_turns` and returns its partial text marked partial. The loop used to fall out after the last turn's tool calls and complete the session with no `max_turns` marker; it now executes that turn's calls, records their results, and fails the run with `ErrMaxTurns` (code `max_turns`, exit 5, HTTP 409) through the provider-failure path: a terminal `provider.error` event with reason `max_turns` comes before the `failed` status. A turn that answers without tool calls still completes, even on the last allowed turn. The delegate tool reports the child as failed, partial; the parent continues (D7). This adds a cause to the `failed` row of ADR-002's status table. |
 
 The working directory is checked once, before the child starts. A symlink swapped in after that check can let a child
 read outside it, because the file tools resolve their root again on every call. That needs another actor able to create

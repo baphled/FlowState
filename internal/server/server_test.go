@@ -264,7 +264,7 @@ var closedJSON = `{"id":"01a1f000-0000-4000-8000-000000000001","created_at_utc":
 var _ = Describe("Serve S1 transport", func() {
 	It("maps the closed code table onto HTTP statuses", func() {
 		want := map[string]int{"usage": 400, "session_not_found": 404, "session_terminal": 409, "session_cancelled": 409, "budget_exceeded": 409,
-			"receipt_invalid": 422, "provider_error": 502, "replay_mismatch": 500, "config_invalid": 500, "internal": 500, "reservation_unsettled": 500}
+			"max_turns": 409, "receipt_invalid": 422, "provider_error": 502, "replay_mismatch": 500, "config_invalid": 500, "internal": 500, "reservation_unsettled": 500}
 		got := map[string]int{}
 		for code := range want {
 			got[code] = statusFor(code)
