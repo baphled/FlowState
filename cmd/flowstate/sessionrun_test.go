@@ -1396,3 +1396,83 @@ var _ = Describe("Session run --agents", func() {
 		Expect(seen).To(ContainSubstring("- reviewer: d"))
 	})
 })
+
+// toolThenAnswerServer serves a tool call on its first toolTurns requests
+// and a final answer on every later one, counting requests.
+func toolThenAnswerServer(toolTurns int32, requests *atomic.Int32) *httptest.Server {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl := w.(http.Flusher)
+		chunks := []string{`{"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}`}
+		if n := requests.Add(1); n <= toolTurns {
+			chunks = []string{
+				fmt.Sprintf(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-%d","type":"function","function":{"name":"echo","arguments":"{}"}}]}}]}`, n),
+				`{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+			}
+		}
+		for _, c := range chunks {
+			_, _ = w.Write([]byte("data: " + c + "\n\n"))
+			fl.Flush()
+		}
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		fl.Flush()
+	}))
+	DeferCleanup(srv.Close)
+	return srv
+}
+
+var _ = Describe("Session run --max-turns", func() {
+	var requests atomic.Int32
+
+	// runWithTools runs a loop over echo that asks for the tool on its
+	// first toolTurns turns, with the given extra flags.
+	runWithTools := func(toolTurns int32, extra ...string) result {
+		requests.Store(0)
+		withFakeZai(toolThenAnswerServer(toolTurns, &requests))
+		return runCLILoop(newLoopSession(), append([]string{"--allow", "echo"}, extra...)...)
+	}
+
+	DescribeTable("refuses a turn limit that is not 1 to 1000 with the usage exit",
+		func(value string) {
+			Expect(runWithTools(0, "--max-turns", value).exit).To(Equal(2))
+		},
+		Entry("zero", "0"),
+		Entry("negative", "-1"),
+		Entry("not a number", "abc"),
+		Entry("above the bound", "1001"),
+	)
+
+	It("accepts the bound of 1000", func() {
+		Expect(runWithTools(0, "--max-turns", "1000").exit).To(Equal(0))
+	})
+
+	It("refuses --max-turns without a tool loop with the usage exit", func() {
+		withFakeZai(fakeZaiServer(`{"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}]}`))
+		Expect(runCLILoop(newLoopSession(), "--max-turns", "3").exit).To(Equal(2))
+	})
+
+	It("completes a run that answers on turn 3 under --max-turns 3", func() {
+		Expect(runWithTools(2, "--max-turns", "3").exit).To(Equal(0))
+	})
+
+	It("exits 5 for a run still asking for tools at --max-turns 2", func() {
+		Expect(runWithTools(2, "--max-turns", "2").exit).To(Equal(5))
+	})
+
+	It("reports max_turns for a run still asking for tools at --max-turns 2", func() {
+		Expect(stderrCode(runWithTools(2, "--max-turns", "2").stderr)).To(Equal("max_turns"))
+	})
+
+	It("stops after exactly 2 provider turns under --max-turns 2", func() {
+		runWithTools(5, "--max-turns", "2")
+		Expect(requests.Load()).To(Equal(int32(2)))
+	})
+
+	It("completes a run that answers on turn 25 by default", func() {
+		Expect(runWithTools(24).exit).To(Equal(0))
+	})
+
+	It("exits 5 for a run still asking for tools at turn 25 by default", func() {
+		Expect(runWithTools(25).exit).To(Equal(5))
+	})
+})

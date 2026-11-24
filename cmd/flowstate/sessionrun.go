@@ -400,6 +400,7 @@ func runTurnOrLoop(ctx context.Context, st *app.Store, sess *app.Session, s app.
 		Agents:           fl.agents,
 		Budget:           fl.budget,
 		MaxTokens:        fl.maxTokens,
+		MaxTurns:         fl.maxTurns,
 		RequireAllowlist: true,
 	})
 	return toTurnResult(sess, loopRes), err
@@ -414,9 +415,9 @@ func allowlistFlagged(fl *flags) bool {
 
 // hasToolSurface reports whether the invocation activates the tool
 // execution loop: an explicit tool-surface flag (--allow, --allow-file,
-// --workdir) or a config-derived allowlist.
+// --workdir, --agents, --max-turns) or a config-derived allowlist.
 func hasToolSurface(fl *flags) bool {
-	return allowlistFlagged(fl) || fl.workdir != "" || fl.agents != "" || len(fl.config.ToolAllowlist) > 0
+	return allowlistFlagged(fl) || fl.workdir != "" || fl.agents != "" || fl.maxTurns > 0 || len(fl.config.ToolAllowlist) > 0
 }
 
 // toTurnResult projects a loop result onto the shared turn result

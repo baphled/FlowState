@@ -15,8 +15,14 @@ import (
 )
 
 // execDefaultMaxTurns bounds one CLI-driven loop run when no explicit
-// turn limit is supplied.
-const execDefaultMaxTurns int64 = 8
+// turn limit is supplied. It matches an agent profile's default
+// max_turns, because reaching the limit while the model still asks for
+// tools fails the run with max_turns.
+const execDefaultMaxTurns int64 = 25
+
+// MaxTurnsLimit is the largest turn limit a run accepts from
+// `session run --max-turns` or the run body's max_turns.
+const MaxTurnsLimit int64 = 1000
 
 // execLeaseAgent is the lease owner recorded for CLI-driven loop runs.
 const execLeaseAgent = "cli"

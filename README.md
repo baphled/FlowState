@@ -71,7 +71,7 @@ flowstate session new --provider anthropic --model haiku --task "Say hello"
 | Command | Purpose |
 | --- | --- |
 | `session new` | Create a session: `--provider`, `--model`, `--task <text\|@file>`, `--parent`, `--reserve` |
-| `session run <id>` | One turn or tool loop: `--budget`, `--max-tokens`, `--allow`, `--allow-file`, `--workdir`, `--agents` |
+| `session run <id>` | One turn or tool loop: `--budget`, `--max-tokens`, `--max-turns`, `--allow`, `--allow-file`, `--workdir`, `--agents` |
 | `session list [--status <s>]` | List sessions |
 | `session events <id> [--follow]` | Print or follow the event log |
 | `session replay <id>` | Replay and verify the log |
@@ -139,6 +139,14 @@ You review. You do not edit. Begin your final message with VERDICT: pass or VERD
   directory fail the load.
 - This repository's `.gitignore` ignores `.flowstate/`. A project that wants committed profiles unignores them
   (`.flowstate/*` then `!.flowstate/agents/`).
+
+### Turn limit
+
+A tool loop runs at most 25 turns by default. `session run <id> --max-turns <n>` (1 to 1000; anything else is a
+usage error, exit 2) changes that for the run. `--max-turns` is a tool-loop flag like `--allow`: without a tool
+loop (`--allow`, `--allow-file`, `--agents` or a config `tool_allowlist`) it is a usage error. A loop still asking
+for tools when it reaches the limit fails with `max_turns` (exit 5) and the session is `failed`, so raise the limit
+before the run. The HTTP run body takes the same limit as `max_turns`.
 
 ### Delegating to a child agent
 

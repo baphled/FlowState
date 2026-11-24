@@ -150,11 +150,12 @@ type ReceiptVerdict struct {
 }
 
 // RunOptions carries the optional run request body onto the run
-// port, mirroring the CLI --budget/--max-tokens flags; zero values
+// port, mirroring the CLI --budget/--max-tokens/--max-turns flags; zero values
 // mean unset exactly as omitted flags do.
 type RunOptions struct {
 	Budget    int64
 	MaxTokens int64
+	MaxTurns  int64
 }
 
 // CreateRequest carries the POST /sessions body onto the create
@@ -293,6 +294,7 @@ type receiptVerdictBody struct {
 type runRequest struct {
 	Budget    int64 `json:"budget"`
 	MaxTokens int64 `json:"max_tokens"`
+	MaxTurns  int64 `json:"max_turns"`
 }
 
 // createBody is the POST /sessions request body; empty provider and

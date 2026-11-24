@@ -217,7 +217,7 @@ func parseFlags(args []string) (*flags, []string, error) {
 			if serr := fl.setToolFlag(a, take); serr != nil {
 				return nil, nil, serr
 			}
-		case a == "--budget", a == "--max-tokens", a == "--reserve":
+		case a == "--budget", a == "--max-tokens", a == "--reserve", a == "--max-turns":
 			v, err := flagValue(a, take)
 			if err != nil {
 				return nil, nil, err
@@ -298,6 +298,9 @@ func (f *flags) setToolFlag(name string, take func() (string, error)) error {
 // setLimit assigns one non-negative integer limit flag (--budget,
 // --max-tokens); non-numeric or negative input is a usage error.
 func setLimit(fl *flags, name, v string) error {
+	if name == "--max-turns" {
+		return setMaxTurns(fl, v)
+	}
 	n, err := strconv.ParseInt(v, 10, 64)
 	if err != nil || n < 0 {
 		return fmt.Errorf("flag %s expects a non-negative integer, got %q", name, v)
@@ -311,6 +314,29 @@ func setLimit(fl *flags, name, v string) error {
 		fl.reserveSet = true
 	default:
 		fl.maxTokens = n
+	}
+	return nil
+}
+
+// setMaxTurns assigns --max-turns: a positive integer up to
+// app.MaxTurnsLimit; anything else is a usage error.
+func setMaxTurns(fl *flags, v string) error {
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return fmt.Errorf("flag --max-turns expects an integer from 1 to %d, got %q", app.MaxTurnsLimit, v)
+	}
+	if err := checkMaxTurns(n, true); err != nil {
+		return err
+	}
+	fl.maxTurns = n
+	return nil
+}
+
+// checkMaxTurns validates a turn limit: 0 is unset (the default) unless
+// explicit, a negative or above-limit value is refused.
+func checkMaxTurns(n int64, explicit bool) error {
+	if n < 0 || n > app.MaxTurnsLimit || (explicit && n == 0) {
+		return fmt.Errorf("max turns must be from 1 to %d, got %d", app.MaxTurnsLimit, n)
 	}
 	return nil
 }
@@ -339,12 +365,14 @@ session budget <id> [--db path]
 session doctor <id> [--db path]
 session message <id> --from <parent> --body <text|@file> [--db path]
 session list   [--status <s>] [--db path]
-session run    <id> [--budget <n>] [--max-tokens <n>] [--allow <name>]... [--allow-file <manifest>] [--workdir <path>]
+session run    <id> [--budget <n>] [--max-tokens <n>] [--max-turns <n>] [--allow <name>]... [--allow-file <manifest>] [--workdir <path>]
                [--agents user|project|both] [--db path]
                (--allow/--allow-file replace the config tool_allowlist; --workdir only sets where tools
                run and needs an allowlist from --allow, --allow-file or tool_allowlist; --agents loads agent
                profiles for the delegate tool, which must also be allowlisted: --allow delegate;
-               project profiles come from --workdir, else the current directory)
+               project profiles come from --workdir, else the current directory;
+               --max-turns 1..1000 bounds the tool loop, default 25, and a loop still asking for tools
+               at the limit fails with max_turns, exit 5; it needs a tool loop like --allow does)
 session events <id> [--follow] [--db path]
 session close  <id> [--db path]
 session cancel <id> [--db path]

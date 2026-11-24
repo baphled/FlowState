@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -400,5 +401,51 @@ var _ = Describe("Serve run cancellation reason", func() {
 		mustExit(stop())
 		<-finished
 		Expect(cancelledReason(db, id)).To(Equal("shutdown"))
+	})
+})
+
+var _ = Describe("Serve run max_turns", func() {
+	// postRun boots serve with an echo allowlist and a model asking for the
+	// tool on its first toolTurns turns, then posts body to the run route.
+	postRun := func(toolTurns int32, body string) (int, string) {
+		cfg := filepath.Join(GinkgoT().TempDir(), "flowstate.json")
+		must(os.WriteFile(cfg, []byte(`{"tool_allowlist":["echo"]}`), 0o600))
+		var id string
+		db := filepath.Join(GinkgoT().TempDir(), "serve.db")
+		base, stop := serveBootAt(db, func(st *app.Store) {
+			sess, err := app.CreateSession(context.Background(), st, "z.ai", "glm-5.3", app.DefaultHarness, "3f7a", "greet")
+			must(err)
+			id = sess.ID
+		}, "--config", cfg)
+		defer func() { mustExit(stop()) }()
+		var requests atomic.Int32
+		withFakeZai(toolThenAnswerServer(toolTurns, &requests))
+		res := serveReq(http.MethodPost, base+"/sessions/"+id+"/run", body)
+		var doc map[string]any
+		data, err := io.ReadAll(res.Body)
+		must(err)
+		_ = json.Unmarshal(data, &doc)
+		code, _ := doc["code"].(string)
+		return res.StatusCode, code
+	}
+
+	It("stops a run at the body max_turns with 409", func() {
+		status, _ := postRun(5, `{"max_turns":3}`)
+		Expect(status).To(Equal(http.StatusConflict))
+	})
+
+	It("reports max_turns as the code of that stop", func() {
+		_, code := postRun(5, `{"max_turns":3}`)
+		Expect(code).To(Equal("max_turns"))
+	})
+
+	It("lets a run answering on turn 3 complete under max_turns 3", func() {
+		status, _ := postRun(2, `{"max_turns":3}`)
+		Expect(status).To(Equal(http.StatusOK))
+	})
+
+	It("uses the default of 25 turns when the body omits max_turns", func() {
+		status, _ := postRun(24, `{"budget":0}`)
+		Expect(status).To(Equal(http.StatusOK))
 	})
 })

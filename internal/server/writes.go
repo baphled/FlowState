@@ -145,13 +145,17 @@ func diagnosisWire(d Diagnosis) diagnosisBody {
 // synchronous turn, which can outlive the global 30s WriteTimeout.
 const runWriteWindow = 10 * time.Minute
 
+// runMaxTurnsLimit is the largest max_turns a run body may carry; it
+// equals the CLI --max-turns bound.
+const runMaxTurnsLimit = 1000
+
 // runHandler answers POST /sessions/{id}/run: one synchronous
 // provider turn behind the run port, mirroring `session run <id>`
 // including the detect-crash → recover → resume-pause preamble, with
 // the projected event log answered as the session-events array. The
-// optional body {"budget":N,"max_tokens":N} mirrors the CLI flags
-// (an empty body means no options; unknown fields are usage); negative
-// values are usage. Failure classes ride the shared code table
+// optional body {"budget":N,"max_tokens":N,"max_turns":N} mirrors the CLI
+// flags (an empty body means no options; unknown fields are usage);
+// negative values, or a max_turns above 1000, are usage. Failure classes ride the shared code table
 // (provider 502, budget stop 409, terminal 409). The run's
 // EventWriter holds no connection across the turn, so polls proceed.
 func (s *Server) runHandler(id string) http.HandlerFunc {
@@ -163,6 +167,10 @@ func (s *Server) runHandler(id string) http.HandlerFunc {
 		}
 		if req.Budget < 0 || req.MaxTokens < 0 {
 			s.writeErrorStatus(w, http.StatusBadRequest, "usage", "budget and max_tokens must not be negative")
+			return
+		}
+		if req.MaxTurns < 0 || req.MaxTurns > runMaxTurnsLimit {
+			s.writeErrorStatus(w, http.StatusBadRequest, "usage", "max_turns must be from 1 to 1000")
 			return
 		}
 		rc := http.NewResponseController(w)
