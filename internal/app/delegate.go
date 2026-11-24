@@ -43,6 +43,10 @@ func RunDelegatedChild(ctx context.Context, req DelegateRequest) (DelegateResult
 	if err != nil {
 		return DelegateResult{}, fmt.Errorf("generate session id: %w", err)
 	}
+	owner, err := newDelegateOwner()
+	if err != nil {
+		return DelegateResult{}, err
+	}
 	grant := int64(req.Profile.MaxTurns)
 	if out, rerr := reserveDelegateBudget(ctx, &req, childID, grant); rerr != nil || out.Status != "" {
 		return out, rerr
@@ -56,9 +60,20 @@ func RunDelegatedChild(ctx context.Context, req DelegateRequest) (DelegateResult
 		unwindDelegateBudget(ctx, &req, childID, grant)
 		return DelegateResult{}, fmt.Errorf("app: delegate: create child: %w", err)
 	}
-	defer settleDelegatedPanic(ctx, &req, child, grant)
-	res, runErr := RunExecLoop(ctx, delegateLoopConfig(&req, child, registry, grant))
-	return finishDelegatedChild(ctx, &req, child, grant, res, runErr)
+	return runAndSettleDelegated(ctx, &req, &delegateRun{owner: owner, child: child, grant: grant}, registry)
+}
+
+// runAndSettleDelegated is the tail a fresh and a resumed child share: record
+// delegation.started in the parent's log, run the child under its grant and
+// settle it. A panic in the loop is settled and re-raised. A failed started
+// write, like a failed receipt, does not stop the child: the failure is
+// returned beside its result. The write is detached from ctx, as the receipt is.
+func runAndSettleDelegated(ctx context.Context, req *DelegateRequest, run *delegateRun, registry *tool.Registry) (DelegateResult, error) {
+	defer settleDelegatedPanic(ctx, req, run)
+	startErr := appendDelegationStarted(context.WithoutCancel(ctx), req, run)
+	res, runErr := RunExecLoop(ctx, delegateLoopConfig(req, run, registry))
+	out, err := finishDelegatedChild(ctx, req, run, res, runErr)
+	return out, errors.Join(startErr, err)
 }
 
 // errDelegatePanic is the failure recorded for a child whose loop panicked. The
@@ -68,9 +83,9 @@ var errDelegatePanic = errors.New("panic")
 // settleDelegatedPanic runs deferred: if the loop panicked it fails the child with
 // reason "panic", charges the whole grant, settles it on a detached context and
 // re-panics with the value.
-func settleDelegatedPanic(ctx context.Context, req *DelegateRequest, child *store.Session, grant int64) {
+func settleDelegatedPanic(ctx context.Context, req *DelegateRequest, run *delegateRun) {
 	if p := recover(); p != nil {
-		_, _ = finishDelegatedChild(context.WithoutCancel(ctx), req, child, grant, nil, errDelegatePanic)
+		_, _ = finishDelegatedChild(context.WithoutCancel(ctx), req, run, nil, errDelegatePanic)
 		panic(p)
 	}
 }
@@ -88,9 +103,16 @@ func planDelegation(ctx context.Context, req *DelegateRequest) (*tool.Registry, 
 	if err := checkChildCreation(ctx, req.Store, req.Parent.ID, req.Parent.Provider, modelID, req.Task); err != nil {
 		return nil, "", err
 	}
+	registry, err := childRegistry(req)
+	return registry, modelID, err
+}
+
+// childRegistry builds the child's registry in its confined working directory
+// and checks that the profile's tools exist in it.
+func childRegistry(req *DelegateRequest) (*tool.Registry, error) {
 	workdir, err := confineChildWorkdir(req.ParentWorkdir, req.Workdir)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	build := req.NewRegistry
 	if build == nil {
@@ -98,12 +120,12 @@ func planDelegation(ctx context.Context, req *DelegateRequest) (*tool.Registry, 
 	}
 	registry, err := build(workdir)
 	if err != nil {
-		return nil, "", fmt.Errorf("app: delegate: child registry: %w", err)
+		return nil, fmt.Errorf("app: delegate: child registry: %w", err)
 	}
 	if _, derr := SessionToolDefinitions(registry, req.Profile.Tools); derr != nil {
-		return nil, "", fmt.Errorf("%w: profile %s tools: %v", ErrUsage, req.Profile.Name, derr)
+		return nil, fmt.Errorf("%w: profile %s tools: %v", ErrUsage, req.Profile.Name, derr)
 	}
-	return registry, modelID, nil
+	return registry, nil
 }
 
 // validateDelegateRequest rejects missing collaborators and a profile that asks
@@ -221,12 +243,23 @@ func unwindDelegateBudget(ctx context.Context, req *DelegateRequest, childID str
 	req.Pool.Release(grant)
 }
 
+// newDelegateOwner returns the lease owner of one delegated run: unique per call.
+func newDelegateOwner() (string, error) {
+	id, err := session.NewID()
+	if err != nil {
+		return "", fmt.Errorf("generate lease owner: %w", err)
+	}
+	return delegateLeasePrefix + id, nil
+}
+
 // delegateLoopConfig composes the loop for the child: exactly the profile's
-// tools, prompt and turn cap, drawing one unit per turn from its grant.
-func delegateLoopConfig(req *DelegateRequest, child *store.Session, registry *tool.Registry, grant int64) ExecLoopConfig {
+// tools, prompt and turn cap, drawing one unit per turn from its grant. Its lease
+// owner is the run's, so it re-grants a resume's claim and its release ends it.
+func delegateLoopConfig(req *DelegateRequest, run *delegateRun, registry *tool.Registry) ExecLoopConfig {
+	child, grant := run.child, run.grant
 	cfg := ExecLoopConfig{
 		Store: req.Store, Session: child, Streamer: req.Streamer, Registry: registry,
-		Allowlist: req.Profile.Tools, LeaseItem: "exec:" + child.ID, LeaseAgent: delegateLeaseAgent,
+		Allowlist: req.Profile.Tools, LeaseItem: "exec:" + child.ID, LeaseAgent: run.owner,
 		MaxTurns: grant, SystemPrompt: req.Profile.Body,
 	}
 	if req.Pool != nil {
@@ -238,8 +271,9 @@ func delegateLoopConfig(req *DelegateRequest, child *store.Session, registry *to
 // finishDelegatedChild ends the child in the status the run implies and settles
 // it on a detached context: consumption charged, reservation settled, the unspent
 // grant released, the receipt appended. Cancellation wins over any loop error.
-func finishDelegatedChild(ctx context.Context, req *DelegateRequest, child *store.Session, grant int64,
+func finishDelegatedChild(ctx context.Context, req *DelegateRequest, run *delegateRun,
 	res *ExecLoopResult, runErr error) (DelegateResult, error) {
+	child, grant := run.child, run.grant
 	reason := CancelReason(ctx) // read before detaching: WithoutCancel drops the cause
 	dctx := context.WithoutCancel(ctx)
 	out := DelegateResult{ChildID: child.ID}
@@ -252,7 +286,7 @@ func finishDelegatedChild(ctx context.Context, req *DelegateRequest, child *stor
 	}
 	var errs []error
 	if req.Pool != nil {
-		errs = append(errs, chargeDelegation(dctx, req.Store, child.ID, consumed))
+		errs = append(errs, chargeDelegation(dctx, req.Store, child.ID, run.prior+consumed))
 	}
 	switch {
 	case errors.Is(ctx.Err(), context.Canceled):
@@ -275,7 +309,7 @@ func finishDelegatedChild(ctx context.Context, req *DelegateRequest, child *stor
 		req.Pool.Release(grant - consumed)
 	}
 	out.Partial = out.Status != DelegateStatusCompleted && out.FinalContent != ""
-	errs = append(errs, appendDelegationReceipt(dctx, req, out, consumed))
+	errs = append(errs, appendDelegationReceipt(dctx, req, out, consumed, run.resumed))
 	return out, errors.Join(errs...)
 }
 
@@ -324,16 +358,40 @@ func failDelegatedChild(ctx context.Context, st *store.Store, id string, cause e
 // parent's log, through req.ParentEvents when given. Otherwise it opens a writer
 // on the parent, serialised in-process per parent and retried briefly while
 // another holder (the parent loop) has the one writer the store allows.
-func appendDelegationReceipt(ctx context.Context, req *DelegateRequest, out DelegateResult, consumed int64) error {
-	payload := map[string]any{
-		"child_id": out.ChildID, "profile": profileRef(req.Profile), "status": out.Status,
-		"turns": out.Turns, "tool_calls": out.ToolCalls, "reason": capDelegateText(out.Reason), "consumed": consumed,
+func appendDelegationReceipt(ctx context.Context, req *DelegateRequest, out DelegateResult, consumed int64, resumed bool) error {
+	payload := delegationPayload(req, out.ChildID)
+	payload["status"], payload["turns"], payload["tool_calls"] = out.Status, out.Turns, out.ToolCalls
+	payload["reason"], payload["consumed"] = capDelegateText(out.Reason), consumed
+	if resumed {
+		payload["resumed"] = true
 	}
+	return appendParentEvent(ctx, req, TypeDelegationCompleted, payload)
+}
+
+// appendDelegationStarted writes delegation.started to the parent's log, through
+// the same sink or fallback as the receipt, as soon as the child exists.
+func appendDelegationStarted(ctx context.Context, req *DelegateRequest, run *delegateRun) error {
+	payload := delegationPayload(req, run.child.ID)
+	if run.resumed {
+		payload["resumed"] = true
+	}
+	return appendParentEvent(ctx, req, TypeDelegationStarted, payload)
+}
+
+// delegationPayload is the part of the started and completed payloads they share.
+func delegationPayload(req *DelegateRequest, childID string) map[string]any {
+	payload := map[string]any{"child_id": childID, "profile": profileRef(req.Profile)}
 	if req.BatchIndex != nil {
 		payload["index"] = *req.BatchIndex
 	}
+	return payload
+}
+
+// appendParentEvent appends one engine event to the parent's log: to
+// req.ParentEvents when given, else through a retried fallback writer.
+func appendParentEvent(ctx context.Context, req *DelegateRequest, typ string, payload map[string]any) error {
 	if req.ParentEvents != nil {
-		return recordReceipt(ctx, req.ParentEvents, payload)
+		return recordParentEvent(ctx, req.ParentEvents, typ, payload)
 	}
 	var err error
 	for attempt := 0; attempt < receiptWriterAttempts; attempt++ {
@@ -346,7 +404,7 @@ func appendDelegationReceipt(ctx context.Context, req *DelegateRequest, out Dele
 			case <-t.C:
 			}
 		}
-		if err = appendParentReceipt(ctx, req, payload); !errors.Is(err, store.ErrWriterExists) {
+		if err = appendParentReceipt(ctx, req, typ, payload); !errors.Is(err, store.ErrWriterExists) {
 			return err
 		}
 	}
@@ -355,20 +413,20 @@ func appendDelegationReceipt(ctx context.Context, req *DelegateRequest, out Dele
 
 // appendParentReceipt opens the parent's writer under the per-parent lock,
 // appends the receipt and closes the writer.
-func appendParentReceipt(ctx context.Context, req *DelegateRequest, payload map[string]any) error {
+func appendParentReceipt(ctx context.Context, req *DelegateRequest, typ string, payload map[string]any) error {
 	defer receiptLocks.acquire(req.Parent.ID)()
 	w, err := req.Store.NewEventWriter(ctx, req.Parent.ID)
 	if err != nil {
 		return fmt.Errorf("app: delegate: receipt writer: %w", err)
 	}
 	defer func() { _ = w.Close() }()
-	return recordReceipt(ctx, w, payload)
+	return recordParentEvent(ctx, w, typ, payload)
 }
 
-// recordReceipt appends the receipt to sink.
-func recordReceipt(ctx context.Context, sink tool.EventSink, payload map[string]any) error {
-	if _, err := sink.Append(ctx, session.ActorEngine, TypeDelegationCompleted, payload); err != nil {
-		return fmt.Errorf("app: delegate: record receipt: %w", err)
+// recordParentEvent appends the event to sink.
+func recordParentEvent(ctx context.Context, sink tool.EventSink, typ string, payload map[string]any) error {
+	if _, err := sink.Append(ctx, session.ActorEngine, typ, payload); err != nil {
+		return fmt.Errorf("app: delegate: record %s: %w", typ, err)
 	}
 	return nil
 }

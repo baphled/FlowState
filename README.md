@@ -186,7 +186,15 @@ flowstate session run "$id" --budget 200 --agents user --allow delegate --workdi
 
 - The tool takes `agent` (a loaded profile name) and `task`, and optionally `cwd`, a directory inside the parent's
   workdir; anything outside it is refused. Its description lists the loaded profiles, so the model can choose. With
-  `agent` and `task` one call runs one child; `resume` is not available yet and returns an error saying so.
+  `agent` and `task` one call runs one child.
+- `resume` continues an interrupted child: `{"resume": "<child id>", "task": "<follow-up, optional>"}`, alone (not
+  with `agent`, `cwd` or `tasks`). The child must belong to this parent, be active or paused (a crashed or
+  budget-stopped run) and not be running; a finished child is refused ("start a new one"), as are another session's
+  id, a profile that is gone or whose file changed since the child started, and a child with no turns left. It
+  continues from its own log with the turns it has left (`max_turns` minus the turns already used), which the budget
+  charges, and a `task` becomes its next user message. The receipt says `"resumed": true`.
+- Each child's start is recorded as a `delegation.started` event in the parent's log. A child whose runner was
+  killed together with its process keeps a stale lease and cannot be resumed until a later change clears it.
 - `tasks` runs several children in one call: an array of `{agent, task, cwd?}`, at most 8, exclusive with `agent`,
   `task` and `cwd`. At most 4 run at once; the rest start as slots free (calls in one turn run one after another, so the
   cap of 4 applies per call). Every entry is validated before any child starts: a ninth task, an unknown agent, a blank

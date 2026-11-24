@@ -31,10 +31,10 @@ const (
 )
 
 // delegateSchema is the JSON schema of the delegate arguments: either agent and
-// task (one child) or tasks (up to 8, exclusive with the others). `resume` is
-// deliberately absent: it is not available yet.
+// task (one child), tasks (up to 8, exclusive with the others) or resume (a
+// child id, with an optional follow-up task).
 const delegateSchema = `{"type":"object","properties":{"agent":{"type":"string","minLength":1},` +
-	`"task":{"type":"string","minLength":1},"cwd":{"type":"string"},` +
+	`"task":{"type":"string","minLength":1},"cwd":{"type":"string"},"resume":{"type":"string","minLength":1},` +
 	`"tasks":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"object","properties":{` +
 	`"agent":{"type":"string","minLength":1},"task":{"type":"string","minLength":1},"cwd":{"type":"string"}},` +
 	`"required":["agent","task"],"additionalProperties":false}}},"additionalProperties":false}`
@@ -78,7 +78,8 @@ func (t *DelegateTool) Definition() provider.ToolDefinition {
 		"and turn cap, and return its final message. A failed or cancelled child comes back as an error you can act on. " +
 		"Or pass tasks, up to 8 entries of agent, task and optional cwd (not with agent or task): they run 4 at a time " +
 		"and return {results: [...]} in input order; a child that did not complete is an entry with its status and " +
-		"reason, not an error.")
+		"reason, not an error. Or pass resume, the id of an interrupted child of yours, with an optional follow-up task " +
+		"(not with agent, cwd or tasks): it continues with the turns it has left.")
 	if len(t.cfg.Profiles) == 0 {
 		b.WriteString("\nNo agents are available: no profile was loaded.")
 	} else {
@@ -107,18 +108,19 @@ func (t *DelegateTool) Invoke(ctx context.Context, raw json.RawMessage) (any, er
 	if args.batch != nil {
 		return t.invokeParallel(ctx, args.batch)
 	}
-	profile, err := t.profile(args.Agent)
-	if err != nil {
-		return nil, err
-	}
 	req := DelegateRequest{
 		Store: t.cfg.Store, Parent: t.cfg.Parent, Streamer: t.cfg.Streamer, Pool: t.cfg.Pool,
-		ParentWorkdir: t.cfg.Workdir, Profile: profile, Task: args.Task, Workdir: args.Cwd,
+		ParentWorkdir: t.cfg.Workdir, Task: args.Task, Workdir: args.Cwd,
 	}
 	if sink, ok := ctx.Value(delegateParentEventsKey{}).(tool.EventSink); ok && sink != nil {
 		req.ParentEvents = appendFailureSink{inner: sink}
 	}
-	res, err := RunDelegatedChild(ctx, req)
+	var res DelegateResult
+	if args.Resume != "" {
+		res, err = ResumeDelegatedChild(ctx, DelegateResumeRequest{DelegateRequest: req, ChildID: args.Resume, Profiles: t.cfg.Profiles})
+	} else if req.Profile, err = t.profile(args.Agent); err == nil {
+		res, err = RunDelegatedChild(ctx, req)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -144,8 +146,8 @@ func (t *DelegateTool) profile(name string) (agent.Profile, error) {
 }
 
 // parseDelegateArgs decodes the argument object strictly: unknown fields, extra
-// JSON, a missing agent or a blank task are errors, and so is `resume`, which
-// this build does not offer. `tasks` is decoded and validated whole, so a bad
+// JSON, a missing agent or a blank task are errors; `resume` stands alone with an
+// optional task and is refused beside agent, cwd or tasks. `tasks` is decoded and validated whole, so a bad
 // entry refuses the call before any child starts.
 func parseDelegateArgs(raw json.RawMessage) (delegateArgs, error) {
 	var args delegateArgs
@@ -158,13 +160,26 @@ func parseDelegateArgs(raw json.RawMessage) (delegateArgs, error) {
 		return args, errors.New("invalid arguments: extra data after the JSON object")
 	}
 	switch {
-	case args.Resume != nil:
-		return args, errors.New("resume is not available yet: this build runs one child per call with agent, task " +
-			"and optional cwd, or up to 8 with tasks")
+	case args.Resume != "":
+		return args, parseDelegateResume(args)
 	case args.Tasks != nil:
 		return parseDelegateBatch(args)
 	}
 	return args, validateDelegateTask(args.Agent, args.Task)
+}
+
+// parseDelegateResume validates a resume call: the child id alone, with an
+// optional follow-up task that passes the single form's task checks.
+func parseDelegateResume(args delegateArgs) error {
+	switch {
+	case args.Tasks != nil:
+		return errors.New("resume cannot be combined with tasks")
+	case args.Agent != "" || args.Cwd != "":
+		return errors.New("resume cannot be combined with agent or cwd")
+	case args.Task == "":
+		return nil
+	}
+	return validateDelegateTask(args.Resume, args.Task)
 }
 
 // parseDelegateBatch decodes and validates the `tasks` array: it is exclusive

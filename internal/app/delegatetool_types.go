@@ -48,14 +48,14 @@ type DelegateToolResult struct {
 	Text string `json:"text"`
 }
 
-// delegateArgs is the strict argument object of one delegate call. Tasks and
-// Resume are decoded only to be refused with a clear message.
+// delegateArgs is the strict argument object of one delegate call. Tasks is
+// decoded whole and validated before any child starts.
 type delegateArgs struct {
 	Agent  string          `json:"agent"`
 	Task   string          `json:"task"`
 	Cwd    string          `json:"cwd"`
 	Tasks  json.RawMessage `json:"tasks"`
-	Resume json.RawMessage `json:"resume"`
+	Resume string          `json:"resume"`
 	// batch is Tasks once decoded and validated.
 	batch []delegateTaskArg
 }

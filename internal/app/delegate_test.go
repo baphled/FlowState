@@ -803,7 +803,47 @@ var _ = Describe("RunDelegatedChild", func() {
 		if _, err := RunDelegatedChild(ctx, req); err != nil {
 			panic(err)
 		}
-		Expect(sink.types).To(Equal([]string{TypeDelegationCompleted}))
+		Expect(sink.types).To(Equal([]string{TypeDelegationStarted, TypeDelegationCompleted}))
+	})
+
+	Describe("the delegation.started event", func() {
+		var f *delegateFixture
+		var res DelegateResult
+		BeforeEach(func() {
+			f = newDelegateFixture(finishText("ok"))
+			idx := 2
+			req := f.request()
+			req.BatchIndex = &idx
+			res = must(RunDelegatedChild(ctx, req))
+		})
+		It("is written to the parent's log once", func() { Expect(f.events(f.parent.ID, TypeDelegationStarted)).To(HaveLen(1)) })
+		It("names the child", func() {
+			Expect(f.events(f.parent.ID, TypeDelegationStarted)[0].PayloadJSON).To(ContainSubstring(`"child_id":"` + res.ChildID + `"`))
+		})
+		It("names the profile's digest", func() {
+			Expect(f.events(f.parent.ID, TypeDelegationStarted)[0].PayloadJSON).To(ContainSubstring(`"sha256":"feedface"`))
+		})
+		It("carries a batch entry's index", func() {
+			Expect(f.events(f.parent.ID, TypeDelegationStarted)[0].PayloadJSON).To(ContainSubstring(`"index":2`))
+		})
+		It("comes before the receipt", func() {
+			Expect(f.events(f.parent.ID, TypeDelegationStarted)[0].Seq).To(BeNumerically("<", f.events(f.parent.ID, TypeDelegationCompleted)[0].Seq))
+		})
+	})
+
+	Describe("a failed started write", func() {
+		var res DelegateResult
+		var err error
+		BeforeEach(func() {
+			f := newDelegateFixture(finishText("ok"))
+			req := f.request()
+			req.ParentEvents = receiptFailSink{}
+			res, err = RunDelegatedChild(ctx, req)
+		})
+		It("still runs the child", func() { Expect(res.Status).To(Equal(DelegateStatusCompleted)) })
+		It("reports the failure beside the result", func() {
+			Expect(err).To(MatchError(ContainSubstring("record delegation.started")))
+		})
 	})
 
 	It("a parent writer released within the retry window: still writes the receipt", func() {
