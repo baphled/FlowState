@@ -18,6 +18,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/store"
 	"github.com/baphled/flowstate/internal/tool"
 )
 
@@ -151,7 +152,7 @@ func badArgEntries() []TableEntry {
 		Entry("tasks with agent and task", `{"agent":"reviewer","task":"t","tasks":[{"agent":"reviewer","task":"t"}]}`,
 			"tasks cannot be combined"),
 		Entry("tasks with a cwd", `{"cwd":".","tasks":[{"agent":"reviewer","task":"t"}]}`, "tasks cannot be combined"),
-		Entry("tasks with a resume", `{"resume":"abc","tasks":[{"agent":"reviewer","task":"t"}]}`, "resume is not available yet"),
+		Entry("tasks with a resume", `{"resume":"abc","tasks":[{"agent":"reviewer","task":"t"}]}`, "resume cannot be combined with tasks"),
 		Entry("a task entry with an unknown field", `{"tasks":[{"agent":"reviewer","task":"t","x":1}]}`, "unknown field"),
 		Entry("a task entry without an agent", `{"tasks":[{"agent":"reviewer","task":"t"},{"task":"t"}]}`, "tasks[1]: agent is required"),
 		Entry("a blank task in entry 2", `{"tasks":[{"agent":"reviewer","task":"t"},{"agent":"reviewer","task":"t"},`+
@@ -159,7 +160,9 @@ func badArgEntries() []TableEntry {
 		Entry("a NUL in an entry's task", `{"tasks":[{"agent":"reviewer","task":"a\u0000b"}]}`, "tasks[0]: task must not contain NUL"),
 		Entry("an unknown agent in entry 1", `{"tasks":[{"agent":"reviewer","task":"t"},{"agent":"ghost","task":"t"}]}`,
 			`tasks[1]: unknown agent "ghost"; available agents: reviewer, writer`),
-		Entry("a resume", `{"resume":"abc"}`, "resume is not available yet"),
+		Entry("a resume with an agent", `{"resume":"abc","agent":"reviewer"}`, "resume cannot be combined with agent or cwd"),
+		Entry("a resume with a cwd", `{"resume":"abc","cwd":"."}`, "resume cannot be combined with agent or cwd"),
+		Entry("a resume with a NUL in the follow-up", `{"resume":"abc","task":"a\u0000b"}`, "NUL, ESC or C1"),
 		Entry("an unknown agent", `{"agent":"ghost","task":"t"}`, `unknown agent "ghost"; available agents: reviewer, writer`),
 		Entry("a cwd outside the parent's", `{"agent":"reviewer","task":"t","cwd":"../"}`, "inside the parent's"),
 		Entry("a task with NUL", `{"agent":"reviewer","task":"a\u0000b"}`, "NUL, ESC or C1"),
@@ -246,7 +249,7 @@ var _ = Describe("The delegate tool", func() {
 			Expect(f.toolResultContent()).To(MatchJSON(`{"child":"` + f.childIDs()[0] + `","status":"completed","turns":1,"text":"child says hi"}`))
 		})
 		It("writes the receipt between the tool.call and the tool.result of that call", func() {
-			Expect(f.parentTypes()[2:5]).To(hasTypes("tool.call", TypeDelegationCompleted, "tool.result"))
+			Expect(f.parentTypes()[2:6]).To(hasTypes("tool.call", TypeDelegationStarted, TypeDelegationCompleted, "tool.result"))
 		})
 		It("offers the parent the delegate tool", func() { Expect(toolNames(f.streamer.reqs[0])).To(Equal([]string{"delegate"})) })
 		It("never offers the child the delegate tool", func() { Expect(toolNames(f.streamer.reqs[1])).To(Equal([]string{"fs.read"})) })
@@ -465,5 +468,44 @@ var _ = Describe("The delegate tool", func() {
 		})
 		It("cancels the child", func() { Expect(f.status(f.childIDs()[0])).To(Equal("cancelled")) })
 		It("records the parent's reason in the receipt", func() { Expect(f.receiptPayload()).To(HaveKeyWithValue("reason", "sigterm")) })
+	})
+})
+
+var _ = Describe("The delegate tool's resume", func() {
+	It("is denied when delegate is not on the allowlist", func() {
+		f := newToolFixture(callTurn(delegateCall(`{"resume":"abc"}`)), finishText("parent done"))
+		f.allow = []string{"echo"}
+		must(f.runParent(context.Background()))
+		Expect(f.events(f.parent.ID, tool.TypeToolResult)[0].PayloadJSON).To(ContainSubstring("tool_denied"))
+	})
+
+	It("refuses an unknown child as a tool error", func() {
+		f := newToolFixture()
+		_, err := f.invoke(`{"resume":"ghost"}`)
+		Expect(err).To(MatchError(ContainSubstring("is not a child of this session")))
+	})
+
+	Describe("when the model resumes a child", func() {
+		var f *toolFixture
+		var child *store.Session
+		var res *ExecLoopResult
+		BeforeEach(func() {
+			ctx := context.Background()
+			f = newToolFixture()
+			child = f.seedChild(f.parent, 2)
+			f.streamer.turns = [][]provider.StreamEvent{
+				callTurn(delegateCall(`{"resume":"` + child.ID + `"}`)), finishText("child done"), finishText("parent done"),
+			}
+			res = must(f.runParent(ctx))
+		})
+		It("lets the parent finish", func() { Expect(res.FinalContent).To(Equal("parent done")) })
+		It("completes the resumed child", func() { Expect(f.status(child.ID)).To(Equal("completed")) })
+		It("gives the resumed child its earlier turns", func() {
+			Expect(roles(f.streamer.reqs[1])).To(Equal([]string{"system", "user", "assistant", "tool", "assistant", "tool"}))
+		})
+		It("hands the parent the child's final text", func() {
+			Expect(f.toolResultContent()).To(ContainSubstring(`"text":"child done"`))
+		})
+		It("records the receipt as resumed", func() { Expect(f.receiptPayload()).To(HaveKeyWithValue("resumed", true)) })
 	})
 })

@@ -13,6 +13,11 @@ import (
 // parent's log when a delegation ends, whatever its status.
 const TypeDelegationCompleted = "delegation.completed"
 
+// TypeDelegationStarted is the event RunDelegatedChild appends to the parent's
+// log as soon as a child exists (before it runs): the record of which children a
+// parent call started (ADR-009 D8).
+const TypeDelegationStarted = "delegation.started"
+
 // TypeDelegationFailed is the final event of a child that failed outside the
 // provider path (the loop records provider failures itself).
 const TypeDelegationFailed = "delegation.failed"
@@ -28,8 +33,10 @@ const (
 	DelegateStatusCancelled = "cancelled"
 )
 
-// delegateLeaseAgent is the lease owner recorded for delegated child runs.
-const delegateLeaseAgent = "delegate"
+// delegateLeasePrefix starts the lease owner of every delegated run: the prefix
+// plus a fresh id, because a lease is re-granted to its own owner and one shared
+// name would let two runs of a child both hold it.
+const delegateLeasePrefix = "delegate:"
 
 // DelegateProfileRef names the profile a child ran under: recorded in the
 // child's session.delegated payload and in the delegation receipt.
@@ -110,4 +117,34 @@ type receiptLock struct {
 type receiptLockTable struct {
 	mu    sync.Mutex
 	locks map[string]*receiptLock
+}
+
+// DelegateResumeRequest asks to continue an interrupted child of Parent
+// (ADR-009 D8). Profile and Workdir of the embedded request are ignored: the
+// profile is the loaded one the child recorded, and the child runs in the
+// parent's working directory. Task, when set, is the follow-up user message.
+type DelegateResumeRequest struct {
+	DelegateRequest
+	// ChildID is the child session to resume.
+	ChildID string
+	// Profiles are the profiles loaded for this run; the child's recorded
+	// profile must be among them with an unchanged digest.
+	Profiles []agent.Profile
+}
+
+// delegateRun is what the shared run-and-settle tail needs to know about one
+// child: the session, the grant its loop draws from, the turns an earlier run
+// already charged (zero for a fresh child) and whether it is a resume.
+type delegateRun struct {
+	owner   string
+	child   *store.Session
+	grant   int64
+	prior   int64
+	resumed bool
+}
+
+// resumableLog is what a resume reads from the child's event log.
+type resumableLog struct {
+	profile *DelegateProfileRef
+	turns   int64
 }
