@@ -138,6 +138,15 @@ func selfTestTranscript(ctx context.Context, fl *flags, id string) ([]byte, erro
 	return body, nil
 }
 
+// recoveryFailure classifies a crash-recovery error: a corrupt log keeps its
+// replay_mismatch class (exit 7), any other failure is config_invalid.
+func recoveryFailure(err error) error {
+	if app.ErrorCode(err) == app.CodeReplayMismatch {
+		return err
+	}
+	return fmt.Errorf("%w: crash recovery: %v", app.ErrConfigInvalid, err)
+}
+
 // cmdRun implements `flowstate session run <id>` (or, with --task,
 // a gated live self-test): runs one bounded provider turn, explicitly
 // resuming a paused session first, projects the persisted events as
@@ -176,11 +185,10 @@ func cmdRun(ctx context.Context, st *app.Store, id string, fl *flags, stdout, st
 	// Crash-recovery: detect an active session whose last turn was left
 	// incomplete (process died mid-turn) and append session.interrupted
 	// before proceeding, so the event log records the gap.
-	if crashed, derr := app.DetectCrashedSession(ctx, st, id); derr == nil && crashed {
-		if rerr := app.RecoverCrashedSession(ctx, st, id); rerr != nil {
-			writeError(stderr, fmt.Errorf("%w: crash recovery: %v", app.ErrConfigInvalid, rerr))
-			return exitConfigInvalid
-		}
+	if rerr := app.RecoverCrashedSession(ctx, st, id); rerr != nil {
+		cerr := recoveryFailure(rerr)
+		writeError(stderr, cerr)
+		return exitCodeFor(cerr)
 	}
 	if code, done := resumePausedRun(ctx, st, sess, stderr); done {
 		return code

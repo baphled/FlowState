@@ -20,6 +20,7 @@ import (
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/zai"
+	"github.com/baphled/flowstate/internal/store"
 )
 
 // serveBoot boots `flowstate serve` on a fresh temp database seeded by
@@ -246,6 +247,40 @@ var _ = Describe("Serve creation wiring", func() {
 		var ec map[string]any
 		serveJSON(res, &ec)
 		Expect([]string{res.Status, ec["code"].(string)}).To(Equal([]string{"400 Bad Request", "usage"}))
+	})
+})
+
+var _ = Describe("Serve run crash recovery", func() {
+	// bootCrashSession boots serve on a database holding one seeded session.
+	bootCrashSession := func(seed func(w *store.EventWriter), tamper bool) (string, string, string, func() int) {
+		db := filepath.Join(GinkgoT().TempDir(), "serve.db")
+		id := seedCrashSession(db, seed)
+		if tamper {
+			tamperFirstEvent(db, id)
+		}
+		base, stop := serveBootAt(db, nil)
+		return base, id, db, stop
+	}
+
+	// The HTTP table has no replay_mismatch status, so a corrupt log answers
+	// internal (500) as it did before crash recovery; it must not be relabelled
+	// config_invalid in the message.
+	It("does not relabel a corrupt log as config_invalid", func() {
+		base, id, _, stop := bootCrashSession(func(*store.EventWriter) {}, true)
+		defer func() { mustExit(stop()) }()
+		var ec map[string]any
+		serveJSON(serveReq(http.MethodPost, base+"/sessions/"+id+"/run", ""), &ec)
+		Expect(ec["message"]).NotTo(ContainSubstring("config_invalid"))
+	})
+
+	It("answers a delegate call left unanswered with no dangling turn before the first request", func() {
+		withFakeZai(fakeZaiServer(`{"choices":[{"delta":{"content":"ok"}}]}`))
+		base, id, db, stop := bootCrashSession(unansweredDelegateLog, false)
+		defer func() { mustExit(stop()) }()
+		if res := serveReq(http.MethodPost, base+"/sessions/"+id+"/run", ""); res.StatusCode != http.StatusOK {
+			panic("serve run failed: " + res.Status)
+		}
+		Expect(loggedTypesBeforeFirst(db, id, "assistant.delta")).To(ContainElement("tool.result"))
 	})
 })
 

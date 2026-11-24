@@ -55,10 +55,8 @@ func serveRun(ctx context.Context, st *app.Store, fl *flags, id string, opts ser
 	if err != nil {
 		return nil, err
 	}
-	if crashed, derr := app.DetectCrashedSession(ctx, st, id); derr == nil && crashed {
-		if rerr := app.RecoverCrashedSession(ctx, st, id); rerr != nil {
-			return nil, fmt.Errorf("%w: crash recovery: %v", app.ErrConfigInvalid, rerr)
-		}
+	if rerr := app.RecoverCrashedSession(ctx, st, id); rerr != nil {
+		return nil, recoveryFailure(rerr)
 	}
 	if sess.Status == "paused" {
 		if rerr := app.ResumePausedSession(ctx, st, sess); rerr != nil {

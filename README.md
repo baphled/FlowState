@@ -188,13 +188,21 @@ flowstate session run "$id" --budget 200 --agents user --allow delegate --workdi
   workdir; anything outside it is refused. Its description lists the loaded profiles, so the model can choose. With
   `agent` and `task` one call runs one child.
 - `resume` continues an interrupted child: `{"resume": "<child id>", "task": "<follow-up, optional>"}`, alone (not
-  with `agent`, `cwd` or `tasks`). The child must belong to this parent, be active or paused (a crashed or
-  budget-stopped run) and not be running; a finished child is refused ("start a new one"), as are another session's
-  id, a profile that is gone or whose file changed since the child started, and a child with no turns left. It
-  continues from its own log with the turns it has left (`max_turns` minus the turns already used), which the budget
-  charges, and a `task` becomes its next user message. The receipt says `"resumed": true`.
-- Each child's start is recorded as a `delegation.started` event in the parent's log. A child whose runner was
-  killed together with its process keeps a stale lease and cannot be resumed until a later change clears it.
+  with `agent`, `cwd` or `tasks`). The child must belong to this parent, be active or paused (a crashed or paused run;
+  a child that reaches its turn limit is failed, which is final) and not be running; a finished child is refused
+  ("start a new one"), as are another session's id, a profile that is gone or whose file changed since the child
+  started, and a child with no turns left. It continues from its own log with the turns it has left (`max_turns` minus
+  the turns already used), which the budget charges, and a `task` becomes its next user message. The receipt says
+  `"resumed": true`.
+- If the parent itself crashes during a `delegate` call, the call is not run again. When the parent is resumed
+  (`session run <id>`), the log gets an error result for each such call, before the run's first request, naming every
+  child it started with its id and status: an unfinished one can be resumed (`resume it with delegate {resume:
+  "<id>"} or start a new one`), a finished one lost its result, which is not delivered, and the model starts a new one
+  only if it still needs the work. The text says no child had started only when none had. Paths and profile names are
+  never repeated to the model. The leases that unfinished children's killed runners left are cleared, so they can be
+  resumed. Each child's start is recorded as a `delegation.started` event in the parent's log. Recovery assumes no
+  other process is running the session. A call answered late (a log an earlier build left with the call unanswered)
+  gets its result after later events, which a provider that wants the result next to the call may reject.
 - `tasks` runs several children in one call: an array of `{agent, task, cwd?}`, at most 8, exclusive with `agent`,
   `task` and `cwd`. At most 4 run at once; the rest start as slots free (calls in one turn run one after another, so the
   cap of 4 applies per call). Every entry is validated before any child starts: a ninth task, an unknown agent, a blank
