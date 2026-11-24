@@ -204,6 +204,52 @@ var _ = Describe("ResumeDelegatedChild", func() {
 		})
 	})
 
+	// crashedCall records a delegate call of the parent that started child and
+	// never got its result, with the lease the killed runner left on the child.
+	crashedCall := func(f *delegateFixture, callID string, c *store.Session, owner string) {
+		mustAppendEvent(ctx, f.st, f.parent.ID, "tool:delegate", "tool.call", map[string]any{
+			"tool": "delegate", "tool_call_id": callID, "args": map[string]any{},
+		})
+		mustAppendEvent(ctx, f.st, f.parent.ID, "engine", TypeDelegationStarted, map[string]any{"child_id": c.ID})
+		must(f.st.AcquireLease(ctx, "exec:"+c.ID, owner))
+		check(RecoverCrashedSession(ctx, f.st, f.parent.ID))
+	}
+
+	It("resumes a child whose stale lease the parent's crash recovery cleared", func() {
+		f := newDelegateFixture(finishText("ok"))
+		c := f.seedChild(f.parent, 2)
+		crashedCall(f, "d1", c, delegateLeasePrefix+"dead-run")
+		res := must(ResumeDelegatedChild(ctx, f.resumeRequest(c.ID, "")))
+		Expect(res.Status).To(Equal(DelegateStatusCompleted))
+	})
+
+	It("resumes a child left under the legacy lease owner after recovery", func() {
+		f := newDelegateFixture(finishText("ok"))
+		c := f.seedChild(f.parent, 2)
+		crashedCall(f, "d1", c, delegateLegacyOwner)
+		res := must(ResumeDelegatedChild(ctx, f.resumeRequest(c.ID, "")))
+		Expect(res.Status).To(Equal(DelegateStatusCompleted))
+	})
+
+	It("resumes the child of a second crash in the same parent", func() {
+		f := newDelegateFixture(finishText("ok"))
+		first := f.seedChild(f.parent, 2)
+		crashedCall(f, "d1", first, delegateLeasePrefix+"dead-run-1")
+		second := f.seedChild(f.parent, 2)
+		crashedCall(f, "d2", second, delegateLeasePrefix+"dead-run-2")
+		res := must(ResumeDelegatedChild(ctx, f.resumeRequest(second.ID, "")))
+		Expect(res.Status).To(Equal(DelegateStatusCompleted))
+	})
+
+	It("keeps refusing a child whose lease belongs to a live run when no crash was answered", func() {
+		f := newDelegateFixture(finishText("never"))
+		c := f.seedChild(f.parent, 2)
+		must(f.st.AcquireLease(ctx, "exec:"+c.ID, delegateLeasePrefix+"live-run"))
+		check(RecoverCrashedSession(ctx, f.st, f.parent.ID))
+		_, err := ResumeDelegatedChild(ctx, f.resumeRequest(c.ID, ""))
+		Expect(err).To(MatchError(ContainSubstring("is running")))
+	})
+
 	It("starts no run for a refused child", func() {
 		f := newDelegateFixture(finishText("never"))
 		_, _ = ResumeDelegatedChild(ctx, f.resumeRequest("ghost", ""))

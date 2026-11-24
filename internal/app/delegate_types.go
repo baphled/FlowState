@@ -14,8 +14,8 @@ import (
 const TypeDelegationCompleted = "delegation.completed"
 
 // TypeDelegationStarted is the event RunDelegatedChild appends to the parent's
-// log as soon as a child exists (before it runs): the record of which children a
-// parent call started (ADR-009 D8).
+// log as soon as a child exists (before it runs). It is what lets crash recovery
+// find the children of a dangling delegate call (ADR-009 D8).
 const TypeDelegationStarted = "delegation.started"
 
 // TypeDelegationFailed is the final event of a child that failed outside the
@@ -37,6 +37,11 @@ const (
 // plus a fresh id, because a lease is re-granted to its own owner and one shared
 // name would let two runs of a child both hold it.
 const delegateLeasePrefix = "delegate:"
+
+// delegateLegacyOwner is the exact lease owner an earlier build gave a delegated
+// run, without the run id. Nothing else can ever release such a lease, so crash
+// recovery clears it too.
+const delegateLegacyOwner = "delegate"
 
 // DelegateProfileRef names the profile a child ran under: recorded in the
 // child's session.delegated payload and in the delegation receipt.
@@ -147,4 +152,13 @@ type delegateRun struct {
 type resumableLog struct {
 	profile *DelegateProfileRef
 	turns   int64
+}
+
+// danglingChild is a child a dangling delegate call started. completed is true
+// when its delegation.completed receipt was written: it finished, and only the
+// result the call would have carried was lost.
+type danglingChild struct {
+	id        string
+	status    string
+	completed bool
 }

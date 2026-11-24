@@ -1476,3 +1476,82 @@ var _ = Describe("Session run --max-turns", func() {
 		Expect(runWithTools(25).exit).To(Equal(5))
 	})
 })
+
+// seedCrashSession creates an active z.ai session in the database at db and
+// lets seed append events to it through the store's writer.
+func seedCrashSession(db string, seed func(w *store.EventWriter)) string {
+	ctx := context.Background()
+	st, err := app.OpenStore(db)
+	must(err)
+	defer func() { must(st.Close()) }()
+	sess, err := app.CreateSession(ctx, st, "z.ai", "glm-5.3", app.DefaultHarness, "3f7a", "greet")
+	must(err)
+	w, err := st.NewEventWriter(ctx, sess.ID)
+	must(err)
+	defer w.Close()
+	seed(w)
+	return sess.ID
+}
+
+// tamperFirstEvent breaks the payload digest of the session's first event
+// through a second connection, as disk corruption would.
+func tamperFirstEvent(db, id string) {
+	conn, err := sql.Open("sqlite", db)
+	must(err)
+	defer func() { _ = conn.Close() }()
+	_, err = conn.Exec(`UPDATE events SET payload_json = payload_json || ' ' WHERE session_id = ? AND seq = 0`, id)
+	must(err)
+}
+
+// loggedTypesBeforeFirst replays the session's log and returns the event types
+// up to, not including, the first one of type stop.
+func loggedTypesBeforeFirst(db, id, stop string) []string {
+	st, err := app.OpenStore(db)
+	must(err)
+	defer func() { must(st.Close()) }()
+	events, err := st.Replay(context.Background(), id)
+	must(err)
+	types := []string{}
+	for _, e := range events {
+		if e.Type == stop {
+			break
+		}
+		types = append(types, e.Type)
+	}
+	return types
+}
+
+// unansweredDelegateLog appends a delegate call that no result follows and a
+// session.interrupted after it, so no turn.start is left dangling.
+func unansweredDelegateLog(w *store.EventWriter) {
+	ctx := context.Background()
+	_, err := w.Append(ctx, "tool:delegate", "tool.call", map[string]any{
+		"tool": "delegate", "tool_call_id": "d1", "args": map[string]any{}})
+	must(err)
+	_, err = w.Append(ctx, "engine", "session.interrupted", map[string]any{"reason": "process_lost"})
+	must(err)
+}
+
+var _ = Describe("Session run crash recovery", func() {
+	Context("a corrupt log on an active session", func() {
+		var run result
+		BeforeEach(func() {
+			id := seedCrashSession(dbFor(), func(*store.EventWriter) {})
+			tamperFirstEvent(dbFor(), id)
+			run = runCLIRun(id)
+		})
+		It("exits with the replay mismatch status", func() { Expect(run.exit).To(Equal(7)) })
+		It("reports replay_mismatch", func() { Expect(stderrCode(run.stderr)).To(Equal("replay_mismatch")) })
+	})
+
+	Context("a delegate call left unanswered with no dangling turn", func() {
+		It("answers the call before the first provider request", func() {
+			withFakeZai(fakeZaiServer(`{"choices":[{"delta":{"content":"ok"}}]}`))
+			id := seedCrashSession(dbFor(), unansweredDelegateLog)
+			if run := runCLIRun(id); run.exit != 0 {
+				panic("session run failed")
+			}
+			Expect(loggedTypesBeforeFirst(dbFor(), id, "assistant.delta")).To(ContainElement("tool.result"))
+		})
+	})
+})

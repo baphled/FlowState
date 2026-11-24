@@ -485,7 +485,7 @@ var _ = Describe("The delegate tool's resume", func() {
 		Expect(err).To(MatchError(ContainSubstring("is not a child of this session")))
 	})
 
-	Describe("when the model resumes a child", func() {
+	Describe("after the parent crashed mid-delegate", func() {
 		var f *toolFixture
 		var child *store.Session
 		var res *ExecLoopResult
@@ -493,12 +493,28 @@ var _ = Describe("The delegate tool's resume", func() {
 			ctx := context.Background()
 			f = newToolFixture()
 			child = f.seedChild(f.parent, 2)
+			// The crash: the call and delegation.started are in the log, no result, no receipt, and the
+			// killed runner's lease is still on the child.
+			mustAppendEvent(ctx, f.st, f.parent.ID, "tool:delegate", tool.TypeToolCall, map[string]any{
+				"tool": "delegate", "tool_call_id": "d0", "args": map[string]any{"agent": "reviewer", "task": "look"},
+			})
+			mustAppendEvent(ctx, f.st, f.parent.ID, "engine", TypeDelegationStarted, map[string]any{"child_id": child.ID})
+			must(f.st.AcquireLease(ctx, "exec:"+child.ID, delegateLeasePrefix+"dead-run"))
+			check(RecoverCrashedSession(ctx, f.st, f.parent.ID))
 			f.streamer.turns = [][]provider.StreamEvent{
 				callTurn(delegateCall(`{"resume":"` + child.ID + `"}`)), finishText("child done"), finishText("parent done"),
 			}
 			res = must(f.runParent(ctx))
 		})
 		It("lets the parent finish", func() { Expect(res.FinalContent).To(Equal("parent done")) })
+		It("tells the model about the interruption in its first request", func() {
+			msgs := f.streamer.reqs[0].Messages
+			Expect(msgs[len(msgs)-1].Content).To(ContainSubstring("interrupted by a crash"))
+		})
+		It("names the child and how to resume it in that request", func() {
+			msgs := f.streamer.reqs[0].Messages
+			Expect(msgs[len(msgs)-1].Content).To(ContainSubstring(child.ID + " (active): resume it with delegate"))
+		})
 		It("completes the resumed child", func() { Expect(f.status(child.ID)).To(Equal("completed")) })
 		It("gives the resumed child its earlier turns", func() {
 			Expect(roles(f.streamer.reqs[1])).To(Equal([]string{"system", "user", "assistant", "tool", "assistant", "tool"}))
