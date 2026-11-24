@@ -292,6 +292,7 @@ func payloadFieldRaw(payloadJSON, field string) string {
 
 // runCall invokes one call via the plain writer (denied) or the correlated adapter (allowlisted).
 func runCall(ctx context.Context, cfg ExecLoopConfig, w tool.EventSink, call provider.ToolCall, allowed map[string]bool, results []provider.Message) ([]provider.Message, error) {
+	ctx = withParentEvents(ctx, w) // the one writer the loop holds, for tools that record their own events
 	loop, lerr := func() (*tool.Loop, error) {
 		if !allowed[call.Name] {
 			return tool.NewLoop(cfg.Registry, w, cfg.Allowlist)

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -1291,4 +1292,107 @@ var _ = Describe("Session run --workdir and the config allowlist", func() {
 			It("does not complete the session", func() { Expect(sessionStatusViaList(id)).NotTo(Equal("completed")) })
 		})
 	}
+})
+
+var _ = Describe("Session run --agents", func() {
+	var userAgents string
+
+	putProfile := func(dir, name string) {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			panic(err)
+		}
+		text := "---\nname: " + name + "\ndescription: d\ntools: [fs.read]\n---\nYou review.\n"
+		if err := os.WriteFile(filepath.Join(dir, name+".md"), []byte(text), 0o600); err != nil {
+			panic(err)
+		}
+	}
+
+	BeforeEach(func() {
+		config := GinkgoT().TempDir()
+		for _, env := range []string{"XDG_CONFIG_HOME", "HOME", "APPDATA"} {
+			GinkgoT().Setenv(env, config)
+		}
+		base, err := os.UserConfigDir()
+		if err != nil {
+			panic(err)
+		}
+		userAgents = filepath.Join(base, "flowstate", "agents")
+		withFakeZai(fakeZaiServer(`{"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}`))
+	})
+
+	DescribeTable("exits 2 for a scope and an allowlist that disagree",
+		func(flags ...string) {
+			Expect(runCLILoop(newLoopSession(), flags...).exit).To(Equal(2))
+		},
+		Entry("delegate allowlisted without --agents", "--allow", "delegate"),
+		Entry("--agents without delegate allowlisted", "--agents", "user", "--allow", "echo"),
+		Entry("--agents with no allowlist", "--agents", "user"),
+		Entry("an invalid scope", "--agents", "bogus", "--allow", "delegate"),
+		Entry("an empty scope", "--agents=", "--allow", "delegate"),
+	)
+
+	It("names the missing allowlist entry on stderr", func() {
+		run := runCLILoop(newLoopSession(), "--agents", "user", "--allow", "echo")
+		Expect(run.stderr).To(ContainSubstring("--agents loads profiles but delegate is not allowlisted"))
+	})
+
+	It("names the missing flag on stderr", func() {
+		Expect(runCLILoop(newLoopSession(), "--allow", "delegate").stderr).To(ContainSubstring("delegate needs --agents"))
+	})
+
+	It("exits 4 before anything runs when both directories hold the same profile", func() {
+		workdir := GinkgoT().TempDir()
+		putProfile(userAgents, "dup")
+		putProfile(filepath.Join(workdir, ".flowstate", "agents"), "dup")
+		run := runCLILoop(newLoopSession(), "--agents", "both", "--allow", "delegate", "--workdir", workdir)
+		Expect(run.exit).To(Equal(4))
+	})
+
+	It("leaves the session untouched after that conflict", func() {
+		workdir := GinkgoT().TempDir()
+		putProfile(userAgents, "dup")
+		putProfile(filepath.Join(workdir, ".flowstate", "agents"), "dup")
+		id := newLoopSession()
+		_ = runCLILoop(id, "--agents", "both", "--allow", "delegate", "--workdir", workdir)
+		Expect(sessionStatusViaList(id)).To(Equal("active"))
+	})
+
+	It("runs with a loaded profile and delegate allowlisted", func() {
+		putProfile(userAgents, "reviewer")
+		run := runCLILoop(newLoopSession(), "--agents", "user", "--allow", "delegate", "--workdir", GinkgoT().TempDir())
+		Expect(run.exit).To(Equal(0))
+	})
+	It("delegates without --workdir: the log has the call, the receipt and the result", func() {
+		putProfile(userAgents, "reviewer")
+		var requests atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			chunk := `{"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}`
+			if requests.Add(1) == 1 {
+				chunk = `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":` +
+					`{"name":"delegate","arguments":"{\"agent\":\"reviewer\",\"task\":\"look\"}"}}]},"finish_reason":"tool_calls"}]}`
+			}
+			_, _ = w.Write([]byte("data: " + chunk + "\n\ndata: [DONE]\n\n"))
+		}))
+		DeferCleanup(srv.Close)
+		withFakeZai(srv)
+		run := runCLILoop(newLoopSession(), "--agents", "user", "--allow", "delegate")
+		Expect(stdoutEventTypes(run.stdout)).To(ContainElements("tool.call", "delegation.completed", "tool.result"))
+	})
+
+	It("finds a project profile under --workdir", func() {
+		workdir := GinkgoT().TempDir()
+		putProfile(filepath.Join(workdir, ".flowstate", "agents"), "reviewer")
+		var seen string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			seen = string(body)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(`data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}` + "\n\ndata: [DONE]\n\n"))
+		}))
+		DeferCleanup(srv.Close)
+		withFakeZai(srv)
+		_ = runCLILoop(newLoopSession(), "--agents", "project", "--allow", "delegate", "--workdir", workdir)
+		Expect(seen).To(ContainSubstring("- reviewer: d"))
+	})
 })

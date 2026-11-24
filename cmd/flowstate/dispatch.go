@@ -213,7 +213,7 @@ func parseFlags(args []string) (*flags, []string, error) {
 			if serr := fl.setString(a, take); serr != nil {
 				return nil, nil, serr
 			}
-		case strings.HasPrefix(a, "--tool"), a == "--allow", a == "--allow-file", a == "--workdir":
+		case strings.HasPrefix(a, "--tool"), a == "--allow", a == "--allow-file", a == "--workdir", strings.HasPrefix(a, "--agents"):
 			if serr := fl.setToolFlag(a, take); serr != nil {
 				return nil, nil, serr
 			}
@@ -284,6 +284,11 @@ func (f *flags) setToolFlag(name string, take func() (string, error)) error {
 		f.allowFile = v
 	case strings.HasPrefix(name, "--allow"):
 		f.allow = append(f.allow, v)
+	case strings.HasPrefix(name, "--agents"):
+		if v == "" {
+			return fmt.Errorf("flag --agents requires user, project or both")
+		}
+		f.agents = v
 	default:
 		f.workdir = v
 	}
@@ -334,9 +339,12 @@ session budget <id> [--db path]
 session doctor <id> [--db path]
 session message <id> --from <parent> --body <text|@file> [--db path]
 session list   [--status <s>] [--db path]
-session run    <id> [--budget <n>] [--max-tokens <n>] [--allow <name>]... [--allow-file <manifest>] [--workdir <path>] [--db path]
+session run    <id> [--budget <n>] [--max-tokens <n>] [--allow <name>]... [--allow-file <manifest>] [--workdir <path>]
+               [--agents user|project|both] [--db path]
                (--allow/--allow-file replace the config tool_allowlist; --workdir only sets where tools
-               run and needs an allowlist from --allow, --allow-file or tool_allowlist)
+               run and needs an allowlist from --allow, --allow-file or tool_allowlist; --agents loads agent
+               profiles for the delegate tool, which must also be allowlisted: --allow delegate;
+               project profiles come from --workdir, else the current directory)
 session events <id> [--follow] [--db path]
 session close  <id> [--db path]
 session cancel <id> [--db path]

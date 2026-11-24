@@ -76,8 +76,9 @@ from copying the agreed design and adding only what FlowState already has.
 | `resume` | A child session id to continue (see D8). |
 | `cwd` | Working directory of a single child; defaults to the parent's. The user creates it, not the engine. |
 
-The result is text: a first line `child <id> <status> turns <n> tokens <n>` followed by the child's final message,
-capped at 50 KB / 2000 lines with a truncation notice. A child that did not complete is marked `is_error` and carries
+A completed single child returns JSON, `{child, status, turns, text}`: `text` is the child's final message, capped at
+50 KB / 2000 lines with a truncation notice, and `turns` stands in for tokens until child token accounting lands (as in
+the receipt). A child that did not complete is marked `is_error` and carries
 its reason. Parallel results are one block per task, each with its own cap.
 
 ### Agent profiles

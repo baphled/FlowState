@@ -290,6 +290,13 @@ reject run as `session_terminal` (exit 6). A resume append failure blocks turn
 execution and surfaces the persisted failure; the session stays paused and
 unacknowledged. Use the app Ginkgo command above for local verification.
 
+`session run <id> --agents user|project|both` loads agent profiles and registers the `delegate` tool in the run's
+registry (`app.NewDelegateTool`); `delegate` must be allowlisted and the two must agree, or the run is a usage error
+(exit 2). The execution loop passes the per-call event writer it already holds to the tool through the invocation
+context, so the `delegation.completed` receipt is appended by that one writer between the call and its result. A
+failed, cancelled or partial child is returned to the parent model as an `error:` tool result; the parent run does not
+fail, and a cancelled parent still ends cancelled. The HTTP run has no `--agents` yet.
+
 ## Session config composition
 
 `flowstate.json` (CLI-AND-API-CONTRACT §4) supplies session defaults: an explicit

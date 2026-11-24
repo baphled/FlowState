@@ -61,6 +61,14 @@ type SessionExecLoopRequest struct {
 	RequireAllowlist bool
 	// Workdir is the --workdir override; empty defaults beside the db.
 	Workdir string
+	// Agents is the --agents scope (user, project or both); empty offers no
+	// delegation. A scope requires `delegate` on the allowlist and the other
+	// way round; both are usage errors.
+	Agents string
+	// ProjectRoot is where project profiles are found when Workdir is empty;
+	// empty means the process current directory. The CLI leaves it empty; it is
+	// a seam for in-process callers and specs, which must not change directory.
+	ProjectRoot string
 	// Budget is the total loop budget pool; <= 0 means unlimited turns.
 	Budget int64
 	// MaxTokens caps each provider response; <= 0 means provider default.
