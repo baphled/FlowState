@@ -117,6 +117,15 @@ You review. You do not edit. Begin your final message with VERDICT: pass or VERD
 - `name` (`^[a-z][a-z0-9-]{0,63}$`) and `description` are required. `tools` is the allowlist; omitted means no tools.
   Names must be registered (`echo`, `fs.read`, `fs.write`, `fs.edit`, `exec.run`) or the reserved `delegate`, and may
   not repeat. `model` is a model name or `inherit` (the default). `max_turns` is 1 to 100 and defaults to 25.
+- `delegates` is a list of profile names (each `^[a-z][a-z0-9-]{0,63}$`, at most 32, no duplicate, never the profile
+  itself): the only profiles this profile's `delegate` tool may spawn. It needs `delegate` in `tools`, otherwise the
+  load fails with "delegates needs delegate in tools". `delegate` in `tools` without `delegates` loads, with
+  `delegates: []` (visible in `agents list`): it fails closed, nothing is allowed. The allowlist is defined and
+  validated now; it is enforced when nested delegation lands (#445). Until then a profile that lists `delegate`
+  still cannot be spawned as a child: the spawn refuses it with "delegate is not available to children yet".
+  A name outside the loaded scope fails `agents list`, `session run` and the other loaders at load
+  (`config_invalid`), naming both profiles; `agents validate` checks files one by one, so it does not cross-check.
+  Cycles (a delegates b, b delegates a) are allowed: the depth cap bounds the recursion.
 - An unknown field fails the load. So does an empty body: a profile with no instructions is a mistake.
 - The frontmatter is strict. Refused: an explicit YAML tag; a non-string text value or a `max_turns` that is not a
   plain decimal integer; a second YAML document or content after `...`; a control, format or separator character
@@ -139,6 +148,21 @@ You review. You do not edit. Begin your final message with VERDICT: pass or VERD
   directory fail the load.
 - This repository's `.gitignore` ignores `.flowstate/`. A project that wants committed profiles unignores them
   (`.flowstate/*` then `!.flowstate/agents/`).
+
+A coordinator that may delegate only to named profiles:
+
+```markdown
+---
+name: team-lead
+description: Splits a task and hands the parts to engineers and a reviewer
+tools: [delegate, fs.read]
+delegates: [engineer, reviewer]
+---
+You plan. You never edit. Delegate each part to an engineer, then to the reviewer.
+```
+
+Note: this profile loads and validates today, but it cannot be spawned as a child until nested delegation lands
+(#445), which is also when its `delegates` list is enforced (ADR-009).
 
 ### Turn limit
 
@@ -232,6 +256,8 @@ flowstate session run "$id" --budget 200 --agents user --allow delegate --workdi
   `--agents` and no `--workdir`, that default directory is created (mode 0700) before the run.
 - Use project profiles only for repositories you trust: a model with `fs.write` on the same workdir could write a
   profile there in an earlier run, and a child's tools are not limited by the parent's allowlist.
+  A project profile's `delegates` is also repository-controlled:
+  under `--agents both` it can name user profiles, which then load as its delegates.
 - A task is at most 64 KiB, and the tool description lists at most 32 profiles, then `(and N more)`.
 - The parent needs a provider that accepts tools: the z.ai coding route or the Anthropic API-key route. With one that
   refuses tools the run fails as it does today; nothing checks this in advance.

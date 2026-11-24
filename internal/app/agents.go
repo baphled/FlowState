@@ -28,7 +28,8 @@ func AgentToolNames() []string {
 // current directory) and is read only when the scope asks for it, because
 // project profiles are repository-controlled prompts that carry tools. A
 // profile that fails validation, or a name
-// found in both directories under scope both, is config_invalid.
+// found in both directories under scope both, or a delegates entry naming a
+// profile outside the loaded set, is config_invalid.
 func LoadProfiles(scope, workdir string) ([]agent.Profile, error) {
 	sc, err := agent.ParseScope(scope)
 	if err != nil {
@@ -47,6 +48,9 @@ func LoadProfiles(scope, workdir string) ([]agent.Profile, error) {
 	}
 	profiles, err := agent.Load(sc, userDir, filepath.Join(workdir, projectAgentsDir), AgentToolNames())
 	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConfigInvalid, err)
+	}
+	if err := agent.CheckDelegates(profiles); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrConfigInvalid, err)
 	}
 	return profiles, nil

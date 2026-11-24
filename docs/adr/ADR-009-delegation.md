@@ -122,6 +122,16 @@ You review. You do not edit. Begin your final message with VERDICT: pass or VERD
 - A child cannot delegate unless its `tools` lists `delegate`. Claude Code allows nesting by default, OpenCode gates
   it by permission and Pi by the child's tool list; FlowState starts closed. `MaxDelegationDepth` (2) stays as the
   hard backstop.
+- **`delegates` names the profiles a delegating profile may spawn.** A profile that lists `delegate` in `tools`
+  declares `delegates: [profile names]`, the only profiles its `delegate` tool may spawn. It fails closed: none
+  declared means nothing is allowed (nested enforcement lands with nested delegation, #445). `delegates` needs
+  `delegate` in `tools` (the load fails otherwise); names follow the profile-name rule, at most 32, no duplicate, never
+  the profile itself; a name outside the loaded scope fails the load, not the spawn. Cycles are allowed; the depth cap
+  bounds them. A rule that a child may only spawn profiles whose tools are within its own was rejected: a nested
+  review found a read-only reviewer with `[delegate, fs.read]` could spawn a writer, but a subset rule also forbids the
+  main use, a read-only team lead delegating to engineers that write. Claude Code (`Agent(type1,type2)` in the tools
+  list) and OpenCode (`permission.task` globs) make the permitted agents explicit configuration on the delegating
+  agent; FlowState does the same.
 
 ### Decisions
 

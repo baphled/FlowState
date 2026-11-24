@@ -332,11 +332,12 @@
     "items": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "description", "tools", "model", "max_turns", "source", "path", "sha256"],
+      "required": ["name", "description", "tools", "delegates", "model", "max_turns", "source", "path", "sha256"],
       "properties": {
         "name": { "type": "string" },
         "description": { "type": "string" },
         "tools": { "type": "array", "items": { "type": "string" } },
+        "delegates": { "type": "array", "items": { "type": "string" } },
         "model": { "type": "string" },
         "max_turns": { "type": "integer" },
         "source": { "type": "string", "enum": ["user", "project"] },
