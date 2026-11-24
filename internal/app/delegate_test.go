@@ -3,9 +3,12 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -140,6 +143,31 @@ func (b *blockingStreamer) Stream(ctx context.Context, _ *provider.ChatRequest) 
 	return out
 }
 
+// lateDeadlineCtx expires with context.DeadlineExceeded only when expire is
+// called, so a spec can arm the deadline after the provider has been reached.
+type lateDeadlineCtx struct {
+	context.Context
+	done chan struct{}
+	once sync.Once
+}
+
+func newLateDeadlineCtx() *lateDeadlineCtx {
+	return &lateDeadlineCtx{Context: context.Background(), done: make(chan struct{})}
+}
+
+func (c *lateDeadlineCtx) Done() <-chan struct{} { return c.done }
+
+func (c *lateDeadlineCtx) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
+func (c *lateDeadlineCtx) expire() { c.once.Do(func() { close(c.done) }) }
+
 type panicStreamer struct{ execLoopStreamer }
 
 func (*panicStreamer) Stream(context.Context, *provider.ChatRequest) <-chan provider.StreamEvent {
@@ -153,19 +181,33 @@ func (c *captureSink) Append(_ context.Context, _, typ string, _ any) (int64, er
 	return int64(len(c.types)), nil
 }
 
-// escapeEntries are the working directories a child must be refused.
+// escapeEntries are the working directories a child must be refused; each
+// refusal is the one uniform message, which names neither the parent's directory
+// nor the directory outside it.
 func escapeEntries() []TableEntry {
-	outside := MatchError(ContainSubstring("outside the parent's"))
 	entries := []TableEntry{
-		Entry("a parent-relative escape", func(*delegateFixture) string { return "../" }, outside),
-		Entry("an absolute directory elsewhere", func(*delegateFixture) string { return GinkgoT().TempDir() }, outside),
-		Entry("a missing subdirectory", func(*delegateFixture) string { return "absent" }, MatchError(ErrUsage)),
+		Entry("a parent-relative escape", func(*delegateFixture) string { return "../" }),
+		Entry("an absolute directory elsewhere", func(*delegateFixture) string { return GinkgoT().TempDir() }),
+		Entry("a missing subdirectory", func(*delegateFixture) string { return "absent" }),
+		Entry("a file", func(f *delegateFixture) string {
+			check(os.WriteFile(filepath.Join(f.workdir, "afile"), []byte("x"), 0o600))
+			return "afile"
+		}),
+		Entry("a path that cleans to outside through a missing component", func(f *delegateFixture) string {
+			return f.workdir + string(filepath.Separator) + "trap" + string(filepath.Separator) + ".." + string(filepath.Separator) + ".." + string(filepath.Separator) + "x"
+		}),
 	}
 	if runtime.GOOS != "windows" {
 		entries = append(entries, Entry("a symlink that leaves the parent's directory", func(f *delegateFixture) string {
 			check(os.Symlink(GinkgoT().TempDir(), filepath.Join(f.workdir, "out")))
 			return "out"
-		}, outside))
+		}), Entry("a symlink to a missing directory", func(f *delegateFixture) string {
+			check(os.Symlink(filepath.Join(GinkgoT().TempDir(), "gone"), filepath.Join(f.workdir, "dangling")))
+			return "dangling"
+		}), Entry("a path through a symlink that leaves the parent's directory", func(f *delegateFixture) string {
+			check(os.Symlink(GinkgoT().TempDir(), filepath.Join(f.workdir, "out")))
+			return "out/x"
+		}))
 	}
 	return entries
 }
@@ -316,9 +358,9 @@ var _ = Describe("RunDelegatedChild", func() {
 			}
 			return req
 		}
-		DescribeTable("refuses", func(dir func(*delegateFixture) string, want gtypes.GomegaMatcher) {
+		DescribeTable("refuses with the uniform message", func(dir func(*delegateFixture) string) {
 			_, err := RunDelegatedChild(ctx, request(dir(f)))
-			Expect(err).To(want)
+			Expect(err).To(MatchError(errWorkdirRefused().Error()))
 		}, escapeEntries())
 		It("creates no child for a refused directory", func() {
 			_, _ = RunDelegatedChild(ctx, request("../"))
@@ -330,8 +372,44 @@ var _ = Describe("RunDelegatedChild", func() {
 			req := request("")
 			req.ParentWorkdir = file
 			_, err := RunDelegatedChild(ctx, req)
-			Expect(err).To(MatchError(ContainSubstring("not a directory")))
+			Expect(err).To(MatchError(errParentWorkdirRefused().Error()))
 		})
+		It("refuses a parent working directory that is missing, without naming it", func() {
+			req := request("")
+			req.ParentWorkdir = filepath.Join(f.workdir, "gone")
+			_, err := RunDelegatedChild(ctx, req)
+			Expect(err).To(MatchError(errParentWorkdirRefused().Error()))
+		})
+		It("accepts a path that cleans to a directory inside the parent's through a missing component", func() {
+			check(os.Mkdir(filepath.Join(f.workdir, "pkg"), 0o750))
+			sep := string(filepath.Separator)
+			res := must(RunDelegatedChild(ctx, request(f.workdir+sep+"trap"+sep+".."+sep+"pkg")))
+			Expect(res.Status).To(Equal(DelegateStatusCompleted))
+		})
+		if runtime.GOOS != "windows" {
+			Describe("under a symlinked parent", func() {
+				var real, link string
+				BeforeEach(func() {
+					real = must(filepath.EvalSymlinks(f.workdir))
+					check(os.Mkdir(filepath.Join(real, "sub"), 0o750))
+					link = filepath.Join(GinkgoT().TempDir(), "link")
+					check(os.Symlink(real, link))
+				})
+				run := func(child string) {
+					req := request(child)
+					req.ParentWorkdir = link
+					_ = must(RunDelegatedChild(ctx, req))
+				}
+				It("accepts an absolute child named through the symlink", func() {
+					run(filepath.Join(link, "sub"))
+					Expect(seen).To(Equal(filepath.Join(real, "sub")))
+				})
+				It("accepts an absolute child named by the real path", func() {
+					run(filepath.Join(real, "sub"))
+					Expect(seen).To(Equal(filepath.Join(real, "sub")))
+				})
+			})
+		}
 		It("roots the registry at the parent's directory by default", func() {
 			_, _ = RunDelegatedChild(ctx, request(""))
 			Expect(seen).To(Equal(must(filepath.EvalSymlinks(f.workdir))))
@@ -406,15 +484,52 @@ var _ = Describe("RunDelegatedChild", func() {
 			f = newDelegateFixture()
 			req := f.request()
 			req.Streamer = &blockingStreamer{started: make(chan struct{})}
-			dctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
-			defer cancel()
-			var err error
-			if res, err = RunDelegatedChild(dctx, req); err != nil {
-				panic(err)
+			blocker := req.Streamer.(*blockingStreamer)
+			dctx := newLateDeadlineCtx()
+			type outcome struct {
+				res DelegateResult
+				err error
+			}
+			done := make(chan outcome, 1)
+			go func() {
+				r, e := RunDelegatedChild(dctx, req)
+				done <- outcome{r, e}
+			}()
+			select {
+			case <-blocker.started:
+			case <-time.After(10 * time.Second):
+				panic("child never reached the provider")
+			}
+			dctx.expire()
+			select {
+			case o := <-done:
+				if o.err != nil {
+					panic(o.err)
+				}
+				res = o.res
+			case <-time.After(10 * time.Second):
+				panic("the child loop did not return after the deadline")
 			}
 		})
 		It("fails the child rather than cancelling it", func() { Expect(f.status(res.ChildID)).To(Equal("failed")) })
 		It("says the deadline was exceeded", func() { Expect(res.Reason).To(ContainSubstring("deadline exceeded")) })
+	})
+
+	Describe("which failures are the child's own", func() {
+		expired := func() context.Context {
+			c := newLateDeadlineCtx()
+			c.expire()
+			return c
+		}
+		It("counts an unrelated error once the context's deadline has expired", func() {
+			Expect(delegateFailureIsChild(expired(), errors.New("lease read: interrupted"))).To(BeTrue())
+		})
+		It("counts a deadline in the error chain", func() {
+			Expect(delegateFailureIsChild(ctx, fmt.Errorf("read: %w", context.DeadlineExceeded))).To(BeTrue())
+		})
+		It("leaves an unrelated error to the caller while the deadline holds", func() {
+			Expect(delegateFailureIsChild(ctx, errors.New("lease read: disk full"))).To(BeFalse())
+		})
 	})
 
 	Describe("a panicking provider", func() {
@@ -443,10 +558,23 @@ var _ = Describe("RunDelegatedChild", func() {
 		It("settles the reservation", func() {
 			Expect(f.reservation(childID).Status).To(Equal(store.ReservationStatusCharged))
 		})
-		It("restores the pool", func() { Expect(f.pool.Remaining()).To(Equal(delegateParentPool)) })
+		It("charges the whole grant, as the spent turns are unknown", func() {
+			Expect(f.reservation(childID).Consumed).To(Equal(int64(f.profile.MaxTurns)))
+		})
+		It("keeps the whole grant out of the pool", func() {
+			Expect(f.pool.Remaining()).To(Equal(delegateParentPool - int64(f.profile.MaxTurns)))
+		})
 		It("writes the receipt with the reason panic", func() {
 			Expect(f.receiptPayload()).To(HaveKeyWithValue("reason", "panic"))
 		})
+	})
+
+	It("a child failure: clips a long reason in the receipt with the truncation notice", func() {
+		f := newDelegateFixture([]provider.StreamEvent{provError(strings.Repeat("r", 200*1024))})
+		if _, err := RunDelegatedChild(ctx, f.request()); err != nil {
+			panic(err)
+		}
+		Expect(f.receiptPayload()["reason"]).To(HaveSuffix("cut at 50 KB / 2000 lines]"))
 	})
 
 	It("a nil receipt sink with concurrent children: writes one receipt per child", func() {

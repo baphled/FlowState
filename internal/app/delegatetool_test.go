@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -145,7 +146,12 @@ func badArgEntries() []TableEntry {
 		Entry("parallel tasks", `{"tasks":[{"agent":"reviewer","task":"t"}]}`, "tasks and resume are not available yet"),
 		Entry("a resume", `{"resume":"abc"}`, "tasks and resume are not available yet"),
 		Entry("an unknown agent", `{"agent":"ghost","task":"t"}`, `unknown agent "ghost"; available agents: reviewer, writer`),
-		Entry("a cwd outside the parent's", `{"agent":"reviewer","task":"t","cwd":"../"}`, "outside the parent's"),
+		Entry("a cwd outside the parent's", `{"agent":"reviewer","task":"t","cwd":"../"}`, "inside the parent's"),
+		Entry("a task with NUL", `{"agent":"reviewer","task":"a\u0000b"}`, "NUL, ESC or C1"),
+		Entry("a task with ESC", `{"agent":"reviewer","task":"a\u001b[31mb"}`, "NUL, ESC or C1"),
+		Entry("a task with the lowest C1 control", `{"agent":"reviewer","task":"a\u0080b"}`, "NUL, ESC or C1"),
+		Entry("a task with the highest C1 control", `{"agent":"reviewer","task":"a\u009fb"}`, "NUL, ESC or C1"),
+		Entry("a task with a C1 control", `{"agent":"reviewer","task":"a\u009bb"}`, "NUL, ESC or C1"),
 	}
 }
 
@@ -282,7 +288,7 @@ var _ = Describe("The delegate tool", func() {
 			}
 		})
 		It("hands the model an error naming the confinement", func() {
-			Expect(f.toolResultContent()).To(ContainSubstring("outside the parent's"))
+			Expect(f.toolResultContent()).To(ContainSubstring("inside the parent's"))
 		})
 		It("creates no child", func() { Expect(f.childIDs()).To(BeEmpty()) })
 	})
@@ -350,6 +356,30 @@ var _ = Describe("The delegate tool", func() {
 				panic(err)
 			}
 			Expect(len(f.toolResultContent())).To(BeNumerically("<", 60*1024))
+		})
+		It("clips a profile description to 200 characters in the definition", func() {
+			p := agent.Profile{Name: "a", Description: strings.Repeat("d", 201)}
+			desc := NewDelegateTool(DelegateToolConfig{Profiles: []agent.Profile{p}}).Definition().Description
+			Expect(desc).To(HaveSuffix("\n- a: " + strings.Repeat("d", 200) + "..."))
+		})
+		It("keeps a description of exactly 200 characters whole", func() {
+			p := agent.Profile{Name: "a", Description: strings.Repeat("d", 200)}
+			desc := NewDelegateTool(DelegateToolConfig{Profiles: []agent.Profile{p}}).Definition().Description
+			Expect(desc).To(HaveSuffix("\n- a: " + strings.Repeat("d", 200)))
+		})
+		It("keeps 200 CJK characters whole", func() {
+			s := strings.Repeat("日", 200)
+			Expect(clipRunes(s, 200)).To(Equal(s))
+		})
+		It("cuts 201 CJK characters to 200 runes and an ellipsis", func() {
+			Expect(clipRunes(strings.Repeat("日", 201), 200)).To(Equal(strings.Repeat("日", 200) + "..."))
+		})
+		It("leaves valid UTF-8 when it cuts emoji", func() {
+			Expect(utf8.ValidString(clipRunes(strings.Repeat("😀", 201), 200))).To(BeTrue())
+		})
+		It("accepts a task with newlines and tabs", func() {
+			args := must(parseDelegateArgs(json.RawMessage(`{"agent":"reviewer","task":"a\n\tb"}`)))
+			Expect(args.Task).To(Equal("a\n\tb"))
 		})
 		It("lists at most 32 profiles and counts the rest", func() {
 			profiles := make([]agent.Profile, 40)

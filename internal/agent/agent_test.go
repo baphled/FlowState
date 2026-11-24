@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -87,6 +88,28 @@ var _ = Describe("Parse", func() {
 			panic(err)
 		}
 		Expect(p.Description).To(Equal("d\te"))
+	})
+	It("accepts a description of exactly the cap", func() {
+		p, err := agent.Parse([]byte("---\nname: a\ndescription: "+strings.Repeat("d", agent.MaxDescriptionChars)+"\n---\nx\n"), known)
+		if err != nil {
+			panic(err)
+		}
+		Expect(p.Description).To(HaveLen(agent.MaxDescriptionChars))
+	})
+	It("accepts a description of exactly the cap in multi-byte characters", func() {
+		p, err := agent.Parse([]byte("---\nname: a\ndescription: "+strings.Repeat("日", agent.MaxDescriptionChars)+"\n---\nx\n"), known)
+		if err != nil {
+			panic(err)
+		}
+		Expect(utf8.RuneCountInString(p.Description)).To(Equal(agent.MaxDescriptionChars))
+	})
+	It("refuses a multi-byte description one character over the cap", func() {
+		_, err := agent.Parse([]byte("---\nname: a\ndescription: "+strings.Repeat("日", agent.MaxDescriptionChars+1)+"\n---\nx\n"), known)
+		Expect(err).To(MatchError(ContainSubstring("description is longer than")))
+	})
+	It("refuses a description over the cap", func() {
+		_, err := agent.Parse([]byte("---\nname: a\ndescription: "+strings.Repeat("d", agent.MaxDescriptionChars+1)+"\n---\nx\n"), known)
+		Expect(err).To(MatchError(ContainSubstring("description is longer than")))
 	})
 	It("accepts newlines and tabs in the body", func() {
 		p, err := agent.Parse([]byte(profileText("", "a\n\tb\n")), known)

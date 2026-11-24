@@ -60,11 +60,16 @@ func RunDelegatedChild(ctx context.Context, req DelegateRequest) (DelegateResult
 	return finishDelegatedChild(ctx, &req, child, grant, res, runErr)
 }
 
+// errDelegatePanic is the failure recorded for a child whose loop panicked. The
+// turns it spent are unknown, so its whole grant is charged.
+var errDelegatePanic = errors.New("panic")
+
 // settleDelegatedPanic runs deferred: if the loop panicked it fails the child with
-// reason "panic", settles it on a detached context and re-panics with the value.
+// reason "panic", charges the whole grant, settles it on a detached context and
+// re-panics with the value.
 func settleDelegatedPanic(ctx context.Context, req *DelegateRequest, child *store.Session, grant int64) {
 	if p := recover(); p != nil {
-		_, _ = finishDelegatedChild(context.WithoutCancel(ctx), req, child, grant, nil, errors.New("panic"))
+		_, _ = finishDelegatedChild(context.WithoutCancel(ctx), req, child, grant, nil, errDelegatePanic)
 		panic(p)
 	}
 }
@@ -119,16 +124,18 @@ func validateDelegateRequest(req *DelegateRequest) error {
 }
 
 // confineChildWorkdir resolves the child's directory: the parent's when child is
-// empty, else child (relative to the parent's) after symlinks are resolved. A
-// result outside the parent's resolved directory is refused, so a child never
-// widens the parent's filesystem reach.
+// empty, else child (relative to the parent's) cleaned and then resolved through
+// symlinks. A path outside the parent's directory is refused, so a child never
+// widens the parent's filesystem reach. The path is cleaned before anything
+// touches the disk, so a `..` never makes the call stat a component that the
+// cleaned path does not contain. Each refusal of the child's directory is the one
+// errWorkdirRefused message and each refusal of the parent's directory is the one
+// errParentWorkdirRefused message; neither carries an OS path or an OS error. The
+// resolved directory is returned for the caller to use, not to show the model.
 func confineChildWorkdir(parent, child string) (string, error) {
 	root, err := filepath.EvalSymlinks(parent)
-	if err != nil {
-		return "", fmt.Errorf("%w: delegate: parent working directory: %v", ErrUsage, err)
-	}
-	if !isDirectory(root) {
-		return "", fmt.Errorf("%w: delegate: parent working directory %s is not a directory", ErrUsage, parent)
+	if err != nil || !isDirectory(root) {
+		return "", errParentWorkdirRefused()
 	}
 	if child == "" {
 		return root, nil
@@ -137,18 +144,32 @@ func confineChildWorkdir(parent, child string) (string, error) {
 	if !filepath.IsAbs(target) {
 		target = filepath.Join(root, target)
 	}
+	target = filepath.Clean(target)
+	if !pathWithin(root, target) && !pathWithin(filepath.Clean(parent), target) {
+		return "", errWorkdirRefused()
+	}
 	resolved, err := filepath.EvalSymlinks(target)
-	if err != nil {
-		return "", fmt.Errorf("%w: delegate: working directory %s: %v", ErrUsage, child, err)
-	}
-	rel, err := filepath.Rel(root, resolved)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("%w: delegate: working directory %s is outside the parent's", ErrUsage, child)
-	}
-	if !isDirectory(resolved) {
-		return "", fmt.Errorf("%w: delegate: working directory %s is not a directory", ErrUsage, child)
+	if err != nil || !pathWithin(root, resolved) || !isDirectory(resolved) {
+		return "", errWorkdirRefused()
 	}
 	return resolved, nil
+}
+
+// errWorkdirRefused is the one error for every refused child working directory.
+func errWorkdirRefused() error {
+	return fmt.Errorf("%w: delegate: the working directory must be an existing directory inside the parent's", ErrUsage)
+}
+
+// errParentWorkdirRefused is the one error for a parent working directory that
+// is missing, unreadable or not a directory.
+func errParentWorkdirRefused() error {
+	return fmt.Errorf("%w: delegate: the parent working directory must be an existing directory", ErrUsage)
+}
+
+// pathWithin reports whether path is root or lies below it, by name only.
+func pathWithin(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // isDirectory reports whether path is an existing directory.
@@ -225,7 +246,7 @@ func finishDelegatedChild(ctx context.Context, req *DelegateRequest, child *stor
 		out.Turns, out.ToolCalls, out.FinalContent = res.Turns, res.ToolCalls, res.FinalContent
 	}
 	consumed := out.Turns
-	if req.Pool != nil && consumed > grant {
+	if req.Pool != nil && consumed > grant || errors.Is(runErr, errDelegatePanic) {
 		consumed = grant
 	}
 	var errs []error
@@ -242,7 +263,7 @@ func finishDelegatedChild(ctx context.Context, req *DelegateRequest, child *stor
 	default:
 		out.Status, out.Reason = DelegateStatusFailed, runErr.Error()
 		errs = append(errs, failDelegatedChild(dctx, req.Store, child.ID, runErr))
-		if !delegateFailureIsChild(runErr) {
+		if !delegateFailureIsChild(ctx, runErr) {
 			errs = append(errs, runErr)
 		}
 	}
@@ -255,10 +276,13 @@ func finishDelegatedChild(ctx context.Context, req *DelegateRequest, child *stor
 }
 
 // delegateFailureIsChild reports whether a loop error is the child's own failure
-// (a provider failure or an exhausted budget), which the model sees, rather than
-// an infrastructure failure, which the caller sees.
-func delegateFailureIsChild(err error) bool {
-	return errors.Is(err, ErrProvider) || errors.Is(err, ErrExecLoopBudget) || errors.Is(err, context.DeadlineExceeded)
+// (a provider failure, an exhausted budget or an expired deadline), which the
+// model sees, rather than an infrastructure failure, which the caller sees. A
+// deadline can expire inside a store read before the provider is reached, so an
+// expired ctx counts even when the error does not wrap the deadline.
+func delegateFailureIsChild(ctx context.Context, err error) bool {
+	return errors.Is(err, ErrProvider) || errors.Is(err, ErrExecLoopBudget) ||
+		errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded)
 }
 
 // chargeDelegation records the turns the child spent against its reservation.
@@ -299,7 +323,7 @@ func failDelegatedChild(ctx context.Context, st *store.Store, id string, cause e
 func appendDelegationReceipt(ctx context.Context, req *DelegateRequest, out DelegateResult, consumed int64) error {
 	payload := map[string]any{
 		"child_id": out.ChildID, "profile": profileRef(req.Profile), "status": out.Status,
-		"turns": out.Turns, "tool_calls": out.ToolCalls, "reason": out.Reason, "consumed": consumed,
+		"turns": out.Turns, "tool_calls": out.ToolCalls, "reason": capDelegateText(out.Reason), "consumed": consumed,
 	}
 	if req.ParentEvents != nil {
 		return recordReceipt(ctx, req.ParentEvents, payload)

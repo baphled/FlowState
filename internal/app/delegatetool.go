@@ -24,6 +24,8 @@ const (
 	delegateTaskMaxBytes = 64 * 1024
 	// delegateNameMaxChars bounds an agent name echoed in an error.
 	delegateNameMaxChars = 64
+	// delegateDescriptionMaxChars bounds a profile description in the tool definition.
+	delegateDescriptionMaxChars = 200
 	// delegateListMax is how many profiles the tool description lists.
 	delegateListMax = 32
 )
@@ -81,7 +83,7 @@ func (t *DelegateTool) Definition() provider.ToolDefinition {
 			fmt.Fprintf(&b, "\n(and %d more)", len(t.cfg.Profiles)-delegateListMax)
 			break
 		}
-		b.WriteString("\n- " + p.Name + ": " + p.Description)
+		b.WriteString("\n- " + p.Name + ": " + clipRunes(p.Description, delegateDescriptionMaxChars))
 	}
 	return provider.ToolDefinition{Name: agent.DelegateTool, Description: b.String(), Parameters: json.RawMessage(delegateSchema)}
 }
@@ -155,8 +157,16 @@ func parseDelegateArgs(raw json.RawMessage) (delegateArgs, error) {
 		return args, errors.New("task is required and must not be empty")
 	case len(args.Task) > delegateTaskMaxBytes:
 		return args, fmt.Errorf("task is too long: %d bytes, the limit is %d", len(args.Task), delegateTaskMaxBytes)
+	case strings.IndexFunc(args.Task, isForbiddenTaskRune) >= 0:
+		return args, errors.New("task must not contain NUL, ESC or C1 control characters")
 	}
 	return args, nil
+}
+
+// isForbiddenTaskRune reports NUL, ESC and the C1 controls, which a terminal
+// obeys. A newline and a tab are ordinary text and stay allowed.
+func isForbiddenTaskRune(r rune) bool {
+	return r == 0 || r == 0x1b || (r >= 0x80 && r <= 0x9f)
 }
 
 // delegateFailureSummary describes a child that did not complete: its id,

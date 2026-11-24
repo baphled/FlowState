@@ -211,6 +211,9 @@ func build(fields map[string]*yaml.Node, known []string) (Profile, error) {
 	if strings.TrimSpace(p.Description) == "" {
 		return Profile{}, fmt.Errorf("%w: description is required", ErrInvalidProfile)
 	}
+	if utf8.RuneCountInString(p.Description) > MaxDescriptionChars {
+		return Profile{}, fmt.Errorf("%w: description is longer than %d characters", ErrInvalidProfile, MaxDescriptionChars)
+	}
 	names, err := toolNames(fields["tools"])
 	if err != nil {
 		return Profile{}, err

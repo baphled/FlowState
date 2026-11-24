@@ -137,6 +137,10 @@ You review. You do not edit. Begin your final message with VERDICT: pass or VERD
 | D12 | There is no "skipped" child: nothing is scheduled, so nothing is skipped. |
 | D13 | A child that reaches `max_turns` mid-tool-use ends `failed` with reason `max_turns` and returns its partial text marked partial. Today the loop falls out after the last turn's tool calls and completes the session with no `max_turns` marker (`turn.end` records only the last finish reason). This adds a cause to the `failed` row of ADR-002's status table. |
 
+The working directory is checked once, before the child starts. A symlink swapped in after that check can let a child
+read outside it, because the file tools resolve their root again on every call. That needs another actor able to create
+symlinks (`exec.run` or an external process). Pinning the root inside the tools is tracked as a follow-up.
+
 ### Cancellation
 
 An abort of the parent cancels every running child with the parent's reason, in the order the engine already uses

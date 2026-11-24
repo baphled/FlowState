@@ -1538,6 +1538,33 @@ var _ = Describe("replay transcript", func() {
 		Expect(string(transcriptFor(f, []byte(transcript)))).To(Equal(want))
 	})
 
+	It("escapes ESC, the lowest control byte below the fast-path bound, for a character device", func() {
+		f, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+		if err != nil {
+			panic(err)
+		}
+		defer func() { _ = f.Close() }()
+		Expect(string(transcriptFor(f, []byte("a\x1b[31mb")))).To(Equal("a\\u001b[31mb"))
+	})
+
+	It("reads project profiles from the process directory when there is no --workdir", func() {
+		config := GinkgoT().TempDir()
+		for _, env := range []string{"XDG_CONFIG_HOME", "HOME", "APPDATA"} {
+			GinkgoT().Setenv(env, config)
+		}
+		work := GinkgoT().TempDir()
+		dir := filepath.Join(work, ".flowstate", "agents")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			panic(err)
+		}
+		profile := "---\nname: reviewer\ndescription: Reads a change\ntools: [fs.read]\n---\nYou review.\n"
+		if err := os.WriteFile(filepath.Join(dir, "p.md"), []byte(profile), 0o600); err != nil {
+			panic(err)
+		}
+		r := e2eRunInDir("", work, "agents", "list", "--agents", "project")
+		Expect(r.stdout).To(ContainSubstring(`"name":"reviewer"`))
+	})
+
 	It("writes the raw transcript through a pipe from the replay command", func() {
 		nr := runCLINew("--provider", "p", "--model", "m", "--task", "a\u202eb")
 		if nr.exit != 0 {
