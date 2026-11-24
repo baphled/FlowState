@@ -222,7 +222,7 @@ flowstate session run "$id" --budget 200 --agents user --allow delegate --workdi
 | 2 | Usage error |
 | 3 | Provider error |
 | 4 | `config_invalid`: bad configuration, an unopenable database, or a failed crash recovery or steering drain |
-| 5 | Budget stop: the session is paused, never failed |
+| 5 | Budget stop (the session is paused), or `max_turns` (the turn limit reached while still requesting tools; failed) |
 | 6 | The session is already terminal |
 | 7 | Replay found a corrupt log |
 | 8 | A swarm run was not accepted (failed gate or rejected packet), or a receipt is invalid |

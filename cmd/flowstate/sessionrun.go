@@ -147,9 +147,11 @@ func selfTestTranscript(ctx context.Context, fl *flags, id string) ([]byte, erro
 // unclassified failure, which reports code `internal`; 2 usage; 3
 // provider error; 4 config_invalid (live gates closed in task mode,
 // or the database, crash recovery or the steering drain failed); 5
-// budget stop; 6 already terminal; 7 replay_mismatch (corrupt replay
-// found during the turn); 130 cancelled by SIGINT, SIGTERM or SIGHUP
-// (reason sigint, sigterm or sighup). Exit 8 (receipt_invalid) is not
+// budget stop, or max_turns (the turn limit reached while still
+// requesting tools, which fails the run); 6 already terminal; 7
+// replay_mismatch (corrupt replay found during the turn); 130 cancelled
+// by SIGINT, SIGTERM or SIGHUP (reason sigint, sigterm or sighup). Exit
+// 8 (receipt_invalid) is not
 // reachable from here: it belongs to `swarm run` and `receipt
 // validate`.
 func cmdRun(ctx context.Context, st *app.Store, id string, fl *flags, stdout, stderr *os.File) int {
@@ -318,7 +320,7 @@ func providerFailure(err error) error {
 }
 
 // finishRun maps the turn outcome onto its exit code: SIGINT, SIGTERM
-// or SIGHUP cancellation exits 130, budget stops 5, tool-surface
+// or SIGHUP cancellation exits 130, budget stops and max_turns 5, tool-surface
 // usage failures 2, and only errors that satisfy errors.Is(err,
 // app.ErrProvider) exit 3. Any other error (a storage failure while
 // recording the turn, a lease fence) keeps its own classification

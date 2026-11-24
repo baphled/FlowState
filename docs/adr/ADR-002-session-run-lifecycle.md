@@ -51,7 +51,7 @@ A session in the Go CLI transitions through exactly one status at a time:
 | `paused` | Budget exhausted, awaiting explicit resume | Budget stop during `session run` (exit 5) |
 | `cancelled` | a signal, run-route disconnect or shutdown, `session cancel` | Signal handler, run route, `session cancel` |
 | `completed` | Turn finished without error | Turn loop completion |
-| `failed` | Provider error with terminal=true | Provider stream failure |
+| `failed` | Provider error with terminal=true, or the turn limit reached while still requesting tools (`max_turns`) | Provider stream failure; `ErrMaxTurns` |
 
 A run cancelled mid-turn appends `session.cancelled` with `{"status":"cancelled","reason":R}`, where R says what
 happened: `sigint`, `sigterm` or `sighup` for the command-line signal (carried as the root context's cancellation
@@ -155,8 +155,9 @@ The turn loop (single-turn or exec loop with tool surface) runs with the resolve
   payload stays `{"status":"completed"}`. Neutral values are `stop`, `length` (cut off at the max-token limit) and
   `tool_calls`; others pass through. A `length` turn is still `completed`, but the record shows it was truncated,
   and `session doctor` (and `GET /sessions/{id}/doctor`) surfaces it as `finish_reason` plus `truncated: true`. In
-  a tool-surface run the terminal `turn.end` carries the reason of the final provider turn, so a run that ends at
-  `MaxTurns` while still requesting tools records `tool_calls` on a `completed` turn. A failure to persist
+  a tool-surface run the terminal `turn.end` carries the reason of the final provider turn, so a tool-surface run that
+  answers on its last allowed turn records that turn's reason on a `completed` turn. A run that is still requesting
+  tools after its last allowed turn ends `failed` instead (see Phase 5). A failure to persist
   the provider error or a delta ends the turn with an error and never records `turn.end` or `completed`.
 
 ### Phase 5 — Terminal mapping
@@ -168,6 +169,7 @@ The turn outcome maps to the exit-code contract:
 | completed | 0 | yes |
 | budget stop | 5 | no (paused) |
 | provider error | 3 | yes (failed) |
+| turn limit reached while still requesting tools (`max_turns`) | 5 | yes (failed) |
 | SIGINT, SIGTERM, SIGHUP (SIGHUP unless ignored at start) | 130 | yes (cancelled) |
 | unknown tool | 2 | no (pre-flight) |
 | config invalid | 4 | no (pre-flight) |
