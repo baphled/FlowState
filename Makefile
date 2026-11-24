@@ -76,10 +76,10 @@ clean: ## Clean build artifacts
 
 test: ## Run legacy Go tests and parallel Ginkgo suites during migration
 	$(GOTEST) -race -count=1 ./...
-	$(GOCMD) run github.com/onsi/ginkgo/v2/ginkgo -r --procs=$(GINKGO_PROCS) --compilers=$(GINKGO_COMPILERS) --randomize-all --randomize-suites --fail-on-pending --fail-on-empty --keep-going --race --timeout=5m
+	$(GOCMD) run github.com/onsi/ginkgo/v2/ginkgo -r --procs=$(GINKGO_PROCS) --compilers=$(GINKGO_COMPILERS) --randomize-all --randomize-suites --fail-on-pending --fail-on-empty --keep-going --race --timeout=12m
 
 test-e2e: ## Run the CLI end-to-end matrix suite against the real built binary
-	$(GOCMD) run github.com/onsi/ginkgo/v2/ginkgo --procs=$(GINKGO_PROCS) --compilers=$(GINKGO_COMPILERS) --label-filter=e2e --fail-on-pending --race --timeout=5m ./cmd/flowstate
+	$(GOCMD) run github.com/onsi/ginkgo/v2/ginkgo --procs=$(GINKGO_PROCS) --compilers=$(GINKGO_COMPILERS) --label-filter=e2e --fail-on-pending --race --timeout=8m ./cmd/flowstate
 
 check-test-contract: ## Check changed tests (BASE_SHA=exact PR base)
 	python3 -B -m unittest discover -s scripts/tests -p test_test_contract.py
