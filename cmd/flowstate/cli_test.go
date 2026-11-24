@@ -25,6 +25,8 @@ import (
 	. "github.com/onsi/gomega"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
+
+	"github.com/baphled/flowstate/internal/app"
 )
 
 // This suite productises the CLI contract end-to-end matrix: every
@@ -1651,5 +1653,25 @@ var _ = Describe("replay transcript", func() {
 		}
 		defer func() { _ = f.Close() }()
 		Expect(string(transcriptFor(f, []byte("{\"p\":\"a\x9bb\"}\n")))).To(Equal("{\"p\":\"a\\ufffdb\"}\n"))
+	})
+})
+
+var _ = Describe("The max_turns failure at the CLI", func() {
+	var runErr error
+
+	BeforeEach(func() {
+		runErr = fmt.Errorf("%w: the model still requested tools after 3 turns", app.ErrMaxTurns)
+	})
+
+	It("exits 5, the budget class", func() {
+		exit, _ := finishRunOutcome(runErr)
+		Expect(exit).To(Equal(5))
+	})
+	It("writes the max_turns code as JSON on stderr", func() {
+		_, stderr := finishRunOutcome(runErr)
+		Expect(stderrCode(stderr)).To(Equal("max_turns"))
+	})
+	It("maps the error onto exit 5 outside the run path too", func() {
+		Expect(exitCodeFor(runErr)).To(Equal(5))
 	})
 })

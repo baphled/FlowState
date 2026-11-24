@@ -21,6 +21,11 @@ var ErrExecLoopBudget = errors.New("app: execution loop budget exhausted")
 // ErrExecLoopFenced reports a fenced or foreign-held lease.
 var ErrExecLoopFenced = errors.New("app: execution loop lease fenced")
 
+// ErrMaxTurns reports a run that used all its turns while the model still asked
+// for tools (code max_turns, exit 5, HTTP 409). The run ends failed; the last
+// turn's tool results are recorded and the partial text stays in the result.
+var ErrMaxTurns = errors.New("max_turns")
+
 const execTurnBudgetFloor int64 = 1 // minimum sane reservation unit per turn
 
 // RunExecLoop runs the bounded provider-driven loop to a budget/fence/provider stop.
@@ -92,8 +97,44 @@ func runExecTurns(ctx context.Context, cfg *ExecLoopConfig, token int64) (*ExecL
 			return res, rerr
 		}
 		history = append(history, results...)
+		if res.Turns >= cfg.MaxTurns {
+			// The model still wants to continue and the limit is reached. A
+			// cancel during this turn's calls is a cancellation, not a
+			// success; otherwise the run fails, after the last turn's
+			// results are recorded.
+			if ctx.Err() != nil {
+				return res, ctx.Err()
+			}
+			return res, failExecLimit(ctx, cfg, res.Turns)
+		}
 	}
 	return res, nil
+}
+
+// failExecMaxTurns records the terminal max_turns failure: the provider.error
+// event, carrying reason max_turns and terminal true, is appended before the
+// session is marked failed, as failExecTurn does, so a failed append leaves the
+// status untouched. The result wraps ErrMaxTurns and any persistence failure.
+func failExecMaxTurns(ctx context.Context, w EventWriter, st SessionRepo, sessionID string, turns int64) error {
+	cause := fmt.Errorf("%w: the model still requested tools after %d turns", ErrMaxTurns, turns)
+	payload := map[string]any{"error": cause.Error(), "reason": CodeMaxTurns, "terminal": true}
+	if _, aerr := w.Append(ctx, session.ActorEngine, TypeProviderError, payload); aerr != nil {
+		return fmt.Errorf("%w: record max turns: %w", cause, aerr)
+	}
+	if uerr := st.UpdateSessionStatus(ctx, sessionID, "failed"); uerr != nil {
+		return fmt.Errorf("%w: mark session failed: %w", cause, uerr)
+	}
+	return cause
+}
+
+// failExecLimit opens a writer and fails the run at its turn limit.
+func failExecLimit(ctx context.Context, cfg *ExecLoopConfig, turns int64) error {
+	w, err := cfg.Store.NewEventWriter(ctx, cfg.Session.ID)
+	if err != nil {
+		return fmt.Errorf("%w: record max turns: %w", ErrMaxTurns, err)
+	}
+	defer func() { _ = w.Close() }()
+	return failExecMaxTurns(ctx, w, cfg.Store, cfg.Session.ID, turns)
 }
 func reserveExecBudget(ctx context.Context, cfg *ExecLoopConfig) (stop bool, err error) {
 	if cfg.Pool == nil || cfg.TurnBudget <= 0 || cfg.Pool.Reserve(cfg.TurnBudget) == cfg.TurnBudget {

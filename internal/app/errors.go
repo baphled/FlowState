@@ -29,6 +29,8 @@ const (
 	CodeSessionCancelled = "session_cancelled"
 	// CodeReceiptInvalid marks receipts failing schema validation.
 	CodeReceiptInvalid = "receipt_invalid"
+	// CodeMaxTurns marks a run that used all its turns while still asking for tools.
+	CodeMaxTurns = "max_turns"
 	// CodeProvider marks provider failures.
 	CodeProvider = "provider_error"
 )
@@ -61,6 +63,8 @@ func ErrorCode(err error) string {
 		return CodeConfigInvalid
 	case errors.Is(err, ErrBudgetExceeded):
 		return CodeBudgetExceeded
+	case errors.Is(err, ErrMaxTurns):
+		return CodeMaxTurns
 	case errors.Is(err, ErrSessionCancelled):
 		return CodeSessionCancelled
 	case errors.Is(err, ErrSwarmNotAccepted):

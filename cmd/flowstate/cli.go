@@ -143,7 +143,7 @@ func exitCodeFor(err error) int {
 		return exitUsage
 	case codeConfigInvalid:
 		return exitConfigInvalid
-	case app.CodeBudgetExceeded:
+	case app.CodeBudgetExceeded, app.CodeMaxTurns:
 		return exitBudget
 	case app.CodeSessionCancelled:
 		return exitSigint

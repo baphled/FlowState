@@ -123,6 +123,12 @@ func callTurn(c provider.ToolCall) []provider.StreamEvent {
 	return []provider.StreamEvent{provCall(c), provFinish()}
 }
 
+func writeCallID(id string) provider.ToolCall {
+	c := writeCall()
+	c.ID = id
+	return c
+}
+
 func writeCall() provider.ToolCall {
 	return provider.ToolCall{ID: "w1", Name: "fs.write", Arguments: json.RawMessage(`{"path":"new.txt","content":"x"}`)}
 }
@@ -723,11 +729,70 @@ var _ = Describe("RunDelegatedChild", func() {
 		Expect(f.streamer.reqs[0].Model).To(Equal("other-model"))
 	})
 
-	It("a child still asking for tools at max_turns: completes today, as the loop is unchanged", func() {
-		f := newDelegateFixture(callTurn(echoCall("a")), callTurn(echoCall("b")))
-		f.profile.Tools, f.profile.MaxTurns = []string{"echo"}, 2
-		res := must(RunDelegatedChild(ctx, f.request()))
-		Expect(res.Status).To(Equal(DelegateStatusCompleted))
+	Context("a child still asking for tools at its max_turns", func() {
+		var f *delegateFixture
+		var res DelegateResult
+		var rerr error
+		BeforeEach(func() {
+			ask := func(id, text string) []provider.StreamEvent {
+				return []provider.StreamEvent{provText(text), provCall(echoCall(id)), provFinish()}
+			}
+			f = newDelegateFixture(ask("a", "so far"), ask("b", "last words"))
+			f.profile.Tools, f.profile.MaxTurns = []string{"echo"}, 2
+			res, rerr = RunDelegatedChild(ctx, f.request())
+		})
+
+		It("ends failed", func() { Expect(res.Status).To(Equal(DelegateStatusFailed)) })
+		It("gives max_turns as the reason", func() { Expect(res.Reason).To(Equal("max_turns")) })
+		It("marks the result partial", func() { Expect(res.Partial).To(BeTrue()) })
+		It("keeps the child's last text", func() { Expect(res.FinalContent).To(Equal("last words")) })
+		It("marks the child session failed", func() { Expect(f.status(res.ChildID)).To(Equal("failed")) })
+		It("is not an error for the caller: the parent continues", func() { Expect(rerr).To(Succeed()) })
+		It("charges the reservation for every turn", func() {
+			Expect(f.reservation(res.ChildID).Consumed).To(Equal(int64(2)))
+		})
+		It("settles the reservation", func() {
+			Expect(f.reservation(res.ChildID).Status).To(Equal(store.ReservationStatusCharged))
+		})
+		It("records max_turns in the receipt", func() {
+			Expect(f.receiptPayload()).To(HaveKeyWithValue("reason", "max_turns"))
+		})
+	})
+
+	Context("a parent whose child reaches max_turns", func() {
+		var f *toolFixture
+		var res *ExecLoopResult
+		var perr error
+		ask := func(id, text string) []provider.StreamEvent {
+			return []provider.StreamEvent{provText(text), provCall(writeCallID(id)), provFinish()}
+		}
+		BeforeEach(func() {
+			f = newToolFixture(callTurn(delegateCall(`{"agent":"writer","task":"look"}`)),
+				ask("w1", "wrote one"), ask("w2", "wrote two"), finishText("parent done"))
+			res, perr = f.runParent(ctx)
+		})
+
+		It("continues and answers", func() { Expect(res.FinalContent).To(Equal("parent done")) })
+		It("completes without an error", func() { Expect(perr).To(Succeed()) })
+		It("tells the model the child failed with max_turns", func() {
+			Expect(f.toolResultContent()).To(ContainSubstring("failed after 2 turns: max_turns"))
+		})
+		It("tells the model the child's output is partial", func() {
+			Expect(f.toolResultContent()).To(ContainSubstring("partial output:\nwrote two"))
+		})
+	})
+
+	It("a parallel entry whose child reaches max_turns: reports failed, max_turns and the partial text", func() {
+		ask := func(id, text string) []provider.StreamEvent {
+			return []provider.StreamEvent{provText(text), provCall(writeCallID(id)), provFinish()}
+		}
+		f := newToolFixture(callTurn(delegateCall(`{"tasks":[{"agent":"writer","task":"look"}]}`)),
+			ask("w1", "wrote one"), ask("w2", "wrote two"), finishText("parent done"))
+		_, perr := f.runParent(ctx)
+		if perr != nil {
+			panic(perr)
+		}
+		Expect(f.toolResultContent()).To(ContainSubstring(`"status":"failed","turns":2,"text":"wrote two","reason":"max_turns"`))
 	})
 
 	It("a receipt through the caller's sink: is appended to the sink instead of a new parent writer", func() {
@@ -756,5 +821,95 @@ var _ = Describe("RunDelegatedChild", func() {
 		defer func() { _ = held.Close() }()
 		_, rerr := RunDelegatedChild(ctx, req)
 		Expect(rerr).To(MatchError(ContainSubstring("receipt writer")))
+	})
+})
+
+// lateCancelContext reports context.Canceled from Err as soon as the session's
+// log holds a tool.result, and never closes Done. That is the window the
+// last-turn guard has to cover: a cancel that lands after the last tool
+// result is recorded (the store refuses events on a cancelled context, so a
+// cancel any earlier is caught elsewhere) and before the loop looks at the
+// context again.
+type lateCancelContext struct {
+	context.Context
+	st        *store.Store
+	sessionID string
+}
+
+func (c *lateCancelContext) Err() error {
+	if err := c.Context.Err(); err != nil {
+		return err
+	}
+	events, err := c.st.Replay(context.Background(), c.sessionID)
+	if err != nil {
+		panic(err)
+	}
+	for _, e := range events {
+		if e.Type == tool.TypeToolResult {
+			return context.Canceled
+		}
+	}
+	return nil
+}
+
+var _ = Describe("A parent cancelled during its last turn's delegation", func() {
+	var (
+		st      *store.Store
+		sess    *store.Session
+		workdir string
+		cctx    *lateCancelContext
+		turns   [][]provider.StreamEvent
+	)
+
+	BeforeEach(func() {
+		config := GinkgoT().TempDir()
+		for _, env := range []string{"XDG_CONFIG_HOME", "HOME", "APPDATA"} {
+			GinkgoT().Setenv(env, config)
+		}
+		base := must(os.UserConfigDir())
+		putAgent(filepath.Join(base, "flowstate", "agents"), "reviewer.md", agentText("reviewer"))
+		st, sess = execLoopSeed()
+		DeferCleanup(func() { _ = st.Close() })
+		workdir = GinkgoT().TempDir()
+		cctx = &lateCancelContext{Context: context.Background(), st: st, sessionID: sess.ID}
+		// Request 1 is the parent's only turn; request 2 is the child's.
+		turns = [][]provider.StreamEvent{callTurn(delegateCall(`{"agent":"reviewer","task":"look"}`)), finishText("child")}
+	})
+
+	Context("through RunExecLoop", func() {
+		var err error
+		BeforeEach(func() {
+			registry := must(NewSessionToolRegistry(workdir))
+			streamer := &execLoopStreamer{turns: turns}
+			profiles := must(LoadProfiles("user", workdir))
+			check(registry.Register(NewDelegateTool(DelegateToolConfig{
+				Store: st, Parent: sess, Streamer: streamer, Workdir: workdir, Profiles: profiles,
+			})))
+			_, err = RunExecLoop(cctx, ExecLoopConfig{
+				Store: st, Session: sess, Streamer: streamer, Registry: registry, Allowlist: []string{"delegate"},
+				LeaseItem: "exec:" + sess.ID, LeaseAgent: "cli", MaxTurns: 1,
+			})
+		})
+
+		It("reports the context error, not success", func() { Expect(err).To(MatchError(context.Canceled)) })
+		It("does not fail the run with max_turns", func() { Expect(err).NotTo(MatchError(ErrMaxTurns)) })
+		It("records no provider.error", func() {
+			Expect(lastType(st, sess.ID)).NotTo(Equal(TypeProviderError))
+		})
+	})
+
+	Context("through RunSessionExecLoop", func() {
+		var err error
+		BeforeEach(func() {
+			streamer := &execLoopStreamer{turns: turns}
+			_, err = RunSessionExecLoop(cctx, st, filepath.Join(workdir, "run.db"), sess, streamer, SessionExecLoopRequest{
+				Allow: []string{"delegate"}, Agents: "user", Workdir: workdir, MaxTurns: 1,
+			})
+		})
+
+		It("reports the session cancelled", func() { Expect(err).To(MatchError(ErrSessionCancelled)) })
+		It("ends the session cancelled, not active or failed", func() {
+			Expect(statusOf(st, sess.ID)).To(Equal("cancelled"))
+		})
 	})
 })
