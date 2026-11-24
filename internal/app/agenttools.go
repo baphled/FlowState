@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 
+	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/tool"
 )
@@ -55,13 +56,25 @@ func SessionToolDefinitions(registry *tool.Registry, allow []string) ([]provider
 			}
 			return nil, err
 		}
-		definition, err := sessionBuiltinDefinition(implementation)
+		definition, err := sessionToolDefinition(implementation)
 		if err != nil {
 			return nil, err
 		}
 		definitions = append(definitions, definition)
 	}
 	return definitions, nil
+}
+
+// sessionToolDefinition returns the definition of one registered tool: the
+// delegate tool describes itself from the profiles loaded for the run, and is
+// qualified by its concrete type; every other tool is a qualified builtin.
+func sessionToolDefinition(implementation tool.Tool) (provider.ToolDefinition, error) {
+	if implementation.Name() == agent.DelegateTool {
+		if d, ok := implementation.(*DelegateTool); ok && d != nil {
+			return d.Definition(), nil
+		}
+	}
+	return sessionBuiltinDefinition(implementation)
 }
 
 // sessionBuiltinDefinition qualifies both name and implementation: a custom tool

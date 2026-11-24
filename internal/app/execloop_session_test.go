@@ -3,10 +3,13 @@ package app
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	gtypes "github.com/onsi/gomega/types"
 
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
@@ -252,4 +255,179 @@ var _ = Describe("Loop allowlist requirement", func() {
 		Entry("required and empty", true, true),
 		Entry("not required and empty", false, false),
 	)
+})
+
+var _ = Describe("Delegation wiring of a session run", func() {
+	var (
+		st      *store.Store
+		sess    *store.Session
+		dbPath  string
+		workdir string
+		userDir string
+	)
+	var delegateTurn []provider.StreamEvent
+
+	run := func(streamer provider.Streamer, req SessionExecLoopRequest) error {
+		req.Workdir, req.MaxTurns = workdir, 4
+		_, err := RunSessionExecLoop(context.Background(), st, dbPath, sess, streamer, req)
+		return err
+	}
+
+	BeforeEach(func() {
+		delegateTurn = callTurn(delegateCall(`{"agent":"reviewer","task":"look"}`))
+		st, sess = execLoopSeed()
+		DeferCleanup(func() { _ = st.Close() })
+		config := GinkgoT().TempDir()
+		for _, env := range []string{"XDG_CONFIG_HOME", "HOME", "APPDATA"} {
+			GinkgoT().Setenv(env, config)
+		}
+		base, err := os.UserConfigDir()
+		if err != nil {
+			panic(err)
+		}
+		userDir = filepath.Join(base, "flowstate", "agents")
+		dbPath = filepath.Join(GinkgoT().TempDir(), "wire.db")
+		workdir = GinkgoT().TempDir()
+	})
+
+	DescribeTable("refuses a scope and an allowlist that disagree before anything runs",
+		func(req SessionExecLoopRequest, want gtypes.GomegaMatcher) {
+			putAgent(userDir, "dup.md", agentText("dup"))
+			putAgent(filepath.Join(workdir, ".flowstate", "agents"), "dup.md", agentText("dup"))
+			Expect(run(&execLoopStreamer{}, req)).To(want)
+		},
+		Entry("delegate allowlisted without --agents",
+			SessionExecLoopRequest{Allow: []string{"delegate"}}, MatchError(ContainSubstring("delegate needs --agents"))),
+		Entry("--agents without delegate on the allowlist",
+			SessionExecLoopRequest{Allow: []string{"echo"}, Agents: "user"},
+			MatchError(ContainSubstring("--agents loads profiles but delegate is not allowlisted"))),
+		Entry("--agents with no allowlist at all",
+			SessionExecLoopRequest{Agents: "user", RequireAllowlist: true},
+			MatchError(ContainSubstring("delegate is not allowlisted"))),
+		Entry("an invalid scope",
+			SessionExecLoopRequest{Allow: []string{"delegate"}, Agents: "bogus"}, MatchError(ErrUsage)),
+		Entry("a profile name in both directories under both",
+			SessionExecLoopRequest{Allow: []string{"delegate"}, Agents: "both"}, MatchError(ErrConfigInvalid)),
+	)
+
+	It("sends no provider request when the profiles conflict", func() {
+		putAgent(userDir, "dup.md", agentText("dup"))
+		putAgent(filepath.Join(workdir, ".flowstate", "agents"), "dup.md", agentText("dup"))
+		streamer := &execLoopStreamer{}
+		_ = run(streamer, SessionExecLoopRequest{Allow: []string{"delegate"}, Agents: "both"})
+		Expect(streamer.reqs).To(BeEmpty())
+	})
+
+	Context("with a loaded profile and the delegate tool allowlisted", func() {
+		var streamer *execLoopStreamer
+		var err error
+		BeforeEach(func() {
+			putAgent(userDir, "reviewer.md", agentText("reviewer"))
+			streamer = &execLoopStreamer{turns: [][]provider.StreamEvent{delegateTurn, finishText("child says hi"), finishText("parent done")}}
+			err = run(streamer, SessionExecLoopRequest{Allow: []string{"delegate"}, Agents: "user", Budget: 100})
+		})
+		It("completes the run", func() { Expect(err).To(Succeed()) })
+		It("marks the parent completed", func() { Expect(statusOf(st, sess.ID)).To(Equal("completed")) })
+		It("runs one child", func() {
+			all, lerr := st.ListSessions(context.Background(), "")
+			if lerr != nil {
+				panic(lerr)
+			}
+			Expect(all).To(HaveLen(2))
+		})
+		It("describes the loaded profile to the model", func() {
+			Expect(streamer.reqs[0].Tools[0].Description).To(ContainSubstring("- reviewer: d"))
+		})
+	})
+
+	It("tells the model no agent is available when no profile is loaded", func() {
+		streamer := &execLoopStreamer{turns: [][]provider.StreamEvent{finishText("ok")}}
+		if err := run(streamer, SessionExecLoopRequest{Allow: []string{"delegate"}, Agents: "user"}); err != nil {
+			panic(err)
+		}
+		Expect(streamer.reqs[0].Tools[0].Description).To(ContainSubstring("No agents are available"))
+	})
+
+	Context("without --workdir", func() {
+		var streamer *execLoopStreamer
+		var projectDir string
+		runDefault := func(req SessionExecLoopRequest) error {
+			req.Allow, req.MaxTurns = []string{"delegate"}, 4
+			_, err := RunSessionExecLoop(context.Background(), st, dbPath, sess, streamer, req)
+			return err
+		}
+		BeforeEach(func() {
+			streamer = &execLoopStreamer{turns: [][]provider.StreamEvent{delegateTurn, finishText("child says hi"), finishText("parent done")}}
+			projectDir = GinkgoT().TempDir()
+		})
+		It("delegates although the default workdir did not exist", func() {
+			putAgent(userDir, "reviewer.md", agentText("reviewer"))
+			if err := runDefault(SessionExecLoopRequest{Agents: "user"}); err != nil {
+				panic(err)
+			}
+			all, lerr := st.ListSessions(context.Background(), "")
+			if lerr != nil {
+				panic(lerr)
+			}
+			Expect(all).To(HaveLen(2))
+		})
+		It("finds a project profile in the project root, not beside the database", func() {
+			putAgent(filepath.Join(projectDir, ".flowstate", "agents"), "reviewer.md", agentText("reviewer"))
+			if err := runDefault(SessionExecLoopRequest{Agents: "project", ProjectRoot: projectDir}); err != nil {
+				panic(err)
+			}
+			Expect(streamer.reqs[0].Tools[0].Description).To(ContainSubstring("- reviewer: d"))
+		})
+	})
+
+	It("finds a project profile under --workdir", func() {
+		putAgent(filepath.Join(workdir, ".flowstate", "agents"), "reviewer.md", agentText("reviewer"))
+		streamer := &execLoopStreamer{turns: [][]provider.StreamEvent{finishText("ok")}}
+		if err := run(streamer, SessionExecLoopRequest{Allow: []string{"delegate"}, Agents: "project"}); err != nil {
+			panic(err)
+		}
+		Expect(streamer.reqs[0].Tools[0].Description).To(ContainSubstring("- reviewer: d"))
+	})
+
+	Context("when the run is cancelled while its child runs", func() {
+		var childStatus string
+		var err error
+		BeforeEach(func() {
+			putAgent(userDir, "reviewer.md", agentText("reviewer"))
+			blocker := &blockAfterFirst{started: make(chan struct{})}
+			blocker.turns = [][]provider.StreamEvent{delegateTurn}
+			cctx, cancel := context.WithCancelCause(context.Background())
+			defer cancel(nil)
+			done := make(chan error, 1)
+			go func() {
+				_, e := RunSessionExecLoop(cctx, st, dbPath, sess, blocker, SessionExecLoopRequest{
+					Workdir: workdir, MaxTurns: 4, Allow: []string{"delegate"}, Agents: "user",
+				})
+				done <- e
+			}()
+			select {
+			case <-blocker.started:
+			case <-time.After(10 * time.Second):
+				panic("the child never reached the provider")
+			}
+			cancel(&CancelCause{Reason: "sigterm"})
+			select {
+			case err = <-done:
+			case <-time.After(10 * time.Second):
+				panic("the run did not return after cancellation")
+			}
+			all, lerr := st.ListSessions(context.Background(), "cancelled")
+			if lerr != nil {
+				panic(lerr)
+			}
+			for _, s := range all {
+				if s.ID != sess.ID {
+					childStatus = s.Status
+				}
+			}
+		})
+		It("ends the run as cancelled", func() { Expect(err).To(MatchError(ErrSessionCancelled)) })
+		It("marks the parent cancelled", func() { Expect(statusOf(st, sess.ID)).To(Equal("cancelled")) })
+		It("marks the child cancelled", func() { Expect(childStatus).To(Equal("cancelled")) })
+	})
 })

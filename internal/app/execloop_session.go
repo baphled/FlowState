@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"slices"
 
+	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/store"
@@ -31,13 +34,20 @@ func RunSessionExecLoop(ctx context.Context, st *store.Store, dbPath string, ses
 	if err != nil {
 		return nil, err
 	}
+	workdir := req.Workdir
+	if workdir == "" {
+		workdir = sessionWorkdir(dbPath, sess.ID)
+	}
+	profiles, err := runProfiles(req.Agents, projectRoot(req), allowlist)
+	if err != nil {
+		return nil, err
+	}
 	if req.RequireAllowlist && len(allowlist) == 0 {
 		return nil, fmt.Errorf("%w: the run has no tool allowlist; provide one with --allow, --allow-file or "+
 			"tool_allowlist in the config", session.ErrUsage)
 	}
-	workdir := req.Workdir
-	if workdir == "" {
-		workdir = sessionWorkdir(dbPath, sess.ID)
+	if err := ensureDefaultWorkdir(req, workdir); err != nil {
+		return nil, err
 	}
 	registry, err := NewSessionToolRegistry(workdir)
 	if err != nil {
@@ -58,25 +68,15 @@ func RunSessionExecLoop(ctx context.Context, st *store.Store, dbPath string, ses
 		MaxTurns:   maxTurns,
 		MaxTokens:  req.MaxTokens,
 	}
-	switch {
-	case req.Budget > 0:
-		// An explicit budget anchors the session's shared pool: child
-		// sessions may reserve against it (M2 hierarchical budgets).
-		if serr := st.SetBudgetPool(ctx, sess.ID, req.Budget); serr != nil {
-			return nil, serr
-		}
-		cfg.Pool = NewBudgetPool(req.Budget)
-		cfg.TurnBudget = 1
-	default:
-		// Without an explicit budget a delegated child draws from its
-		// reservation: the pool is the grant minus what it has spent.
-		if res, rerr := st.ReservationFor(ctx, sess.ID); rerr == nil && res.Status == store.ReservationStatusReserved {
-			grant := res.Granted - res.Consumed
-			if grant < 0 {
-				grant = 0
-			}
-			cfg.Pool = NewBudgetPool(grant)
-			cfg.TurnBudget = 1
+	if err := bindRunBudget(ctx, st, sess, req.Budget, &cfg); err != nil {
+		return nil, err
+	}
+	if req.Agents != "" {
+		err = registry.Register(NewDelegateTool(DelegateToolConfig{
+			Store: st, Parent: sess, Streamer: streamer, Pool: cfg.Pool, Workdir: workdir, Profiles: profiles,
+		}))
+		if err != nil {
+			return nil, err
 		}
 	}
 	res, err := RunExecLoop(ctx, cfg)
@@ -87,6 +87,29 @@ func RunSessionExecLoop(ctx context.Context, st *store.Store, dbPath string, ses
 		return res, err
 	}
 	return res, nil
+}
+
+// projectRoot is where project profiles are found: --workdir when given,
+// otherwise ProjectRoot, where empty is the process current directory (what
+// LoadProfiles documents). It is never the per-session default workdir.
+func projectRoot(req SessionExecLoopRequest) string {
+	if req.Workdir != "" {
+		return req.Workdir
+	}
+	return req.ProjectRoot
+}
+
+// ensureDefaultWorkdir creates the default per-session workdir for a run that
+// delegates: the child's workdir is confined to the parent's, which must exist.
+// An explicit --workdir is the caller's to provide.
+func ensureDefaultWorkdir(req SessionExecLoopRequest, workdir string) error {
+	if req.Agents == "" || req.Workdir != "" {
+		return nil
+	}
+	if err := os.MkdirAll(workdir, 0o700); err != nil {
+		return fmt.Errorf("create the default working directory: %w", err)
+	}
+	return nil
 }
 
 // sessionWorkdir defaults the per-session tool workdir beside the db.
@@ -139,6 +162,42 @@ func completeExecLoopRun(ctx context.Context, st *store.Store, sessionID, finish
 	settleReservation(ctx, st, sessionID)
 	if err := st.UpdateSessionStatus(ctx, sessionID, "completed"); err != nil {
 		return fmt.Errorf("mark session completed: %w", err)
+	}
+	return nil
+}
+
+// runProfiles loads the agent profiles a run offers and checks the allowlist
+// agrees with the scope: `delegate` and --agents come together or not at all.
+// No scope means no delegation and no profiles. A scope that fails to load is a
+// usage error (bad value) or config_invalid (a profile that fails validation or
+// a name in both directories), before anything has run.
+func runProfiles(scope, workdir string, allowlist []string) ([]agent.Profile, error) {
+	allowed := slices.Contains(allowlist, agent.DelegateTool)
+	switch {
+	case scope == "" && allowed:
+		return nil, fmt.Errorf("%w: delegate needs --agents", session.ErrUsage)
+	case scope != "" && !allowed:
+		return nil, fmt.Errorf("%w: --agents loads profiles but delegate is not allowlisted", session.ErrUsage)
+	case scope == "":
+		return nil, nil
+	}
+	return LoadProfiles(scope, workdir)
+}
+
+// bindRunBudget applies the run's budget to cfg: an explicit budget anchors the
+// session's shared pool, so children may reserve against it (M2 hierarchical
+// budgets); without one a delegated child draws from its reservation, the grant
+// minus what it has spent.
+func bindRunBudget(ctx context.Context, st *store.Store, sess *store.Session, budget int64, cfg *ExecLoopConfig) error {
+	if budget > 0 {
+		if err := st.SetBudgetPool(ctx, sess.ID, budget); err != nil {
+			return err
+		}
+		cfg.Pool, cfg.TurnBudget = NewBudgetPool(budget), 1
+		return nil
+	}
+	if res, rerr := st.ReservationFor(ctx, sess.ID); rerr == nil && res.Status == store.ReservationStatusReserved {
+		cfg.Pool, cfg.TurnBudget = NewBudgetPool(max(res.Granted-res.Consumed, 0)), 1
 	}
 	return nil
 }

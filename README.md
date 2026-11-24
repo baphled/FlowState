@@ -71,7 +71,7 @@ flowstate session new --provider anthropic --model haiku --task "Say hello"
 | Command | Purpose |
 | --- | --- |
 | `session new` | Create a session: `--provider`, `--model`, `--task <text\|@file>`, `--parent`, `--reserve` |
-| `session run <id>` | One turn or tool loop: `--budget`, `--max-tokens`, `--allow`, `--allow-file`, `--workdir` |
+| `session run <id>` | One turn or tool loop: `--budget`, `--max-tokens`, `--allow`, `--allow-file`, `--workdir`, `--agents` |
 | `session list [--status <s>]` | List sessions |
 | `session events <id> [--follow]` | Print or follow the event log |
 | `session replay <id>` | Replay and verify the log |
@@ -100,8 +100,8 @@ standard error. The machine-readable shapes are in [schemas/cli.json](schemas/cl
 ### Agent profiles
 
 An agent profile is a markdown file: YAML frontmatter, then the system prompt for a child agent
-(ADR-009, the delegation design record). This release loads, validates and lists profiles; the `delegate` tool
-that runs them comes next.
+(ADR-009, the delegation design record). Profiles are loaded, validated and listed by `flowstate agents`, and the
+`delegate` tool runs them as child sessions (see "Delegating to a child agent" below).
 
 ```markdown
 ---
@@ -138,6 +138,62 @@ You review. You do not edit. Begin your final message with VERDICT: pass or VERD
   directory fail the load.
 - This repository's `.gitignore` ignores `.flowstate/`. A project that wants committed profiles unignores them
   (`.flowstate/*` then `!.flowstate/agents/`).
+
+### Delegating to a child agent
+
+`session run <id> --agents user|project|both` loads the profiles for that scope and gives the model one extra tool,
+`delegate`. Without `--agents` there is no `delegate` tool. The tool stays deny-by-default: it must also be on the
+allowlist (`--allow delegate`, `--allow-file` or the config `tool_allowlist`), and the two must agree. `--agents`
+without `delegate` allowlisted, `delegate` allowlisted without `--agents`, and a scope that is not `user`, `project`
+or `both` are usage errors (exit 2). A name in both directories under `both` is `config_invalid` (exit 4), before
+any turn runs.
+
+A worked example with a reader and a reviewer (the reviewer cannot write):
+
+```sh
+mkdir -p ~/.config/flowstate/agents
+cat > ~/.config/flowstate/agents/reader.md <<'EOF'
+---
+name: reader
+description: Reads files and summarises them
+tools: [fs.read]
+---
+Summarise what you read.
+EOF
+cat > ~/.config/flowstate/agents/reviewer.md <<'EOF'
+---
+name: reviewer
+description: Reviews a change; never edits
+tools: [fs.read]
+max_turns: 10
+---
+You review. Begin with VERDICT: pass or VERDICT: fail.
+EOF
+flowstate agents list --agents user
+id=$(flowstate session new --provider z.ai --model glm-5.3 \
+  --task "Have the reader summarise main.go, then the reviewer judge it" | jq -r .id)
+flowstate session run "$id" --budget 200 --agents user --allow delegate --workdir ./work
+```
+
+- The tool takes `agent` (a loaded profile name) and `task`, and optionally `cwd`, a directory inside the parent's
+  workdir; anything outside it is refused. Its description lists the loaded profiles, so the model can choose. One
+  call runs one child; `tasks` (parallel calls) and `resume` are not available yet and return an error saying so.
+- A completed child returns `{child, status, turns, text}`, the text capped at 50 KB and 2000 lines with a notice.
+  A failed, cancelled or partial child comes back as an error result (`error: ...` with the child id, status, turns,
+  reason and any partial text): the parent model decides what to do and the parent run does not fail. Cancelling the
+  parent cancels the child with the same reason.
+- The child gets exactly its profile's tools, prompt and `max_turns`, never `delegate`. With `--budget`, its grant is
+  drawn from the parent's pool and the unspent part returns. A `delegation.completed` receipt lands in the parent's
+  log between the call and its result.
+- Project profiles come from `<workdir>/.flowstate/agents` when `--workdir` is given, otherwise from
+  `.flowstate/agents` in the process's current directory, never from the default workdir beside the database. With
+  `--agents` and no `--workdir`, that default directory is created (mode 0700) before the run.
+- Use project profiles only for repositories you trust: a model with `fs.write` on the same workdir could write a
+  profile there in an earlier run, and a child's tools are not limited by the parent's allowlist.
+- A task is at most 64 KiB, and the tool description lists at most 32 profiles, then `(and N more)`.
+- The parent needs a provider that accepts tools: the z.ai coding route or the Anthropic API-key route. With one that
+  refuses tools the run fails as it does today; nothing checks this in advance.
+- `--agents` is a command-line option only. The HTTP run does not accept it yet; that is a later change.
 
 ### Exit codes
 
