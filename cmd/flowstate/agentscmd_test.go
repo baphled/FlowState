@@ -11,6 +11,8 @@ import (
 	. "github.com/onsi/gomega"
 )
 
+const delegatingProfile = "---\nname: lead\ndescription: d\ntools: [delegate]\ndelegates: [eng]\n---\nLead.\n"
+
 const agentProfile = "---\nname: reviewer\ndescription: Reads a change\ntools: [fs.read]\n---\nYou review.\n"
 
 // agentsFixture isolates the user config directory and returns it with an
@@ -68,6 +70,37 @@ var _ = Describe("Agents CLI", func() {
 		sum := sha256.Sum256([]byte(agentProfile))
 		_, rows := listAgents("--workdir", workdir)
 		Expect(rows[0]["sha256"]).To(Equal(hex.EncodeToString(sum[:])))
+	})
+	It("lists delegates as an empty array when none is declared", func() {
+		writeAgent(userDir, "reviewer.md", agentProfile)
+		_, rows := listAgents("--workdir", workdir)
+		Expect(rows[0]["delegates"]).To(Equal([]any{}))
+	})
+	It("lists the declared delegates", func() {
+		writeAgent(userDir, "lead.md", delegatingProfile)
+		writeAgent(userDir, "eng.md", "---\nname: eng\ndescription: d\n---\nEng.\n")
+		_, rows := listAgents("--workdir", workdir)
+		Expect(rows[1]["delegates"]).To(Equal([]any{"eng"}))
+	})
+	It("conforms to the agents-list schema with delegates", func() {
+		writeAgent(userDir, "lead.md", delegatingProfile)
+		writeAgent(userDir, "eng.md", "---\nname: eng\ndescription: d\n---\nEng.\n")
+		r, _ := listAgents("--workdir", workdir)
+		Expect(validateAgainst("agents-list", r.stdout)).To(Succeed())
+	})
+	It("exits 4 for a delegate that is not loaded", func() {
+		writeAgent(userDir, "lead.md", delegatingProfile)
+		r := runArgv([]string{"agents", "list", "--workdir", workdir})
+		Expect(r.exit).To(Equal(4))
+	})
+	It("validates a file whose delegate is not checked across files", func() {
+		r := runArgv([]string{"agents", "validate", writeAgent(workdir, "lead.md", delegatingProfile)})
+		Expect(r.exit).To(Equal(0))
+	})
+	It("refuses delegates without delegate in tools on validate", func() {
+		bad := writeAgent(workdir, "bad.md", "---\nname: x\ndescription: d\ndelegates: [eng]\n---\nbody\n")
+		r := runArgv([]string{"agents", "validate", bad})
+		Expect(r.stdout).To(ContainSubstring("delegates needs delegate in tools"))
 	})
 	It("conforms to the agents-list schema", func() {
 		writeAgent(userDir, "reviewer.md", agentProfile)

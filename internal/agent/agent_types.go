@@ -36,6 +36,8 @@ const (
 	MaxFileBytes = 64 << 10
 	// MaxModelChars is the longest model name a profile may set.
 	MaxModelChars = 200
+	// MaxDelegates is the most profile names a delegates list may hold.
+	MaxDelegates = 32
 	// MaxDescriptionChars is the longest description a profile may set.
 	MaxDescriptionChars = 500
 )
@@ -48,6 +50,12 @@ type Profile struct {
 	Description string `json:"description"`
 	// Tools is the allowlist of tool names; empty means the agent has no tools.
 	Tools []string `json:"tools"`
+	// Delegates lists the only profiles this profile's delegate tool may spawn:
+	// each a valid profile name, at most MaxDelegates, no duplicate, never the
+	// profile itself. It is non-empty only when Tools holds DelegateTool, and is
+	// empty (never nil) when none is declared, which means nothing is allowed.
+	// Cycles between profiles are allowed; the delegation depth cap bounds them.
+	Delegates []string `json:"delegates"`
 	// Model is a model name, or InheritModel for the parent's.
 	Model string `json:"model"`
 	// MaxTurns bounds the child's provider turns, 1..MaxTurnsLimit.

@@ -57,15 +57,15 @@ var _ = Describe("Parse", func() {
 			panic(err)
 		}
 		Expect(p).To(Equal(agent.Profile{Name: "reviewer", Description: "Reads a change", Tools: []string{"fs.read"},
-			Model: "inherit", MaxTurns: 25, Body: "You review."}))
+			Delegates: []string{}, Model: "inherit", MaxTurns: 25, Body: "You review."}))
 	})
 	It("defaults the model, the turns and the tools", func() {
 		p, err := agent.Parse([]byte(profileText("", "Do it.")), known)
 		if err != nil {
 			panic(err)
 		}
-		Expect(p).To(Equal(agent.Profile{Name: "a", Description: "d", Tools: []string{}, Model: "inherit",
-			MaxTurns: 25, Body: "Do it."}))
+		Expect(p).To(Equal(agent.Profile{Name: "a", Description: "d", Tools: []string{}, Delegates: []string{},
+			Model: "inherit", MaxTurns: 25, Body: "Do it."}))
 	})
 	It("accepts the reserved delegate tool", func() {
 		p, err := agent.Parse([]byte(profileText("tools: [delegate]\n", "Do it.")), known)

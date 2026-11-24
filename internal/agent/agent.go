@@ -30,7 +30,8 @@ var nameRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`)
 
 var decimalRE = regexp.MustCompile(`^(0|[1-9]\d*)$`)
 
-var knownField = map[string]bool{"name": true, "description": true, "tools": true, "model": true, "max_turns": true}
+var knownField = map[string]bool{"name": true, "description": true, "tools": true, "model": true, "max_turns": true,
+	"delegates": true}
 
 // ParseScope reads a --agents value; the empty string is ScopeUser.
 func ParseScope(s string) (Scope, error) {
@@ -219,6 +220,9 @@ func build(fields map[string]*yaml.Node, known []string) (Profile, error) {
 		return Profile{}, err
 	}
 	if p.Tools, err = checkTools(names, known); err != nil {
+		return Profile{}, err
+	}
+	if p.Delegates, err = delegateList(fields["delegates"], p.Name, p.Tools); err != nil {
 		return Profile{}, err
 	}
 	model, err := text(fields["model"], "model")

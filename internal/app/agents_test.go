@@ -139,3 +139,85 @@ var _ = Describe("Agent tool names", func() {
 		Expect(AgentToolNames()).To(ContainElement(agent.DelegateTool))
 	})
 })
+
+var _ = Describe("Agent profile delegates", func() {
+	var userDir, workdir string
+
+	BeforeEach(func() {
+		config := GinkgoT().TempDir()
+		for _, env := range []string{"XDG_CONFIG_HOME", "HOME", "APPDATA"} {
+			GinkgoT().Setenv(env, config)
+		}
+		base, err := os.UserConfigDir()
+		if err != nil {
+			panic(err)
+		}
+		userDir = filepath.Join(base, "flowstate", "agents")
+		workdir = GinkgoT().TempDir()
+	})
+
+	lead := func(delegates string) string {
+		return "---\nname: lead\ndescription: d\ntools: [delegate]\ndelegates: " + delegates + "\n---\nLead.\n"
+	}
+
+	It("loads a delegate that is in the loaded set", func() {
+		putAgent(userDir, "lead.md", lead("[eng]"))
+		putAgent(userDir, "eng.md", agentText("eng"))
+		got, err := LoadProfiles("user", workdir)
+		if err != nil {
+			panic(err)
+		}
+		Expect(got[1].Delegates).To(Equal([]string{"eng"}))
+	})
+	It("refuses an unknown delegate as config_invalid", func() {
+		putAgent(userDir, "lead.md", lead("[ghost]"))
+		_, err := LoadProfiles("user", workdir)
+		Expect(err).To(MatchError(ErrConfigInvalid))
+	})
+	It("names the profile and the unknown delegate", func() {
+		putAgent(userDir, "lead.md", lead("[ghost]"))
+		_, err := LoadProfiles("user", workdir)
+		Expect(err).To(MatchError(ContainSubstring(`profile "lead" delegates to "ghost"`)))
+	})
+	It("refuses a delegate that lives only in a scope that is not loaded", func() {
+		putAgent(userDir, "lead.md", lead("[eng]"))
+		putAgent(filepath.Join(workdir, ".flowstate", "agents"), "eng.md", agentText("eng"))
+		_, err := LoadProfiles("user", workdir)
+		Expect(err).To(MatchError(ContainSubstring(`"eng"`)))
+	})
+	It("loads a delegate found in the other scope under both", func() {
+		putAgent(userDir, "lead.md", lead("[eng]"))
+		putAgent(filepath.Join(workdir, ".flowstate", "agents"), "eng.md", agentText("eng"))
+		got, err := LoadProfiles("both", workdir)
+		if err != nil {
+			panic(err)
+		}
+		Expect(got).To(HaveLen(2))
+	})
+	It("loads a project lead that delegates to a user profile under both", func() {
+		putAgent(filepath.Join(workdir, ".flowstate", "agents"), "lead.md", lead("[eng]"))
+		putAgent(userDir, "eng.md", agentText("eng"))
+		got, err := LoadProfiles("both", workdir)
+		if err != nil {
+			panic(err)
+		}
+		Expect(got[1].Delegates).To(Equal([]string{"eng"}))
+	})
+	It("loads a cycle", func() {
+		putAgent(userDir, "a.md", "---\nname: a\ndescription: d\ntools: [delegate]\ndelegates: [b]\n---\nA.\n")
+		putAgent(userDir, "b.md", "---\nname: b\ndescription: d\ntools: [delegate]\ndelegates: [a]\n---\nB.\n")
+		got, err := LoadProfiles("user", workdir)
+		if err != nil {
+			panic(err)
+		}
+		Expect(got).To(HaveLen(2))
+	})
+	It("loads delegate in tools without delegates as an empty list", func() {
+		putAgent(userDir, "lead.md", "---\nname: lead\ndescription: d\ntools: [delegate]\n---\nLead.\n")
+		got, err := LoadProfiles("user", workdir)
+		if err != nil {
+			panic(err)
+		}
+		Expect(got[0].Delegates).To(Equal([]string{}))
+	})
+})
