@@ -86,7 +86,8 @@ before events, terminal status frame, per-write deadline reset 15s ahead of the
 global 30s `WriteTimeout`). `POST /sessions/{id}/run` runs one
 synchronous turn behind the `session run` preamble and answers the projected
 event log; `{"budget","max_tokens"}` mirrors the CLI flags, provider failures
-(errors wrapping `app.ErrProvider`, named once in the message) 502 `provider_error`, budget stops 409, any
+(errors wrapping `app.ErrProvider`, named once in the message) 502 `provider_error`, budget stops and a
+`max_turns` failure (the turn limit reached while still requesting tools, exit 5 on the CLI) 409, any
 other failure keeps its own class (a storage error while recording the turn is 500 `internal`, and `session
 run` exits 1), and the route's deadline extends 10 minutes; a client disconnect or shutdown mid-run cancels
 the session, as
