@@ -25,7 +25,7 @@ func ParseManifest(raw []byte) (Manifest, error) {
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
 		return Manifest{}, fmt.Errorf("swarm: parse manifest: %w", err)
 	}
-	m := Manifest{Name: doc.Name, Scope: doc.Scope, Gates: docGates(doc.Gates)}
+	m := Manifest{Name: doc.Name, Scope: doc.Scope, Coordinator: doc.Coordinator, Gates: docGates(doc.Gates)}
 	for _, p := range doc.Packets {
 		m.Packets = append(m.Packets, Packet(p))
 	}

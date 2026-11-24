@@ -43,10 +43,11 @@ type RunReceipts interface {
 // manifestDoc mirrors Manifest with explicit yaml field names; the
 // exported Manifest stays tag-free for its Go consumers.
 type manifestDoc struct {
-	Name    string      `yaml:"name"`
-	Scope   string      `yaml:"scope"`
-	Packets []packetDoc `yaml:"packets"`
-	Gates   []gateDoc   `yaml:"gates"`
+	Name        string      `yaml:"name"`
+	Scope       string      `yaml:"scope"`
+	Coordinator string      `yaml:"coordinator"`
+	Packets     []packetDoc `yaml:"packets"`
+	Gates       []gateDoc   `yaml:"gates"`
 }
 
 // packetDoc mirrors Packet with snake_case yaml keys.
@@ -57,6 +58,7 @@ type packetDoc struct {
 	SourceSHA256  string   `yaml:"source_sha256"`
 	ParentID      string   `yaml:"parent_id"`
 	Prerequisites []string `yaml:"prerequisites"`
+	Role          string   `yaml:"role"`
 }
 
 // gateDoc mirrors Gate with snake_case yaml keys.

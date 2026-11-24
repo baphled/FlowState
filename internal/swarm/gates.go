@@ -4,30 +4,39 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 )
 
-// ValidateManifest checks a configured swarm manifest for internal: a name and scope are required, packet ids are unique,
-// consistency: a name and scope are required, packet ids are unique,
-// every packet sits within the manifest scope, and gate names are
-// unique and non-empty. It returns the first violation found.
+// ValidateManifest checks a configured swarm manifest for internal
+// consistency: a name and scope are required, packet ids are unique and use
+// the PacketIDPattern charset, every packet sits within the manifest scope,
+// and gate names are unique and non-empty. Every free-text field that reaches
+// the coordinator's brief is bounded (see the Max constants) and free of
+// control, format and line-separator characters (a task may hold \n and \t),
+// and the rendered brief must fit MaxBriefBytes. It returns the first
+// violation found.
 func ValidateManifest(m Manifest) error {
-	if strings.TrimSpace(m.Name) == "" {
-		return fmt.Errorf("manifest name is required")
-	}
-	if strings.TrimSpace(m.Scope) == "" {
-		return fmt.Errorf("manifest scope must not be empty")
+	if err := validateManifestHead(m); err != nil {
+		return err
 	}
 	seen := map[string]bool{}
 	for _, p := range m.Packets {
+		if err := validatePacketID(p.ID); err != nil {
+			return err
+		}
 		if seen[p.ID] {
 			return fmt.Errorf("duplicate packet id %q", p.ID)
 		}
 		seen[p.ID] = true
 		if err := ValidatePacket(p); err != nil {
 			return fmt.Errorf("packet %s: %w", p.ID, err)
+		}
+		if err := validatePacketRole(p); err != nil {
+			return err
 		}
 		if !scopeWithin(p.Scope, m.Scope) {
 			return fmt.Errorf("packet %s scope %q escapes manifest scope %q", p.ID, p.Scope, m.Scope)
@@ -36,17 +45,84 @@ func ValidateManifest(m Manifest) error {
 	if err := validatePrerequisiteGraph(m.Packets); err != nil {
 		return err
 	}
-	gates := map[string]bool{}
-	for _, g := range m.Gates {
+	if err := validateGates(m.Gates); err != nil {
+		return err
+	}
+	if n := len(Brief(m)); n > MaxBriefBytes {
+		return fmt.Errorf("manifest brief is %d bytes, over the %d byte limit", n, MaxBriefBytes)
+	}
+	return nil
+}
+
+// validateManifestHead checks the manifest-level fields and the collection sizes.
+func validateManifestHead(m Manifest) error {
+	if strings.TrimSpace(m.Name) == "" {
+		return fmt.Errorf("manifest name is required")
+	}
+	if strings.TrimSpace(m.Scope) == "" {
+		return fmt.Errorf("manifest scope must not be empty")
+	}
+	if err := validateText("manifest name", m.Name, MaxNameBytes, false); err != nil {
+		return err
+	}
+	if err := validateText("manifest scope", m.Scope, MaxScopeBytes, false); err != nil {
+		return err
+	}
+	if len(m.Packets) > MaxPackets {
+		return fmt.Errorf("manifest has %d packets, over the %d packet limit", len(m.Packets), MaxPackets)
+	}
+	if len(m.Gates) > MaxGates {
+		return fmt.Errorf("manifest has %d gates, over the %d gate limit", len(m.Gates), MaxGates)
+	}
+	return validateProfileName("coordinator", m.Coordinator)
+}
+
+// validateGates checks gate names, descriptions and commands.
+func validateGates(gates []Gate) error {
+	names := map[string]bool{}
+	for _, g := range gates {
 		if strings.TrimSpace(g.Name) == "" {
 			return fmt.Errorf("gate name is required")
 		}
-		if gates[g.Name] {
+		if err := validateText("gate name", g.Name, MaxGateNameBytes, false); err != nil {
+			return err
+		}
+		if err := validateText("gate description", g.Description, MaxGateDescriptionBytes, false); err != nil {
+			return err
+		}
+		if names[g.Name] {
 			return fmt.Errorf("duplicate gate name %q", g.Name)
 		}
-		gates[g.Name] = true
+		names[g.Name] = true
 		if strings.TrimSpace(g.Command) == "" {
 			return fmt.Errorf("gate %s: command is required", g.Name)
+		}
+	}
+	return nil
+}
+
+// validatePacketID refuses an id outside PacketIDPattern; an empty id is left
+// to ValidatePacket. The id is quoted in the error: it is operator data.
+func validatePacketID(id string) error {
+	if id != "" && !packetIDRE.MatchString(id) {
+		return fmt.Errorf("packet id %q does not match %s", id, PacketIDPattern)
+	}
+	return nil
+}
+
+// validateText bounds a free-text field to limit bytes and refuses control,
+// format (Cf) and line or paragraph separator characters, which could hide or
+// forge structure in the brief. multiline additionally allows \n and \t.
+func validateText(field, s string, limit int, multiline bool) error {
+	if len(s) > limit {
+		return fmt.Errorf("%s is %d bytes, over the %d byte limit", field, len(s), limit)
+	}
+	for _, r := range s {
+		if multiline && (r == '\n' || r == '\t') {
+			continue
+		}
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == '\u2028' || r == '\u2029' {
+			return fmt.Errorf("%s holds the disallowed character %U", field, r)
 		}
 	}
 	return nil
@@ -214,6 +290,70 @@ func validateCommandTokens(tokens []string) error {
 		if strings.ContainsAny(t, ";|&$`><") || strings.ContainsAny(t, "\n\r") {
 			return fmt.Errorf("token %q uses shell metacharacters", t)
 		}
+	}
+	return nil
+}
+
+// Bounds on a manifest. Every limit is in bytes except the counts. The packet
+// id limit (64) is part of PacketIDPattern. MaxBriefBytes caps the whole
+// rendered brief, which the per-field limits alone would not (64 packets of
+// MaxPacketTaskBytes is 512 KiB).
+const (
+	// MaxPacketTaskBytes bounds a packet's task text: it becomes part of the
+	// coordinator's brief, so an unbounded task would let a manifest swamp it.
+	MaxPacketTaskBytes = 8192
+	// MaxPackets is the most packets a manifest may hold.
+	MaxPackets = 64
+	// MaxGates is the most gates a manifest may hold.
+	MaxGates = 16
+	// MaxPrerequisites is the most prerequisites one packet may name.
+	MaxPrerequisites = 16
+	// MaxNameBytes bounds the swarm name.
+	MaxNameBytes = 100
+	// MaxScopeBytes bounds the manifest scope.
+	MaxScopeBytes = 200
+	// MaxGateNameBytes bounds a gate name.
+	MaxGateNameBytes = 100
+	// MaxGateDescriptionBytes bounds a gate description.
+	MaxGateDescriptionBytes = 500
+	// MaxBriefBytes bounds the rendered coordinator brief.
+	MaxBriefBytes = 65536
+)
+
+// PacketIDPattern is the charset of a packet id in a manifest. It excludes
+// whitespace, brackets and quotes, so every accepted id round-trips through
+// the `[packet <id>]` marker (see PacketRef).
+const PacketIDPattern = `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`
+
+// packetIDRE compiles PacketIDPattern.
+var packetIDRE = regexp.MustCompile(PacketIDPattern)
+
+// profileNameRE is the shape of an agent profile name (internal/agent's rule).
+var profileNameRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`)
+
+// validateProfileName accepts an empty name (the field is optional) or a
+// well-formed profile name; field names the manifest key in the error.
+func validateProfileName(field, name string) error {
+	if name != "" && !profileNameRE.MatchString(name) {
+		return fmt.Errorf("%s %q is not a profile name (lower-case letters, digits and dashes)", field, name)
+	}
+	return nil
+}
+
+// validatePacketRole checks the packet's optional role and bounds its task
+// and prerequisite count. A task of only whitespace is refused.
+func validatePacketRole(p Packet) error {
+	if strings.TrimSpace(p.Task) == "" {
+		return fmt.Errorf("packet %s: task must not be blank", p.ID)
+	}
+	if err := validateText("task", p.Task, MaxPacketTaskBytes, true); err != nil {
+		return fmt.Errorf("packet %s: %w", p.ID, err)
+	}
+	if len(p.Prerequisites) > MaxPrerequisites {
+		return fmt.Errorf("packet %s: %d prerequisites, over the %d limit", p.ID, len(p.Prerequisites), MaxPrerequisites)
+	}
+	if err := validateProfileName("role", p.Role); err != nil {
+		return fmt.Errorf("packet %s: %w", p.ID, err)
 	}
 	return nil
 }
