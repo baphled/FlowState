@@ -177,8 +177,25 @@ flowstate session run "$id" --budget 200 --agents user --allow delegate --workdi
 ```
 
 - The tool takes `agent` (a loaded profile name) and `task`, and optionally `cwd`, a directory inside the parent's
-  workdir; anything outside it is refused. Its description lists the loaded profiles, so the model can choose. One
-  call runs one child; `tasks` (parallel calls) and `resume` are not available yet and return an error saying so.
+  workdir; anything outside it is refused. Its description lists the loaded profiles, so the model can choose. With
+  `agent` and `task` one call runs one child; `resume` is not available yet and returns an error saying so.
+- `tasks` runs several children in one call: an array of `{agent, task, cwd?}`, at most 8, exclusive with `agent`,
+  `task` and `cwd`. At most 4 run at once; the rest start as slots free (calls in one turn run one after another, so the
+  cap of 4 applies per call). Every entry is validated before any child starts: a ninth task, an unknown agent, a blank
+  or oversized task or an empty array refuses the whole call, naming the entry's index, and creates no child. For
+  example, a reader and a reviewer in parallel:
+
+  ```json
+  {"tasks": [{"agent": "reader", "task": "Summarise main.go"},
+             {"agent": "reviewer", "task": "Review main.go", "cwd": "pkg"}]}
+  ```
+
+  The result is one JSON object, `{"results": [{index, agent, child, status, turns, text?, reason?}, ...]}`, in
+  input order whatever the completion order. A failed, cancelled or refused child (a budget, a `cwd` outside the
+  parent's) is an entry with its `status` and `reason`, and its partial `text`, not an error: its siblings keep
+  running and the model sees every result. Each entry's text has its own 50 KB / 2000 line cap. Cancelling the parent
+  cancels the running children and the entries not yet started, which create no session. A `delegation.completed`
+  receipt per child lands in the parent's log as it finishes, carrying its `index`.
 - A completed child returns `{child, status, turns, text}`, the text capped at 50 KB and 2000 lines with a notice.
   A failed, cancelled or partial child comes back as an error result (`error: ...` with the child id, status, turns,
   reason and any partial text): the parent model decides what to do and the parent run does not fail. Cancelling the

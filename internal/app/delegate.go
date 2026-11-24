@@ -325,6 +325,9 @@ func appendDelegationReceipt(ctx context.Context, req *DelegateRequest, out Dele
 		"child_id": out.ChildID, "profile": profileRef(req.Profile), "status": out.Status,
 		"turns": out.Turns, "tool_calls": out.ToolCalls, "reason": capDelegateText(out.Reason), "consumed": consumed,
 	}
+	if req.BatchIndex != nil {
+		payload["index"] = *req.BatchIndex
+	}
 	if req.ParentEvents != nil {
 		return recordReceipt(ctx, req.ParentEvents, payload)
 	}
