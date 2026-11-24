@@ -43,25 +43,8 @@ func CreateSession(ctx context.Context, st *Store, provider, modelID, harness, c
 // written the creation completes whatever happens to the context, so a
 // child either does not exist or exists with its task.
 func CreateChildSession(ctx context.Context, st *Store, parentID, provider, modelID, harness, configSHA, task string) (*store.Session, error) {
-	if parentID == "" || provider == "" || modelID == "" || task == "" {
-		return nil, fmt.Errorf("%w: parent, provider, model and task must not be empty", ErrUsage)
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, childContextError(err)
-	}
-	parent, err := st.GetSession(ctx, parentID)
-	if err != nil {
-		return nil, fmt.Errorf("%w: unknown parent session %s", ErrUsage, parentID)
-	}
-	if delegatedParentTerminal[parent.Status] {
-		return nil, fmt.Errorf("%w: parent session %s is %s", ErrUsage, parentID, parent.Status)
-	}
-	chain, cerr := st.DelegationChain(ctx, parentID)
-	if cerr != nil {
-		return nil, fmt.Errorf("%w: delegation chain: %v", ErrUsage, cerr)
-	}
-	if len(chain)+1 > MaxDelegationDepth {
-		return nil, fmt.Errorf("%w: delegation depth exceeds %d (root/child/nested-child)", ErrUsage, MaxDelegationDepth)
+	if err := checkChildCreation(ctx, st, parentID, provider, modelID, task); err != nil {
+		return nil, err
 	}
 	if harness == "" {
 		harness = DefaultHarness
@@ -77,6 +60,34 @@ func CreateChildSession(ctx context.Context, st *Store, parentID, provider, mode
 		id: id, parentID: parentID, provider: provider, modelID: modelID,
 		harness: harness, configSHA: configSHA, task: task,
 	})
+}
+
+// checkChildCreation applies every precondition of child creation without
+// writing: non-empty arguments, a live context, an existing non-terminal
+// parent and room under MaxDelegationDepth. RunDelegatedChild calls it
+// before it reserves budget, so a refusal leaves nothing behind.
+func checkChildCreation(ctx context.Context, st *Store, parentID, provider, modelID, task string) error {
+	if parentID == "" || provider == "" || modelID == "" || task == "" {
+		return fmt.Errorf("%w: parent, provider, model and task must not be empty", ErrUsage)
+	}
+	if err := ctx.Err(); err != nil {
+		return childContextError(err)
+	}
+	parent, err := st.GetSession(ctx, parentID)
+	if err != nil {
+		return fmt.Errorf("%w: unknown parent session %s", ErrUsage, parentID)
+	}
+	if delegatedParentTerminal[parent.Status] {
+		return fmt.Errorf("%w: parent session %s is %s", ErrUsage, parentID, parent.Status)
+	}
+	chain, cerr := st.DelegationChain(ctx, parentID)
+	if cerr != nil {
+		return fmt.Errorf("%w: delegation chain: %v", ErrUsage, cerr)
+	}
+	if len(chain)+1 > MaxDelegationDepth {
+		return fmt.Errorf("%w: delegation depth exceeds %d (root/child/nested-child)", ErrUsage, MaxDelegationDepth)
+	}
+	return nil
 }
 
 // childContextError classes a done context for child creation as
@@ -103,13 +114,23 @@ func openChildSession(ctx context.Context, st *Store, c childSpec) (*store.Sessi
 		return nil, err
 	}
 	defer w.Close()
-	if _, err := w.Append(ctx, session.ActorUser, TypeSessionDelegated, map[string]any{"parent_id": c.parentID}); err != nil {
+	if _, err := w.Append(ctx, session.ActorUser, TypeSessionDelegated, delegatedPayload(c)); err != nil {
 		return nil, err
 	}
 	if _, err := w.Append(ctx, session.ActorUser, session.TypeTurnStart, map[string]any{"task": c.task}); err != nil {
 		return nil, err
 	}
 	return child, nil
+}
+
+// delegatedPayload is the session.delegated payload: the parent id and,
+// for a profile-driven child, the profile it runs under.
+func delegatedPayload(c childSpec) map[string]any {
+	payload := map[string]any{"parent_id": c.parentID}
+	if c.profile != nil {
+		payload["profile"] = c.profile
+	}
+	return payload
 }
 
 // SessionEventsAfter returns one session's committed events with seq
@@ -148,7 +169,7 @@ func CloseSession(ctx context.Context, st *Store, id string) (*store.Session, er
 // distinct inside the wrapped chain.
 func ReserveChildBudget(ctx context.Context, st *Store, parentID, childID string, grant int64) error {
 	if _, err := st.ReserveBudget(ctx, parentID, childID, grant); err != nil {
-		return fmt.Errorf("%w: %v", ErrUsage, err)
+		return fmt.Errorf("%w: %w", ErrUsage, err)
 	}
 	return nil
 }
