@@ -91,7 +91,9 @@ event log; `{"budget","max_tokens"}` mirrors the CLI flags, provider failures
 other failure keeps its own class (a storage error while recording the turn is 500 `internal`, and `session
 run` exits 1), and the route's deadline extends 10 minutes; a client disconnect or shutdown mid-run cancels
 the session, as
-a signal does for the CLI.
+a signal does for the CLI. The run body also takes `max_turns` (1 to 1000, absent means the default of 25), the
+same tool-loop turn limit as `session run --max-turns`; a negative or larger value is 400 `usage`, and a run that
+reaches the limit while still asking for tools is 409 `max_turns`.
 `POST /sessions` creates via the `session new` composition (a write, so it is
 detached from cancellation): body fields override serve config, secret-looking
 keys are 400 `usage` (client input, unlike the config's `config_invalid`).

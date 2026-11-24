@@ -73,6 +73,6 @@ type SessionExecLoopRequest struct {
 	Budget int64
 	// MaxTokens caps each provider response; <= 0 means provider default.
 	MaxTokens int64
-	// MaxTurns bounds the loop; <= 0 uses execDefaultMaxTurns.
+	// MaxTurns bounds the loop; <= 0 uses execDefaultMaxTurns (25).
 	MaxTurns int64
 }

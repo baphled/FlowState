@@ -40,6 +40,7 @@ type flags struct {
 	budget    int64
 	budgetSet bool // --budget was supplied explicitly
 	maxTokens int64
+	maxTurns  int64 // --max-turns tool-loop turn limit; 0 means the default
 }
 
 // cliConfig holds one parsed flowstate.json: session defaults that

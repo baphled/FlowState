@@ -128,6 +128,45 @@ var _ = Describe("Session run", func() {
 		Expect(f.runOpts).To(Equal(RunOptions{Budget: 100, MaxTokens: 50}))
 	})
 
+	It("passes the body max_turns to the run port", func() {
+		s, f := runServer()
+		rec := doBody(s, http.MethodPost, "/sessions/"+streamID+"/run", `{"max_turns":3}`)
+		if rec.Code != http.StatusOK {
+			panic("run returned " + rec.Body.String())
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		Expect(f.runOpts).To(Equal(RunOptions{MaxTurns: 3}))
+	})
+
+	It("leaves max_turns unset when the body omits it", func() {
+		s, f := runServer()
+		f.runOpts = RunOptions{MaxTurns: -1}
+		rec := doBody(s, http.MethodPost, "/sessions/"+streamID+"/run", `{"budget":5}`)
+		if rec.Code != http.StatusOK {
+			panic("run returned " + rec.Body.String())
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		Expect(f.runOpts.MaxTurns).To(BeZero())
+	})
+
+	It("accepts a max_turns of 1000", func() {
+		s, _ := runServer()
+		rec := doBody(s, http.MethodPost, "/sessions/"+streamID+"/run", `{"max_turns":1000}`)
+		Expect(rec.Code).To(Equal(http.StatusOK))
+	})
+
+	DescribeTable("rejects a max_turns outside 0..1000 with 400 usage",
+		func(body string) {
+			s, _ := runServer()
+			rec := doBody(s, http.MethodPost, "/sessions/"+streamID+"/run", body)
+			Expect(rec.Body.String()).To(ContainSubstring(`"usage"`))
+		},
+		Entry("negative", `{"max_turns":-1}`),
+		Entry("above the bound", `{"max_turns":1001}`),
+	)
+
 	It("treats an empty body as no run options", func() {
 		s, f := runServer()
 		f.runOpts = RunOptions{Budget: -1, MaxTokens: -1}

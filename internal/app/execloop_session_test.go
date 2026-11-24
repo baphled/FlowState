@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -429,5 +431,104 @@ var _ = Describe("Delegation wiring of a session run", func() {
 		It("ends the run as cancelled", func() { Expect(err).To(MatchError(ErrSessionCancelled)) })
 		It("marks the parent cancelled", func() { Expect(statusOf(st, sess.ID)).To(Equal("cancelled")) })
 		It("marks the child cancelled", func() { Expect(childStatus).To(Equal("cancelled")) })
+	})
+})
+
+var _ = Describe("Loop turn limit of a session run", func() {
+	var (
+		st     *store.Store
+		sess   *store.Session
+		dbPath string
+	)
+
+	// run drives RunSessionExecLoop over echo with maxTurns, the model asking
+	// for the tool on its first toolTurns turns and answering on the next.
+	run := func(maxTurns int64, toolTurns int) error {
+		turns := make([][]provider.StreamEvent, 0, toolTurns+1)
+		for i := 0; i < toolTurns; i++ {
+			turns = append(turns, callTurn(echoCall(fmt.Sprintf("c%d", i))))
+		}
+		turns = append(turns, []provider.StreamEvent{provText("answer"), provFinish()})
+		_, err := RunSessionExecLoop(context.Background(), st, dbPath, sess, &execLoopStreamer{turns: turns},
+			SessionExecLoopRequest{Allow: []string{"echo"}, MaxTurns: maxTurns})
+		return err
+	}
+
+	BeforeEach(func() {
+		st, sess = execLoopSeed()
+		DeferCleanup(func() { _ = st.Close() })
+		dbPath = filepath.Join(GinkgoT().TempDir(), "turns.db")
+	})
+
+	It("completes a run that answers on its third turn under a limit of 3", func() {
+		Expect(run(3, 2)).To(Succeed())
+	})
+
+	It("fails with max_turns a run still asking for tools at a limit of 2", func() {
+		Expect(run(2, 2)).To(MatchError(ErrMaxTurns))
+	})
+
+	It("completes a run that answers on turn 25 when no limit is given", func() {
+		Expect(run(0, 24)).To(Succeed())
+	})
+
+	It("fails with max_turns a run still asking for tools at turn 25 when no limit is given", func() {
+		Expect(run(0, 25)).To(MatchError(ErrMaxTurns))
+	})
+})
+
+var _ = Describe("Loop turn limit of a delegating parent", func() {
+	var (
+		st      *store.Store
+		sess    *store.Session
+		workdir string
+		reqs    int
+		err     error
+	)
+
+	// run drives a parent that delegates on every turn to a child that
+	// reads childReads times before answering, under the parent limit.
+	run := func(parentTurns int64, childReads int) {
+		child := make([][]provider.StreamEvent, 0, childReads+1)
+		for i := 0; i < childReads; i++ {
+			read := provider.ToolCall{ID: fmt.Sprintf("r%d", i), Name: "fs.read", Arguments: json.RawMessage(`{"path":"none.txt"}`)}
+			child = append(child, callTurn(read))
+		}
+		child = append(child, []provider.StreamEvent{provText("child done"), provFinish()})
+		var turns [][]provider.StreamEvent
+		for i := int64(0); i <= parentTurns; i++ {
+			turns = append(turns, callTurn(delegateCall(`{"agent":"reviewer","task":"look"}`)))
+			turns = append(turns, child...)
+		}
+		streamer := &execLoopStreamer{turns: turns}
+		_, err = RunSessionExecLoop(context.Background(), st, filepath.Join(workdir, "run.db"), sess, streamer,
+			SessionExecLoopRequest{Allow: []string{"delegate"}, Agents: "user", Workdir: workdir, MaxTurns: parentTurns})
+		reqs = len(streamer.reqs)
+	}
+
+	BeforeEach(func() {
+		st, sess = execLoopSeed()
+		DeferCleanup(func() { _ = st.Close() })
+		config := GinkgoT().TempDir()
+		for _, env := range []string{"XDG_CONFIG_HOME", "HOME", "APPDATA"} {
+			GinkgoT().Setenv(env, config)
+		}
+		base, uerr := os.UserConfigDir()
+		if uerr != nil {
+			panic(uerr)
+		}
+		putAgent(filepath.Join(base, "flowstate", "agents"), "reviewer.md", agentText("reviewer"))
+		workdir = GinkgoT().TempDir()
+	})
+
+	Context("with a limit of 3 and one-turn children", func() {
+		BeforeEach(func() { run(3, 0) })
+		It("fails the parent with max_turns", func() { Expect(err).To(MatchError(ErrMaxTurns)) })
+		It("makes three parent turns and three child turns", func() { Expect(reqs).To(Equal(6)) })
+	})
+
+	Context("with a limit of 2 and a child that needs four turns", func() {
+		BeforeEach(func() { run(2, 3) })
+		It("leaves the child to its own profile limit", func() { Expect(reqs).To(Equal(2 + 2*4)) })
 	})
 })

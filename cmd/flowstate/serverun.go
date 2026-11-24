@@ -49,6 +49,7 @@ func serveRun(ctx context.Context, st *app.Store, fl *flags, id string, opts ser
 	}
 	runFl := *fl
 	runFl.budget, runFl.budgetSet, runFl.maxTokens = opts.Budget, opts.Budget > 0, opts.MaxTokens
+	runFl.maxTurns = opts.MaxTurns
 	applyRunDefaults(&runFl)
 	sess, err := loadRunnableSession(ctx, st, id)
 	if err != nil {
