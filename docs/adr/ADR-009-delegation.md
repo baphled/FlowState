@@ -112,6 +112,8 @@ You review. You do not edit. Begin your final message with VERDICT: pass or VERD
 - **Read-only is enforced**, not requested: a profile without `fs.write`, `fs.edit` and `exec.run` cannot write,
   because the allowlist is checked in the engine. Pi's own reviewer prompt says to assume tool permissions are not
   perfectly enforceable.
+  A profile that lists `exec.run` is not filesystem-confined: `exec.run` runs allowlisted binaries (`make`, `go`,
+  `git`) that can execute arbitrary code, and its confinement is its existing policy (cwd and a PATH-only environment).
 - A child cannot delegate unless its `tools` lists `delegate`. Claude Code allows nesting by default, OpenCode gates
   it by permission and Pi by the child's tool list; FlowState starts closed. `MaxDelegationDepth` (2) stays as the
   hard backstop.
@@ -124,7 +126,7 @@ You review. You do not edit. Begin your final message with VERDICT: pass or VERD
 | D2 | The parent session is the coordinator and is a model with the `delegate` tool. |
 | D3 | Profiles are declarative files as above; an unknown field, a tool name that is not registered, or a missing `name` or `description` fails the load. |
 | D4 | The profile body is the child's system prompt. |
-| D5 | The engine parses no verdict. An independent check is a reviewer profile the model calls. The engine adds a delegation receipt (child id, status, turns, tokens, reason) to the parent's log; gates are unchanged. |
+| D5 | The engine parses no verdict. An independent check is a reviewer profile the model calls. The engine adds a delegation receipt (child id, status, turns, reason; turns stand in for tokens, which are not recorded) to the parent's log; gates are unchanged. |
 | D6 | The cap is `max_turns` per profile. The existing reservation caps the child at its grant (the tool loop spends one unit per provider turn today) and is released to the parent on settlement, which happens on completion and cancellation. Recording the child's consumption against the parent, reporting tokens, and settling on `failed` (a provider failure sets the status and leaves the reservation unsettled today; with no production caller of `ChargeReservation`, a settled child releases its whole grant, spent or not) are part of the delegate packet. |
 | D7 | A failed, cancelled or partial child returns to the parent as an `is_error` tool result with its reason; the parent model decides. |
 | D8 | An interrupted child (not terminal: a crashed or paused run that never finished) resumes by `delegate {resume: <id>}`. A parent that crashed mid-delegate is not re-issued on resume: replay skips a dangling tool call and never re-issues it (the existing rule, `execloop.go`), and for `delegate` the model is additionally told the child's state and may resume it. A terminal child cannot be resumed; the model starts a new one. |

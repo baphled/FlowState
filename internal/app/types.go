@@ -47,4 +47,6 @@ type LoopHandle struct {
 // inherits and the task its first turn carries.
 type childSpec struct {
 	id, parentID, provider, modelID, harness, configSHA, task string
+	// profile, when set, is recorded in the session.delegated payload.
+	profile *DelegateProfileRef
 }
