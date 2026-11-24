@@ -21,6 +21,9 @@ type Packet struct {
 	ParentID string
 	// Prerequisites lists packet ids that must be admitted first.
 	Prerequisites []string
+	// Role names the agent profile the packet is delegated to when the
+	// swarm runs with a coordinator; empty leaves the choice to it.
+	Role string `json:",omitempty"`
 }
 
 // AdmissionLog is the in-memory record of admitted packets backing

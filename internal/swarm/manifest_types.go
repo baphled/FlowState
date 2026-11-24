@@ -20,6 +20,10 @@ type Manifest struct {
 	// Scope is the dot-separated capability scope every packet must
 	// stay within.
 	Scope string
+	// Coordinator names the agent profile that runs the swarm in execute
+	// mode: its prompt and tools come from that profile. Empty is valid
+	// for validation and the receipts-only run, never for execution.
+	Coordinator string `json:",omitempty"`
 	// Packets are the admission packets of the swarm.
 	Packets []Packet
 	// Gates are the completion gates; all must pass for acceptance.

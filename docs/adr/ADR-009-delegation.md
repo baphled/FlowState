@@ -168,6 +168,19 @@ packets listed as tasks and their profiles, as Pi's `/implement` prompt template
 calls and the receipts are filled from the delegation receipts. A deterministic mode that issues the calls in
 dependency order (Pi's `chain`) is a possible later option.
 
+Roles are data, not engine code. A manifest may name a top-level `coordinator:` (the profile that runs the swarm; its
+prompt and tools come from that profile, and execute mode requires it), and each packet may carry `role:` (the profile
+it is delegated to), beside `task:` (at most 8192 bytes) and the existing `prerequisites:`. A manifest without them
+still validates and runs as before. `swarm.Brief` renders the coordinator's first message as a pure function: packets
+in dependency order, gates by name and description only (never the command), and fixed instructions. The operator's
+values sit in a fenced block marked as data, each Go-quoted, and validation bounds the manifest (at most 64 packets, a
+64 KiB brief) and refuses control, format and line-separator characters and ids outside
+`[A-Za-z0-9][A-Za-z0-9._-]{0,63}`.
+The engine will map a delegated child to its packet by the marker the brief tells the model to start each task with,
+`[packet <id>]` at the very start of the task (`swarm.PacketRef`, which refuses wrapped or Unicode-spaced forms); the
+delegation receipts carry no packet argument, so `delegate*.go` is untouched. A marker that names no manifest packet,
+or a role other than the packet's, will leave the child unattributed rather than failing the run.
+
 ### Engine changes this decision depends on
 
 None of these exists today; each is part of a packet in the plan, and the ADR does not claim otherwise.
