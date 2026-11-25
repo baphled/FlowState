@@ -79,7 +79,8 @@ func doctorUsage(u app.SessionUsage) map[string]any {
 // doctorCompactions is the compactions object of the doctor output. last_tokens_after is
 // null without a compaction and the summary token totals are null until a compaction
 // reported usage (summaries_reported 0), as the usage object does for turns. invalid counts
-// the events the rebuild would refuse; above 0, `session run` exits 7 replay_mismatch.
+// the events the rebuild would refuse; above 0, the exec-loop `session run` exits 7 replay_mismatch
+// (the plain text turn never replays the log).
 func doctorCompactions(c app.CompactionStats) map[string]any {
 	out := map[string]any{"count": c.Count, "invalid": c.Invalid, "summaries_reported": c.SummariesReported,
 		"last_tokens_after": nil, "summary_input_tokens": nil, "summary_output_tokens": nil}

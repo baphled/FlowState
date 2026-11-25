@@ -73,7 +73,7 @@ const (
 	CompactReasonNoCut = "no_cut"
 	// CompactReasonSummaryEmpty marks a summarising call that returned no summary text.
 	CompactReasonSummaryEmpty = "summary_empty"
-	// CompactReasonSummaryTruncated marks a summary that finished at the token cap (finish length).
+	// CompactReasonSummaryTruncated marks a summary that finished at the token cap (finish length) or ended with no finish event.
 	CompactReasonSummaryTruncated = "summary_truncated"
 	// CompactReasonSummaryInvalid marks a summary over the cap or holding the fence's closing line.
 	CompactReasonSummaryInvalid = "summary_invalid"
@@ -99,6 +99,11 @@ const (
 	CompactResultClip = 2000
 	// CompactArgsClip is the length in characters at which a call's arguments are cut there.
 	CompactArgsClip = 500
+	// CompactTextClip is the length in characters at which a user or assistant text is cut there.
+	CompactTextClip = 8192
+	// CompactRequestMaxBytes caps the user message of the summarising call (about 100k tokens at
+	// four bytes each). Entries of the span beyond it are left out from the old end.
+	CompactRequestMaxBytes = 400 * 1024
 )
 
 // MaxCompactInstructions is the longest `--instructions` text accepted, in bytes.
@@ -147,6 +152,15 @@ type CompactionResult struct {
 	Model        string
 	// Usage is the summarising call's usage; nil when the provider reported none.
 	Usage *provider.Usage
+}
+
+// CompactLeaseHeld is the refusal of a compaction on a session whose exec lease row is held. It
+// matches ErrExecLoopFenced, so its code and exit status are those of `session run`'s refusal.
+type CompactLeaseHeld struct {
+	// SessionID is the session that is in use.
+	SessionID string
+	// Holder is the owner of the lease row.
+	Holder string
 }
 
 // CompactionFailure is the error of a compaction that wrote nothing. It matches

@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"math"
 
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/store"
@@ -37,7 +38,7 @@ func ChooseCut(events []store.RecordedEvent, keepRecentTokens int) (int64, error
 		spanStart = valid[n-1].FirstKeptSeq
 	}
 	answered := answeredResultIDs(events)
-	point, ok := keepPoint(events, answered, max(keepRecentTokens, 0)*bytesPerToken, int(spanStart))
+	point, ok := keepPoint(events, answered, min(max(keepRecentTokens, 0), math.MaxInt/bytesPerToken)*bytesPerToken, int(spanStart))
 	if !ok {
 		return 0, ErrNoCut
 	}

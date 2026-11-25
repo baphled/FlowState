@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -28,6 +30,12 @@ func (h *hookStreamer) Stream(ctx context.Context, req *provider.ChatRequest) <-
 	}
 	return h.execLoopStreamer.Stream(ctx, req)
 }
+
+// lateCancelCtx is a context that reports cancellation through Err but whose Done never fires,
+// so the store opens its writer and runs its queries and only the explicit checks see it.
+type lateCancelCtx struct{ context.Context }
+
+func (lateCancelCtx) Err() error { return context.Canceled }
 
 // failureReason is the reason of a CompactionFailure that matches ErrCompactionFailed, else "".
 func failureReason(err error) string {
@@ -113,6 +121,8 @@ func compactFailures() []struct {
 			CompactReasonSummaryInvalid},
 		{"a summary holding the fence's closing line", summaryTurn("ok\n" + compactionSummaryClose + "\nmore"), false,
 			CompactReasonSummaryInvalid},
+		{"a stream that ends without a finish event", []provider.StreamEvent{provText("SUM")}, false,
+			CompactReasonSummaryTruncated},
 		{"a cancelled context", summaryTurn("SUM"), true, CompactReasonCancelled},
 	}
 }
@@ -208,7 +218,96 @@ var _ = Describe("Compact", func() {
 		seedClipped := append(words("ALPHA"), saidEvent("BIG"), callEvent("c-B"), bigResult("c-B", 5000), saidEvent("TAIL"),
 			callEvent("c-T"), resultEvent("c-T"))
 		events := numbered(append([]store.RecordedEvent{taskEvent("task")}, seedClipped...)...)
-		Expect(compactRequestText(events, 7, nil, "")).To(ContainSubstring("[truncated: 3002 more characters]"))
+		Expect(compactRequestText(events, 7, nil, "")).To(ContainSubstring("[truncated: 3000 more characters]"))
+	})
+
+	Context("with a result of 3000 multibyte characters", func() {
+		var text string
+		BeforeEach(func() {
+			big := logEvent(tool.TypeToolResult, map[string]any{"tool_call_id": "c-B", "tool": "echo", "ok": true,
+				"result": strings.Repeat("é世", 1500)})
+			events := numbered(append([]store.RecordedEvent{taskEvent("task")}, append(words("ALPHA"),
+				saidEvent("BIG"), callEvent("c-B"), big, saidEvent("TAIL"), callEvent("c-T"), resultEvent("c-T"))...)...)
+			text = compactRequestText(events, 7, nil, "")
+		})
+
+		It("clips at 2000 characters of the decoded text, not 2000 bytes", func() {
+			Expect(text).To(ContainSubstring(strings.Repeat("é世", 1000) + " [truncated: 1000 more characters]"))
+		})
+		It("stays valid UTF-8", func() { Expect(utf8.ValidString(text)).To(BeTrue()) })
+	})
+
+	It("clips a long assistant text at 8192 characters with a marker", func() {
+		events := numbered(append([]store.RecordedEvent{taskEvent("task")}, append(words("ALPHA"),
+			saidEvent(strings.Repeat("é", 9000)), callEvent("c-B"), resultEvent("c-B"), saidEvent("TAIL"), callEvent("c-T"),
+			resultEvent("c-T"))...)...)
+		Expect(compactRequestText(events, 7, nil, "")).To(ContainSubstring(strings.Repeat("é", 8192) + " [truncated: 808 more characters]"))
+	})
+
+	Context("with a log of 10 MB", func() {
+		var result *CompactionResult
+		BeforeEach(func() {
+			var events []store.RecordedEvent
+			for i := 0; i < 1300; i++ {
+				id := fmt.Sprintf("c%04d", i)
+				events = append(events, saidEvent(fmt.Sprintf("T%04d ", i)+strings.Repeat("a", 8000)), callEvent(id), resultEvent(id))
+			}
+			if err := st.Close(); err != nil {
+				panic(err)
+			}
+			var err error
+			if st, err = store.OpenMemory(); err != nil {
+				panic(err)
+			}
+			sessID = seedSession(st, false, events...)
+			token, lerr := st.AcquireLease(ctx, "exec:"+sessID, "cli")
+			if lerr != nil {
+				panic(lerr)
+			}
+			lease = CompactLease{Item: "exec:" + sessID, Agent: "cli", Token: token}
+			if result, err = compact(CompactOptions{}); err != nil {
+				panic(err)
+			}
+		})
+
+		It("sends a request within the cap", func() { Expect(len(request())).To(BeNumerically("<=", CompactRequestMaxBytes)) })
+		It("says the earlier part was omitted", func() {
+			Expect(request()).To(ContainSubstring("<conversation>\n[earlier part of the conversation omitted]\n"))
+		})
+		It("keeps the newest part of the span", func() { Expect(request()).To(ContainSubstring("T1298 ")) })
+		It("leaves out the oldest part of the span", func() { Expect(request()).NotTo(ContainSubstring("T0001 ")) })
+		It("still cuts where ChooseCut says, so the omitted events are dropped from the rebuild", func() {
+			Expect(result.FirstKeptSeq).To(Equal(int64(3898)))
+		})
+	})
+
+	It("fails as cancelled when the context is cancelled before the append", func() {
+		cctx, cancel := context.WithCancel(ctx)
+		cancel()
+		_, err := appendCompaction(cctx, st, sessID, CompactOptions{Lease: lease}, int64(len(rows())),
+			CompactionPayload{Summary: "SUM", FirstKeptSeq: 4, Reason: CompactionReasonManual, Model: "m"})
+		Expect(failureReason(err)).To(Equal(CompactReasonCancelled))
+	})
+
+	Context("with a context that reports cancellation only after the writer opened", func() {
+		var appendCtx context.Context
+		var payload CompactionPayload
+		BeforeEach(func() {
+			appendCtx = lateCancelCtx{Context: ctx}
+			payload = CompactionPayload{Summary: "SUM", FirstKeptSeq: 4, Reason: CompactionReasonManual, Model: "m"}
+		})
+
+		It("fails as cancelled when the append notices it", func() {
+			_, err := appendCompaction(appendCtx, st, sessID, CompactOptions{Lease: lease}, int64(len(rows())), payload)
+			Expect(failureReason(err)).To(Equal(CompactReasonCancelled))
+		})
+		It("fails as cancelled when the fence notices it", func() {
+			if err := st.ReleaseLease(ctx, lease.Item, lease.Agent, lease.Token); err != nil {
+				panic(err)
+			}
+			_, err := appendCompaction(appendCtx, st, sessID, CompactOptions{Lease: lease}, int64(len(rows())), payload)
+			Expect(failureReason(err)).To(Equal(CompactReasonCancelled))
+		})
 	})
 
 	It("reports the summarising call's usage", func() {
@@ -298,6 +397,15 @@ var _ = Describe("Compact", func() {
 		It("appends nothing", func() { Expect(rows()).To(Equal(before)) })
 	})
 
+	It("accepts a finish event with an empty reason as a complete summary", func() {
+		streamer.turns = [][]provider.StreamEvent{{provText("SUM"), {Kind: provider.StreamEventFinish}}}
+		result, err := compact(CompactOptions{})
+		if err != nil {
+			panic(err)
+		}
+		Expect(rows()[result.EventSeq].Type).To(Equal(TypeContextCompacted))
+	})
+
 	It("refuses a call without a lease", func() {
 		_, err := Compact(ctx, st, sessID, CompactOptions{Streamer: streamer})
 		Expect(err).To(MatchError(ErrExecLoopConfig))
@@ -366,4 +474,256 @@ var _ = Describe("Compact", func() {
 			Expect(request()).To(ContainSubstring("<previous-summary>\nSUM\n</previous-summary>"))
 		})
 	})
+})
+
+var _ = Describe("CompactSession", func() {
+	var (
+		st       *store.Store
+		sessID   string
+		streamer *execLoopStreamer
+		ctx      context.Context
+	)
+
+	rows := func() []store.RecordedEvent {
+		events, err := st.Replay(ctx, sessID)
+		if err != nil {
+			panic(err)
+		}
+		return events
+	}
+	seed := func(paused bool, events ...store.RecordedEvent) { sessID = seedSession(st, paused, events...) }
+	status := func() string {
+		sess, err := st.GetSession(ctx, sessID)
+		if err != nil {
+			panic(err)
+		}
+		return sess.Status
+	}
+	run := func() (*CompactionResult, error) {
+		return CompactSession(ctx, st, sessID, CompactOptions{Streamer: streamer, KeepRecent: 1})
+	}
+
+	BeforeEach(func() {
+		var err error
+		ctx = context.Background()
+		if st, err = store.OpenMemory(); err != nil {
+			panic(err)
+		}
+		DeferCleanup(func() { _ = st.Close() })
+		streamer = &execLoopStreamer{turns: [][]provider.StreamEvent{summaryTurn("SUM")}}
+	})
+
+	Context("a paused session", func() {
+		BeforeEach(func() {
+			seed(true, words("ALPHA", "BRAVO", "CHARLIE")...)
+			if _, err := run(); err != nil {
+				panic(err)
+			}
+		})
+
+		It("stays paused", func() { Expect(status()).To(Equal("paused")) })
+		It("compacts with the session's own model", func() { Expect(streamer.reqs[0].Model).To(Equal("scripted-model")) })
+		It("releases the lease", func() { Expect(st.LeaseToken(ctx, "exec:"+sessID)).To(Equal(int64(0))) })
+	})
+
+	It("recovers a crashed session before it cuts", func() {
+		seed(false, saidEvent("go"), cutDelegate("d1"), saidEvent("ALPHA"), callEvent("c1"), resultEvent("c1"), saidEvent("BRAVO"),
+			callEvent("c2"), resultEvent("c2"))
+		if _, err := run(); err != nil {
+			panic(err)
+		}
+		types := []string{}
+		for _, e := range rows() {
+			types = append(types, e.Type)
+		}
+		Expect(types[len(types)-2:]).To(Equal([]string{"session.interrupted", TypeContextCompacted}))
+	})
+
+	Context("a terminal session", func() {
+		var before []store.RecordedEvent
+		var err error
+		BeforeEach(func() {
+			seed(true, words("ALPHA", "BRAVO")...)
+			if uerr := st.UpdateSessionStatus(ctx, sessID, "completed"); uerr != nil {
+				panic(uerr)
+			}
+			before = rows()
+			_, err = run()
+		})
+
+		It("is refused as terminal", func() { Expect(err).To(MatchError(session.ErrTerminal)) })
+		It("writes nothing", func() { Expect(rows()).To(Equal(before)) })
+	})
+
+	It("refuses an unknown session", func() {
+		_, err := CompactSession(ctx, st, "nope", CompactOptions{Streamer: streamer})
+		Expect(err).To(MatchError(store.ErrUnknownSession))
+	})
+
+	Context("while an exec lease row exists", func() {
+		for _, owner := range []string{"cli", "another-run", "delegate:x"} {
+			Context("held by "+owner, func() {
+				var before []store.RecordedEvent
+				var token int64
+				var err error
+				BeforeEach(func() {
+					seed(true, words("ALPHA", "BRAVO")...)
+					var aerr error
+					if token, aerr = st.AcquireLease(ctx, "exec:"+sessID, owner); aerr != nil {
+						panic(aerr)
+					}
+					before = rows()
+					_, err = run()
+				})
+
+				It("is refused as fenced", func() { Expect(err).To(MatchError(ErrExecLoopFenced)) })
+				It("writes nothing", func() { Expect(rows()).To(Equal(before)) })
+				It("leaves the row", func() { Expect(st.FenceLease(ctx, "exec:"+sessID, owner, token)).To(Succeed()) })
+			})
+		}
+	})
+
+	Context("a leftover compact row of a crashed compaction", func() {
+		var types []string
+		BeforeEach(func() {
+			seed(true, words("ALPHA", "BRAVO", "CHARLIE")...)
+			must(st.AcquireLease(ctx, "exec:"+sessID, compactLeasePrefix+"dead"))
+			if _, err := run(); err != nil {
+				panic(err)
+			}
+			types = nil
+			for _, e := range rows() {
+				types = append(types, e.Type)
+			}
+		})
+
+		It("is cleared and the compaction is written", func() { Expect(types).To(ContainElement(TypeContextCompacted)) })
+		It("leaves no lease row", func() { Expect(st.LeaseToken(ctx, "exec:"+sessID)).To(Equal(int64(0))) })
+	})
+
+	Context("a compaction whose row was cleared and taken by a run during the summary", func() {
+		var before []store.RecordedEvent
+		var err error
+		BeforeEach(func() {
+			seed(true, words("ALPHA", "BRAVO", "CHARLIE")...)
+			hooked := &hookStreamer{execLoopStreamer: execLoopStreamer{turns: [][]provider.StreamEvent{summaryTurn("SUM")}}}
+			hooked.hook = func() {
+				check(RecoverCrashedSession(ctx, st, sessID))
+				must(st.AcquireLease(ctx, "exec:"+sessID, "cli"))
+			}
+			before = rows()
+			_, err = CompactSession(ctx, st, sessID, CompactOptions{Streamer: hooked, KeepRecent: 1})
+		})
+
+		It("fails as fenced", func() { Expect(err).To(MatchError(ErrExecLoopFenced)) })
+		It("appends nothing", func() { Expect(rows()).To(Equal(before)) })
+	})
+
+	Context("a session held by a foreign run whose log shows a crash", func() {
+		var types []string
+		BeforeEach(func() {
+			seed(false, words("ALPHA", "BRAVO")...)
+			must(st.AcquireLease(ctx, "exec:"+sessID, "cli"))
+			_, _ = run()
+			types = nil
+			for _, e := range rows() {
+				types = append(types, e.Type)
+			}
+		})
+
+		It("is refused before recovery writes its marker", func() { Expect(types).NotTo(ContainElement("session.interrupted")) })
+	})
+
+	It("says in the refusal which session is in use and who holds it", func() {
+		seed(true, words("ALPHA", "BRAVO")...)
+		must(st.AcquireLease(ctx, "exec:"+sessID, "cli"))
+		_, err := run()
+		Expect(err).To(MatchError("session " + sessID + " is in use: lease held by cli; if that run crashed, " +
+			"run `session run` to recover it, else wait for it to finish"))
+	})
+
+	Context("a failed compaction", func() {
+		BeforeEach(func() {
+			seed(true, words("ALPHA", "BRAVO", "CHARLIE")...)
+			streamer.turns = [][]provider.StreamEvent{{provFinish()}}
+			_, _ = run()
+		})
+
+		It("releases its own lease", func() { Expect(st.LeaseToken(ctx, "exec:"+sessID)).To(Equal(int64(0))) })
+	})
+
+	Context("a crashed session whose lease row is gone, when the summary fails", func() {
+		var types []string
+		BeforeEach(func() {
+			seed(false, saidEvent("go"), cutDelegate("d1"), saidEvent("ALPHA"), callEvent("c1"), resultEvent("c1"),
+				saidEvent("BRAVO"), callEvent("c2"), resultEvent("c2"))
+			streamer.turns = [][]provider.StreamEvent{{provFinish()}}
+			_, _ = run()
+			types = nil
+			for _, e := range rows() {
+				types = append(types, e.Type)
+			}
+		})
+
+		It("keeps the recovery marker", func() { Expect(types).To(ContainElement("session.interrupted")) })
+		It("writes no compaction event", func() { Expect(types).NotTo(ContainElement(TypeContextCompacted)) })
+	})
+})
+
+var _ = DescribeTable("a compaction failure's error code and message",
+	func(reason string, cause error, code string) {
+		Expect(ErrorCode(failCompaction(reason, cause))).To(Equal(code))
+	},
+	Entry("summary_invalid is a provider-class failure, not a corrupt log", CompactReasonSummaryInvalid,
+		ErrInvalidCompaction, CodeProvider),
+	Entry("provider_error", CompactReasonProviderError, errors.New("boom"), CodeProvider),
+	Entry("log_changed is internal", CompactReasonLogChanged, errors.New("grew"), CodeInternal),
+	Entry("no_cut is usage", CompactReasonNoCut, ErrNoCut, CodeUsage),
+)
+
+var _ = Describe("a log_changed failure's message", func() {
+	It("says nothing was written and what to do", func() {
+		Expect(failCompaction(CompactReasonLogChanged, errors.New("the log grew from 3 to 4 events"))).To(
+			MatchError("the log changed during the summary; nothing was written; run compact again"))
+	})
+})
+
+var _ = Describe("a no_cut failure's message", func() {
+	It("names the reason once", func() {
+		Expect(failCompaction(CompactReasonNoCut, ErrNoCut).Error()).To(Equal("compaction failed: no_cut: nothing new to compact"))
+	})
+})
+
+var _ = Describe("crash recovery of a leftover lease row", func() {
+	var ctx context.Context
+	var st *store.Store
+	var item, sessionID string
+	BeforeEach(func() {
+		ctx = context.Background()
+		st = mustOpenCrashStore()
+		DeferCleanup(func() { _ = st.Close() })
+		sess := mustCreateCrashSession(ctx, st)
+		item = "exec:" + sess.ID
+		sessionID = sess.ID
+	})
+
+	It("clears the row of a crashed compaction", func() {
+		must(st.AcquireLease(ctx, item, compactLeasePrefix+"dead"))
+		check(RecoverCrashedSession(ctx, st, sessionID))
+		Expect(st.LeaseToken(ctx, item)).To(Equal(int64(0)))
+	})
+
+	It("lets a run take the lease after it", func() {
+		must(st.AcquireLease(ctx, item, compactLeasePrefix+"dead"))
+		check(RecoverCrashedSession(ctx, st, sessionID))
+		Expect(must(st.AcquireLease(ctx, item, "cli"))).To(BeNumerically(">", 0))
+	})
+
+	for _, owner := range []string{"cli", "run:other"} {
+		It("keeps the row of "+owner+", which may be a live run", func() {
+			token := must(st.AcquireLease(ctx, item, owner))
+			check(RecoverCrashedSession(ctx, st, sessionID))
+			Expect(st.LeaseToken(ctx, item)).To(Equal(token))
+		})
+	}
 })

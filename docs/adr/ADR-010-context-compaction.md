@@ -131,7 +131,10 @@ The engine never rewrites or deletes events.** FlowState adds only what its own 
 - **The summary call.** A provider call on the session's own provider and model with no tools, using the `Streamer`
   already in the loop. There is no `compaction_model` (D5). The span is serialised to text, as Pi's documentation
   describes, so the model does not continue it as a conversation: roles labelled, assistant tool calls as one line,
-  each tool result truncated to 2000 characters, nothing else.
+  each tool result truncated to 2000 characters, nothing else. A user or assistant text is clipped at 8192
+  characters, and the whole request at 400 KiB (about 100k tokens): when the span does not fit, its oldest entries
+  are left out ("[earlier part of the conversation omitted]"), so the summary covers the recent part only. The
+  events before the cut are still dropped from the rebuilt history: what was omitted from the input is lost.
 - **The prompt** asks for the Pi sections (Goal, Constraints & Preferences, Progress, Key Decisions, Next Steps,
   Critical Context) and the files read and modified. `--instructions` is appended as a focus line. The previous
   summary, if any, is passed as iterative context and the span summarised is from the previous `first_kept_seq`.

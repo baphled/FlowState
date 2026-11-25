@@ -92,7 +92,19 @@ func crashedFromEvents(events []store.RecordedEvent) bool {
 // `session run` on a session that is running elsewhere would answer its live
 // calls. This is the same assumption the session.interrupted marker has always
 // made: one process runs a session at a time (ADR-009 D8).
+//
+// It also clears the exec lease row of a crashed `session compact` (clearCompactLeases, whose
+// comment argues the safety), so that a run can proceed. CompactSession does not call this: it
+// holds such a row itself.
 func RecoverCrashedSession(ctx context.Context, st *store.Store, sessionID string) error {
+	if err := clearCompactLeases(ctx, st, sessionID); err != nil {
+		return err
+	}
+	return recoverCrashedSession(ctx, st, sessionID)
+}
+
+// recoverCrashedSession is RecoverCrashedSession without the compact-row clearing.
+func recoverCrashedSession(ctx context.Context, st *store.Store, sessionID string) error {
 	events, rerr := st.Replay(ctx, sessionID)
 	if rerr != nil {
 		return fmt.Errorf("crash recovery detection: crash detection replay: %w", rerr)

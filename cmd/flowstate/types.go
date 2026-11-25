@@ -38,6 +38,8 @@ type flags struct {
 	allowFile string
 	workdir   string
 	agents    string // --agents scope: user, project or both; empty offers no delegation
+	// session compact
+	instructions string // --instructions: a focus line for the summary
 	// session run
 	budget    int64
 	budgetSet bool // --budget was supplied explicitly
