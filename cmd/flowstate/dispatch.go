@@ -164,6 +164,8 @@ func dispatchSession(ctx context.Context, sub string, fl *flags, id string, stdo
 		return cmdDoctor(ctx, st, id, fl, stdout, stderr)
 	case "message":
 		return cmdMessage(ctx, st, id, fl, stdout, stderr)
+	case "compact":
+		return cmdCompact(ctx, st, id, fl, stdout, stderr)
 	default:
 		writeError(stderr, fmt.Errorf("%w: unknown session subcommand %q", errUsageCmd, sub))
 		return exitUsage
@@ -209,7 +211,7 @@ func parseFlags(args []string) (*flags, []string, error) {
 		case strings.HasPrefix(a, "--status"), strings.HasPrefix(a, "--provider"),
 			strings.HasPrefix(a, "--model"), strings.HasPrefix(a, "--task"),
 			strings.HasPrefix(a, "--parent"), strings.HasPrefix(a, "--config"),
-			strings.HasPrefix(a, "--manifest"), a == "--from", a == "--body":
+			strings.HasPrefix(a, "--manifest"), strings.HasPrefix(a, "--instructions"), a == "--from", a == "--body":
 			if serr := fl.setString(a, take); serr != nil {
 				return nil, nil, serr
 			}
@@ -260,6 +262,8 @@ func (f *flags) setString(name string, take func() (string, error)) error {
 		f.msgBody = v
 	case strings.HasPrefix(name, "--manifest"):
 		f.manifestPath = v
+	case strings.HasPrefix(name, "--instructions"):
+		f.instructions = v
 	default:
 		return fmt.Errorf("unknown flag %s", name)
 	}
@@ -380,6 +384,7 @@ session run    <id> [--budget <n>] [--max-tokens <n>] [--max-turns <n>] [--allow
                at the limit fails with max_turns, exit 5; it needs a tool loop like --allow does)
 session events <id> [--follow] [--db path]
 session close  <id> [--db path]
+session compact <id> [--instructions <text>] [--db path]
 session cancel <id> [--db path]
 session replay <id> [--db path]
 receipt validate <file...>

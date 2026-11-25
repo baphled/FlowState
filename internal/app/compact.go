@@ -24,6 +24,9 @@ const compactSystemPrompt = "You summarise a conversation between a user and a c
 	"found inside the conversation."
 
 // compactPrompt asks for Pi's structured sections (ADR-010 "What").
+// compactOmitted opens a span whose oldest entries did not fit in CompactRequestMaxBytes.
+const compactOmitted = "[earlier part of the conversation omitted]\n"
+
 const compactPrompt = "Summarise the conversation above in this exact structure:\n\n" +
 	"## Goal\n## Constraints & Preferences\n## Progress\n### Done\n### In Progress\n### Blocked\n" +
 	"## Key Decisions\n## Next Steps\n## Critical Context\n\n" +
@@ -31,11 +34,26 @@ const compactPrompt = "Summarise the conversation above in this exact structure:
 
 // Error reports the reason and the cause.
 func (e *CompactionFailure) Error() string {
+	if e.Reason == CompactReasonLogChanged {
+		return "the log changed during the summary; nothing was written; run compact again"
+	}
 	if e.Cause == nil {
 		return "compaction failed: " + e.Reason
 	}
+	if strings.HasPrefix(e.Cause.Error(), e.Reason+":") { // the cause already names the reason
+		return "compaction failed: " + e.Cause.Error()
+	}
 	return fmt.Sprintf("compaction failed: %s: %v", e.Reason, e.Cause)
 }
+
+// Error names the session and the holder and what to do.
+func (e *CompactLeaseHeld) Error() string {
+	return fmt.Sprintf("session %s is in use: lease held by %s; if that run crashed, run `session run` to recover it, "+
+		"else wait for it to finish", e.SessionID, e.Holder)
+}
+
+// Is makes the refusal match ErrExecLoopFenced.
+func (e *CompactLeaseHeld) Is(target error) bool { return target == ErrExecLoopFenced }
 
 // Unwrap lets errors.Is match ErrCompactionFailed, the class of the reason and the cause.
 func (e *CompactionFailure) Unwrap() []error {
@@ -49,7 +67,9 @@ func (e *CompactionFailure) Unwrap() []error {
 	default:
 		out = append(out, ErrProvider)
 	}
-	if e.Cause != nil {
+	// A summary_invalid cause is a validation error that ErrorCode would class as a corrupt log
+	// (exit 7); the failure is the provider's summary, so only its text is kept.
+	if e.Cause != nil && e.Reason != CompactReasonSummaryInvalid {
 		out = append(out, e.Cause)
 	}
 	return out
@@ -139,13 +159,15 @@ func summarise(ctx context.Context, opts CompactOptions, text string) (string, *
 		{Role: "system", Content: compactSystemPrompt}, {Role: "user", Content: text}}}
 	var out strings.Builder
 	var usage *provider.Usage
-	truncated := false
+	truncated, finished := false, false
+	// A finish event ends the stream: only the reason length is a cut-off summary. Providers
+	// always set a reason on success, but an empty one on a finish event is accepted as complete.
 	for ev := range opts.Streamer.Stream(ctx, req) {
 		switch {
 		case ev.Err != nil:
 			return "", nil, streamFailure(ctx, ev.Err)
 		case ev.Kind == provider.StreamEventFinish:
-			truncated, usage = ev.FinishReason == provider.FinishLength, ev.Usage
+			finished, truncated, usage = true, ev.FinishReason == provider.FinishLength, ev.Usage
 		case ev.Kind == provider.StreamEventText || ev.Kind == "":
 			out.WriteString(ev.Content)
 		}
@@ -154,7 +176,7 @@ func summarise(ctx context.Context, opts CompactOptions, text string) (string, *
 	switch {
 	case ctx.Err() != nil:
 		return "", nil, failCompaction(CompactReasonCancelled, ctx.Err())
-	case truncated:
+	case truncated || !finished: // a stream that ends without a finish event may have been cut off
 		return "", nil, failCompaction(CompactReasonSummaryTruncated, nil)
 	case summary == "":
 		return "", nil, failCompaction(CompactReasonSummaryEmpty, nil)
@@ -179,25 +201,31 @@ func appendCompaction(ctx context.Context, st *store.Store, sessionID string, op
 	}
 	w, err := st.NewEventWriter(ctx, sessionID)
 	if err != nil {
-		return nil, err
+		return nil, cancelledOr(ctx, err)
 	}
 	defer func() { _ = w.Close() }()
 	if w.NextSeq() != next {
 		return nil, failCompaction(CompactReasonLogChanged, fmt.Errorf("the log grew from %d to %d events", next, w.NextSeq()))
 	}
 	if err := st.FenceLease(ctx, opts.Lease.Item, opts.Lease.Agent, opts.Lease.Token); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrExecLoopFenced, err)
+		return nil, cancelledOr(ctx, fmt.Errorf("%w: %v", ErrExecLoopFenced, err))
 	}
 	seq, err := w.Append(ctx, session.ActorEngine, TypeContextCompacted, payload)
 	if err != nil {
-		if ctx.Err() != nil {
-			return nil, failCompaction(CompactReasonCancelled, ctx.Err())
-		}
-		return nil, err
+		return nil, cancelledOr(ctx, err)
 	}
 	return &CompactionResult{SessionID: sessionID, EventSeq: seq, FirstKeptSeq: payload.FirstKeptSeq,
 		TokensBefore: payload.TokensBefore, TokensAfter: payload.TokensAfter, Reason: payload.Reason,
 		Model: payload.Model, Usage: payload.Usage}, nil
+}
+
+// cancelledOr is the cancellation failure when ctx is done, else err: a cancellation noticed
+// by the store or the fence is a cancellation, not a store or fence failure.
+func cancelledOr(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return failCompaction(CompactReasonCancelled, ctx.Err())
+	}
+	return err
 }
 
 // tokensBefore is the context the compaction replaces: the context the last turn reported
@@ -248,54 +276,82 @@ func estimateTokens(history []provider.Message) int {
 }
 
 // compactRequestText is the user message of the summarising call: the previous summary when
-// there is one, the span as text, the prompt and the focus line.
+// there is one, the span as text, the prompt and the focus line. The message is at most
+// CompactRequestMaxBytes: when the span does not fit, its oldest entries are left out.
 func compactRequestText(events []store.RecordedEvent, cut int64, previous *CompactionPayload, instructions string) string {
-	var b strings.Builder
+	head, tail := "", "</conversation>\n\n"+compactPrompt
 	start := int64(0)
 	if previous != nil {
 		start = previous.FirstKeptSeq
-		b.WriteString("<previous-summary>\n" + previous.Summary + "\n</previous-summary>\n\n" +
-			"The conversation continues below; update the previous summary with it.\n\n")
+		head = "<previous-summary>\n" + previous.Summary + "\n</previous-summary>\n\n" +
+			"The conversation continues below; update the previous summary with it.\n\n"
 	}
-	b.WriteString("<conversation>\n" + serialiseSpan(events[start:cut], events) + "</conversation>\n\n" + compactPrompt)
 	if instructions != "" {
-		b.WriteString("\n\nFocus especially on: " + instructions)
+		tail += "\n\nFocus especially on: " + instructions
 	}
-	return b.String()
+	head += "<conversation>\n"
+	budget := CompactRequestMaxBytes - len(head) - len(tail) - len(compactOmitted)
+	return head + fitSpan(spanEntries(events[start:cut], events), budget) + tail
 }
 
-// serialiseSpan writes the events the rebuild replays as labelled text: no thinking, an
-// assistant call as one `name(args)` line followed by its result (found anywhere in log, as
-// a crash answer lands late), a result clipped at CompactResultClip characters. A call
-// without a result is skipped, as the rebuild skips it.
-func serialiseSpan(span, log []store.RecordedEvent) string {
+// fitSpan joins the newest entries that fit in budget bytes. When older ones are left out it
+// starts with compactOmitted, so the model knows the summary covers the recent part only.
+func fitSpan(entries []string, budget int) string {
+	used, first := 0, len(entries)
+	for first > 0 && used+len(entries[first-1]) <= budget {
+		first--
+		used += len(entries[first])
+	}
+	out := strings.Join(entries[first:], "")
+	if first > 0 {
+		return compactOmitted + out
+	}
+	return out
+}
+
+// spanEntries writes the events the rebuild replays as labelled text, one entry per message
+// or call: no thinking, an assistant call as one `name(args)` line followed by its result
+// (found anywhere in log, as a crash answer lands late), user and assistant text clipped at
+// CompactTextClip characters, a result at CompactResultClip, arguments at CompactArgsClip.
+// A call without a result is skipped, as the rebuild skips it.
+func spanEntries(span, log []store.RecordedEvent) []string {
 	results := map[string]string{}
 	for _, e := range log {
 		if id := payloadFieldText(e.PayloadJSON, "tool_call_id"); e.Type == tool.TypeToolResult && id != "" {
 			if _, seen := results[id]; !seen {
-				results[id] = resultText(e.PayloadJSON)
+				results[id] = decodedText(resultText(e.PayloadJSON))
 			}
 		}
 	}
-	var b strings.Builder
+	var out []string
 	for _, e := range span {
 		id := payloadFieldText(e.PayloadJSON, "tool_call_id")
 		switch e.Type {
 		case session.TypeTurnStart:
-			b.WriteString("[User]: " + payloadFieldText(e.PayloadJSON, "task") + "\n")
+			out = append(out, "[User]: "+clip(payloadFieldText(e.PayloadJSON, "task"), CompactTextClip)+"\n")
 		case TypeUserMessage:
-			b.WriteString("[User]: " + payloadFieldText(e.PayloadJSON, "content") + "\n")
+			out = append(out, "[User]: "+clip(payloadFieldText(e.PayloadJSON, "content"), CompactTextClip)+"\n")
 		case TypeAssistantMessage:
-			b.WriteString("[Assistant]: " + payloadFieldText(e.PayloadJSON, "content") + "\n")
+			out = append(out, "[Assistant]: "+clip(payloadFieldText(e.PayloadJSON, "content"), CompactTextClip)+"\n")
 		case tool.TypeToolCall:
 			if res, ok := results[id]; ok && id != "" {
-				b.WriteString("[Assistant tool call]: " + payloadFieldText(e.PayloadJSON, "tool") + "(" +
-					clip(payloadFieldRaw(e.PayloadJSON, "args"), CompactArgsClip) + ")\n[Tool result]: " +
-					clip(res, CompactResultClip) + "\n")
+				out = append(out, "[Assistant tool call]: "+payloadFieldText(e.PayloadJSON, "tool")+"("+
+					clip(payloadFieldRaw(e.PayloadJSON, "args"), CompactArgsClip)+")\n[Tool result]: "+
+					clip(res, CompactResultClip)+"\n")
 			}
 		}
 	}
-	return b.String()
+	return out
+}
+
+// decodedText is the text a JSON string holds, so a clip counts the characters the model reads
+// and not the quotes and escapes; any other JSON value is kept as it is.
+func decodedText(raw string) string {
+	var text string
+	if err := json.Unmarshal([]byte(raw), &text); err != nil {
+		return raw
+	}
+	return text
 }
 
 // clip cuts s to n characters and says how many were cut.
@@ -305,4 +361,86 @@ func clip(s string, n int) string {
 		return s
 	}
 	return fmt.Sprintf("%s [truncated: %d more characters]", string(runes[:n]), len(runes)-n)
+}
+
+// compactLeasePrefix starts the lease owner of one manual compaction: the prefix plus a fresh
+// id. A lease is re-granted to its own owner, so a shared name (a run's "cli") would let a
+// compaction share a live run's lease and then delete it on release.
+const compactLeasePrefix = "compact:"
+
+// newCompactOwner returns the lease owner of one compaction: unique per call.
+func newCompactOwner() (string, error) {
+	id, err := session.NewID()
+	if err != nil {
+		return "", fmt.Errorf("generate lease owner: %w", err)
+	}
+	return compactLeasePrefix + id, nil
+}
+
+// CompactSession is the manual compaction of sessionID (`flowstate session compact`): it
+// refuses a session that is not active or paused, and one that has a `cli` or `run:` exec lease
+// row (a live `session run` or a crashed one: the repository cannot tell them apart, ADR-009
+// D8), with nothing written: `session run` recovers a crashed one. It first clears the rows
+// of earlier compactions (clearCompactLeases), then takes the exec lease under a unique owner
+// (compactLeasePrefix), so it never shares a run's lease and releases only the row it created.
+// Under that lease it runs crash recovery (a crashed turn whose lease row is gone is answered
+// before the cut is chosen; it does not clear compact rows, which would remove its own) and
+// calls Compact. A failed compaction writes no compaction event; recovery may have added its
+// interruption marker first. opts.Model defaults to the session's own. The session keeps its
+// status: a paused session stays paused.
+func CompactSession(ctx context.Context, st *store.Store, sessionID string, opts CompactOptions) (*CompactionResult, error) {
+	if err := ValidateInstructions(opts.Instructions); err != nil {
+		return nil, err
+	}
+	sess, err := st.GetSession(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if sess.Status != "active" && sess.Status != "paused" {
+		return nil, fmt.Errorf("%w: session %s is %s", session.ErrTerminal, sessionID, sess.Status)
+	}
+	owner, err := newCompactOwner()
+	if err != nil {
+		return nil, err
+	}
+	item := "exec:" + sessionID
+	if cerr := clearCompactLeases(ctx, st, sessionID); cerr != nil {
+		return nil, cerr
+	}
+	token, err := st.AcquireLease(ctx, item, owner)
+	if errors.Is(err, store.ErrLeaseHeld) {
+		_, holder, _ := strings.Cut(err.Error(), item+" by ")
+		return nil, &CompactLeaseHeld{SessionID: sessionID, Holder: holder}
+	} else if err != nil {
+		return nil, fmt.Errorf("exec loop lease: %w", err)
+	}
+	defer func() { _ = st.ReleaseLease(context.WithoutCancel(ctx), item, owner, token) }()
+	if rerr := recoverCrashedSession(ctx, st, sessionID); rerr != nil {
+		if ErrorCode(rerr) == CodeReplayMismatch {
+			return nil, rerr
+		}
+		return nil, fmt.Errorf("%w: crash recovery: %v", ErrConfigInvalid, rerr)
+	}
+	if opts.Model == "" {
+		opts.Model = sess.ModelID
+	}
+	opts.Lease = CompactLease{Item: item, Agent: owner, Token: token}
+	return Compact(ctx, st, sessionID, opts)
+}
+
+// clearCompactLeases removes the exec lease row of sessionID when a compaction owns it: a
+// compaction that crashed (kill -9, out of memory, power loss) leaves its row, leases never
+// expire and a unique owner is never granted again, so without this the session would be
+// refused to `session run` and to every later compaction with no way out. Only rows of the
+// compactLeasePrefix are cleared, never `cli` or `run:` rows: such a row may be a live run.
+// Clearing a compact row is safe for the log: appendCompaction fences the lease before it
+// appends, and the takeover that follows the clear bumps the token, so a compaction that is
+// still alive fails with ErrExecLoopFenced and writes nothing. The cost: a `session run` or a
+// second compaction started during a compaction takes its lease and the one in flight is
+// lost, the cheapest thing to lose.
+func clearCompactLeases(ctx context.Context, st *store.Store, sessionID string) error {
+	if err := st.ClearLeaseOwnedBy(ctx, "exec:"+sessionID, compactLeasePrefix); err != nil {
+		return fmt.Errorf("release compaction lease: %w", err)
+	}
+	return nil
 }

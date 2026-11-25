@@ -1,6 +1,7 @@
 package app
 
 import (
+	"math"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -69,6 +70,8 @@ var _ = Describe("ChooseCut", func() {
 		Entry("at the previous compaction's first_kept_seq", cutLog(cutTurn("c1"), cutTurn("c2"), cutTurn("c3"),
 			cutOne(compactedEvent(4, "SUM"))), 16),
 		Entry("in a log of a task alone", cutLog(), 0),
+		Entry("when the keep size is the largest int", cutLog(cutTurn("c1"), cutTurn("c2"), cutTurn("c3")), math.MaxInt),
+		Entry("when the keep size overflows as bytes", cutLog(cutTurn("c1"), cutTurn("c2"), cutTurn("c3")), math.MaxInt/4+1),
 	)
 
 	It("refuses a log holding an invalid compaction", func() {

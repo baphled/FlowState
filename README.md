@@ -37,11 +37,10 @@ govern how it is changed. There is no TUI yet: the command line and the HTTP API
 - **HTTP API.** `flowstate serve` exposes the same operations, with server-sent events for a live log.
 
 **Not built yet:** the receipts-only `swarm run` does not execute provider turns for its children (it creates,
-budgets and gates them; `swarm run --execute` is the path that runs them). Skills, hooks, MCP, manual and
-overflow-triggered context compaction (only the automatic trigger in the tool loop exists), provider failover and a
-frontend are also outstanding. Nothing here is claimed to be production ready; see
-[the architecture overview](docs/architecture/OVERVIEW.md) for the exact
-current behaviour.
+budgets and gates them; `swarm run --execute` is the path that runs them). Skills, hooks, MCP, overflow-triggered
+context compaction (only the automatic trigger in the tool loop and the manual `session compact` exist), provider
+failover and a frontend are also outstanding. Nothing here is claimed to be production ready; see
+[the architecture overview](docs/architecture/OVERVIEW.md) for the exact current behaviour.
 
 ## Quick start
 
@@ -74,12 +73,43 @@ signed-in `claude` binary and never reads or forwards a Claude credential.
 flowstate session new --provider anthropic --model haiku --task "Say hello"
 ```
 
+## Compaction
+
+`session compact <id> [--instructions <text>]` summarises the old part of a long session with the session's own
+provider and model (no tools, at most 8192 tokens) and appends one `context.compacted` event; the log is never
+rewritten, and `session replay` still shows everything. The newest turns (about 20000 estimated tokens) stay verbatim.
+It takes the session's exec lease under its own unique owner, so a session that holds a `cli` or `run:` exec lease
+(running, or crashed and not yet resumed with `session run`) cannot be compacted: run `session run` first to recover
+it. The lease row of a compaction that crashed is cleared by the next `session run` or `session compact`. So a
+`session run` or a second compaction started during a compaction takes its lease, and the one in flight fails fenced
+and writes nothing. It is refused unless the session is `active` or `paused`; it recovers a crashed turn whose lease
+is gone first; a paused session stays paused. It never releases a lease it did not take. It has no loop, so no budget
+pool applies: every flag that does not apply (`--budget`, `--max-tokens`, `--max-turns`, `--allow`, `--workdir`,
+`--provider`, `--model` and the like) is refused with exit 2 naming it. `--instructions` is one line of at most 1000
+bytes with no control characters (a tab counts), appended as a focus for the summary. It prints one JSON object:
+`session`, `event_seq`, `first_kept_seq`, `tokens_before`, `tokens_after`, `reason`, `model` and `usage`. The
+summariser's input is capped at 400 KiB: of a very long span only the newest part is summarised, though the events
+before the cut still leave the rebuilt history.
+
+Exit codes: 0 done; 2 usage, including `no_cut` (nothing new to compact, or the history is too short, so nothing is
+written); 3 the provider failed, or the summary was empty, cut off at the token cap or invalid (code
+`provider_error`); 4 the database or crash recovery failed (`config_invalid`); 6 a finished session; 7 a corrupt log;
+130 cancelled by a signal (no compaction event was written); 1 an unknown session, a held lease, or a log that
+changed during the summary (code `internal`: run again). A failed compaction writes no compaction event (crash
+recovery may add its interruption marker first).
+
+What exists today: a tool-loop session (`session run` with `--allow` or the other tool-loop flags) honours a
+compaction on its next run, compacts itself automatically near the window (see Configuration), and `session doctor`
+counts the compactions. There is no retry after a provider overflow error yet, and the plain text-turn path never
+rebuilds history from the log, so a compaction does not change what it sends.
+
 ## Commands
 
 | Command | Purpose |
 | --- | --- |
 | `session new` | Create a session: `--provider`, `--model`, `--task <text\|@file>`, `--parent`, `--reserve` |
 | `session run <id>` | One turn or tool loop: `--budget`, `--max-tokens`, `--max-turns`, `--allow`, `--allow-file`, `--workdir`, `--agents` |
+| `session compact <id>` | Compact a tool-loop session's context by hand: `--instructions <text>`; see [Compaction](#compaction) |
 | `session list [--status <s>]` | List sessions |
 | `session events <id> [--follow]` | Print or follow the event log |
 | `session replay <id>` | Replay and verify the log |
@@ -421,8 +451,9 @@ compacts: raise the window or lower the reserve or `max_tokens`. In `swarm run -
 children compact with the built-in defaults (by the model table, or a child profile's `context_window`); the
 `compaction` settings, including `enabled: false`, do not apply to them yet, and each compaction draws from the swarm
 pool. Not yet: there is no retry after a provider
-context-overflow error, and no manual command, so a model that overflows still fails as a provider error. A window
-comes from the profile's `context_window` for a delegated child, else from `compaction.context_window`, else from a
+context-overflow error, so a model that overflows still fails as a provider error. `session compact` summarises by
+hand. A window comes from the profile's `context_window` for a delegated child, else from
+`compaction.context_window`, else from a
 built-in table of `anthropic` and `z.ai` models matched by exact, case-sensitive id (it follows Pi's registry); there
 is no default, and an unknown window never compacts automatically. `session doctor` resolves the window from
 `compaction.context_window` and the table only: it does not read a profile's `context_window`, because a root session

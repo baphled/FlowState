@@ -448,6 +448,31 @@
       }
     }
   },
+  "session-compact": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["session", "event_seq", "first_kept_seq", "tokens_before", "tokens_after", "reason", "model", "usage"],
+    "properties": {
+      "session": { "type": "string" },
+      "event_seq": { "type": "integer", "minimum": 1 },
+      "first_kept_seq": { "type": "integer", "minimum": 1 },
+      "tokens_before": { "type": "integer", "minimum": 0 },
+      "tokens_after": { "type": "integer", "minimum": 0 },
+      "reason": { "type": "string", "enum": ["manual"] },
+      "model": { "type": "string" },
+      "usage": {
+        "type": ["object", "null"],
+        "additionalProperties": false,
+        "required": ["input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"],
+        "properties": {
+          "input_tokens": { "type": "integer", "minimum": 0 },
+          "output_tokens": { "type": "integer", "minimum": 0 },
+          "cache_read_tokens": { "type": "integer", "minimum": 0 },
+          "cache_write_tokens": { "type": "integer", "minimum": 0 }
+        }
+      }
+    }
+  },
   "session-doctor": {
     "type": "object",
     "additionalProperties": false,
