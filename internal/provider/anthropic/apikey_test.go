@@ -622,6 +622,47 @@ var _ = Describe("APIKey", func() {
 		Entry("529 overloaded_error", 529, "overloaded_error", "Overloaded"),
 	)
 
+	DescribeTable("a context overflow",
+		func(code int, typ, msg string) {
+			status = code
+			reply = `{"type":"error","error":{"type":"` + typ + `","message":"` + msg + `"}}`
+			_, err := chat(hello())
+			Expect(err).To(MatchError(provider.ErrContextOverflow))
+		},
+		Entry("400 prompt is too long", 400, "invalid_request_error", "prompt is too long: 250000 tokens > 200000 maximum"),
+		Entry("413 request_too_large", 413, "request_too_large", "Request exceeds the maximum allowed size"),
+	)
+
+	DescribeTable("a failure that is not a context overflow",
+		func(code int, typ, msg string) {
+			status = code
+			reply = `{"type":"error","error":{"type":"` + typ + `","message":"` + msg + `"}}`
+			_, err := chat(hello())
+			Expect(err).NotTo(MatchError(provider.ErrContextOverflow))
+		},
+		Entry("another 400", 400, "invalid_request_error", "max_tokens: must be positive"),
+		Entry("429", 429, "rate_limit_error", "slow down"),
+		Entry("500", 500, "api_error", "prompt is too long"),
+	)
+
+	It("keeps the overflow cause on a streamed API error", func() {
+		status = 400
+		reply = `{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 9 > 8"}}`
+		var last provider.StreamEvent
+		for ev := range p.Stream(context.Background(), hello()) {
+			last = ev
+		}
+		Expect(last.Err).To(MatchError(provider.ErrContextOverflow))
+	})
+
+	It("returns the route's own typed error for an overflow", func() {
+		status = 400
+		reply = `{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 9 > 8"}}`
+		_, err := chat(hello())
+		var apiErr *anthropic.APIError
+		Expect(errors.As(err, &apiErr)).To(BeTrue())
+	})
+
 	It("surfaces a streamed API error as a terminal error event", func() {
 		status = 529
 		reply = `{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`

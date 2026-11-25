@@ -72,20 +72,10 @@ func runExecTurns(ctx context.Context, cfg *ExecLoopConfig, token int64) (*ExecL
 		if err := meter.before(ctx, cfg, token, definitions, &history); err != nil {
 			return res, err
 		}
-		stop, serr := reserveExecBudget(ctx, cfg)
-		if serr != nil {
-			return res, serr
+		if err := beginExecRequest(ctx, cfg, token, res); err != nil {
+			return res, err
 		}
-		if stop {
-			res.BudgetExhausted = true
-			return res, ErrExecLoopBudget
-		}
-		if err := cfg.Store.FenceLease(ctx, cfg.LeaseItem, cfg.LeaseAgent, token); err != nil {
-			return res, fmt.Errorf("%w: %v", ErrExecLoopFenced, err)
-		}
-		turn, terr := runExecTurn(ctx, *cfg, definitions, history)
-		res.recordTurn(turn)
-		meter.afterTurn(turn.Usage)
+		turn, terr := meter.request(ctx, cfg, token, definitions, &history, res)
 		if terr != nil {
 			return res, terr
 		}
@@ -148,6 +138,24 @@ func failExecLimit(ctx context.Context, cfg *ExecLoopConfig, turns int64) error 
 	defer func() { _ = w.Close() }()
 	return failExecMaxTurns(ctx, w, cfg.Store, cfg.Session.ID, turns)
 }
+
+// beginExecRequest reserves the pool unit of one provider request and checks the lease is still held. A
+// pool that cannot cover it ends the run budget_exhausted.
+func beginExecRequest(ctx context.Context, cfg *ExecLoopConfig, token int64, res *ExecLoopResult) error {
+	stop, serr := reserveExecBudget(ctx, cfg)
+	if serr != nil {
+		return serr
+	}
+	if stop {
+		res.BudgetExhausted = true
+		return ErrExecLoopBudget
+	}
+	if err := cfg.Store.FenceLease(ctx, cfg.LeaseItem, cfg.LeaseAgent, token); err != nil {
+		return fmt.Errorf("%w: %v", ErrExecLoopFenced, err)
+	}
+	return nil
+}
+
 func reserveExecBudget(ctx context.Context, cfg *ExecLoopConfig) (stop bool, err error) {
 	if cfg.Pool == nil || cfg.TurnBudget <= 0 || cfg.Pool.Reserve(cfg.TurnBudget) == cfg.TurnBudget {
 		return false, nil
@@ -171,7 +179,12 @@ func failExecTurn(ctx context.Context, w EventWriter, st SessionRepo, sessionID 
 	return fmt.Errorf("%w: %w", ErrProvider, cause)
 }
 
-func runExecTurn(ctx context.Context, cfg ExecLoopConfig, definitions []provider.ToolDefinition, history []provider.Message) (execTurn, error) {
+// runExecTurn runs one provider request and records its events. With recoverable set, a context
+// overflow is not a failure yet: it writes the non-terminal provider.error marker (ADR-010 D10)
+// and returns an *execOverflow for the loop to compact and retry; otherwise it is a terminal
+// provider failure like any other.
+func runExecTurn(ctx context.Context, cfg ExecLoopConfig, definitions []provider.ToolDefinition, history []provider.Message,
+	recoverable bool) (execTurn, error) {
 	w, err := cfg.Store.NewEventWriter(ctx, cfg.Session.ID)
 	if err != nil {
 		return execTurn{}, err
@@ -181,6 +194,8 @@ func runExecTurn(ctx context.Context, cfg ExecLoopConfig, definitions []provider
 	req := &provider.ChatRequest{Tools: definitions, Messages: withSystemPrompt(cfg.SystemPrompt, history), Model: cfg.Session.ModelID, MaxTokens: cfg.MaxTokens}
 	for ev := range cfg.Streamer.Stream(ctx, req) {
 		switch {
+		case ev.Err != nil && recoverable && errors.Is(ev.Err, provider.ErrContextOverflow):
+			return execTurn{}, markExecOverflow(ctx, w, ev.Err)
 		case ev.Err != nil:
 			return execTurn{}, failExecTurn(ctx, w, cfg.Store, cfg.Session.ID, ev.Err)
 		case ev.Kind == provider.StreamEventToolCall && ev.ToolCall != nil:

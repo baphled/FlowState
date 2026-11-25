@@ -259,7 +259,9 @@ reported turn context plus an estimate of the tool results since, or the estimat
 `window - reserve`, draws one pool unit, summarises, appends and continues from the rebuilt history; a failed automatic
 compaction writes nothing, is not retried in the run and the run continues. In `swarm run --execute` the coordinator
 and its children compact by the config's `compaction` settings (including `enabled: false`), the coordinator by its
-profile's `context_window`. The overflow retry is a later ADR-010 packet.
+profile's `context_window`. A provider context-overflow error (or a `length` finish with no calls over the line)
+compacts with reason `overflow` and retries the request once, after a non-terminal `provider.error` (`terminal` false,
+`reason` `context_overflow`) that leaves the session `active`; every other `provider.error` is terminal.
 
 ## Verified conversation history
 

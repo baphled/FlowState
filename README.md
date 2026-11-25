@@ -37,9 +37,8 @@ govern how it is changed. There is no TUI yet: the command line and the HTTP API
 - **HTTP API.** `flowstate serve` exposes the same operations, with server-sent events for a live log.
 
 **Not built yet:** the receipts-only `swarm run` does not execute provider turns for its children (it creates,
-budgets and gates them; `swarm run --execute` is the path that runs them). Skills, hooks, MCP, overflow-triggered
-context compaction (only the automatic trigger in the tool loop and the manual `session compact` exist), provider
-failover and a frontend are also outstanding. Nothing here is claimed to be production ready; see
+budgets and gates them; `swarm run --execute` is the path that runs them). Skills, hooks, MCP, provider failover
+and a frontend are also outstanding. Nothing here is claimed to be production ready; see
 [the architecture overview](docs/architecture/OVERVIEW.md) for the exact current behaviour.
 
 ## Quick start
@@ -100,8 +99,8 @@ recovery may add its interruption marker first).
 
 What exists today: a tool-loop session (`session run` with `--allow` or the other tool-loop flags) honours a
 compaction on its next run, compacts itself automatically near the window (see Configuration), and `session doctor`
-counts the compactions. There is no retry after a provider overflow error yet, and the plain text-turn path never
-rebuilds history from the log, so a compaction does not change what it sends.
+counts the compactions. The plain text-turn path never rebuilds history from the log, so a compaction does not
+change what it sends; for the retry after a provider overflow see [Overflow retry](#compaction).
 
 ## Commands
 
@@ -449,16 +448,33 @@ retried in that run (so a `no_cut` on the first over-the-line turn turns compact
 the run continues; a `no_cut` gives its pool unit back. A window not larger than the reserve (or `--max-tokens`) never
 compacts: raise the window or lower the reserve or `max_tokens`. In `swarm run --execute` the coordinator and its
 children, nested ones included, compact by the same `compaction` settings, including `enabled: false`; the coordinator's
-window is its profile's `context_window` when set, and each compaction draws from the swarm pool. Not yet: there is no
-retry after a provider context-overflow error, so a model that overflows still fails as a provider error.
-`session compact` summarises by hand. A window comes from the profile's `context_window` for a delegated child, else
-from `compaction.context_window`, else from a
-built-in table of `anthropic` and `z.ai` models matched by exact, case-sensitive id (it follows Pi's registry); there
-is no default, and an unknown window never compacts automatically. `session doctor` resolves the window from
-`compaction.context_window` and the table only: it does not read a profile's `context_window`, because a root session
-has no profile and the doctor does not know the profile of a child. It warns for a model outside the table, for
-example the subscription aliases `haiku`, `sonnet` and `opus`, z.ai `glm-4.5-flash` and every free or local model (a
-local model's window is whatever you loaded it with); set `compaction.context_window` to silence it.
+window is its profile's `context_window` when set, and each compaction draws from the swarm pool. `session compact`
+summarises by hand.
+
+**Overflow retry.** The tool loop also has a reactive net: when the provider says a request does not fit the window
+(`provider.ErrContextOverflow`), or answers with a `length` finish and no tool calls on a request whose context was
+already over `window - reserve`, the engine compacts (reason `overflow`) and retries that request once; it needs a
+known window and `compaction.enabled`, as the automatic trigger does. The first overflow writes a `provider.error`
+event with `reason` `context_overflow` and `terminal` false, which leaves the session `active`; the retry draws a
+second pool unit and counts as a second turn in the run result, but the log counts only the answered requests, so a
+retry costs one `max_turns` turn and an overflow can fail a run that had a turn left. A second overflow after the
+retry, an overflow compaction that fails, a pool too short for the compaction, or an unknown window ends the run as an
+ordinary provider failure (exit 3, a terminal `provider.error`, `failed`, not `budget_exhausted`). After a `length`
+finish whose compaction fails, the truncated answer stands. The adapters classify overflow only on a pinned signature,
+never a substring: HTTP 413 on any HTTP route; the Anthropic Messages API (the API-key route and the z.ai
+Anthropic-compatible route) answering 400 `invalid_request_error` with a message starting `prompt is too long`; and
+z.ai answering 400 with the string code `1261`. The 400 signatures are recalled, unverified against the live APIs: a
+miss only means the net does not fire. A numeric code `1261` is not classified (z.ai bodies use a string code), and
+neither is a streamed SSE `error` event: a mid-stream overflow error is an ordinary provider failure (Anthropic
+reports a too-long prompt as HTTP 400 before streaming starts). The subscription route (the `claude` binary) does not
+classify overflow, as it reports only result text. A window comes from the profile's `context_window` for a delegated
+child, else from `compaction.context_window`, else from a built-in table of `anthropic` and `z.ai` models matched by
+exact, case-sensitive id (it follows Pi's registry); there is no default, and an unknown window never compacts
+automatically. `session doctor` resolves the window from `compaction.context_window` and the table only: it does not
+read a profile's `context_window`, because a root session has no profile and the doctor does not know the profile of a
+child. It warns for a model outside the table, for example the subscription aliases `haiku`, `sonnet` and `opus`, z.ai
+`glm-4.5-flash` and every free or local model (a local model's window is whatever you loaded it with); set
+`compaction.context_window` to silence it.
 
 Explicit flags override the file. `--allow` and `--allow-file` replace `tool_allowlist`; `--workdir` only says where the
 tools operate. A file holding anything that looks like a secret is rejected.

@@ -181,8 +181,12 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("zai: api error %d code=%s: %s", e.Status, e.Code, e.Message)
 }
 
-// Unwrap maps auth failures onto ErrUnauthorized.
+// Unwrap maps auth failures onto ErrUnauthorized and a context overflow (see contextOverflow)
+// onto provider.ErrContextOverflow.
 func (e *APIError) Unwrap() error {
+	if e.contextOverflow() {
+		return provider.ErrContextOverflow
+	}
 	if e.Status == http.StatusUnauthorized || e.Status == http.StatusForbidden {
 		return ErrUnauthorized
 	}
@@ -348,4 +352,30 @@ func (p *Provider) post(ctx context.Context, req *provider.ChatRequest, stream b
 		return nil, apiErr
 	}
 	return resp.Body, nil
+}
+
+// zaiPromptTooLongCode is the Z.ai error code of a prompt over the model's context. RECALLED,
+// unverified against the live API: a miss only means the reactive overflow net does not fire.
+const zaiPromptTooLongCode = "1261"
+
+// anthropicTooLongPrefix starts the message of the Messages API's invalid_request_error for a
+// prompt over the context. RECALLED from Anthropic's behaviour, unverified against the live
+// API (the API-key route and the Z.ai Anthropic-compatible route share it): a miss only means
+// the reactive overflow net does not fire.
+const anthropicTooLongPrefix = "prompt is too long"
+
+// contextOverflow reports whether the failure is the provider saying the prompt does not fit
+// the context window: HTTP 413 on any route, or a 400 with one exact known signature. It is
+// deliberately narrow (an exact code or an exact message prefix, never a substring such as
+// "limit"), because a wrong yes compacts a session for nothing.
+func (e *APIError) contextOverflow() bool {
+	switch {
+	case e.Status == http.StatusRequestEntityTooLarge:
+		return true
+	case e.Status != http.StatusBadRequest:
+		return false
+	case e.Code == zaiPromptTooLongCode:
+		return true
+	}
+	return e.Code == "invalid_request_error" && strings.HasPrefix(e.Message, anthropicTooLongPrefix)
 }

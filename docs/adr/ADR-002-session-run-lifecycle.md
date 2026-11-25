@@ -89,7 +89,9 @@ PR #260 introduced the provider-driven execution loop (`app.RunSessionExecLoop`)
   The loop drives the provider stream, detects tool calls, executes them through the allowlist-gated tool registry
   (see [[ADR - Tool-Capability Allowlist Gate]] for the prototype-scale statement), and retries the provider with
   results appended until a terminal condition. Termination guards: max turns reached, budget exhausted, provider error
-  (terminal), context cancelled (SIGINT, SIGTERM or SIGHUP; on the serve run route, a client disconnect or shutdown).
+  (terminal, except the one non-terminal `context_overflow` marker that ADR-010 writes before it compacts and retries,
+  which leaves the session `active`), context cancelled (SIGINT, SIGTERM or SIGHUP; on the serve run route, a client
+  disconnect or shutdown).
 
 The loop was originally designed without resume or crash-recovery awareness: a rerun after pause or crash silently
   skipped the lifecycle event and started a fresh turn. This ADR makes the lifecycle explicit so the loop's entry
