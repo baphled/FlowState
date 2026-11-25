@@ -586,9 +586,10 @@ var _ = Describe("The delegate tool with tasks", func() {
 			ps.parent = &call
 			registry := tool.NewRegistry()
 			check(registry.Register(f.tool))
+			lease, _ := acquireTestLease(f.st, "exec:"+f.parent.ID, "cli")
 			res := must(RunExecLoop(context.Background(), ExecLoopConfig{
 				Store: f.st, Session: f.parent, Streamer: ps, Registry: registry, Allowlist: []string{"delegate"},
-				Pool: f.pool, TurnBudget: 1, LeaseItem: "exec:" + f.parent.ID, LeaseAgent: "cli", MaxTurns: 4,
+				Pool: f.pool, TurnBudget: 1, Lease: lease, MaxTurns: 4,
 			}))
 			parentTurns = res.Turns
 			events = must(f.st.Replay(context.Background(), f.parent.ID))

@@ -157,7 +157,7 @@ var _ = Describe("The automatic compaction trigger", func() {
 			cfg.Streamer = streamer
 			history := []provider.Message{}
 			meter := &compactRun{hasBase: true, base: 7000}
-			if berr := meter.before(context.Background(), &cfg, leaseToken(cfg), nil, &history); berr != nil {
+			if berr := meter.before(context.Background(), &cfg, nil, &history); berr != nil {
 				panic(berr)
 			}
 		})
@@ -174,7 +174,7 @@ var _ = Describe("The automatic compaction trigger", func() {
 			cfg.Streamer = streamer
 			history := []provider.Message{}
 			meter := &compactRun{hasBase: true, base: 900}
-			if berr := meter.before(context.Background(), &cfg, leaseToken(cfg), nil, &history); berr != nil {
+			if berr := meter.before(context.Background(), &cfg, nil, &history); berr != nil {
 				panic(berr)
 			}
 		})
@@ -192,14 +192,14 @@ var _ = Describe("The automatic compaction trigger", func() {
 		})
 		It("holds a compaction that stays above the 1 token line to the ceiling and writes nothing", func() {
 			history := []provider.Message{}
-			if berr := meter.before(context.Background(), &cfg, leaseToken(cfg), nil, &history); berr != nil {
+			if berr := meter.before(context.Background(), &cfg, nil, &history); berr != nil {
 				panic(berr)
 			}
 			Expect(countOf(cfg, TypeContextCompacted)).To(BeZero())
 		})
 		It("makes the summary call when the context is over the line", func() {
 			history := []provider.Message{}
-			if berr := meter.before(context.Background(), &cfg, leaseToken(cfg), nil, &history); berr != nil {
+			if berr := meter.before(context.Background(), &cfg, nil, &history); berr != nil {
 				panic(berr)
 			}
 			Expect(summaryCalls(streamer.reqs)).To(Equal(1))
@@ -207,7 +207,7 @@ var _ = Describe("The automatic compaction trigger", func() {
 		It("makes no summary call when the context is at the line", func() {
 			meter.base = 1
 			history := []provider.Message{}
-			if berr := meter.before(context.Background(), &cfg, leaseToken(cfg), nil, &history); berr != nil {
+			if berr := meter.before(context.Background(), &cfg, nil, &history); berr != nil {
 				panic(berr)
 			}
 			Expect(summaryCalls(streamer.reqs)).To(BeZero())
@@ -238,17 +238,7 @@ var _ = Describe("The automatic compaction trigger", func() {
 					return
 				}
 				stolen = true
-				ctx := context.Background()
-				token, terr := cfg.Store.LeaseToken(ctx, cfg.LeaseItem)
-				if terr != nil {
-					panic(terr)
-				}
-				if rerr := cfg.Store.ReleaseLease(ctx, cfg.LeaseItem, cfg.LeaseAgent, token); rerr != nil {
-					panic(rerr)
-				}
-				if _, aerr := cfg.Store.AcquireLease(ctx, cfg.LeaseItem, "thief"); aerr != nil {
-					panic(aerr)
-				}
+				stealTestLease(cfg, "thief")
 			}
 			cfg.Streamer = hooked
 			run()
@@ -363,7 +353,7 @@ var _ = Describe("The automatic compaction trigger", func() {
 			cfg.Streamer = &execLoopStreamer{turns: [][]provider.StreamEvent{summaryTurn("s")}}
 			meter := &compactRun{hasBase: true, base: 950}
 			history := []provider.Message{}
-			if berr := meter.before(context.Background(), &cfg, leaseToken(cfg), nil, &history); berr != nil {
+			if berr := meter.before(context.Background(), &cfg, nil, &history); berr != nil {
 				panic(berr)
 			}
 			events := eventsOf(cfg)
@@ -385,15 +375,6 @@ func seededTwoTurns() ExecLoopConfig {
 	return cfg
 }
 
-// leaseToken takes the exec lease of the loop's session for the spec, as the loop does.
-func leaseToken(cfg ExecLoopConfig) int64 {
-	token, err := cfg.Store.AcquireLease(context.Background(), cfg.LeaseItem, cfg.LeaseAgent)
-	if err != nil {
-		panic(err)
-	}
-	return token
-}
-
 func provFinishOnly() []provider.StreamEvent { return []provider.StreamEvent{provFinish()} }
 
 var _ = Describe("Compact with a ceiling on tokens_after", func() {
@@ -401,7 +382,7 @@ var _ = Describe("Compact with a ceiling on tokens_after", func() {
 		cfg := seededTwoTurns()
 		_, cerr := Compact(context.Background(), cfg.Store, cfg.Session.ID, CompactOptions{
 			Streamer: &execLoopStreamer{turns: [][]provider.StreamEvent{summaryTurn("s")}}, Model: "m", KeepRecent: 1,
-			MaxTokensAfter: 1, Lease: CompactLease{Item: cfg.LeaseItem, Agent: cfg.LeaseAgent, Token: leaseToken(cfg)}})
+			MaxTokensAfter: 1, Lease: execCompactLease(&cfg)})
 		Expect(failureReason(cerr)).To(Equal(CompactReasonContextTooLarge))
 	})
 })
@@ -497,7 +478,7 @@ var _ = Describe("The trigger's bounds and failure modes", func() {
 			cfg.Streamer = streamer
 			history := []provider.Message{}
 			meter := &compactRun{hasBase: true, base: 950}
-			if berr := meter.before(context.Background(), &cfg, leaseToken(cfg), nil, &history); berr != nil {
+			if berr := meter.before(context.Background(), &cfg, nil, &history); berr != nil {
 				panic(berr)
 			}
 		})

@@ -49,11 +49,13 @@ func (f *delegateFixture) seedChildID(parent *store.Session, id string, turns in
 	for i := range script {
 		script[i] = []provider.StreamEvent{provText("t"), provCall(echoCall("c" + strconv.Itoa(i))), provFinish()}
 	}
+	lease, release := acquireTestLease(f.st, "exec:"+id, delegateLeasePrefix+"seed")
 	_, err := RunExecLoop(ctx, ExecLoopConfig{
 		Store: f.st, Session: child, Streamer: &execLoopStreamer{turns: script}, Registry: must(NewSessionToolRegistry("")),
-		Allowlist: []string{"echo"}, Pool: NewBudgetPool(turns), TurnBudget: 1, LeaseItem: "exec:" + id,
-		LeaseAgent: delegateLeasePrefix + "seed", MaxTurns: turns + 1,
+		Allowlist: []string{"echo"}, Pool: NewBudgetPool(turns), TurnBudget: 1, Lease: lease,
+		MaxTurns: turns + 1,
 	})
+	release() // the child is resumed under its own lease
 	if !errors.Is(err, ErrExecLoopBudget) {
 		panic("the seeded child must stop at its budget")
 	}
