@@ -152,7 +152,8 @@ var _ = Describe("session compact", func() {
 				res = runCompact(id)
 			})
 
-			It("exits 1", func() { Expect(res.exit).To(Equal(1)) })
+			It("exits 9", func() { Expect(res.exit).To(Equal(9)) })
+			It("reports the session_busy code", func() { Expect(stderrCode(res.stderr)).To(Equal("session_busy")) })
 			It("writes nothing", func() {
 				Expect(loggedTypesBeforeFirst(dbFor(), id, "no-such-type")).To(Equal(before))
 			})
@@ -164,6 +165,12 @@ var _ = Describe("session compact", func() {
 			})
 		})
 	}
+	Context("while a live run holds the lease", func() {
+		BeforeEach(func() { holdLease(id) })
+
+		It("exits 9", func() { Expect(runCompact(id).exit).To(Equal(9)) })
+		It("reports the session_busy code", func() { Expect(stderrCode(runCompact(id).stderr)).To(Equal("session_busy")) })
+	})
 	It("names the held lease on stderr while the exec lease is held", func() {
 		st, err := app.OpenStore(dbFor())
 		must(err)

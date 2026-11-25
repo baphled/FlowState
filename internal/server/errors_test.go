@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -91,5 +92,24 @@ var _ = Describe("runContext", func() {
 	It("cancels nothing while a request completes normally", func() {
 		serve(context.Background(), nil)
 		Expect(probe.errAtCall).NotTo(HaveOccurred())
+	})
+})
+
+var _ = Describe("a refused lease over HTTP", func() {
+	const target = "/sessions/01a1f000-0000-4000-8000-000000000001/run"
+	var rec *httptest.ResponseRecorder
+
+	BeforeEach(func() {
+		busy := errors.New("lease held")
+		p := (&fakePorts{}).ports()
+		p.RunSession = func(context.Context, string, RunOptions) ([]Event, error) { return nil, busy }
+		p.ErrCode = func(error) string { return "session_busy" }
+		rec = httptest.NewRecorder()
+		New(p).Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, target, strings.NewReader("")))
+	})
+
+	It("answers 409", func() { Expect(rec.Code).To(Equal(http.StatusConflict)) })
+	It("keeps the code session_busy in the body", func() {
+		Expect(rec.Body.String()).To(Equal(`{"code":"session_busy","message":"lease held"}`))
 	})
 })

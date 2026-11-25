@@ -1011,6 +1011,8 @@ var _ = Describe("Session run failure classification", func() {
 		},
 		Entry("persistence failure", errors.New("append event seq 3: disk full"), 1),
 		Entry("lease fence", app.ErrExecLoopFenced, 1),
+		Entry("lease taken mid-run", fmt.Errorf("%w: %v", app.ErrExecLoopFenced, store.ErrLeaseFenced), 1),
+		Entry("lease refused at acquire", &store.SessionBusyError{Item: "exec:s"}, 9),
 		Entry("wrapped provider failure", fmt.Errorf("%w: %w", app.ErrProvider, errors.New("zai: api error 429")), 3),
 		Entry("budget", app.ErrBudgetExceeded, 5),
 		Entry("usage", app.ErrUsage, 2),
@@ -1024,6 +1026,8 @@ var _ = Describe("Session run failure classification", func() {
 		},
 		Entry("persistence failure", errors.New("append event seq 3: disk full"), "internal"),
 		Entry("lease fence", app.ErrExecLoopFenced, "internal"),
+		Entry("lease taken mid-run", fmt.Errorf("%w: %v", app.ErrExecLoopFenced, store.ErrLeaseFenced), "internal"),
+		Entry("lease refused at acquire", &store.SessionBusyError{Item: "exec:s"}, "session_busy"),
 		Entry("wrapped provider failure", fmt.Errorf("%w: %w", app.ErrProvider, errors.New("zai: api error 429")),
 			"provider_error"),
 	)
@@ -1811,7 +1815,8 @@ var _ = Describe("Session run takes the judged run lease", func() {
 				before = runCLIEvents(id).stdout
 				run = runCLILoop(id, sf.args...)
 			})
-			It("is refused with the internal status", func() { Expect(run.exit).To(Equal(1)) })
+			It("is refused with the session_busy status", func() { Expect(run.exit).To(Equal(9)) })
+			It("reports the session_busy code", func() { Expect(stderrCode(run.stderr)).To(Equal("session_busy")) })
 			It("names the holder", func() {
 				Expect(stderrMessage(run.stderr)).To(ContainSubstring("run:live"))
 			})
@@ -1870,7 +1875,8 @@ var _ = Describe("Session run takes the judged run lease", func() {
 				before = runCLIEvents(id).stdout
 				run = runCLIRun(id)
 			})
-			It("is refused, not taken over", func() { Expect(run.exit).To(Equal(1)) })
+			It("is refused, not taken over", func() { Expect(run.exit).To(Equal(9)) })
+			It("reports the session_busy code", func() { Expect(stderrCode(run.stderr)).To(Equal("session_busy")) })
 			It("leaves the log byte-identical", func() { Expect(runCLIEvents(id).stdout).To(Equal(before)) })
 			It("leaves the row with its owner", func() {
 				info, _ := leaseAt(dbFor(), id)

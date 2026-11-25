@@ -150,7 +150,7 @@ func recoveryFailure(err error) error {
 // cmdRun implements `flowstate session run <id>` (or, with --task,
 // a gated live self-test): takes the session's run lease (owner run:<uuid>,
 // held until the run's last writer returns; a held or unjudgeable lease is
-// refused as ErrSessionBusy, which reports code `internal`, exit 1, with the
+// refused as ErrSessionBusy, which reports code `session_busy`, exit 9, with the
 // holder and `flowstate session unlock <id>` in the message), then runs one
 // bounded provider turn, explicitly
 // resuming a paused session first, projects the persisted events as
@@ -162,7 +162,8 @@ func recoveryFailure(err error) error {
 // or the database, crash recovery or the steering drain failed); 5
 // budget stop, or max_turns (the turn limit reached while still
 // requesting tools, which fails the run); 6 already terminal; 7
-// replay_mismatch (corrupt replay found during the turn); 130 cancelled
+// replay_mismatch (corrupt replay found during the turn); 9 session_busy
+// (the lease was refused at acquire); 130 cancelled
 // by SIGINT, SIGTERM or SIGHUP (reason sigint, sigterm or sighup). Exit
 // 8 (receipt_invalid) is not
 // reachable from here: it belongs to `swarm run` and `receipt

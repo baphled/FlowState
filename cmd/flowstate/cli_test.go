@@ -27,6 +27,7 @@ import (
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/baphled/flowstate/internal/app"
+	"github.com/baphled/flowstate/internal/store"
 )
 
 // This suite productises the CLI contract end-to-end matrix: every
@@ -1686,3 +1687,27 @@ var _ = Describe("The max_turns failure at the CLI", func() {
 		Expect(exitCodeFor(runErr)).To(Equal(5))
 	})
 })
+
+var _ = Describe("a refused lease across a process boundary", Label("e2e"), func() {
+	var db, id string
+	var res result
+
+	BeforeEach(func() {
+		db = filepath.Join(GinkgoT().TempDir(), "busy.db")
+		id = seedCrashSession(db, crashedLog)
+		holdLeaseAt(db, id)
+		res = e2eRun("", "session", "run", "--db", db, id)
+	})
+
+	It("exits 9", func() { Expect(res.exit).To(Equal(9)) })
+	It("reports the session_busy code", func() { Expect(stderrCode(res.stderr)).To(Equal("session_busy")) })
+})
+
+var _ = DescribeTable("exit codes of the lease errors",
+	func(err error, want int) { Expect(exitCodeFor(err)).To(Equal(want)) },
+	Entry("a refused acquire is 9", &store.SessionBusyError{Item: "exec:s"}, 9),
+	Entry("a live holder under unlock is 9", &app.LeaseLiveError{SessionID: "s"}, 9),
+	Entry("a refused compaction is 9", &app.CompactLeaseHeld{SessionID: "s"}, 9),
+	Entry("a fence lost mid-run stays 1", app.ErrExecLoopFenced, 1),
+	Entry("an unclassified failure stays 1", errors.New("disk full"), 1),
+)

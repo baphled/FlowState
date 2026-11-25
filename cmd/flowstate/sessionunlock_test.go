@@ -223,7 +223,10 @@ var _ = Describe("session unlock", func() {
 	Context("when a live process holds the lease", func() {
 		BeforeEach(func() { holdLease(id) })
 
-		It("refuses --force with exit 1", func() { Expect(runUnlock(id, "--force").exit).To(Equal(1)) })
+		It("refuses --force with exit 9", func() { Expect(runUnlock(id, "--force").exit).To(Equal(9)) })
+		It("reports the session_busy code", func() {
+			Expect(stderrCode(runUnlock(id, "--force").stderr)).To(Equal("session_busy"))
+		})
 		It("keeps the row", func() {
 			runUnlock(id, "--force")
 			Expect(leaseRowFor(id)).To(BeTrue())
@@ -238,7 +241,7 @@ var _ = Describe("session unlock", func() {
 		It("names the live holder on stderr", func() {
 			Expect(runUnlock(id, "--force").stderr).To(ContainSubstring("live process"))
 		})
-		It("exits 1 without --force too", func() { Expect(runUnlock(id).exit).To(Equal(1)) })
+		It("exits 9 without --force too", func() { Expect(runUnlock(id).exit).To(Equal(9)) })
 	})
 
 	Context("with a terminal session", func() {

@@ -82,7 +82,7 @@ It takes the session's exec lease under its own unique owner, `compact:<uuid>`, 
 whose lease is held by a live run cannot be compacted (nothing is written). A crashed `run:` or `compact:` row of this
 machine is taken over by the next `session run`, `session compact` or `tool run`. A legacy row, one written by an
 older binary (`cli`, `delegate:` or `compact:`), records no machine and cannot be judged: every one of them refuses it,
-naming the holder (exit 1, code `internal`), and it needs `flowstate session unlock <id> --force`; a leftover
+naming the holder (exit 9, code `session_busy`), and it needs `flowstate session unlock <id> --force`; a leftover
 `compact:` row is no longer cleared silently. A compaction whose row was taken from it fails fenced and writes nothing.
 It is refused unless the session is `active` or `paused`; it recovers a crashed turn under its lease first; a paused
 session stays paused. It never releases a lease it did not take. It has no loop, so no budget pool applies:
@@ -96,8 +96,9 @@ before the cut still leave the rebuilt history.
 Exit codes: 0 done; 2 usage, including `no_cut` (nothing new to compact, or the history is too short, so nothing is
 written); 3 the provider failed, or the summary was empty, cut off at the token cap or invalid (code
 `provider_error`); 4 the database or crash recovery failed (`config_invalid`); 6 a finished session; 7 a corrupt log;
-130 cancelled by a signal (no compaction event was written); 1 an unknown session, a held lease, or a log that
-changed during the summary (code `internal`: run again). A failed compaction writes no compaction event (crash
+130 cancelled by a signal (no compaction event was written); 9 the lease is held or cannot be judged (code
+`session_busy`: wait, or see `session unlock`); 1 an unknown session, or a log that changed during the summary (code
+`internal`: run again). A failed compaction writes no compaction event (crash
 recovery may add its interruption marker first).
 
 What exists today: a tool-loop session (`session run` with `--allow` or the other tool-loop flags) honours a
@@ -112,14 +113,16 @@ Use it when a run refuses a session because a row that cannot be judged is in th
 machine, or one from before the lease columns existed (a legacy row, with no machine and no lock). Without `--force`
 it only reports: it prints one JSON object (`session`, `item`, `outcome`, `holder` with `owner`, `host`, `pid`, `token`
 and `acquired_at`, `machine_matches`, `legacy_row`, `event_appended` and `message`), deletes nothing and exits 1 when a
-row exists (outcome `reported`); with no row it exits 0 (outcome `no_lease`). The report writes nothing to the lease row
-or the log, but it may create the lock directory beside the database.
+row exists and its holder cannot be judged (outcome `reported`); with no row it exits 0 (outcome `no_lease`). A
+live holder on this machine is refused even without `--force`: the report is still printed, but the exit is 9, code
+`session_busy`. A legacy or otherwise unjudgeable row without `--force` stays exit 1, `reported`. The report
+writes nothing to the lease row or the log, but it may create the lock directory beside the database.
 
 With `--force` it deletes the row it read, only if the row is still the one it showed (a replaced row survives and the
 exit is 1), appends one `session.unlocked` event to the log (none for a finished session), writes one line on stderr
 naming the owner, host and pid, and prints the report (outcome `deleted`). It runs no recovery: the next `session run`
 acquires the lease, recovers a crashed turn from the log and runs. A lease whose lock is held by a live process on this
-machine is refused even with `--force` (the holder is printed, exit 1): stop that process instead.
+machine is refused even with `--force` (the holder is printed, exit 9, code `session_busy`): stop that process instead.
 
 **Danger.** A legacy row holds no lock, so `--force` cannot tell whether its run is still alive. If it is, deleting the
 row leaves two writers on one log. Check that nothing is running the session before you force; the stderr line repeats
@@ -415,7 +418,7 @@ included.
 | Code | Meaning |
 | --- | --- |
 | 0 | Completed (a truncated answer is still 0, with one warning line on standard error) |
-| 1 | Unknown session, or any other failure without its own class (code `internal`) |
+| 1 | Unknown session, or any other failure without its own class (code `internal`); a lease lost mid-run (fenced) is `internal`, exit 1 |
 | 2 | Usage error |
 | 3 | Provider error |
 | 4 | `config_invalid`: bad configuration, an unopenable database, or a failed crash recovery or steering drain |
@@ -423,6 +426,7 @@ included.
 | 6 | The session is already terminal |
 | 7 | Replay found a corrupt log |
 | 8 | A swarm run, receipts-only or `--execute`, was not accepted (failed gate or rejected packet), or a receipt is invalid |
+| 9 | `session_busy`: the session's lease is held by a live run, or by a holder that cannot be judged; nothing was written |
 | 130 | Cancelled by SIGINT, SIGTERM or SIGHUP (SIGHUP is left alone when ignored, as under `nohup`) |
 
 ## Configuration
@@ -524,6 +528,8 @@ op run --env-file zai.env -- flowstate session run <id>
 `flowstate serve` listens on `127.0.0.1:7600` (`--addr` to change it). It refuses to bind a non-loopback address
 unless `FLOWSTATE_SERVE_TOKEN` is set, which then becomes a required bearer token. Request bodies are capped at 1 MiB
 and decoded strictly. Errors use the same `{code, message}` body as the command line, with the status for each code.
+A 409 has several causes; the body `code` tells them apart (`session_terminal`, `session_cancelled`, `budget_exceeded`,
+`max_turns`, `session_busy`).
 
 | Endpoint | Purpose |
 | --- | --- |

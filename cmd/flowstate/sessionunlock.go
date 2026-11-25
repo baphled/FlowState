@@ -10,8 +10,8 @@ import (
 )
 
 // errLeaseKept reports a lease row that `session unlock` found and did not delete: it is the
-// non-zero exit of a report without --force (ADR-011). Its code is `internal`, exit 1, the class
-// a held lease already has under `session compact` and `session run`; no new exit code exists.
+// non-zero exit of a report of a row that cannot be judged, without --force (ADR-011). Its code is
+// `internal`, exit 1; a live holder is `session_busy`, exit 9 (with or without --force), as for `session run`.
 var errLeaseKept = errors.New("lease not deleted")
 
 // cmdUnlock implements `flowstate session unlock <id> [--force]` (ADR-011 D8). Without --force it
@@ -20,8 +20,8 @@ var errLeaseKept = errors.New("lease not deleted")
 // it deletes the row it read, appends one session.unlocked event (not for a terminal session),
 // writes one stderr line naming what was deleted, with the warning that a legacy row may still
 // be running, prints the JSON report and exits 0. A lease whose lock is held by a live process
-// on this machine is refused even with --force: the holder is printed and the exit is 1, as for
-// a held lease elsewhere. Exit 2 usage (no id, or a flag that does not apply); 1 unknown
+// on this machine is refused even with --force: the holder is printed and the exit is 9
+// (session_busy), as for a held lease elsewhere. Exit 2 usage (no id, or a flag that does not apply); 1 unknown
 // session, or a lease that changed between the read and the delete; 4 config_invalid. A no-force
 // run writes nothing to the lease row or the log, but may create the lock directory beside the
 // database. Owner and host come from the row, so the JSON and the stderr line are escaped for a
