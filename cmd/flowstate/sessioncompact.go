@@ -12,10 +12,10 @@ import (
 // cmdCompact implements `flowstate session compact <id> [--instructions text]`: one manual
 // context compaction (ADR-010). The summary is written by the session's own provider and
 // model, so --provider and --model are refused, as is every flag that does not apply (exit 2).
-// It takes the session's exec lease under a unique owner, so a `cli` or `run:` lease row refuses
-// it (a crashed compaction's row is cleared first), and is refused unless the session is active
-// or paused; it recovers a crashed turn whose lease is gone first and leaves a paused session
-// paused. No budget pool applies: a manual compaction has no loop and draws nothing. It prints one
+// It takes the lease through the judged acquire (`compact:<uuid>`); a live holder or an
+// unjudgeable (legacy or other-machine) row is refused with nothing written; a crashed judged
+// `run:`/`compact:` row of this machine is taken over; it runs crash recovery under the lease.
+// It is refused unless the session is active or paused, and leaves a paused session paused. No budget pool applies: a manual compaction has no loop and draws nothing. It prints one
 // JSON object (session-compact) and exits 0. Exit 2 usage, including no_cut (nothing new to
 // compact; a request that cannot be met, with no new error code); 1 unknown session or a
 // held lease, as `session run` reports them; 6 terminal session; 3 a provider failure, or a

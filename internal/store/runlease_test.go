@@ -512,7 +512,7 @@ var _ = Describe("AcquireRunLease", func() {
 		})
 
 		It("names the unlock command with the session id", func() {
-			Expect(msg).To(ContainSubstring("run `flowstate session unlock sess-1`"))
+			Expect(msg).To(ContainSubstring("run `flowstate session unlock sess-1 --force`"))
 		})
 	})
 

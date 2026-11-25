@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -48,8 +49,15 @@ func (e *CompactionFailure) Error() string {
 
 // Error names the session and the holder and what to do.
 func (e *CompactLeaseHeld) Error() string {
-	return fmt.Sprintf("session %s is in use: lease held by %s; if that run crashed, `session run` takes over a run: holder "+
-		"and `flowstate session unlock %s --force` clears any other, else wait for it to finish", e.SessionID, e.Holder, e.SessionID)
+	if !e.Unjudgeable {
+		return fmt.Sprintf("session %s is in use: lease held by %s; the holder is running, so wait for it to finish "+
+			"or stop that run (a crashed holder of this machine is taken over by the next `session run`, "+
+			"`session compact` or `tool run`)", e.SessionID, e.Holder)
+	}
+	return fmt.Sprintf("session %s is in use: lease held by %s; a crashed run: or compact: holder of this machine is taken over "+
+		"by the next `session run`, `session compact` or `tool run`; this holder cannot be judged (an older binary or "+
+		"another machine), so if it is gone `flowstate session unlock %s --force` clears it, else wait for it to finish",
+		e.SessionID, e.Holder, e.SessionID)
 }
 
 // Is makes the refusal match ErrExecLoopFenced.
@@ -364,30 +372,22 @@ func clip(s string, n int) string {
 }
 
 // compactLeasePrefix starts the lease owner of one manual compaction: the prefix plus a fresh
-// id. A lease is re-granted to its own owner, so a shared name (a run's "cli") would let a
-// compaction share a live run's lease and then delete it on release.
+// id, so a user recognises the holder. Every run owner is unique (ADR-011), so a compaction
+// never shares the lease of a run and releases only the handle it took.
 const compactLeasePrefix = "compact:"
 
-// newCompactOwner returns the lease owner of one compaction: unique per call.
-func newCompactOwner() (string, error) {
-	id, err := session.NewID()
-	if err != nil {
-		return "", fmt.Errorf("generate lease owner: %w", err)
-	}
-	return compactLeasePrefix + id, nil
-}
-
 // CompactSession is the manual compaction of sessionID (`flowstate session compact`): it
-// refuses a session that is not active or paused, and one that has a `cli` or `run:` exec lease
-// row (a live `session run` or a crashed one: the repository cannot tell them apart, ADR-009
-// D8), with nothing written: `session run` recovers a crashed one. It first clears the rows
-// of earlier compactions (clearCompactLeases), then takes the exec lease under a unique owner
-// (compactLeasePrefix), so it never shares a run's lease and releases only the row it created.
-// Under that lease it runs crash recovery (a crashed turn whose lease row is gone is answered
-// before the cut is chosen; it does not clear compact rows, which would remove its own) and
-// calls Compact. A failed compaction writes no compaction event; recovery may have added its
-// interruption marker first. opts.Model defaults to the session's own. The session keeps its
-// status: a paused session stays paused.
+// refuses a session that is not active or paused, then takes the exec lease through the
+// judging acquire (AcquireRunLease, ADR-011) under a unique owner, compact:<uuid>. A lease
+// whose holder is alive, or whose row cannot be judged (a legacy row, which records no
+// machine, or another machine's), is refused with a *CompactLeaseHeld and nothing written;
+// a crashed row of this machine, a run: or compact: one, is taken over. A leftover legacy
+// compact: row is never cleared silently: it is refused, and `session unlock <id> --force`
+// removes it. Under the handle it runs crash recovery (a crashed turn is answered before the
+// cut is chosen) and calls Compact with the handle, so the append is fenced through it. The
+// handle is released after Compact returns. A failed compaction writes no compaction event;
+// recovery may have added its interruption marker first. opts.Model defaults to the
+// session's own. The session keeps its status: a paused session stays paused.
 func CompactSession(ctx context.Context, st *store.Store, sessionID string, opts CompactOptions) (*CompactionResult, error) {
 	if err := ValidateInstructions(opts.Instructions); err != nil {
 		return nil, err
@@ -399,23 +399,15 @@ func CompactSession(ctx context.Context, st *store.Store, sessionID string, opts
 	if sess.Status != "active" && sess.Status != "paused" {
 		return nil, fmt.Errorf("%w: session %s is %s", session.ErrTerminal, sessionID, sess.Status)
 	}
-	owner, err := newCompactOwner()
-	if err != nil {
-		return nil, err
-	}
-	item := "exec:" + sessionID
-	if cerr := clearCompactLeases(ctx, st, sessionID); cerr != nil {
-		return nil, cerr
-	}
-	token, err := st.AcquireLease(ctx, item, owner)
-	if errors.Is(err, store.ErrLeaseHeld) {
-		_, holder, _ := strings.Cut(err.Error(), item+" by ")
-		return nil, &CompactLeaseHeld{SessionID: sessionID, Holder: holder}
+	lease, _, err := acquireOwnedRunLease(ctx, st, sess, compactLeasePrefix)
+	var busy *store.SessionBusyError
+	if errors.As(err, &busy) {
+		return nil, &CompactLeaseHeld{SessionID: sessionID, Holder: busyHolder(busy), Unjudgeable: busy.Unjudgeable}
 	} else if err != nil {
 		return nil, fmt.Errorf("exec loop lease: %w", err)
 	}
-	defer func() { _ = st.ReleaseLease(context.WithoutCancel(ctx), item, owner, token) }()
-	if rerr := recoverCrashedSession(ctx, st, sessionID); rerr != nil {
+	defer func() { _ = lease.Release(context.WithoutCancel(ctx)) }()
+	if rerr := RecoverCrashedSession(ctx, st, sessionID); rerr != nil {
 		if ErrorCode(rerr) == CodeReplayMismatch {
 			return nil, rerr
 		}
@@ -424,25 +416,28 @@ func CompactSession(ctx context.Context, st *store.Store, sessionID string, opts
 	if opts.Model == "" {
 		opts.Model = sess.ModelID
 	}
-	opts.Lease = CompactLease{Item: item, Agent: owner, Token: token}
+	opts.Lease = CompactLease{Item: lease.Item(), Agent: lease.Owner(), Token: lease.Token(), Held: lease}
 	return Compact(ctx, st, sessionID, opts)
 }
 
-// clearCompactLeases removes the exec lease row of sessionID when a compaction owns it: a
-// compaction that crashed (kill -9, out of memory, power loss) leaves its row, leases never
-// expire and a unique owner is never granted again, so without this the session would be
-// refused to `session run` and to every later compaction with no way out. Only rows of the
-// compactLeasePrefix are cleared, never `cli` or `run:` rows: such a row may be a live run.
-// Clearing a compact row is safe for the log: appendCompaction fences the lease before it
-// appends, and the takeover that follows the clear bumps the token, so a compaction that is
-// still alive fails with ErrExecLoopFenced and writes nothing. The cost: a `session run` or a
-// second compaction started during a compaction takes its lease and the one in flight is
-// lost, the cheapest thing to lose.
-func clearCompactLeases(ctx context.Context, st *store.Store, sessionID string) error {
-	if err := st.ClearLeaseOwnedBy(ctx, "exec:"+sessionID, compactLeasePrefix); err != nil {
-		return fmt.Errorf("release compaction lease: %w", err)
+// busyHolder names the holder of a refused lease for the CompactLeaseHeld message: the owner, its host, pid
+// and acquisition time as the row records them (unknown when it does not), and whether the row can be judged.
+func busyHolder(busy *store.SessionBusyError) string {
+	if busy.Owner == "" {
+		return "another process"
 	}
-	return nil
+	host, pid := busy.Host, "unknown"
+	if host == "" {
+		host = "unknown"
+	}
+	if busy.Pid != 0 {
+		pid = strconv.FormatInt(busy.Pid, 10)
+	}
+	out := fmt.Sprintf("%s (host %s, pid %s, since %s)", busy.Owner, host, pid, busy.AcquiredAtUTC)
+	if busy.Unjudgeable {
+		out += " (a row that cannot be judged: another machine or an older writer)"
+	}
+	return out
 }
 
 // fenceCompactLease checks the compaction's lease is still held: through the caller's handle when

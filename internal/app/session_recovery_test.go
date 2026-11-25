@@ -264,6 +264,17 @@ var _ = Describe("crash recovery of a dangling delegate call", func() {
 		recoverParent()
 		Expect(strings.Count(message(), "resume it with delegate")).To(Equal(2))
 	})
+	It("known limit L1: deletes a live judged delegate row, so the holder is fenced", func() {
+		danglingCall("delegate", "d1")
+		id := started("active")
+		live, err := st.AcquireRunLease(ctx, "exec:"+id, "delegate:live")
+		if err != nil {
+			panic(err)
+		}
+		DeferCleanup(func() { _ = live.Release(ctx) })
+		recoverParent()
+		Expect(live.Fence(ctx)).To(MatchError(store.ErrLeaseNotFound))
+	})
 	// finishedChild records a child that finished and whose receipt was written.
 	finishedChild := func() string {
 		id := started("completed")

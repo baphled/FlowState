@@ -18,6 +18,14 @@ import (
 	"github.com/baphled/flowstate/internal/tool"
 )
 
+// toolRunAfterAcquireHook runs with the lease held, before the status is read again; specs use it to
+// change the session in that window.
+var toolRunAfterAcquireHook = func(string) {}
+
+// toolRunBeforeAppendHook runs with the lease held, just before the loop appends the tool events; specs
+// use it to probe that the lease is still held at that point.
+var toolRunBeforeAppendHook = func(string) {}
+
 // RunSessionToolFromPath opens the store at dbPath and runs
 // RunSessionTool; the CLI adapter uses this to avoid importing the
 // store package directly.
@@ -34,6 +42,12 @@ func RunSessionToolFromPath(ctx context.Context, dbPath string, req ToolRequest)
 // builds the session builtin registry, gates through the allowlist and records
 // events. Filesystem tools remain confined to the session workdir.
 // Usage/terminal/denied failures wrap session sentinel errors.
+//
+// It appends to the session's log, so it holds the session's exec lease as a
+// judged handle (owner run:<uuid>, ADR-011) from before the first append until
+// the last writer has closed, on every path including a panic. A session whose
+// lease is held, or cannot be judged, is refused with an error that matches
+// store.ErrSessionBusy and nothing is written.
 func RunSessionTool(ctx context.Context, st *store.Store, dbPath string, req ToolRequest) (*ToolOutcome, error) {
 	if req.SessionID == "" {
 		return nil, fmt.Errorf("%w: session id required", session.ErrUsage)
@@ -52,6 +66,11 @@ func RunSessionTool(ctx context.Context, st *store.Store, dbPath string, req Too
 	if toolTerminalStatus(sess.Status) {
 		return nil, fmt.Errorf("%w: session %s is %s", session.ErrTerminal, req.SessionID, sess.Status)
 	}
+	lease, err := acquireToolLease(ctx, st, req.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = lease.Release(context.WithoutCancel(ctx)) }()
 	w, err := st.NewEventWriter(ctx, req.SessionID)
 	if err != nil {
 		return nil, err
@@ -61,11 +80,37 @@ func RunSessionTool(ctx context.Context, st *store.Store, dbPath string, req Too
 	if err != nil {
 		return nil, err
 	}
+	toolRunBeforeAppendHook(req.SessionID)
 	result, invokeErr := loop.Invoke(ctx, req.Tool, json.RawMessage(req.ToolArg))
 	if invokeErr != nil {
 		return nil, wrapGateFailure(invokeErr)
 	}
 	return &ToolOutcome{SessionID: req.SessionID, Tool: req.Tool, Result: result}, nil
+}
+
+// acquireToolLease takes the exec lease of sessionID for one tool run. The
+// status is read again once the lease is held, because it may have changed in
+// between; a session that became terminal is refused and the lease released.
+// Any non-terminal status may run a tool, as before the lease existed.
+func acquireToolLease(ctx context.Context, st *store.Store, sessionID string) (*store.RunLease, error) {
+	id, err := session.NewID()
+	if err != nil {
+		return nil, fmt.Errorf("tool run lease owner: %w", err)
+	}
+	lease, err := st.AcquireRunLease(ctx, "exec:"+sessionID, "run:"+id)
+	if err != nil {
+		return nil, fmt.Errorf("run lease: %w", err)
+	}
+	toolRunAfterAcquireHook(sessionID)
+	sess, err := st.GetSession(ctx, sessionID)
+	if err == nil && toolTerminalStatus(sess.Status) {
+		err = fmt.Errorf("%w: session %s is %s", session.ErrTerminal, sessionID, sess.Status)
+	}
+	if err != nil {
+		_ = lease.Release(context.WithoutCancel(ctx))
+		return nil, err
+	}
+	return lease, nil
 }
 
 // newSessionToolLoop selects the session workdir and composes the shared builtin
