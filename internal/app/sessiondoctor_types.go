@@ -38,4 +38,7 @@ type SessionDiagnosis struct {
 	Truncated bool
 	// Usage is the provider usage the event log records; see SessionUsage.
 	Usage SessionUsage
+	// Compactions summarises the log's context.compacted events; see
+	// CompactionStats.
+	Compactions CompactionStats
 }

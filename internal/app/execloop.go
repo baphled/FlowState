@@ -269,7 +269,11 @@ func replayInto(ctx context.Context, st *store.Store, sessionID string, history 
 	if rerr != nil {
 		return rerr
 	}
-	*history = append(*history, rebuildHistory(events)...)
+	rebuilt, berr := rebuildCompacted(events)
+	if berr != nil {
+		return berr
+	}
+	*history = append(*history, rebuilt...)
 	return nil
 }
 

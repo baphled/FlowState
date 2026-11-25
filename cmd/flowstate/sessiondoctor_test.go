@@ -93,7 +93,65 @@ func doctorRecord(id string) (result, map[string]any) {
 	return r, rec
 }
 
+// noCompactions is the compactions object of a session whose log holds none.
+var noCompactions = map[string]any{"count": float64(0), "invalid": float64(0), "summaries_reported": float64(0), "last_tokens_after": nil,
+	"summary_input_tokens": nil, "summary_output_tokens": nil}
+
+// compactedDoctorSession creates a session whose log holds two context.compacted events, the
+// first carrying the summarising call's usage, panicking on setup errors.
+func compactedDoctorSession() string {
+	created := runCLINew("--provider", "z.ai", "--model", "glm-5.3", "--task", "compaction probe")
+	if created.exit != 0 {
+		panic("session new failed: " + created.stderr)
+	}
+	id := decodeNew(created.stdout).ID
+	st, oerr := app.OpenStore(dbFor())
+	if oerr != nil {
+		panic(oerr)
+	}
+	w, werr := st.NewEventWriter(context.Background(), id)
+	if werr != nil {
+		panic(werr)
+	}
+	if _, aerr := w.Append(context.Background(), "user", "turn.start", map[string]any{"task": "compaction probe"}); aerr != nil {
+		panic(aerr)
+	}
+	for _, usage := range []map[string]any{{"input_tokens": 100, "output_tokens": 10}, nil} {
+		payload := map[string]any{"summary": "SUM", "first_kept_seq": 1, "tokens_before": 900, "tokens_after": 300,
+			"reason": "manual", "model": "m"}
+		if usage != nil {
+			payload["usage"] = usage
+		}
+		if _, aerr := w.Append(context.Background(), "engine", "context.compacted", payload); aerr != nil {
+			panic(aerr)
+		}
+	}
+	if cerr := w.Close(); cerr != nil {
+		panic(cerr)
+	}
+	if serr := st.Close(); serr != nil {
+		panic(serr)
+	}
+	return id
+}
+
 var _ = Describe("Session doctor CLI", func() {
+	It("prints the compactions object with counts, the last tokens_after and the summary usage", func() {
+		_, rec := doctorRecord(compactedDoctorSession())
+		Expect(rec["compactions"]).To(Equal(map[string]any{"count": float64(2), "invalid": float64(0), "summaries_reported": float64(1),
+			"last_tokens_after": float64(300), "summary_input_tokens": float64(100), "summary_output_tokens": float64(10)}))
+	})
+
+	It("keeps a compaction's usage out of the usage object", func() {
+		_, rec := doctorRecord(compactedDoctorSession())
+		Expect(rec["usage"].(map[string]any)["turns_reported"]).To(Equal(float64(0)))
+	})
+
+	It("validates a diagnosis with compactions against the session-doctor schema", func() {
+		r, _ := doctorRecord(compactedDoctorSession())
+		Expect(validateAgainst("session-doctor", firstLine(r.stdout))).To(Succeed())
+	})
+
 	It("exits 0 for a crashed session", func() {
 		id := crashedDoctorSession()
 		r, _ := doctorRecord(id)
@@ -109,6 +167,7 @@ var _ = Describe("Session doctor CLI", func() {
 			"reserved": float64(0), "budget_pool": nil, "available": nil,
 			"usage": map[string]any{"input_tokens": nil, "output_tokens": nil, "cache_read_tokens": nil,
 				"cache_write_tokens": nil, "last_context_tokens": nil, "turns_reported": float64(0), "turns_total": float64(0)},
+			"compactions": noCompactions,
 		}))
 	})
 
@@ -219,6 +278,7 @@ var _ = Describe("Session doctor CLI", func() {
 			"reserved": float64(0), "budget_pool": nil, "available": nil,
 			"usage": map[string]any{"input_tokens": nil, "output_tokens": nil, "cache_read_tokens": nil,
 				"cache_write_tokens": nil, "last_context_tokens": nil, "turns_reported": float64(0), "turns_total": float64(0)},
+			"compactions": noCompactions,
 		}))
 	})
 })

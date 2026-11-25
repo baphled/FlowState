@@ -240,3 +240,36 @@ var _ = DescribeTable("Events after cursor",
 	Entry("stream empty value", "/events/stream?after=", "after must be an integer"),
 	Entry("stream repeated cursor", "/events/stream?after=1&after=2", "after must be given once"),
 )
+
+var _ = Describe("Events carrying a context.compacted event", func() {
+	const compactedJSON = `{"session_id":"` + streamID + `","seq":3,"created_at_utc":"2026-11-20T12:00:00Z","actor":"engine",` +
+		`"type":"context.compacted","payload":{"first_kept_seq":2,"model":"m","reason":"auto","summary":"SUM",` +
+		`"tokens_after":300,"tokens_before":900},"payload_sha256":"5d3e"}`
+	seed := func() (*Server, *fakePorts) {
+		s, f := streamServer()
+		f.streamEvents = append(f.streamEvents, Event{SessionID: streamID, Seq: 3,
+			CreatedAt: time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC), Actor: "engine", Type: "context.compacted",
+			Payload: json.RawMessage(`{"first_kept_seq":2,"model":"m","reason":"auto","summary":"SUM",` +
+				`"tokens_after":300,"tokens_before":900}`), PayloadSHA: "5d3e"})
+		return s, f
+	}
+
+	It("lists it in the snapshot like any other type", func() {
+		s, _ := seed()
+		rec := doRequest(s, http.MethodGet, "/sessions/"+streamID+"/events?after=2", "")
+		Expect(reply{rec.Code, rec.Body.String()}).To(Equal(reply{http.StatusOK, `[` + compactedJSON + `]`}))
+	})
+
+	It("validates the snapshot against the session-events schema", func() {
+		s, _ := seed()
+		rec := doRequest(s, http.MethodGet, "/sessions/"+streamID+"/events", "")
+		Expect(schemaError("session-events", rec.Body.String())).To(Succeed())
+	})
+
+	It("carries it in the follow stream as a data frame", func() {
+		s, f := seed()
+		f.setStatus("completed")
+		rec := doRequest(s, http.MethodGet, "/sessions/"+streamID+"/events/stream?after=2", "")
+		Expect(rec.Body.String()).To(Equal("data: " + compactedJSON + "\n\n" + streamTerminalJSON))
+	})
+})

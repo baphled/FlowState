@@ -73,7 +73,7 @@ func ErrorCode(err error) string {
 		return CodeSessionTerminal
 	case errors.Is(err, store.ErrUnknownSession):
 		return CodeSessionMissing
-	case errors.Is(err, store.ErrHashMismatch), errors.Is(err, store.ErrSeqGap):
+	case errors.Is(err, store.ErrHashMismatch), errors.Is(err, store.ErrSeqGap), errors.Is(err, ErrInvalidCompaction):
 		return CodeReplayMismatch
 	case errors.Is(err, ErrProvider):
 		return CodeProvider
