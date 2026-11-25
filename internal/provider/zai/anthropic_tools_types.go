@@ -33,6 +33,7 @@ type anthropicMessage struct {
 // anthropicStream is the per-stream state: the stop reason and the tool_use
 // blocks still receiving input_json_delta fragments, by content block index.
 type anthropicStream struct {
+	usage   usageAccumulator
 	stop    string
 	pending map[int]*pendingToolUse
 	ids     map[string]bool

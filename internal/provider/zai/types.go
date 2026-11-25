@@ -57,6 +57,7 @@ type response struct {
 	Choices []struct {
 		Message message `json:"message"`
 	} `json:"choices"`
+	Usage *openAIUsage `json:"usage"`
 }
 
 type streamChunk struct {
@@ -66,4 +67,43 @@ type streamChunk struct {
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
+	Usage *openAIUsage `json:"usage"`
+}
+
+// sseState is what the plain route remembers across the lines of one stream:
+// the wire finish_reason and the usage of the last chunk that carried one.
+type sseState struct {
+	finish string
+	usage  *provider.Usage
+}
+
+// openAIUsage is the OpenAI-style usage object: prompt_tokens counts the cached
+// tokens too, which neutral() separates out. Pointers tell an absent count from
+// a reported zero; an object with no known count is not a report.
+type openAIUsage struct {
+	PromptTokens        *int64 `json:"prompt_tokens"`
+	CompletionTokens    *int64 `json:"completion_tokens"`
+	PromptTokensDetails *struct {
+		CachedTokens *int64 `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
+}
+
+// openAIUsageWire has the fields of openAIUsage without its UnmarshalJSON, so
+// decoding it does not recurse.
+type openAIUsageWire openAIUsage
+
+// anthropicUsage is the Messages API usage object. Pointers tell an absent
+// count (keep the earlier one) from a reported zero.
+type anthropicUsage struct {
+	InputTokens     *int64 `json:"input_tokens"`
+	OutputTokens    *int64 `json:"output_tokens"`
+	CacheCreation   *int64 `json:"cache_creation_input_tokens"`
+	CacheReadTokens *int64 `json:"cache_read_input_tokens"`
+}
+
+// usageAccumulator folds the usage objects of one Messages stream (message_start,
+// then the cumulative message_delta) into one neutral usage.
+type usageAccumulator struct {
+	seen  bool
+	usage provider.Usage
 }

@@ -95,6 +95,9 @@ func (validator *StreamValidator) Accept(event StreamEvent) error {
 	if err := validateEvent(event); err != nil {
 		return err
 	}
+	if err := validateEventUsage(event); err != nil {
+		return err
+	}
 	if event.ToolCall != nil {
 		if validator.ids[event.ToolCall.ID] {
 			return fmt.Errorf("provider: duplicate tool call ID %q", event.ToolCall.ID)
@@ -105,6 +108,14 @@ func (validator *StreamValidator) Accept(event StreamEvent) error {
 		validator.ids[event.ToolCall.ID] = true
 	}
 	validator.terminal = event.Err != nil || event.Kind == StreamEventFinish
+	return nil
+}
+
+// validateEventUsage accepts usage only on a finish event, and only in range.
+func validateEventUsage(event StreamEvent) error {
+	if event.Usage != nil && (event.Kind != StreamEventFinish || event.Usage.Validate() != nil) {
+		return fmt.Errorf("provider: usage is valid only, and in range, on a finish event")
+	}
 	return nil
 }
 
@@ -145,4 +156,25 @@ func validateEvent(event StreamEvent) error {
 		}
 	}
 	return fmt.Errorf("provider: invalid stream event kind or payload")
+}
+
+// MaxUsageTokens bounds any one reported count (2^40, about 1.1e12, far above
+// any real context). A larger value is corrupt, and failing closed keeps
+// sums of counts from overflowing.
+const MaxUsageTokens int64 = 1 << 40
+
+// Validate fails closed on a count no provider can legitimately report: a
+// negative one or one above MaxUsageTokens. Adapters call it before they emit usage, and StreamValidator
+// calls it on a finish event, so a corrupt count never reaches the ledger.
+func (u Usage) Validate() error {
+	counts := map[string]int64{
+		"input_tokens": u.InputTokens, "output_tokens": u.OutputTokens,
+		"cache_read_tokens": u.CacheReadTokens, "cache_write_tokens": u.CacheWriteTokens,
+	}
+	for name, n := range counts {
+		if n < 0 || n > MaxUsageTokens {
+			return fmt.Errorf("provider: usage %s is out of range (%d)", name, n)
+		}
+	}
+	return nil
 }

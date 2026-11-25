@@ -42,6 +42,13 @@ func (state *codingAssembly) chunk(ctx context.Context, out chan<- provider.Stre
 	if len(chunk.Choices) > 1 {
 		return &ToolProtocolError{Reason: "multiple choices in single-choice stream"}
 	}
+	usage, err := chunk.Usage.neutral()
+	if err != nil {
+		return &ToolProtocolError{Reason: err.Error()}
+	}
+	if usage != nil {
+		state.usage = usage
+	}
 	for _, choice := range chunk.Choices {
 		if choice.Index != 0 || state.finish != "" {
 			return &ToolProtocolError{Reason: "unexpected choice or delta after finish"}
@@ -63,7 +70,7 @@ func (state *codingAssembly) chunk(ctx context.Context, out chan<- provider.Stre
 }
 func (state *codingAssembly) complete(ctx context.Context, out chan<- provider.StreamEvent) error {
 	if !state.strict {
-		codingSend(ctx, out, provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: wireFinishReason(state.finish)})
+		codingSend(ctx, out, provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: wireFinishReason(state.finish), Usage: state.usage})
 		return nil
 	}
 	if state.finish == "" {
@@ -85,7 +92,7 @@ func (state *codingAssembly) complete(ctx context.Context, out chan<- provider.S
 			return ctx.Err()
 		}
 	}
-	codingSend(ctx, out, provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: state.finish})
+	codingSend(ctx, out, provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: state.finish, Usage: state.usage})
 	return nil
 }
 

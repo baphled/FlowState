@@ -72,6 +72,11 @@ func (p *Provider) codingChatAnthropic(ctx context.Context, req *provider.ChatRe
 		}
 	}
 	out.Content = sb.String()
+	var acc usageAccumulator
+	if err := acc.merge(resp.Usage); err != nil {
+		return nil, err
+	}
+	out.Usage = acc.result()
 	return out, nil
 }
 
@@ -145,10 +150,13 @@ func (p *Provider) handleAnthropicEvent(ctx context.Context, ev anthropicEvent, 
 			return false, nil
 		}
 		return false, sendAnthropic(ctx, out, provider.StreamEvent{Content: ev.Delta.Text})
+	case "message_start":
+		return false, st.usage.merge(startUsage(ev.Message))
 	case "message_delta":
 		if ev.Delta.StopReason != "" {
 			st.stop = ev.Delta.StopReason
 		}
+		return false, st.usage.merge(ev.Usage)
 	case "error":
 		return false, fmt.Errorf("zai: stream error %s: %s", ev.Error.Type, ev.Error.Message)
 	case "message_stop":
@@ -158,7 +166,7 @@ func (p *Provider) handleAnthropicEvent(ctx context.Context, ev anthropicEvent, 
 		if !p.anthropicFinish {
 			return true, nil
 		}
-		fin := provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: finishReason(st.stop)}
+		fin := provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: finishReason(st.stop), Usage: st.usage.result()}
 		return true, sendAnthropic(ctx, out, fin)
 	}
 	return false, nil
@@ -268,4 +276,16 @@ func splitSystem(msgs []provider.Message) (string, []provider.Message) {
 		rest = append(rest, m)
 	}
 	return strings.Join(system, "\n\n"), rest
+}
+
+// startUsage is the usage object of a message_start message; a message that
+// is not an object (or has no usage) reports no usage.
+func startUsage(message json.RawMessage) json.RawMessage {
+	var m struct {
+		Usage json.RawMessage `json:"usage"`
+	}
+	if json.Unmarshal(message, &m) != nil {
+		return nil
+	}
+	return m.Usage
 }

@@ -65,7 +65,11 @@ func (p *Provider) codingChat(ctx context.Context, req *provider.ChatRequest) (*
 	if calls := resp.Choices[0].Message.ToolCalls; len(calls) > 0 && string(calls) != "null" && string(calls) != "[]" {
 		return nil, &ToolProtocolError{Reason: "nonstream tool responses are unsupported"}
 	}
-	return &provider.ChatResponse{Content: resp.Choices[0].Message.Content}, nil
+	usage, err := resp.Usage.neutral()
+	if err != nil {
+		return nil, &ToolProtocolError{Reason: err.Error()}
+	}
+	return &provider.ChatResponse{Content: resp.Choices[0].Message.Content, Usage: usage}, nil
 }
 
 func (p *Provider) codingStream(ctx context.Context, req *provider.ChatRequest) <-chan provider.StreamEvent {

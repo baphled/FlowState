@@ -206,7 +206,11 @@ func (p *Provider) Chat(ctx context.Context, req *provider.ChatRequest) (*provid
 	if len(resp.Choices) == 0 {
 		return nil, errors.New("zai: empty choices in response")
 	}
-	return &provider.ChatResponse{Content: resp.Choices[0].Message.Content}, nil
+	usage, err := resp.Usage.neutral()
+	if err != nil {
+		return nil, err
+	}
+	return &provider.ChatResponse{Content: resp.Choices[0].Message.Content, Usage: usage}, nil
 }
 
 // Stream performs one streaming turn, emitting content deltas in
@@ -226,11 +230,11 @@ func (p *Provider) Stream(ctx context.Context, req *provider.ChatRequest) <-chan
 		}
 		defer body.Close()
 		rd := bufio.NewReader(body)
-		finish := ""
+		state := &sseState{}
 		for {
 			line, err := rd.ReadString('\n')
 			if line != "" {
-				if done := p.emitSSELine(ctx, out, line, &finish); done {
+				if done := p.emitSSELine(ctx, out, line, state); done {
 					return
 				}
 			}
@@ -249,9 +253,9 @@ func (p *Provider) Stream(ctx context.Context, req *provider.ChatRequest) <-chan
 }
 
 // emitSSELine parses one SSE line and emits any content delta, remembering the
-// wire finish_reason in *finish; at [DONE] it emits the one finish event. It
-// reports true when the stream is complete.
-func (p *Provider) emitSSELine(ctx context.Context, out chan<- provider.StreamEvent, line string, finish *string) bool {
+// wire finish_reason and usage in *state; at [DONE] it emits the one finish
+// event, carrying the usage. It reports true when the stream is complete.
+func (p *Provider) emitSSELine(ctx context.Context, out chan<- provider.StreamEvent, line string, state *sseState) bool {
 	trimmed := strings.TrimSpace(line)
 	if !strings.HasPrefix(trimmed, "data:") {
 		return false
@@ -260,7 +264,7 @@ func (p *Provider) emitSSELine(ctx context.Context, out chan<- provider.StreamEv
 	if payload == "[DONE]" {
 		if p.anthropicFinish {
 			select {
-			case out <- provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: wireFinishReason(*finish)}:
+			case out <- provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: wireFinishReason(state.finish), Usage: state.usage}:
 			case <-ctx.Done():
 			}
 		}
@@ -271,11 +275,19 @@ func (p *Provider) emitSSELine(ctx context.Context, out chan<- provider.StreamEv
 		out <- provider.StreamEvent{Err: fmt.Errorf("zai: bad stream chunk: %w", jerr)}
 		return true
 	}
+	usage, uerr := chunk.Usage.neutral()
+	if uerr != nil {
+		out <- provider.StreamEvent{Err: uerr}
+		return true
+	}
+	if usage != nil {
+		state.usage = usage
+	}
 	for _, c := range chunk.Choices {
 		// "length" is sticky: a truncation on any choice must not be hidden by
 		// a later choice or chunk ending "stop".
-		if c.FinishReason != "" && *finish != provider.FinishLength {
-			*finish = c.FinishReason
+		if c.FinishReason != "" && state.finish != provider.FinishLength {
+			state.finish = c.FinishReason
 		}
 		if c.Delta.Content != "" {
 			select {

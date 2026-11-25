@@ -30,6 +30,26 @@ type ChatResponse struct {
 	// ToolCalls contains complete calls returned by a tool-capable adapter.
 	ToolCalls []ToolCall
 	Error     error
+	// Usage is the token usage the provider reported for the turn; nil means
+	// the provider did not report any (see Usage).
+	Usage *Usage
+}
+
+// Usage is the token usage a provider reported for one turn. It travels as a
+// pointer (ChatResponse.Usage, StreamEvent.Usage): nil means "not reported",
+// while a non-nil Usage with a zero field is a reported zero, so a provider
+// that does not report usage is never mistaken for one that consumed nothing.
+// The counts are disjoint, so their sum is the context the turn occupied:
+// adapters subtract cache tokens from wire counts that include them.
+type Usage struct {
+	// InputTokens is the prompt tokens billed at the full rate, excluding cache tokens.
+	InputTokens int64 `json:"input_tokens"`
+	// OutputTokens is the tokens the model generated, reasoning included.
+	OutputTokens int64 `json:"output_tokens"`
+	// CacheReadTokens is the prompt tokens served from the provider's prompt cache.
+	CacheReadTokens int64 `json:"cache_read_tokens"`
+	// CacheWriteTokens is the prompt tokens written to the provider's prompt cache.
+	CacheWriteTokens int64 `json:"cache_write_tokens"`
 }
 
 // Provider is the chat-provider port implemented by adapters.
@@ -63,4 +83,7 @@ type StreamEvent struct {
 	FinishReason string
 	Content      string
 	Err          error
+	// Usage is the turn's reported token usage. It is valid only on a finish
+	// event (StreamValidator rejects it elsewhere); nil means not reported.
+	Usage *Usage
 }
