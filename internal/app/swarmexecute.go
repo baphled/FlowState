@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -26,13 +27,15 @@ import (
 // role on every packet, `delegate` in the coordinator's tools, a streamer, a
 // workdir, an admitter and a gate runner. The coordinator's delegate tool may
 // spawn only the manifest's role profiles (the #445 allowlist, with the
-// coordinator as delegator), so it cannot reach any other loaded profile.
+// coordinator as delegator), so it cannot reach any other loaded profile. When
+// the coordinator profile lists `delegates`, the allowlist is the intersection of
+// those and the manifest's roles (least privilege); a packet role the
+// intersection leaves out is refused up front, as no one could run that packet.
 //
 // Also refused: no packet (a swarm with no work would be accepted vacuously), no
 // gate (the engine, not the model, decides acceptance), a packet whose role is
-// the coordinator, and a gate runner whose Dir is not the Workdir. The
-// coordinator profile's own `delegates` list is not consulted: the manifest's
-// roles restrict it.
+// the coordinator, and a gate runner whose Dir is not the Workdir. An empty
+// `delegates` list imposes no further limit: the manifest's roles apply.
 //
 // A child is attributed to a packet when its first task starts with the
 // marker `[packet <id>]` (swarm.PacketRef) naming a manifest packet, the
@@ -69,11 +72,11 @@ func ExecuteSwarm(ctx context.Context, st *Store, cfg ExecuteSwarmConfig) (Execu
 		return ExecuteSwarmResult{}, fmt.Errorf("app: execute swarm: create the coordinator session: %w", err)
 	}
 	res := ExecuteSwarmResult{CoordinatorID: sess.ID, Manifest: m}
-	status, reason, err := runSwarmCoordinator(ctx, st, sess, coord, cfg)
+	status, reason, cause, err := runSwarmCoordinator(ctx, st, sess, coord, cfg)
 	if err != nil {
 		return res, err
 	}
-	res.Status, res.Reason = status, reason
+	res.Status, res.Reason, res.Cause = status, reason, cause
 	if res.Status == SwarmExecCancelled || res.Reason == reasonDeadline {
 		err = settleCancelledChildren(ctx, st, &res)
 	} else {
@@ -87,6 +90,21 @@ func ExecuteSwarm(ctx context.Context, st *Store, cfg ExecuteSwarmConfig) (Execu
 		return res, err
 	}
 	return runSwarmEvidence(ctx, st, cfg, res)
+}
+
+// ExecuteSwarmFile is ExecuteSwarm for a manifest file, with the engine's own
+// collaborators: the manifest is loaded from manifestPath (a failure is a usage
+// error), packets are admitted by the hash-checking swarm.AdmissionLog, and the
+// gates run in cfg.Workdir through swarm.NewGateRunnerIn. cfg.Manifest,
+// cfg.Admitter and cfg.Gates are ignored. It is the seam cmd uses, as cmd does
+// not import the swarm package.
+func ExecuteSwarmFile(ctx context.Context, st *Store, manifestPath string, cfg ExecuteSwarmConfig) (ExecuteSwarmResult, error) {
+	m, err := swarm.LoadManifest(manifestPath)
+	if err != nil {
+		return ExecuteSwarmResult{}, fmt.Errorf("%w: %v", ErrUsage, err)
+	}
+	cfg.Manifest, cfg.Admitter, cfg.Gates = m, swarm.NewAdmissionLog(), swarm.NewGateRunnerIn(cfg.Workdir)
+	return ExecuteSwarm(ctx, st, cfg)
 }
 
 // checkExecuteSwarm checks every precondition, writing nothing, and returns the
@@ -134,7 +152,31 @@ func checkExecuteSwarm(st *Store, cfg ExecuteSwarmConfig) (agent.Profile, error)
 		return agent.Profile{}, fmt.Errorf("%w: execute swarm: coordinator profile %q does not list `delegate` in its tools: add it",
 			ErrUsage, coord.Name)
 	}
-	return coord, nil
+	return coord, checkCoordinatorReach(m, coord)
+}
+
+// swarmAllowlist is the profiles the coordinator's delegate tool may spawn: the
+// manifest's roles, narrowed to the coordinator profile's `delegates` when it
+// lists any.
+func swarmAllowlist(m swarm.Manifest, coord agent.Profile) []string {
+	roles := manifestRoles(m)
+	if len(coord.Delegates) == 0 {
+		return roles
+	}
+	return slices.DeleteFunc(roles, func(r string) bool { return !slices.Contains(coord.Delegates, r) })
+}
+
+// checkCoordinatorReach refuses a manifest with a packet role the coordinator
+// cannot delegate to: a packet nobody can run can never be admitted.
+func checkCoordinatorReach(m swarm.Manifest, coord agent.Profile) error {
+	allowed := swarmAllowlist(m, coord)
+	for _, p := range m.Packets {
+		if !slices.Contains(allowed, p.Role) {
+			return fmt.Errorf("%w: execute swarm: packet %s has the role %q, which coordinator %q cannot delegate to: "+
+				"add it to the coordinator's `delegates`", ErrUsage, p.ID, p.Role, coord.Name)
+		}
+	}
+	return nil
 }
 
 // manifestRoles lists the distinct role profiles the manifest names.
@@ -151,13 +193,14 @@ func manifestRoles(m swarm.Manifest) []string {
 // runSwarmCoordinator composes the coordinator's loop as RunSessionExecLoop does
 // (the profile's tools as the allowlist, its body as the system prompt) and runs
 // it. Its delegate tool is bound to the coordinator profile and restricted to the
-// manifest's roles. It returns an empty status when the coordinator completed;
-// otherwise failed or cancelled with the reason. The error is persistence only.
+// manifest's roles, narrowed by the profile's `delegates` (swarmAllowlist). It returns an empty status when the coordinator completed;
+// otherwise failed or cancelled with the reason and the error that stopped the
+// loop (cause). The error is persistence only.
 func runSwarmCoordinator(ctx context.Context, st *Store, sess *store.Session, coord agent.Profile,
-	cfg ExecuteSwarmConfig) (status, reason string, err error) {
+	cfg ExecuteSwarmConfig) (status, reason string, cause, err error) {
 	registry, err := NewSessionToolRegistry(cfg.Workdir)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	maxTurns := cfg.MaxTurns
 	if maxTurns <= 0 {
@@ -169,20 +212,22 @@ func runSwarmCoordinator(ctx context.Context, st *Store, sess *store.Session, co
 		SystemPrompt: coord.Body,
 	}
 	if err := bindRunBudget(ctx, st, sess, cfg.Budget, &loop); err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	err = registry.Register(NewDelegateTool(DelegateToolConfig{
 		Store: st, Parent: sess, Streamer: cfg.Streamer, Pool: loop.Pool, Workdir: cfg.Workdir, Profiles: cfg.Profiles,
-		DelegatorProfile: coord.Name, AllowedProfiles: manifestRoles(cfg.Manifest),
+		DelegatorProfile: coord.Name, AllowedProfiles: swarmAllowlist(cfg.Manifest, coord),
 	}))
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	res, runErr := RunExecLoop(ctx, loop)
 	if runErr != nil {
-		return classifyCoordinatorStop(ctx, finishExecLoopState(ctx, st, sess, runErr))
+		stop := finishExecLoopState(ctx, st, sess, runErr)
+		status, reason, err = classifyCoordinatorStop(ctx, stop)
+		return status, reason, stop, err
 	}
-	return "", "", completeExecLoopRun(ctx, st, sess.ID, res.FinishReason)
+	return "", "", nil, completeExecLoopRun(ctx, st, sess.ID, res.FinishReason)
 }
 
 // classifyCoordinatorStop maps the error that ended the coordinator onto the
@@ -435,4 +480,59 @@ func swarmDecisionStatus(m swarm.Manifest, run swarm.RunResult) string {
 		return SwarmExecGateFailed
 	}
 	return SwarmExecNotAccepted
+}
+
+// RequireDirectory reports an error unless path names an existing directory (a
+// symbolic link to one counts). It is the check cmd makes on --workdir before
+// anything is created.
+func RequireDirectory(path string) error {
+	if !isDirectory(path) {
+		return fmt.Errorf("%w: %q", ErrUsage, path)
+	}
+	return nil
+}
+
+// RequireDatabaseOutside reports an ErrUsage error when the database file or
+// one of its WAL sidecars lies inside workdir: a role with a write tool could
+// overwrite the engine's own database there. Both paths are made absolute and
+// their symbolic links resolved; the database need not exist yet, so the
+// nearest existing ancestor is resolved. It runs before the store is opened.
+func RequireDatabaseOutside(db, workdir string) error {
+	root := resolvePath(workdir)
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		rel, err := filepath.Rel(root, resolvePath(db+suffix))
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("%w: --db %q is inside --workdir %q: the swarm's tools can write there; give --db a path outside it",
+				ErrUsage, db+suffix, workdir)
+		}
+	}
+	return nil
+}
+
+// resolvePath is the absolute path with symbolic links resolved as far as the
+// path exists; the missing tail is appended unresolved. A dangling link is
+// followed to where SQLite would create its target (at most 16 links deep).
+func resolvePath(path string) string { return resolveDepth(path, 16) }
+
+func resolveDepth(path string, depth int) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	tail := ""
+	for cur := abs; ; cur = filepath.Dir(cur) {
+		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
+			return filepath.Join(resolved, tail)
+		}
+		if target, err := os.Readlink(cur); err == nil && depth > 0 {
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(filepath.Dir(cur), target)
+			}
+			return filepath.Join(resolveDepth(target, depth-1), tail)
+		}
+		if filepath.Dir(cur) == cur {
+			return abs
+		}
+		tail = filepath.Join(filepath.Base(cur), tail)
+	}
 }

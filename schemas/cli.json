@@ -276,6 +276,60 @@
       }
     }
   },
+  "swarm-run-execute": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["manifest", "run_id", "status", "reason", "coordinator_session", "children", "gates", "packets"],
+    "properties": {
+      "manifest": { "type": "string" },
+      "run_id": { "type": "string" },
+      "status": { "enum": ["accepted", "not_accepted", "gate_failed", "failed", "cancelled"] },
+      "reason": { "type": "string" },
+      "coordinator_session": { "type": "string" },
+      "children": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "profile", "packet", "status", "turns"],
+          "properties": {
+            "id": { "type": "string" },
+            "profile": { "type": "string" },
+            "packet": { "type": "string" },
+            "status": { "type": "string" },
+            "turns": { "type": "integer", "minimum": 0 }
+          }
+        }
+      },
+      "gates": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "passed", "interrupted"],
+          "properties": {
+            "name": { "type": "string" },
+            "passed": { "type": "boolean" },
+            "interrupted": { "type": "boolean" }
+          }
+        }
+      },
+      "packets": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "admitted", "reason", "evidence"],
+          "properties": {
+            "id": { "type": "string" },
+            "admitted": { "type": "boolean" },
+            "reason": { "type": "string" },
+            "evidence": { "type": "string" }
+          }
+        }
+      }
+    }
+  },
   "swarm-run": {
     "type": "object",
     "additionalProperties": false,

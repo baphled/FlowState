@@ -21,9 +21,10 @@ govern how it is changed. There is no TUI yet: the command line and the HTTP API
   pauses the session instead of failing it.
 - **Delegation.** Child sessions with a parent, a depth limit, and steering messages from a parent to its children
   (a message is accepted only from an ancestor).
-- **Swarm manifests.** Validate a manifest, and run one: it creates a child session per packet in dependency order,
-  reserves budget, admits packets, runs the gates and records the outcome. A cancelled run cancels its unfinished
-  children.
+- **Swarm manifests.** Validate a manifest, and run one. The receipts-only run creates a child session per packet in
+  dependency order, reserves budget, admits packets, runs the gates and records the outcome. With `--execute`, a
+  coordinator agent delegates the packets to role profiles and the engine runs the gates itself (see
+  [Running a swarm](#running-a-swarm)). A cancelled run cancels its unfinished children.
 - **Recovery and diagnosis.** A crashed run is detected from its log, and the next `session run` (or the server's
   run endpoint) recovers it automatically. `session doctor` reports
   whether a session crashed, its pending messages and budget, the last finish reason, whether an answer was
@@ -33,9 +34,9 @@ govern how it is changed. There is no TUI yet: the command line and the HTTP API
   usage is not in its parent's, and the context figure can be stale); `session replay` re-verifies the log.
 - **HTTP API.** `flowstate serve` exposes the same operations, with server-sent events for a live log.
 
-**Not built yet:** a swarm run does not yet execute provider turns for its children (it creates, budgets and gates
-them; each child is then driven by an ordinary `session run`). Agent definition files, skills, hooks, MCP, context
-compaction, provider failover and a frontend are also outstanding. Nothing here is claimed to be production ready;
+**Not built yet:** the receipts-only `swarm run` does not execute provider turns for its children (it creates,
+budgets and gates them; `swarm run --execute` is the path that runs them). Skills, hooks, MCP, context compaction,
+provider failover and a frontend are also outstanding. Nothing here is claimed to be production ready;
 see [the architecture overview](docs/architecture/OVERVIEW.md) for the exact current behaviour.
 
 ## Quick start
@@ -85,6 +86,7 @@ flowstate session new --provider anthropic --model haiku --task "Say hello"
 | `session tool <id>` | Run one allowed tool directly |
 | `swarm validate <manifest>` | Validate a swarm manifest (YAML) |
 | `swarm run <manifest>` | Run one: requires `--parent <id>` and `--budget <n>` |
+| `swarm run <manifest> --execute` | Run one with a coordinator agent that delegates the packets; see [Running a swarm](#running-a-swarm) |
 | `receipt validate <file...>` | Validate acceptance receipts against their schema |
 | `store info` | Database facts; the file is not modified (WAL sidecars may appear): schema, journal mode, foreign keys |
 | `agents list` | List agent profiles as a JSON array: `--agents user\|project\|both` (default `user`), `--workdir` |
@@ -294,6 +296,59 @@ flowstate session run "$id" --budget 200 --agents user --allow delegate --workdi
   refuses tools the run fails as it does today; nothing checks this in advance.
 - `--agents` is a command-line option only. The HTTP run does not accept it yet; that is a later change.
 
+### Running a swarm
+
+`swarm run <manifest> --execute` runs a swarm for real. The manifest names a `coordinator:` profile and gives each
+packet a `role:` profile; the coordinator is told the packets and delegates each one to its role with the `delegate`
+tool, and every role is a profile file, so no role is built into the engine. A worked example, a reader and a
+reviewer with a gate that checks the file the reviewer must write, is in
+[docs/examples/swarm](docs/examples/swarm/review-swarm.yaml):
+
+```sh
+cp -r docs/examples/swarm ./swarm-work && cd swarm-work
+cp ../README.md .            # something for the reader to read
+flowstate agents list --agents project --workdir .
+flowstate swarm run review-swarm.yaml --execute --agents project --workdir . --db ../flowstate.db \
+  --provider z.ai --model glm-5.3 --budget 20000 --max-turns 12
+```
+
+Keep `--db` outside `--workdir`: the reviewer can write there, and a database inside it could be overwritten. The run
+is refused (exit 2) if the database or its `-wal` or `-shm` file is inside the workdir, the default `flowstate.db`
+included.
+
+- Flags: `--agents user|project|both` (default `user`) picks where the profiles load from, `--workdir` (default the
+  current directory) is where the coordinator's tools, the children and the gates all work, `--provider` and `--model`
+  come from the flags or the config defaults as for `session new`, `--budget` is the coordinator's turn pool (0 means
+  none), `--max-turns` bounds the coordinator's loop (1 to 1000) and `--max-tokens` caps each response. No `--parent`
+  is needed: the engine creates the coordinator session. Without `--execute` these flags are usage errors (exit 2): the
+  receipts-only `swarm run` refuses them rather than ignoring them, and is otherwise unchanged. `--workdir` must be an
+  existing directory (a symlink to one is fine).
+- Needs a provider that accepts tool calls (the z.ai coding route or the Anthropic API-key route). The manifest needs a
+  coordinator, at least one packet with a role and at least one gate, and no packet may use the coordinator as its role.
+  The coordinator may delegate only to the manifest's roles; if its profile lists `delegates`, only to the roles that
+  list also names (a packet role it leaves out is a usage error), and an empty list adds no limit.
+- The coordinator is given the swarm's brief: the packets in dependency order with their roles and tasks, and the gate
+  names and descriptions (never their commands). It must start every delegated task with `[packet <id>]` followed by
+  the packet's task text, which is how the engine attributes a child to a packet.
+- **The engine decides the outcome, not the model.** After the coordinator completes, the engine admits a packet only if
+  a child attributed to it completed, then runs the gates itself in the workdir. What the coordinator claims about the
+  gates is ignored. A failed or cancelled coordinator runs no gate.
+- Output is one JSON object (`swarm-run-execute` in [schemas/cli.json](schemas/cli.json)): `run_id`, `status`
+  (`accepted`, `not_accepted`, `gate_failed`, `failed` or `cancelled`), `reason` (why a run failed or was cancelled,
+  such as `max_turns`, `budget_exhausted` or `sigint`), `coordinator_session`, `children` (`id`, `profile`, `packet`,
+  `status`, `turns`), `gates` (`name`, `passed`, `interrupted`) and `packets` (the admission decision, with a `reason`
+  for a refusal and the admitting child as `evidence`).
+- Exit codes: 0 accepted; 8 `not_accepted` or `gate_failed` (as for the receipts-only run); a failed coordinator keeps
+  its own class (3 provider error, 5 budget or `max_turns`, 1 anything else, including a passed deadline); 130 cancelled
+  by SIGINT, SIGTERM or SIGHUP, with the children settled so no session stays active; 2 usage errors, which include a
+  manifest with no coordinator or a role with no profile, and 4 `config_invalid`, such as a profile in both
+  directories under `--agents both`. A refused run creates no session or run.
+- Gates run as plain argv (no shell) in the workdir. A gate that executes a file the swarm's write-capable roles can
+  write (`./check.sh`) runs what they wrote, and a stale `REVIEW.md` from an earlier run satisfies `test -s REVIEW.md`:
+  use a fresh workdir per run.
+- To see what happened, run `session events <coordinator_session>` for the coordinator's log (its `delegation.started`
+  and `delegation.completed` receipts name each child) and `session events <child id>` for a child's own turns.
+
 ### Exit codes
 
 | Code | Meaning |
@@ -306,7 +361,7 @@ flowstate session run "$id" --budget 200 --agents user --allow delegate --workdi
 | 5 | Budget stop (the session is paused), or `max_turns` (the turn limit reached while still requesting tools; failed) |
 | 6 | The session is already terminal |
 | 7 | Replay found a corrupt log |
-| 8 | A swarm run was not accepted (failed gate or rejected packet), or a receipt is invalid |
+| 8 | A swarm run, receipts-only or `--execute`, was not accepted (failed gate or rejected packet), or a receipt is invalid |
 | 130 | Cancelled by SIGINT, SIGTERM or SIGHUP (SIGHUP is left alone when ignored, as under `nohup`) |
 
 ## Configuration

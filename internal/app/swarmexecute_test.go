@@ -364,6 +364,50 @@ var _ = Describe("ExecuteSwarm", func() {
 		Expect(execStop{res.Status, res.Reason, f.gateRan()}).To(Equal(execStop{SwarmExecFailed, CodeMaxTurns, false}))
 	})
 
+	It("carries ErrMaxTurns as the cause of a coordinator stopped by max_turns", func() {
+		f.cfg.MaxTurns = 1
+		f.both("done")
+		Expect(errors.Is(f.execute(ctx).Cause, ErrMaxTurns)).To(BeTrue())
+	})
+
+	It("carries the provider's error as the cause of a failed coordinator", func() {
+		f.scripts.byRole["coord-body"] = [][]provider.StreamEvent{{provError("provider down")}}
+		Expect(f.execute(ctx).Cause).To(MatchError(ContainSubstring("provider down")))
+	})
+
+	Describe("when the coordinator profile lists delegates", func() {
+		It("refuses up front, as a usage error naming the role, a packet role it leaves out", func() {
+			f.cfg.Profiles[0].Delegates = []string{"writer"}
+			_, err := ExecuteSwarm(ctx, f.st, f.cfg)
+			Expect(err).To(MatchError(ContainSubstring(`role "reviewer"`)))
+		})
+		It("creates no session when it refuses a packet role the list leaves out", func() {
+			f.cfg.Profiles[0].Delegates = []string{"writer"}
+			_, _ = ExecuteSwarm(ctx, f.st, f.cfg)
+			Expect(f.sessionCount()).To(BeZero())
+		})
+		It("runs when the list covers every packet role", func() {
+			f.cfg.Profiles[0].Delegates = []string{"writer", "reviewer"}
+			f.both("done")
+			Expect(f.execute(ctx).Status).To(Equal(SwarmExecAccepted))
+		})
+		It("runs on the manifest's roles when the list is empty", func() {
+			f.cfg.Profiles[0].Delegates = []string{}
+			f.both("done")
+			Expect(f.execute(ctx).Status).To(Equal(SwarmExecAccepted))
+		})
+		It("keeps a profile the manifest does not name out of the allowlist", func() {
+			coord := f.cfg.Profiles[0]
+			coord.Delegates = []string{"writer", "reviewer", "rogue"}
+			Expect(swarmAllowlist(f.cfg.Manifest, coord)).To(Equal([]string{"writer", "reviewer"}))
+		})
+		It("narrows the allowlist to the listed roles", func() {
+			coord := f.cfg.Profiles[0]
+			coord.Delegates = []string{"reviewer"}
+			Expect(swarmAllowlist(f.cfg.Manifest, coord)).To(Equal([]string{"reviewer"}))
+		})
+	})
+
 	It("fails the run when the budget is exhausted, without running a gate", func() {
 		f.cfg.Budget = 1
 		f.both("done")
