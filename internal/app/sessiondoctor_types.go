@@ -36,4 +36,6 @@ type SessionDiagnosis struct {
 	// provider.FinishLength (answer cut off at the token limit) and the
 	// session is neither failed, cancelled, paused nor crashed.
 	Truncated bool
+	// Usage is the provider usage the event log records; see SessionUsage.
+	Usage SessionUsage
 }

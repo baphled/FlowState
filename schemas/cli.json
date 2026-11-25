@@ -404,7 +404,8 @@
       "pending_messages",
       "reserved",
       "budget_pool",
-      "available"
+      "available",
+      "usage"
     ],
     "properties": {
       "session_id": {
@@ -442,6 +443,28 @@
       },
       "truncated": {
         "type": "boolean"
+      },
+      "usage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "input_tokens",
+          "output_tokens",
+          "cache_read_tokens",
+          "cache_write_tokens",
+          "turns_reported",
+          "turns_total",
+          "last_context_tokens"
+        ],
+        "properties": {
+          "input_tokens": { "type": ["integer", "null"], "minimum": 0 },
+          "output_tokens": { "type": ["integer", "null"], "minimum": 0 },
+          "cache_read_tokens": { "type": ["integer", "null"], "minimum": 0 },
+          "cache_write_tokens": { "type": ["integer", "null"], "minimum": 0 },
+          "turns_reported": { "type": "integer", "minimum": 0 },
+          "turns_total": { "type": "integer", "minimum": 0 },
+          "last_context_tokens": { "type": ["integer", "null"], "minimum": 0 }
+        }
       }
     }
   }

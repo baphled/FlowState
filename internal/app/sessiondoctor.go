@@ -53,6 +53,7 @@ func DiagnoseSession(ctx context.Context, st *Store, sessionID string) (SessionD
 		Reserved:        snap.Reserved,
 		Pool:            snap.Pool,
 		Available:       snap.Available,
+		Usage:           summariseUsage(events),
 	}, nil
 }
 

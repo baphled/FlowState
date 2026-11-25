@@ -339,6 +339,30 @@ var _ = Describe("Serve S1 transport", func() {
 				"/sessions/01a1f000-0000-4000-8000-000000000001/doctor", "").Body.String())).To(Succeed())
 		})
 
+		It("renders the totals of a reported usage and validates against schemas/cli.json", func() {
+			s, f := sampleServer()
+			f.diagnosis.Usage = DiagnosisUsage{InputTokens: 7, OutputTokens: 3, TurnsReported: 1, TurnsTotal: 2,
+				LastContextTokens: 10}
+			body := doRequest(s, http.MethodGet, "/sessions/01a1f000-0000-4000-8000-000000000001/doctor", "").Body.String()
+			Expect(schemaError("session-doctor", body)).To(Succeed())
+		})
+
+		DescribeTable("carries the usage in the body",
+			func(usage DiagnosisUsage, want string) {
+				s, f := sampleServer()
+				f.diagnosis.Usage = usage
+				Expect(doRequest(s, http.MethodGet, "/sessions/01a1f000-0000-4000-8000-000000000001/doctor", "").
+					Body.String()).To(ContainSubstring(want))
+			},
+			Entry("the totals when reported",
+				DiagnosisUsage{InputTokens: 7, TurnsReported: 1, TurnsTotal: 2}, `"input_tokens":7`),
+			Entry("a null total when no turn reported",
+				DiagnosisUsage{TurnsTotal: 2}, `"input_tokens":null`),
+			Entry("a null last context when no turn reported",
+				DiagnosisUsage{TurnsTotal: 2}, `"last_context_tokens":null`),
+			Entry("the turns total", DiagnosisUsage{TurnsTotal: 2}, `"turns_total":2`),
+		)
+
 		DescribeTable("carries a truncated diagnosis in the body",
 			func(want string) {
 				s, f := sampleServer()
