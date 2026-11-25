@@ -514,10 +514,8 @@ var _ = Describe("Serve run takes the judged run lease", func() {
 			code = ec["code"]
 			after = read()
 		})
-		It("is refused with the status the held-lease mapping gives today", func() {
-			Expect(res.StatusCode).To(Equal(http.StatusInternalServerError))
-		})
-		It("reports the internal code until the error contract moves", func() { Expect(code).To(Equal("internal")) })
+		It("is refused with 409", func() { Expect(res.StatusCode).To(Equal(http.StatusConflict)) })
+		It("reports the session_busy code", func() { Expect(code).To(Equal("session_busy")) })
 		It("leaves the log byte-identical", func() { Expect(after).To(Equal(before)) })
 	})
 

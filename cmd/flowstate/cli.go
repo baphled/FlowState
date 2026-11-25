@@ -14,7 +14,8 @@ import (
 )
 
 // Exit codes per specs/CLI-AND-API-CONTRACT.md §1–2 (stable; CI
-// depends on them).
+// depends on them). Exit 9 (session_busy) was added by ADR-011 D11; that external spec is
+// outside the repository and gains it when next edited.
 const (
 	exitOK             = 0
 	exitUnknownSession = 1
@@ -25,9 +26,10 @@ const (
 	exitTerminal       = 6
 	exitReplayMismatch = 7
 	exitReceiptInvalid = 8
+	exitSessionBusy    = 9
 )
 
-// Error-code strings of the closed error contract.
+// Error-code strings of the error contract (session_busy added by ADR-011 D11).
 const (
 	codeUsage          = app.CodeUsage
 	codeConfigInvalid  = app.CodeConfigInvalid
@@ -155,6 +157,8 @@ func exitCodeFor(err error) int {
 		return exitReplayMismatch
 	case codeReceiptInvalid:
 		return exitReceiptInvalid
+	case app.CodeSessionBusy:
+		return exitSessionBusy
 	default:
 		return exitUnknownSession
 	}

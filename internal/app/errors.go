@@ -33,6 +33,10 @@ const (
 	CodeMaxTurns = "max_turns"
 	// CodeProvider marks provider failures.
 	CodeProvider = "provider_error"
+	// CodeSessionBusy marks a lease refused at acquire: the session is held by a live
+	// or unjudgeable holder (store.ErrSessionBusy, *CompactLeaseHeld, ErrLeaseLive).
+	// A lease taken from a running holder mid-run (ErrExecLoopFenced) is not this code.
+	CodeSessionBusy = "session_busy"
 )
 
 // ErrConfigInvalid marks configuration or database-open failures
@@ -71,6 +75,8 @@ func ErrorCode(err error) string {
 		return CodeReceiptInvalid
 	case errors.Is(err, session.ErrTerminal):
 		return CodeSessionTerminal
+	case isLeaseRefusal(err):
+		return CodeSessionBusy
 	case errors.Is(err, store.ErrUnknownSession):
 		return CodeSessionMissing
 	case errors.Is(err, store.ErrHashMismatch), errors.Is(err, store.ErrSeqGap), errors.Is(err, ErrInvalidCompaction):
@@ -80,4 +86,12 @@ func ErrorCode(err error) string {
 	default:
 		return CodeInternal
 	}
+}
+
+// isLeaseRefusal reports a lease refused at acquire, or an unlock refused because the holder is
+// alive. ErrExecLoopFenced alone is not one: it also reports a lease taken from this run mid-run,
+// which keeps code internal; a compaction refusal matches it too, so it is tested by type.
+func isLeaseRefusal(err error) bool {
+	var held *CompactLeaseHeld
+	return errors.Is(err, store.ErrSessionBusy) || errors.Is(err, ErrLeaseLive) || errors.As(err, &held)
 }
