@@ -93,6 +93,20 @@ type Diagnosis struct {
 	Available       *int64
 	FinishReason    string
 	Truncated       bool
+	Usage           DiagnosisUsage
+}
+
+// DiagnosisUsage is the provider usage the event log records. The totals and
+// LastContextTokens are rendered as JSON null while TurnsReported is 0: not
+// reported is never read as zero tokens used.
+type DiagnosisUsage struct {
+	InputTokens       int64
+	OutputTokens      int64
+	CacheReadTokens   int64
+	CacheWriteTokens  int64
+	TurnsReported     int64
+	TurnsTotal        int64
+	LastContextTokens int64
 }
 
 // Message is the steering-message DTO mirroring the CLI message
@@ -323,16 +337,29 @@ type streamStatusBody struct {
 // diagnosisBody mirrors the session-doctor item field-for-field; a nil
 // pool renders budget_pool/available as JSON null, as the CLI does.
 type diagnosisBody struct {
-	SessionID       string `json:"session_id"`
-	Status          string `json:"status"`
-	Crashed         bool   `json:"crashed"`
-	RunActivity     bool   `json:"run_activity"`
-	PendingMessages int    `json:"pending_messages"`
-	Reserved        int64  `json:"reserved"`
-	BudgetPool      *int64 `json:"budget_pool"`
-	Available       *int64 `json:"available"`
-	FinishReason    string `json:"finish_reason,omitempty"`
-	Truncated       bool   `json:"truncated,omitempty"`
+	SessionID       string    `json:"session_id"`
+	Status          string    `json:"status"`
+	Crashed         bool      `json:"crashed"`
+	RunActivity     bool      `json:"run_activity"`
+	PendingMessages int       `json:"pending_messages"`
+	Reserved        int64     `json:"reserved"`
+	BudgetPool      *int64    `json:"budget_pool"`
+	Available       *int64    `json:"available"`
+	FinishReason    string    `json:"finish_reason,omitempty"`
+	Truncated       bool      `json:"truncated,omitempty"`
+	Usage           usageBody `json:"usage"`
+}
+
+// usageBody is the usage object of the session-doctor item; the pointers are
+// nil (JSON null) when no turn reported usage.
+type usageBody struct {
+	InputTokens       *int64 `json:"input_tokens"`
+	OutputTokens      *int64 `json:"output_tokens"`
+	CacheReadTokens   *int64 `json:"cache_read_tokens"`
+	CacheWriteTokens  *int64 `json:"cache_write_tokens"`
+	TurnsReported     int64  `json:"turns_reported"`
+	TurnsTotal        int64  `json:"turns_total"`
+	LastContextTokens *int64 `json:"last_context_tokens"`
 }
 
 // cancelCause is a request cancellation cause that also names the reason a

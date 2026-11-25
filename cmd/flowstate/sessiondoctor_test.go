@@ -3,12 +3,16 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"sync/atomic"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/app"
+	"github.com/baphled/flowstate/internal/server"
 )
 
 // crashedDoctorSession creates a session whose event log ends in a
@@ -103,6 +107,8 @@ var _ = Describe("Session doctor CLI", func() {
 			"session_id": id, "status": "active", "crashed": true,
 			"run_activity": true, "pending_messages": float64(0),
 			"reserved": float64(0), "budget_pool": nil, "available": nil,
+			"usage": map[string]any{"input_tokens": nil, "output_tokens": nil, "cache_read_tokens": nil,
+				"cache_write_tokens": nil, "last_context_tokens": nil, "turns_reported": float64(0), "turns_total": float64(0)},
 		}))
 	})
 
@@ -211,6 +217,151 @@ var _ = Describe("Session doctor CLI", func() {
 			"session_id": id, "status": "active", "crashed": false,
 			"run_activity": true, "pending_messages": float64(0),
 			"reserved": float64(0), "budget_pool": nil, "available": nil,
+			"usage": map[string]any{"input_tokens": nil, "output_tokens": nil, "cache_read_tokens": nil,
+				"cache_write_tokens": nil, "last_context_tokens": nil, "turns_reported": float64(0), "turns_total": float64(0)},
 		}))
+	})
+})
+
+// usageLoopServer is a loopback fake z.ai: the first request answers with a tool
+// call and the second with the final answer, each finish chunk carrying usage.
+func usageLoopServer() *httptest.Server {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		chunks := []string{
+			`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":` +
+				`{"name":"echo","arguments":"{\"message\":\"hi\"}"}}]}}]}`,
+			`{"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":100,"completion_tokens":10}}`,
+		}
+		if atomic.AddInt32(&calls, 1) > 1 {
+			chunks = []string{`{"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":` +
+				`{"prompt_tokens":150,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":50}}}`}
+		}
+		for _, c := range chunks {
+			_, _ = w.Write([]byte("data: " + c + "\n\n"))
+		}
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	DeferCleanup(srv.Close)
+	return srv
+}
+
+// usageTextServer is a loopback fake z.ai answering one plain text turn whose
+// last chunk carries usage.
+func usageTextServer() *httptest.Server {
+	return fakeZaiServer(`{"choices":[{"delta":{"content":"hi"}}]}`,
+		`{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":4}}`)
+}
+
+// usageAnthropicServer is a loopback fake Messages API answering one streamed
+// turn whose usage arrives in message_start and message_delta.
+func usageAnthropicServer() *httptest.Server {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, c := range []string{
+			`{"type":"message_start","message":{"usage":{"input_tokens":12,"cache_read_input_tokens":3,` +
+				`"cache_creation_input_tokens":2,"output_tokens":1}}}`,
+			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`,
+			`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}`,
+			`{"type":"message_stop"}`,
+		} {
+			_, _ = w.Write([]byte("data: " + c + "\n\n"))
+		}
+	}))
+	DeferCleanup(srv.Close)
+	return srv
+}
+
+// e2eDoctorUsage runs `session doctor` through the built binary and returns
+// the raw first stdout line.
+func e2eDoctorUsage(baseURL string, extraEnv []string, db, id string) string {
+	return firstLine(e2eRunWith(baseURL, "", extraEnv, "session", "doctor", id, "--db", db).stdout)
+}
+
+var _ = Describe("Session doctor usage after a real run", Label("e2e"), func() {
+	var db string
+
+	BeforeEach(func() { db = filepath.Join(GinkgoT().TempDir(), "usage.db") })
+
+	It("reports the totals of a run through the registry-built z.ai route", func() {
+		srv := usageLoopServer()
+		id := e2eNewSession(srv.URL, db)
+		if r := e2eRun(srv.URL, "session", "run", "--db", db, "--allow", "echo", id); r.exit != 0 {
+			panic("session run failed: " + r.stderr)
+		}
+		Expect(gjsonUsage(e2eDoctorUsage(srv.URL, nil, db, id))).To(Equal(map[string]any{
+			"input_tokens": float64(200), "output_tokens": float64(30), "cache_read_tokens": float64(50),
+			"cache_write_tokens": float64(0), "turns_reported": float64(2), "turns_total": float64(2),
+			"last_context_tokens": float64(170)}))
+	})
+
+	It("reports the usage of a plain text turn through the registry-built z.ai route", func() {
+		srv := usageTextServer()
+		id := e2eNewSession(srv.URL, db)
+		if r := e2eRun(srv.URL, "session", "run", "--db", db, id); r.exit != 0 {
+			panic("session run failed: " + r.stderr)
+		}
+		Expect(gjsonUsage(e2eDoctorUsage(srv.URL, nil, db, id))).To(HaveKeyWithValue("last_context_tokens", float64(13)))
+	})
+
+	It("validates that doctor output against the session-doctor schema", func() {
+		srv := usageLoopServer()
+		id := e2eNewSession(srv.URL, db)
+		if r := e2eRun(srv.URL, "session", "run", "--db", db, "--allow", "echo", id); r.exit != 0 {
+			panic("session run failed: " + r.stderr)
+		}
+		Expect(validateAgainst("session-doctor", e2eDoctorUsage(srv.URL, nil, db, id))).To(Succeed())
+	})
+
+	It("reports the usage of a text turn on the Anthropic API-key route", func() {
+		srv := usageAnthropicServer()
+		env := []string{"FLOWSTATE_ANTHROPIC_AUTH=api_key", "ANTHROPIC_API_KEY=sk-ant-synthetic-test-key",
+			"ANTHROPIC_BASE_URL=" + srv.URL}
+		created := e2eRunWith(srv.URL, "", env, "session", "new", "--db", db, "--provider", "anthropic",
+			"--model", "claude-sonnet-5-5", "--task", "greet")
+		if created.exit != 0 {
+			panic("session new failed: " + created.stderr)
+		}
+		id := decodeNew(created.stdout).ID
+		if r := e2eRunWith(srv.URL, "", env, "session", "run", "--db", db, id); r.exit != 0 {
+			panic("session run failed: " + r.stderr)
+		}
+		Expect(gjsonUsage(e2eDoctorUsage(srv.URL, env, db, id))).To(HaveKeyWithValue("last_context_tokens", float64(24)))
+	})
+})
+
+// gjsonUsage decodes a doctor line and returns its usage object.
+func gjsonUsage(line string) map[string]any {
+	var rec struct {
+		Usage map[string]any `json:"usage"`
+	}
+	if err := json.Unmarshal([]byte(line), &rec); err != nil {
+		panic(err)
+	}
+	return rec.Usage
+}
+
+var _ = Describe("Session doctor usage through the serve port", func() {
+	It("carries the recorded usage through the store-backed doctor port", func() {
+		created := runCLINew("--provider", "z.ai", "--model", "glm-5.3", "--task", "usage probe")
+		if created.exit != 0 {
+			panic("session new failed: " + created.stderr)
+		}
+		id := decodeNew(created.stdout).ID
+		st, oerr := app.OpenStore(dbFor())
+		must(oerr)
+		DeferCleanup(func() { must(st.Close()) })
+		w, werr := st.NewEventWriter(context.Background(), id)
+		must(werr)
+		_, aerr := w.Append(context.Background(), "engine", "assistant.message", map[string]any{
+			"content": "x", "usage": map[string]any{"input_tokens": 4, "output_tokens": 1,
+				"cache_read_tokens": 2, "cache_write_tokens": 3}})
+		must(aerr)
+		must(w.Close())
+		d, err := servePorts(st, &flags{}).DiagnoseSession(context.Background(), id)
+		must(err)
+		Expect(d.Usage).To(Equal(server.DiagnosisUsage{InputTokens: 4, OutputTokens: 1, CacheReadTokens: 2,
+			CacheWriteTokens: 3, TurnsReported: 1, TurnsTotal: 1, LastContextTokens: 10}))
 	})
 })

@@ -50,6 +50,8 @@ type turnState struct {
 	cause error
 	// finishReason is the provider-neutral reason of the finish event.
 	finishReason string
+	// usage is the usage of the finish event; nil when not reported.
+	usage *provider.Usage
 }
 
 // TurnOptions configures one engine turn; the zero value preserves

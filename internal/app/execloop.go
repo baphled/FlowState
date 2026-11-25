@@ -84,6 +84,7 @@ func runExecTurns(ctx context.Context, cfg *ExecLoopConfig, token int64) (*ExecL
 		res.Turns++
 		res.FinalContent = turn.Content
 		res.FinishReason = turn.FinishReason
+		res.recordUsage(turn.Usage)
 		if terr != nil {
 			return res, terr
 		}
@@ -175,6 +176,7 @@ func runExecTurn(ctx context.Context, cfg ExecLoopConfig, definitions []provider
 			turn.Calls = append(turn.Calls, *ev.ToolCall)
 		case ev.Kind == provider.StreamEventFinish:
 			turn.FinishReason = ev.FinishReason
+			turn.Usage = ev.Usage
 		case ev.Kind == provider.StreamEventText || ev.Kind == "":
 			if _, aerr := w.Append(ctx, session.ActorEngine, "assistant.delta", map[string]any{"delta": ev.Content}); aerr != nil {
 				return execTurn{}, aerr
@@ -182,7 +184,7 @@ func runExecTurn(ctx context.Context, cfg ExecLoopConfig, definitions []provider
 			turn.Content += ev.Content
 		}
 	}
-	if _, aerr := w.Append(ctx, session.ActorEngine, "assistant.message", map[string]any{"content": turn.Content}); aerr != nil {
+	if _, aerr := w.Append(ctx, session.ActorEngine, "assistant.message", assistantMessagePayload(turn.Content, turn.Usage)); aerr != nil {
 		return execTurn{}, aerr
 	}
 	return turn, nil

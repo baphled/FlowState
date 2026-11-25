@@ -112,7 +112,7 @@ func TurnWithOptions(ctx context.Context, st *store.Store, sess *store.Session, 
 	if ferr := turnFailure(s); ferr != nil {
 		return nil, ferr
 	}
-	if _, err := w.Append(ctx, session.ActorEngine, TypeAssistantMessage, map[string]any{"content": s.content}); err != nil {
+	if _, err := w.Append(ctx, session.ActorEngine, TypeAssistantMessage, assistantMessagePayload(s.content, s.usage)); err != nil {
 		return nil, err
 	}
 	if _, err := w.Append(ctx, session.ActorEngine, TypeTurnEnd, turnEndPayload(s.finishReason)); err != nil {
@@ -203,6 +203,7 @@ func consumeStreamEvent(ctx context.Context, w *store.EventWriter, st *store.Sto
 	}
 	if ev.Kind == provider.StreamEventFinish {
 		s.finishReason = ev.FinishReason
+		s.usage = ev.Usage
 		return false
 	}
 	if _, derr := w.Append(ctx, session.ActorEngine, TypeAssistantDelta, map[string]any{"delta": ev.Content}); derr != nil {

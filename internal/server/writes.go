@@ -138,7 +138,18 @@ func (s *Server) doctorHandler(id string) http.HandlerFunc {
 func diagnosisWire(d Diagnosis) diagnosisBody {
 	return diagnosisBody{SessionID: d.SessionID, Status: d.Status, Crashed: d.Crashed,
 		RunActivity: d.RunActivity, PendingMessages: d.PendingMessages, Reserved: d.Reserved,
-		BudgetPool: d.Pool, Available: d.Available, FinishReason: d.FinishReason, Truncated: d.Truncated}
+		BudgetPool: d.Pool, Available: d.Available, FinishReason: d.FinishReason, Truncated: d.Truncated, Usage: usageWire(d.Usage)}
+}
+
+// usageWire renders the usage object; totals are null while no turn reported.
+func usageWire(u DiagnosisUsage) usageBody {
+	out := usageBody{TurnsReported: u.TurnsReported, TurnsTotal: u.TurnsTotal}
+	if u.TurnsReported > 0 {
+		out.InputTokens, out.OutputTokens = &u.InputTokens, &u.OutputTokens
+		out.CacheReadTokens, out.CacheWriteTokens = &u.CacheReadTokens, &u.CacheWriteTokens
+		out.LastContextTokens = &u.LastContextTokens
+	}
+	return out
 }
 
 // runWriteWindow extends the run route's write deadline for one

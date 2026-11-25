@@ -39,6 +39,7 @@ func cmdDoctor(ctx context.Context, st *app.Store, id string, stdout, stderr *os
 		out["budget_pool"] = nil
 		out["available"] = nil
 	}
+	out["usage"] = doctorUsage(d.Usage)
 	if d.FinishReason != "" {
 		out["finish_reason"] = d.FinishReason
 	}
@@ -50,4 +51,22 @@ func cmdDoctor(ctx context.Context, st *app.Store, id string, stdout, stderr *os
 		return exitCodeFor(err)
 	}
 	return exitOK
+}
+
+// doctorUsage is the usage object of the doctor output. The totals and the
+// last context size are null when no turn reported usage (turns_reported 0), so
+// "not reported" is never read as zero tokens used.
+func doctorUsage(u app.SessionUsage) map[string]any {
+	out := map[string]any{"turns_reported": u.Totals.UsageTurns, "turns_total": u.TurnsTotal}
+	keys := []string{"input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "last_context_tokens"}
+	values := []int64{u.Totals.InputTokens, u.Totals.OutputTokens, u.Totals.CacheReadTokens,
+		u.Totals.CacheWriteTokens, u.LastContextTokens}
+	for i, key := range keys {
+		if u.Totals.UsageTurns > 0 {
+			out[key] = values[i]
+		} else {
+			out[key] = nil
+		}
+	}
+	return out
 }
