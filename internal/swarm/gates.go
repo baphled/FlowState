@@ -195,13 +195,36 @@ func NewGateRunner() *GateRunner {
 // not positive or exceeds the default of three seconds is replaced by the
 // default, so a cancelled run always returns within gateWaitDelay.
 func NewGateRunnerWithGrace(grace time.Duration) *GateRunner {
+	return newGateRunnerIn("", grace)
+}
+
+// NewGateRunnerIn builds a runner with the real shell executor whose gate
+// commands run in dir (cmd.Dir; the environment is unchanged). Gates judge the
+// tree the work was done in, so an executed swarm needs a runner whose Dir is
+// its workdir.
+func NewGateRunnerIn(dir string) *GateRunner {
+	return newGateRunnerIn(dir, gateStopGrace)
+}
+
+// newGateRunnerIn is the real executor in dir with the given stop grace.
+func newGateRunnerIn(dir string, grace time.Duration) *GateRunner {
 	if grace <= 0 || grace > gateStopGrace {
 		grace = gateStopGrace
 	}
-	return &GateRunner{execCommand: func(ctx context.Context, name string, args []string) error {
-		return runGate(ctx, name, args, grace)
+	return &GateRunner{dir: dir, execCommand: func(ctx context.Context, name string, args []string) error {
+		return runGate(ctx, dir, name, args, grace)
 	}}
 }
+
+// NewGateRunnerWithIn builds a runner around a caller-supplied executor that
+// declares the directory it runs its commands in (see Dir).
+func NewGateRunnerWithIn(dir string, executor GateExecutor) *GateRunner {
+	return &GateRunner{dir: dir, execCommand: executor}
+}
+
+// Dir is the directory the runner's commands run in; empty means the process
+// working directory (and, for NewGateRunnerWith, that nothing is declared).
+func (r *GateRunner) Dir() string { return r.dir }
 
 // NewGateRunnerWith builds a runner around a caller-supplied executor,
 // the dependency-injection seam for tests and alternative sandboxes.
@@ -268,12 +291,13 @@ func (d GatesDecision) FailedGateNames() []string {
 // the direct process is killed. The gate's output is not piped (os/exec
 // connects a nil Stdout to the null device), so a surviving child
 // cannot hold Run open; WaitDelay bounds the wait regardless.
-func runGate(ctx context.Context, name string, args []string, grace time.Duration) error {
+func runGate(ctx context.Context, dir, name string, args []string, grace time.Duration) error {
 	if err := validateCommandTokens(append([]string{name}, args...)); err != nil {
 		return err
 	}
 	candidate := exec.CommandContext
 	cmd := candidate(ctx, name, args...)
+	cmd.Dir = dir
 	cmd.WaitDelay = gateWaitDelay
 	settle := isolateGate(cmd, grace)
 	defer settle()

@@ -29,8 +29,9 @@ var (
 	ErrSwarmRunOutcomeInvalid = errors.New("store: swarm run outcome must be pass or fail")
 	// ErrSwarmRunPacketMissing rejects a decision row without a packet id.
 	ErrSwarmRunPacketMissing = errors.New("store: swarm run packet id must not be empty")
-	// ErrSwarmRunChildMissing rejects a child row without a packet or session id.
-	ErrSwarmRunChildMissing = errors.New("store: swarm run child packet and session ids must not be empty")
+	// ErrSwarmRunChildMissing rejects a child row without a session id. The packet
+	// id may be empty: it marks a child the engine could not attribute to a packet.
+	ErrSwarmRunChildMissing = errors.New("store: swarm run child session id must not be empty")
 )
 
 // RecordSwarmRun persists one configured-swarm run, its packet
@@ -148,7 +149,7 @@ func validateSwarmRun(run SwarmRun) error {
 		}
 	}
 	for _, c := range run.Children {
-		if c.PacketID == "" || c.SessionID == "" {
+		if c.SessionID == "" {
 			return ErrSwarmRunChildMissing
 		}
 	}

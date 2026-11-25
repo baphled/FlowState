@@ -179,10 +179,24 @@ in dependency order, gates by name and description only (never the command), and
 values sit in a fenced block marked as data, each Go-quoted, and validation bounds the manifest (at most 64 packets, a
 64 KiB brief) and refuses control, format and line-separator characters and ids outside
 `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`.
-The engine will map a delegated child to its packet by the marker the brief tells the model to start each task with,
-`[packet <id>]` at the very start of the task (`swarm.PacketRef`, which refuses wrapped or Unicode-spaced forms); the
+`app.ExecuteSwarm` now implements this in the engine; the `swarm run` flag that calls it is still pending. It checks
+every precondition before it creates anything (the manifest, a loaded coordinator and role profiles, a role on every
+packet, `delegate` in the coordinator's tools) and gives the coordinator a delegate tool restricted, through the
+allowlist above, to the manifest's roles. The engine maps a delegated child to its packet by the marker the brief
+tells the model to start each task with, `[packet <id>]` at the very start of the task (`swarm.PacketRef`, which
+refuses wrapped or Unicode-spaced forms), read from the child's own first task after the coordinator stops; the
 delegation receipts carry no packet argument, so `delegate*.go` is untouched. A marker that names no manifest packet,
-or a role other than the packet's, will leave the child unattributed rather than failing the run.
+or a role other than the packet's, or whose task text after the marker does not contain the packet's task verbatim
+(whitespace runs collapsed), leaves the child unattributed (stored with an empty packet id) rather than failing the
+run, and a packet no completed child stands for is recorded not run; the first completed child is named as the one
+that admitted it. Only a coordinator that completed lets the engine run the gates and the admission; a failed,
+cancelled or max-turns coordinator stores a failed run and runs no gate, and the model's claim about the gates is never
+read. A swarm with no packet, no gate or a packet whose role is the coordinator is refused before anything is created.
+The gates must run in the tree the children worked in: `swarm.NewGateRunnerIn(dir)` runs them with `cmd.Dir = dir`, and
+`ExecuteSwarm` refuses a runner whose `Dir()` is not the workdir. A passed deadline is a failed run with reason
+`deadline`; a budget-exhausted coordinator stays paused. The store keeps only pass or fail, so `gate_failed` and a
+cancel during the gates both store fail with the packets admitted and no gate rows: a later `swarm status` needs the
+richer result (a follow-up).
 
 ### Engine changes this decision depends on
 

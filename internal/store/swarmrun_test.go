@@ -113,6 +113,18 @@ var _ = Describe("durable swarm run records", func() {
 		Expect(got).To(Equal(swarmRunRejection{Err: ErrSwarmRunChildMissing}))
 	})
 
+	It("round-trips a child recorded without a packet id", func() {
+		st := mustSwarmRunStore()
+		run := sampleSwarmRun("demo.swarm", SwarmRunOutcomeFail)
+		run.Children = []SwarmRunChild{{SessionID: "s-1"}}
+		recordSwarmRun(st, run)
+		runs, err := st.SwarmRunsFor(context.Background(), "demo.swarm")
+		if err != nil || len(runs) != 1 {
+			panic("SwarmRunsFor did not return the single recorded run")
+		}
+		Expect(runs[0].Children).To(Equal(run.Children))
+	})
+
 	It("rolls back the run and its packet rows when a child insert fails", func() {
 		st := mustSwarmRunStore()
 		mustRawExec(st, `CREATE TRIGGER fail_child BEFORE INSERT ON swarm_run_children

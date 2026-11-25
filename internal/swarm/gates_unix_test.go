@@ -390,3 +390,29 @@ var _ = Describe("gate runner process groups", func() {
 		})
 	})
 })
+
+var _ = Describe("a gate runner built in a directory", func() {
+	var (
+		dir string
+		m   swarm.Manifest
+	)
+	BeforeEach(func() {
+		dir = GinkgoT().TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "marker"), []byte("here"), 0o600); err != nil {
+			panic(err)
+		}
+		m = swarm.Manifest{Gates: []swarm.Gate{{Name: "cwd", Description: "cwd", Command: "test -f marker"}}}
+	})
+
+	It("runs its gate commands in that directory", func() {
+		Expect(swarm.NewGateRunnerIn(dir).Evaluate(context.Background(), m).Accepted).To(BeTrue())
+	})
+
+	It("does not find the marker from the process working directory", func() {
+		Expect(swarm.NewGateRunnerIn("").Evaluate(context.Background(), m).Accepted).To(BeFalse())
+	})
+
+	It("reports the directory it was built in", func() {
+		Expect(swarm.NewGateRunnerIn(dir).Dir()).To(Equal(dir))
+	})
+})
