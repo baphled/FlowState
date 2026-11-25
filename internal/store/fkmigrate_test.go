@@ -308,10 +308,10 @@ var _ = Describe("Foreign-key migration of a v8 database", func() {
 			DeferCleanup(func() { _ = s.Close() })
 		})
 
-		It("records schema version 9", func() {
+		It("records schema version 10", func() {
 			v, err := s.SchemaVersion()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(v).To(Equal(int64(9)))
+			Expect(v).To(Equal(int64(10)))
 		})
 
 		It("preserves every row of every table", func() {
@@ -446,7 +446,7 @@ var _ = Describe("Foreign-key migration of a v8 database", func() {
 		Expect(verifyRowCount("events", 3, 2)).To(MatchError(ErrRowCountMismatch))
 	})
 
-	It("does not back up a v8 database that already declares every key", func() {
+	It("writes no pre-v9 backup of a v8 database that already declares every key", func() {
 		path = filepath.Join(GinkgoT().TempDir(), "keyed.db")
 		fresh, err := Open(path)
 		if err != nil {
@@ -455,7 +455,7 @@ var _ = Describe("Foreign-key migration of a v8 database", func() {
 		if err := fresh.Close(); err != nil {
 			panic(err)
 		}
-		rawExec(path, `DELETE FROM schema_migrations WHERE version = 9`)
+		rawExec(path, `DELETE FROM schema_migrations WHERE version >= 9`)
 		again, err := Open(path)
 		if err != nil {
 			panic(err)
@@ -463,6 +463,16 @@ var _ = Describe("Foreign-key migration of a v8 database", func() {
 		DeferCleanup(func() { _ = again.Close() })
 		_, statErr := os.Stat(path + ".pre-v9.bak")
 		Expect(os.IsNotExist(statErr)).To(BeTrue())
+	})
+
+	It("backs up a v8 database that already declares every key before v10", func() {
+		path = seedV9("keyed.db", 8)
+		again, err := Open(path)
+		if err != nil {
+			panic(err)
+		}
+		DeferCleanup(func() { _ = again.Close() })
+		Expect(rawInt(path+".pre-v10.bak", `SELECT max(version) FROM schema_migrations`)).To(Equal(int64(8)))
 	})
 
 	It("keeps the rowid order of the rows it copies", func() {
@@ -588,7 +598,7 @@ var _ = Describe("Pre-v9 backup file", func() {
 			panic(err)
 		}
 		DeferCleanup(func() { _ = s.Close() })
-		rawExec(path, `DELETE FROM schema_migrations WHERE version = 9`)
+		rawExec(path, `DELETE FROM schema_migrations WHERE version >= 9`)
 		Expect(s.backupBeforeRebuild()).To(MatchError(ErrBackupExists))
 	})
 })
@@ -609,5 +619,160 @@ var _ = Describe("An in-memory store", func() {
 			counts = append(counts, n)
 		}
 		Expect(counts).To(Equal([]int64{1, 1, 1, 1, 1, 1}))
+	})
+})
+
+// seedV9 writes a database as the build before v10 left it: a fresh database
+// whose leases table lacks the liveness columns, one legacy lease row, and
+// versions recorded up to top (8 or 9).
+func seedV9(name string, top int64) string {
+	path := filepath.Join(GinkgoT().TempDir(), name)
+	fresh, err := Open(path)
+	if err != nil {
+		panic(err)
+	}
+	if err := fresh.Close(); err != nil {
+		panic(err)
+	}
+	for _, q := range []string{
+		fmt.Sprintf(`DELETE FROM schema_migrations WHERE version > %d`, top),
+		`ALTER TABLE leases DROP COLUMN machine`,
+		`ALTER TABLE leases DROP COLUMN host`,
+		`ALTER TABLE leases DROP COLUMN pid`,
+		`INSERT INTO leases (item, agent, token, acquired_at_utc) VALUES ('exec:old','cli',3,'t')`,
+	} {
+		rawExec(path, q)
+	}
+	return path
+}
+
+var _ = Describe("The v10 lease schema", func() {
+	var path string
+
+	openAt := func(p string) *Store {
+		s, err := Open(p)
+		if err != nil {
+			panic(err)
+		}
+		DeferCleanup(func() { _ = s.Close() })
+		return s
+	}
+	exists := func(p string) bool {
+		_, err := os.Stat(p)
+		return err == nil
+	}
+
+	Describe("a v9 database", func() {
+		BeforeEach(func() {
+			path = seedV9("v9.db", 9)
+			openAt(path)
+		})
+
+		It("opens at version 10", func() {
+			Expect(rawInt(path, `SELECT max(version) FROM schema_migrations`)).To(Equal(int64(10)))
+		})
+
+		It("gets a .pre-v10.bak", func() {
+			Expect(exists(path + ".pre-v10.bak")).To(BeTrue())
+		})
+
+		It("writes that backup at version 9", func() {
+			Expect(rawInt(path+".pre-v10.bak", `SELECT max(version) FROM schema_migrations`)).To(Equal(int64(9)))
+		})
+
+		It("writes that backup before the columns exist", func() {
+			Expect(rawInt(path+".pre-v10.bak", `SELECT count(*) FROM pragma_table_info('leases') WHERE name='machine'`)).
+				To(BeZero())
+		})
+
+		It("gets no .pre-v9.bak", func() {
+			Expect(exists(path + ".pre-v9.bak")).To(BeFalse())
+		})
+
+		It("gains the three lease columns", func() {
+			Expect(rawInt(path, `SELECT count(*) FROM pragma_table_info('leases') WHERE name IN ('machine','host','pid')`)).
+				To(Equal(int64(3)))
+		})
+
+		It("declares them not null", func() {
+			Expect(rawInt(path, `SELECT count(*) FROM pragma_table_info('leases')
+				WHERE name IN ('machine','host','pid') AND "notnull" = 1`)).To(Equal(int64(3)))
+		})
+
+		It("keeps the lease row it had", func() {
+			Expect(rawText(path, `SELECT agent || ':' || token FROM leases WHERE item='exec:old'`)).To(Equal("cli:3"))
+		})
+
+		It("reads the old row with no machine", func() {
+			Expect(rawText(path, `SELECT machine FROM leases WHERE item='exec:old'`)).To(BeEmpty())
+		})
+
+		It("reads the old row with no host", func() {
+			Expect(rawText(path, `SELECT host FROM leases WHERE item='exec:old'`)).To(BeEmpty())
+		})
+
+		It("reads the old row with pid 0", func() {
+			Expect(rawInt(path, `SELECT pid FROM leases WHERE item='exec:old'`)).To(BeZero())
+		})
+	})
+
+	It("takes only the pre-v9 backup of an unkeyed v8 database", func() {
+		path = seedV8(false)
+		openAt(path)
+		Expect(exists(path + ".pre-v10.bak")).To(BeFalse())
+	})
+
+	It("takes the pre-v9 backup of an unkeyed v8 database", func() {
+		path = seedV8(false)
+		openAt(path)
+		Expect(exists(path + ".pre-v9.bak")).To(BeTrue())
+	})
+
+	It("takes no backup of a database already at v10", func() {
+		path = filepath.Join(GinkgoT().TempDir(), "v10.db")
+		fresh, err := Open(path)
+		if err != nil {
+			panic(err)
+		}
+		if err := fresh.Close(); err != nil {
+			panic(err)
+		}
+		openAt(path)
+		Expect(exists(path + ".pre-v10.bak")).To(BeFalse())
+	})
+
+	It("is refused by a build that knows only version 9", func() {
+		path = filepath.Join(GinkgoT().TempDir(), "barrier.db")
+		openAt(path)
+		Expect(openAt(path).rejectSchemaAbove(foreignKeyVersion)).To(MatchError(ErrFutureSchema))
+	})
+
+	It("is the version this build knows", func() {
+		Expect(knownSchemaVersion).To(Equal(int64(10)))
+	})
+
+	It("keeps version 9 as the foreign-key version", func() {
+		Expect(foreignKeyVersion).To(Equal(int64(9)))
+	})
+
+	It("reports another process's v10 migration when the v10 backup name is taken", func() {
+		path = seedV9("taken.db", 9)
+		s := openAt(path)
+		if err := os.Remove(path + ".pre-v10.bak"); err != nil {
+			panic(err)
+		}
+		if err := os.WriteFile(path+".pre-v10.bak", []byte("theirs"), 0o600); err != nil {
+			panic(err)
+		}
+		Expect(s.backupBefore(leaseLivenessVersion)).To(MatchError(ErrMigratedElsewhere))
+	})
+
+	It("refuses to overwrite a v10 backup while v10 is not recorded", func() {
+		path = seedV9("held.db", 9)
+		if err := os.WriteFile(path+".pre-v10.bak", []byte("keep"), 0o600); err != nil {
+			panic(err)
+		}
+		_, err := Open(path)
+		Expect(err).To(MatchError(ErrBackupExists))
 	})
 })

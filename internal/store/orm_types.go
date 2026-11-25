@@ -56,12 +56,17 @@ type receiptRow struct {
 	RecordedAtUTC string `gorm:"column:recorded_at_utc;not null;type:text"`
 }
 
-// leaseRow mirrors the leases table (v3 DDL).
+// leaseRow mirrors the leases table (v3 DDL). Machine, Host and Pid arrive in
+// v10 (ADR-011) with defaults, so AutoMigrate can add them to rows that exist.
+// Nothing writes or reads them yet: a row keeps Machine = "".
 type leaseRow struct {
 	Item          string `gorm:"column:item;primaryKey;not null;type:text"`
 	Agent         string `gorm:"column:agent;not null;type:text"`
 	Token         int64  `gorm:"column:token;not null;type:integer"`
 	AcquiredAtUTC string `gorm:"column:acquired_at_utc;not null;type:text"`
+	Machine       string `gorm:"column:machine;not null;type:text;default:''"`
+	Host          string `gorm:"column:host;not null;type:text;default:''"`
+	Pid           int64  `gorm:"column:pid;not null;type:integer;default:0"`
 }
 
 // leaseHistoryRow mirrors the lease_history table (v3 DDL).

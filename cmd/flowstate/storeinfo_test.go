@@ -31,9 +31,9 @@ var _ = Describe("Store info CLI", func() {
 		Expect(r.exit).To(Equal(0))
 	})
 
-	It("reports schema version 9", func() {
+	It("reports schema version 10", func() {
 		_, rec := storeInfoRecord()
-		Expect(rec["schema_version"]).To(Equal(float64(9)))
+		Expect(rec["schema_version"]).To(Equal(float64(10)))
 	})
 
 	It("reports that the handle enforces foreign keys", func() {

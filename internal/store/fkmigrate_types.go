@@ -4,6 +4,11 @@ package store
 // reference as a foreign key on databases created before #421.
 const foreignKeyVersion = int64(9)
 
+// leaseLivenessVersion is the schema version that adds the lease liveness
+// columns (ADR-011). It is a downgrade barrier: a build that knows an older
+// version refuses the database with ErrFutureSchema.
+const leaseLivenessVersion = int64(10)
+
 // rebuildBatch is how many copied rows one insert carries.
 const rebuildBatch = 500
 
