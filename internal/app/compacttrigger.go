@@ -99,7 +99,7 @@ func compactOnce(ctx context.Context, cfg *ExecLoopConfig, token int64, reason s
 	return Compact(ctx, cfg.Store, cfg.Session.ID, CompactOptions{
 		Streamer: cfg.Streamer, Model: cfg.Session.ModelID, Reason: reason,
 		KeepRecent: cfg.Compaction.Resolved().KeepRecent, OverheadTokens: overhead, MaxTokensAfter: limit,
-		Lease: CompactLease{Item: cfg.LeaseItem, Agent: cfg.LeaseAgent, Token: token},
+		Lease: execCompactLease(cfg, token),
 	})
 }
 

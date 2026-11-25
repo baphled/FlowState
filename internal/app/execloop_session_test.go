@@ -532,3 +532,87 @@ var _ = Describe("Loop turn limit of a delegating parent", func() {
 		It("leaves the child to its own profile limit", func() { Expect(reqs).To(Equal(2 + 2*4)) })
 	})
 })
+
+var _ = Describe("RunSessionExecLoop given a held lease", func() {
+	var (
+		st     *store.Store
+		sess   *store.Session
+		handle *store.RunLease
+		dbPath string
+	)
+	BeforeEach(func() {
+		st, sess = execLoopSeed()
+		DeferCleanup(func() { _ = st.Close() })
+		var err error
+		if handle, err = st.AcquireRunLease(context.Background(), "exec:"+sess.ID, "run:held-1"); err != nil {
+			panic(err)
+		}
+		DeferCleanup(func() { _ = handle.Release(context.Background()) })
+		dbPath = filepath.Join(GinkgoT().TempDir(), "held.db")
+	})
+	run := func(ctx context.Context, streamer provider.Streamer, req SessionExecLoopRequest) (*ExecLoopResult, error) {
+		req.Lease = handle
+		return RunSessionExecLoop(ctx, st, dbPath, sess, streamer, req)
+	}
+	// stillHeld is the row check: another owner cannot take the item while it exists.
+	stillHeld := func() error {
+		_, err := st.AcquireRunLease(context.Background(), "exec:"+sess.ID, "run:second")
+		return err
+	}
+
+	It("forwards the handle to the loop, which then takes no lease of its own", func() {
+		res, err := run(context.Background(), &execLoopStreamer{turns: [][]provider.StreamEvent{{provText("done"), provFinish()}}}, SessionExecLoopRequest{})
+		if err != nil {
+			panic(err)
+		}
+		Expect(res.FinalContent).To(Equal("done"))
+	})
+
+	DescribeTable("keeps the handle held after the post-loop state writers have returned", func(
+		streamer func(cancel context.CancelFunc) provider.Streamer, req SessionExecLoopRequest, status string) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_, _ = run(ctx, streamer(cancel), req)
+		got, err := st.GetSession(context.Background(), sess.ID)
+		if err != nil {
+			panic(err)
+		}
+		if got.Status != status {
+			panic("the post-loop writer did not run: status " + got.Status)
+		}
+		Expect(handle.Fence(context.Background())).To(Succeed())
+	},
+		Entry("after completeExecLoopRun", func(context.CancelFunc) provider.Streamer {
+			return &execLoopStreamer{turns: [][]provider.StreamEvent{{provText("done"), provFinish()}}}
+		}, SessionExecLoopRequest{}, "completed"),
+		Entry("after pauseExecLoopRun", func(context.CancelFunc) provider.Streamer {
+			return &execLoopStreamer{turns: [][]provider.StreamEvent{{provText("x"), provCall(echoCall("p1")), provFinish()}, {provText("never")}}}
+		}, SessionExecLoopRequest{Allow: []string{"echo"}, Budget: 1}, "paused"),
+		Entry("after CancelSession", func(cancel context.CancelFunc) provider.Streamer {
+			return &cancelOnStream{n: 1, cancel: cancel}
+		}, SessionExecLoopRequest{}, "cancelled"),
+	)
+
+	It("refuses a handle for another session's item", func() {
+		other, err := st.AcquireRunLease(context.Background(), "exec:another-session", "run:other")
+		if err != nil {
+			panic(err)
+		}
+		DeferCleanup(func() { _ = other.Release(context.Background()) })
+		_, err = RunSessionExecLoop(context.Background(), st, dbPath, sess, &execLoopStreamer{}, SessionExecLoopRequest{Lease: other})
+		Expect(err).To(MatchError(ErrExecLoopConfig))
+	})
+
+	It("keeps the row so a second run stays out while the caller holds the handle", func() {
+		_, _ = run(context.Background(), &execLoopStreamer{turns: [][]provider.StreamEvent{{provText("done"), provFinish()}}}, SessionExecLoopRequest{})
+		Expect(stillHeld()).To(MatchError(store.ErrSessionBusy))
+	})
+
+	It("lets a second run in once the caller releases the handle", func() {
+		_, _ = run(context.Background(), &execLoopStreamer{turns: [][]provider.StreamEvent{{provText("done"), provFinish()}}}, SessionExecLoopRequest{})
+		if err := handle.Release(context.Background()); err != nil {
+			panic(err)
+		}
+		Expect(stillHeld()).To(Succeed())
+	})
+})

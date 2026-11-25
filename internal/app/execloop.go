@@ -28,7 +28,10 @@ var ErrMaxTurns = errors.New("max_turns")
 
 const execTurnBudgetFloor int64 = 1 // minimum sane reservation unit per turn
 
-// RunExecLoop runs the bounded provider-driven loop to a budget/fence/provider stop.
+// RunExecLoop runs the bounded provider-driven loop to a budget/fence/provider stop. It runs under
+// the lease it acquires from LeaseItem and LeaseAgent and releases on return, or, when cfg.Lease is
+// set, under that caller-held handle, which it only fences and never releases; the caller releases
+// it once the post-loop state writers have returned.
 func RunExecLoop(ctx context.Context, cfg ExecLoopConfig) (*ExecLoopResult, error) {
 	if err := validateExecLoopConfig(&cfg); err != nil {
 		return nil, err
@@ -37,10 +40,39 @@ func RunExecLoop(ctx context.Context, cfg ExecLoopConfig) (*ExecLoopResult, erro
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = cfg.Store.ReleaseLease(context.Background(), cfg.LeaseItem, cfg.LeaseAgent, token) }()
+	if cfg.Lease == nil {
+		defer func() { _ = cfg.Store.ReleaseLease(context.Background(), cfg.LeaseItem, cfg.LeaseAgent, token) }()
+	}
 	return runExecTurns(ctx, &cfg, token)
 }
+
+// fenceExecLease checks the loop's lease is still held: through the caller's handle when it gave
+// one, otherwise by the config's item and agent and the token the loop was granted.
+func fenceExecLease(ctx context.Context, cfg *ExecLoopConfig, token int64) error {
+	if cfg.Lease != nil {
+		return cfg.Lease.Fence(ctx)
+	}
+	return cfg.Store.FenceLease(ctx, cfg.LeaseItem, cfg.LeaseAgent, token)
+}
+
+// execCompactLease is the lease the loop hands to Compact: the caller's handle, with its item, owner
+// and token, when there is one; otherwise the config's item and agent with the loop's token.
+func execCompactLease(cfg *ExecLoopConfig, token int64) CompactLease {
+	if h := cfg.Lease; h != nil {
+		return CompactLease{Item: h.Item(), Agent: h.Owner(), Token: h.Token(), Held: h}
+	}
+	return CompactLease{Item: cfg.LeaseItem, Agent: cfg.LeaseAgent, Token: token}
+}
+
+// acquireExecLease takes the loop's own lease and fences it. With a handle from the caller it only
+// fences the handle and returns its token: the loop acquires nothing.
 func acquireExecLease(ctx context.Context, cfg *ExecLoopConfig) (int64, error) {
+	if cfg.Lease != nil {
+		if err := cfg.Lease.Fence(ctx); err != nil {
+			return 0, fmt.Errorf("%w: %v", ErrExecLoopFenced, err)
+		}
+		return cfg.Lease.Token(), nil
+	}
 	token, err := cfg.Store.AcquireLease(ctx, cfg.LeaseItem, cfg.LeaseAgent)
 	if err != nil {
 		if errors.Is(err, store.ErrLeaseHeld) {
@@ -150,7 +182,7 @@ func beginExecRequest(ctx context.Context, cfg *ExecLoopConfig, token int64, res
 		res.BudgetExhausted = true
 		return ErrExecLoopBudget
 	}
-	if err := cfg.Store.FenceLease(ctx, cfg.LeaseItem, cfg.LeaseAgent, token); err != nil {
+	if err := fenceExecLease(ctx, cfg, token); err != nil {
 		return fmt.Errorf("%w: %v", ErrExecLoopFenced, err)
 	}
 	return nil
@@ -319,8 +351,10 @@ func validateExecLoopConfig(cfg *ExecLoopConfig) error {
 	switch {
 	case cfg.Store == nil, cfg.Session == nil, cfg.Streamer == nil, cfg.Registry == nil:
 		return fmt.Errorf("%w: store, session, streamer and registry are required", ErrExecLoopConfig)
-	case cfg.LeaseItem == "" || cfg.LeaseAgent == "":
+	case cfg.Lease == nil && (cfg.LeaseItem == "" || cfg.LeaseAgent == ""):
 		return fmt.Errorf("%w: lease item and agent are required", ErrExecLoopConfig)
+	case cfg.Lease != nil && cfg.Lease.Item() == "":
+		return fmt.Errorf("%w: lease handle has no item", ErrExecLoopConfig)
 	case cfg.MaxTurns <= 0:
 		return fmt.Errorf("%w: max turns must be positive", ErrExecLoopConfig)
 	case cfg.Pool != nil && cfg.TurnBudget < execTurnBudgetFloor:
