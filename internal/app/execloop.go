@@ -61,13 +61,16 @@ func runExecTurns(ctx context.Context, cfg *ExecLoopConfig, token int64) (*ExecL
 		// request or budget spend (CLI-AND-API-CONTRACT §§1–2).
 		return nil, fmt.Errorf("%w: %v", ErrUsage, err)
 	}
-	res, history := &ExecLoopResult{}, []provider.Message{}
+	res, history, meter := &ExecLoopResult{}, []provider.Message{}, &compactRun{}
 	if err := replayInto(ctx, cfg.Store, cfg.Session.ID, &history); err != nil {
 		return nil, err
 	}
 	for res.Turns < cfg.MaxTurns {
 		if ctx.Err() != nil {
 			return res, ctx.Err()
+		}
+		if err := meter.before(ctx, cfg, token, definitions, &history); err != nil {
+			return res, err
 		}
 		stop, serr := reserveExecBudget(ctx, cfg)
 		if serr != nil {
@@ -81,10 +84,8 @@ func runExecTurns(ctx context.Context, cfg *ExecLoopConfig, token int64) (*ExecL
 			return res, fmt.Errorf("%w: %v", ErrExecLoopFenced, err)
 		}
 		turn, terr := runExecTurn(ctx, *cfg, definitions, history)
-		res.Turns++
-		res.FinalContent = turn.Content
-		res.FinishReason = turn.FinishReason
-		res.recordUsage(turn.Usage)
+		res.recordTurn(turn)
+		meter.afterTurn(turn.Usage)
 		if terr != nil {
 			return res, terr
 		}
@@ -98,6 +99,7 @@ func runExecTurns(ctx context.Context, cfg *ExecLoopConfig, token int64) (*ExecL
 			return res, rerr
 		}
 		history = append(history, results...)
+		meter.afterResults(results)
 		if res.Turns >= cfg.MaxTurns {
 			// The model still wants to continue and the limit is reached. A
 			// cancel during this turn's calls is a cancellation, not a
@@ -110,6 +112,15 @@ func runExecTurns(ctx context.Context, cfg *ExecLoopConfig, token int64) (*ExecL
 		}
 	}
 	return res, nil
+}
+
+// recordTurn folds a finished provider turn into the run's result: the turn count, the final
+// text and finish reason, and the usage.
+func (r *ExecLoopResult) recordTurn(turn execTurn) {
+	r.Turns++
+	r.FinalContent = turn.Content
+	r.FinishReason = turn.FinishReason
+	r.recordUsage(turn.Usage)
 }
 
 // failExecMaxTurns records the terminal max_turns failure: the provider.error

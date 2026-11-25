@@ -81,6 +81,8 @@ const (
 	CompactReasonProviderError = "provider_error"
 	// CompactReasonCancelled marks a context cancelled before the event was appended.
 	CompactReasonCancelled = "cancelled"
+	// CompactReasonContextTooLarge marks a compaction whose tokens_after is still above the line.
+	CompactReasonContextTooLarge = "context_too_large"
 	// CompactReasonLogChanged marks a log another writer appended to while the summary was written.
 	CompactReasonLogChanged = "log_changed"
 )
@@ -125,6 +127,13 @@ type CompactOptions struct {
 	KeepRecent int
 	// Lease is the exec lease held by the caller; it is required.
 	Lease CompactLease
+	// OverheadTokens is the estimate of what each request carries besides the history (the
+	// system prompt and the tool definitions); it is added to tokens_after, and to tokens_before
+	// when that is estimated, so the figures compare with a provider-reported context.
+	OverheadTokens int
+	// MaxTokensAfter, when positive, fails the compaction with context_too_large if the
+	// estimated tokens_after is above it. Nothing is written.
+	MaxTokensAfter int
 }
 
 // CompactionResult reports an appended compaction.

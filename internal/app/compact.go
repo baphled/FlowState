@@ -108,9 +108,14 @@ func Compact(ctx context.Context, st *store.Store, sessionID string, opts Compac
 	if err != nil {
 		return nil, err
 	}
-	payload := CompactionPayload{Summary: summary, FirstKeptSeq: cut, TokensBefore: tokensBefore(events, valid),
-		Reason: compactReason(opts), Model: opts.Model, Usage: usage}
-	payload.TokensAfter = tokensAfter(events, payload)
+	payload := CompactionPayload{Summary: summary, FirstKeptSeq: cut,
+		TokensBefore: tokensBefore(events, valid, opts.OverheadTokens),
+		Reason:       compactReason(opts), Model: opts.Model, Usage: usage}
+	payload.TokensAfter = tokensAfter(events, payload) + opts.OverheadTokens
+	if opts.MaxTokensAfter > 0 && payload.TokensAfter > opts.MaxTokensAfter {
+		return nil, failCompaction(CompactReasonContextTooLarge,
+			fmt.Errorf("tokens_after %d is above %d", payload.TokensAfter, opts.MaxTokensAfter))
+	}
 	return appendCompaction(ctx, st, sessionID, opts, int64(len(events)), payload)
 }
 
@@ -198,7 +203,7 @@ func appendCompaction(ctx context.Context, st *store.Store, sessionID string, op
 // tokensBefore is the context the compaction replaces: the context the last turn reported
 // since the last compaction, else that compaction's tokens_after (the last assistant
 // usage describes the replaced context), else the estimate of the rebuilt history.
-func tokensBefore(events []store.RecordedEvent, valid []CompactionPayload) int {
+func tokensBefore(events []store.RecordedEvent, valid []CompactionPayload, overhead int) int {
 	since := events
 	for i := len(events) - 1; i >= 0; i-- {
 		if events[i].Type == TypeContextCompacted {
@@ -212,7 +217,7 @@ func tokensBefore(events []store.RecordedEvent, valid []CompactionPayload) int {
 	if n := len(valid); n > 0 {
 		return valid[n-1].TokensAfter
 	}
-	return estimateTokens(rebuildHistory(events))
+	return estimateTokens(rebuildHistory(events)) + overhead
 }
 
 // tokensAfter estimates the history the rebuild makes once payload is appended.

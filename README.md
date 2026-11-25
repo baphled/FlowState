@@ -37,9 +37,10 @@ govern how it is changed. There is no TUI yet: the command line and the HTTP API
 - **HTTP API.** `flowstate serve` exposes the same operations, with server-sent events for a live log.
 
 **Not built yet:** the receipts-only `swarm run` does not execute provider turns for its children (it creates,
-budgets and gates them; `swarm run --execute` is the path that runs them). Skills, hooks, MCP, context compaction
-(none exists yet, automatic or manual), provider failover and a frontend are also outstanding. Nothing here is
-claimed to be production ready; see [the architecture overview](docs/architecture/OVERVIEW.md) for the exact
+budgets and gates them; `swarm run --execute` is the path that runs them). Skills, hooks, MCP, manual and
+overflow-triggered context compaction (only the automatic trigger in the tool loop exists), provider failover and a
+frontend are also outstanding. Nothing here is claimed to be production ready; see
+[the architecture overview](docs/architecture/OVERVIEW.md) for the exact
 current behaviour.
 
 ## Quick start
@@ -404,14 +405,30 @@ subscription. Only `FLOWSTATE_ANTHROPIC_AUTH=api_key` does.
 1 to 100000000. Config only: there is no flag or environment override, an unknown key inside it is rejected, keys
 match case-insensitively and a repeated key takes its last value.
 
-**Nothing compacts yet.** The `compaction` settings and a profile's `context_window` are parsed, validated and shown
-only; automatic compaction does not exist, and `enabled`, `reserve` and `keep_recent` have no effect (a manual
-`session compact` is a later packet). `session doctor` resolves a window from `compaction.context_window`, else a
+**Automatic compaction.** In the tool loop (`session run` with a tool surface, and the `delegate` children it starts)
+the engine measures the context before each provider request: the last reported turn context plus an estimate (bytes /
+4) of the tool results appended since, or, when no turn has reported usage or the session was just resumed, an
+estimate of the whole rebuilt history with the system prompt and tool definitions. Above `window - reserve` (`reserve`
+raised to the run's `--max-tokens` when larger) it summarises the older turns with the session's own model, appends
+one `context.compacted` event (reason `auto`) and continues from the rebuilt history, keeping about `keep_recent`
+tokens verbatim. `enabled`, `reserve`, `keep_recent` and `context_window` take effect there. The summary draws one
+unit from the budget pool before the turn's own reservation, so it can spend a pool's last unit; a compaction is not a
+turn and does not count against `max_turns`. A compaction that fails (no eligible cut, an empty or truncated summary,
+a failed summary call, a pool that cannot cover it, or a `tokens_after` still above the line) writes nothing, is not
+retried in that run (so a `no_cut` on the first over-the-line turn turns compaction off for the rest of the run), and
+the run continues; a `no_cut` gives its pool unit back. A window not larger than the reserve (or `--max-tokens`) never
+compacts: raise the window or lower the reserve or `max_tokens`. In `swarm run --execute` the coordinator and its
+children compact with the built-in defaults (by the model table, or a child profile's `context_window`); the
+`compaction` settings, including `enabled: false`, do not apply to them yet, and each compaction draws from the swarm
+pool. Not yet: there is no retry after a provider
+context-overflow error, and no manual command, so a model that overflows still fails as a provider error. A window
+comes from the profile's `context_window` for a delegated child, else from `compaction.context_window`, else from a
 built-in table of `anthropic` and `z.ai` models matched by exact, case-sensitive id (it follows Pi's registry); there
-is no default. It does not yet read a profile's `context_window`: a root session has no profile, and the profile of a
-swarm coordinator or child is not known to the doctor. A model outside the table gets a warning, for example the
-subscription aliases `haiku`, `sonnet` and `opus`, z.ai `glm-4.5-flash` and every free or local model (a local model's
-window is whatever you loaded it with); set `compaction.context_window` to silence it.
+is no default, and an unknown window never compacts automatically. `session doctor` resolves the window from
+`compaction.context_window` and the table only: it does not read a profile's `context_window`, because a root session
+has no profile and the doctor does not know the profile of a child. It warns for a model outside the table, for
+example the subscription aliases `haiku`, `sonnet` and `opus`, z.ai `glm-4.5-flash` and every free or local model (a
+local model's window is whatever you loaded it with); set `compaction.context_window` to silence it.
 
 Explicit flags override the file. `--allow` and `--allow-file` replace `tool_allowlist`; `--workdir` only says where the
 tools operate. A file holding anything that looks like a secret is rejected.

@@ -280,6 +280,7 @@ func delegateLoopConfig(ctx context.Context, req *DelegateRequest, run *delegate
 		Store: req.Store, Session: child, Streamer: req.Streamer, Registry: registry,
 		Allowlist: req.Profile.Tools, LeaseItem: "exec:" + child.ID, LeaseAgent: run.owner,
 		MaxTurns: grant, SystemPrompt: req.Profile.Body,
+		Compaction: req.Compaction, ProfileWindow: req.Profile.ContextWindow,
 	}
 	if req.Pool != nil {
 		cfg.Pool, cfg.TurnBudget = NewBudgetPool(grant), 1
