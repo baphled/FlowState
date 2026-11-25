@@ -53,7 +53,8 @@ type CompactionStats struct {
 	Count int64
 	// Invalid is the number of context.compacted events that fail decode or ValidateCompaction,
 	// or whose first_kept_seq is below the previous valid one's. Above 0 the rebuild fails, so
-	// `session run` refuses the session with replay_mismatch.
+	// the exec-loop `session run` (--allow and the other tool-loop flags) refuses the session with
+	// replay_mismatch; the plain text turn never replays the log, so it is unaffected.
 	Invalid int64
 	// LastTokensAfter is the tokens_after of the last valid event; nil when there is none.
 	LastTokensAfter *int64
@@ -64,4 +65,87 @@ type CompactionStats struct {
 	SummaryInputTokens int64
 	// SummaryOutputTokens sums the output tokens of the summarising calls.
 	SummaryOutputTokens int64
+}
+
+// Failure reasons of a compaction (CompactionFailure.Reason).
+const (
+	// CompactReasonNoCut marks a compaction with no eligible cut point: nothing new to compact.
+	CompactReasonNoCut = "no_cut"
+	// CompactReasonSummaryEmpty marks a summarising call that returned no summary text.
+	CompactReasonSummaryEmpty = "summary_empty"
+	// CompactReasonSummaryTruncated marks a summary that finished at the token cap (finish length).
+	CompactReasonSummaryTruncated = "summary_truncated"
+	// CompactReasonSummaryInvalid marks a summary over the cap or holding the fence's closing line.
+	CompactReasonSummaryInvalid = "summary_invalid"
+	// CompactReasonProviderError marks a failed summarising call.
+	CompactReasonProviderError = "provider_error"
+	// CompactReasonCancelled marks a context cancelled before the event was appended.
+	CompactReasonCancelled = "cancelled"
+	// CompactReasonLogChanged marks a log another writer appended to while the summary was written.
+	CompactReasonLogChanged = "log_changed"
+)
+
+// CompactKeepRecentDefault is the keep-recent budget in estimated tokens (ADR-010 D7).
+const CompactKeepRecentDefault = 20000
+
+// CompactSummaryMaxTokens caps the summarising call's response (ADR-010 D6).
+const CompactSummaryMaxTokens int64 = 8192
+
+const (
+	// CompactResultClip is the length in characters at which a tool result is cut in the span
+	// sent to the summariser.
+	CompactResultClip = 2000
+	// CompactArgsClip is the length in characters at which a call's arguments are cut there.
+	CompactArgsClip = 500
+)
+
+// MaxCompactInstructions is the longest `--instructions` text accepted, in bytes.
+const MaxCompactInstructions = 1000
+
+// CompactLease is the exec lease the caller holds for the compaction; Compact fences it
+// immediately before the append, so a lease taken over during the summary call appends nothing.
+type CompactLease struct {
+	// Item and Agent name the lease, Token is the fencing token the caller was given.
+	Item  string
+	Agent string
+	Token int64
+}
+
+// CompactOptions configures Compact.
+type CompactOptions struct {
+	// Streamer and Model are the session's own provider and model (ADR-010 D5).
+	Streamer provider.Streamer
+	Model    string
+	// Instructions is an optional focus line appended to the prompt: one line, at most
+	// MaxCompactInstructions bytes, no control characters.
+	Instructions string
+	// Reason is the compaction reason recorded; empty means CompactionReasonManual.
+	Reason string
+	// KeepRecent is the keep-recent budget in estimated tokens; <= 0 means CompactKeepRecentDefault.
+	KeepRecent int
+	// Lease is the exec lease held by the caller; it is required.
+	Lease CompactLease
+}
+
+// CompactionResult reports an appended compaction.
+type CompactionResult struct {
+	SessionID    string
+	EventSeq     int64
+	FirstKeptSeq int64
+	TokensBefore int
+	TokensAfter  int
+	Reason       string
+	Model        string
+	// Usage is the summarising call's usage; nil when the provider reported none.
+	Usage *provider.Usage
+}
+
+// CompactionFailure is the error of a compaction that wrote nothing. It matches
+// ErrCompactionFailed and, by reason, ErrProvider (provider_error and the summary_* reasons),
+// session.ErrUsage (no_cut) or ErrSessionCancelled (cancelled), so ErrorCode classifies it.
+type CompactionFailure struct {
+	// Reason is one of the CompactReason constants.
+	Reason string
+	// Cause is the underlying error, if any.
+	Cause error
 }

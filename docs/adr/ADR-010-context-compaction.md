@@ -117,6 +117,9 @@ The engine never rewrites or deletes events.** FlowState adds only what its own 
 - **Manual.** `flowstate session compact <id> [--instructions text]`. It takes the session's exec lease like a run and
   is refused, with nothing written, while the lease is held or when the session is not `active` or `paused`. It runs
   crash recovery first, as `session run` does, so a crashed turn is answered before the cut is chosen.
+  It has no loop and no per-invocation budget pool, so it draws nothing from one: D12's unit applies to the
+  automatic trigger of packet (d). It leaves a paused session paused. The exec loop honours the compaction on its
+  next run; the plain text-turn path never replays the log, so a compaction does not affect it.
 - **Overflow.** A provider context-overflow error, or a `length` finish with no tool calls on a request that was
   already over `window - reserve`, compacts and retries the request once. A second failure is an ordinary provider
   failure. The provider adapters must classify overflow (`ErrContextOverflow`); today none does, and the loop's
@@ -173,9 +176,11 @@ The engine never rewrites or deletes events.** FlowState adds only what its own 
 Rules:
 
 1. **Replay** takes the last `context.compacted` event C. The history is one first message, then the events with
-   `seq >= C.first_kept_seq` replayed as today. The first message is the summary under a fixed heading that says it was
-   written automatically and replaces earlier conversation; if the original task is before the cut, it follows the
-   summary in the same message under "Original task". If the kept tail begins with a user message it is merged into
+   `seq >= C.first_kept_seq` replayed as today. The first message opens with a fixed heading that says an automatic
+   summary replaced the earlier conversation; if the original task is before the cut, it follows under "Original
+   task", and the summary comes last, between the lines `--- summary ---` and `--- end of summary ---`, so model
+   output cannot forge a heading above the genuine sections. A summary holding the closing line is refused when the
+   event is written and when it is read. If the kept tail begins with a user message it is merged into
    that first message rather than leaving two user messages in a row, so no provider has to tolerate them. A
    `tool.result` whose call is before `first_kept_seq` is skipped, never orphaned; this matters because the crash
    answer of ADR-009 D8 is appended at the end of the log, after later events.
@@ -229,7 +234,7 @@ Rules:
 | D1 | Compaction is an appended `context.compacted` event; replay rebuilds from the last one. No event is changed or removed. |
 | D2 | Trigger: provider-reported `LastContextTokens` plus an estimate of what was appended since, above `window - reserve`, checked before each provider request. |
 | D3 | The window: the profile's `context_window` for a session under a profile (delegated child, swarm coordinator), else `compaction.context_window`, else the registry table. Unknown means no automatic compaction and a doctor warning. There is no default window. |
-| D4 | The first rebuilt message holds the summary and, when it falls before the cut, the original task verbatim; a user message at the head of the tail is merged into it. |
+| D4 | The first rebuilt message holds the heading, the original task verbatim when it falls before the cut, then the fenced summary; a user message at the head of the tail is merged into it, after the fence. |
 | D5 | The session's own provider and model write the summary; there is no `compaction_model`. A different model is a later option. |
 | D6 | The summary has Pi's structure; the previous summary is iterative context; one summary per compaction (no split-span merge); capped at 8192 tokens, and a truncated or empty summary fails the compaction. |
 | D7 | Reserve 16384 (raised to `MaxTokens` when larger), keep-recent 20000, enabled by default. Config keys `compaction.reserve`, `compaction.keep_recent`, `compaction.enabled` and `compaction.context_window`, none containing "token" (ADR-005's secret filter). |
