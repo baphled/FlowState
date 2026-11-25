@@ -221,6 +221,13 @@ func runSwarmCoordinator(ctx context.Context, st *Store, sess *store.Session, co
 	if err != nil {
 		return "", "", nil, err
 	}
+	// The coordinator's handle outlives the loop and the post-loop writers (ADR-011 rule 8).
+	lease, err := acquireCoordinatorLease(ctx, st, sess.ID)
+	if err != nil {
+		return "", "", nil, err
+	}
+	defer func() { _ = lease.Release(context.WithoutCancel(ctx)) }()
+	loop.Lease = lease
 	res, runErr := RunExecLoop(ctx, loop)
 	if runErr != nil {
 		stop := finishExecLoopState(ctx, st, sess, runErr)
@@ -228,6 +235,21 @@ func runSwarmCoordinator(ctx context.Context, st *Store, sess *store.Session, co
 		return status, reason, stop, err
 	}
 	return "", "", nil, completeExecLoopRun(ctx, st, sess.ID, res.FinishReason)
+}
+
+// acquireCoordinatorLease takes the exec lease of the coordinator's session under a fresh "run:<id>"
+// owner. A refusal (a live or unjudgeable holder) is returned as an error with nothing written: a
+// process that was refused must not write the holder's log.
+func acquireCoordinatorLease(ctx context.Context, st *Store, sessionID string) (*store.RunLease, error) {
+	id, err := session.NewID()
+	if err != nil {
+		return nil, fmt.Errorf("generate lease owner: %w", err)
+	}
+	lease, err := st.AcquireRunLease(ctx, "exec:"+sessionID, runLeasePrefix+id)
+	if err != nil {
+		return nil, fmt.Errorf("app: execute swarm: coordinator lease: %w", err)
+	}
+	return lease, nil
 }
 
 // classifyCoordinatorStop maps the error that ended the coordinator onto the

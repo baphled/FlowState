@@ -25,12 +25,6 @@ import (
 // a stale lease (nothing clears it yet): "child is running". The loop re-grants
 // the same owner and its release ends the claim.
 //
-// Known window: between the loop's release and the child's settlement no lease is
-// held, so a child that gave its final answer, still active, can be resumed by a
-// second, concurrent parent run and run one more turn. Spend stays capped: the
-// turns used are recounted from the log and the charge is a set, not an add, so
-// there is no double charge and a terminal child is not resurrected. Not fixed.
-//
 // A request is refused, as an ErrUsage error with nothing written or held, when
 // the id is malformed, not a child of this parent (unknown, another parent's, a
 // root), the child is not active or paused, it has no recorded profile, its
@@ -71,18 +65,18 @@ func ResumeDelegatedChild(ctx context.Context, rr DelegateResumeRequest) (Delega
 		return DelegateResult{}, err
 	}
 	item := "exec:" + rr.ChildID
-	token, err := req.Store.AcquireLease(ctx, item, owner)
-	if errors.Is(err, store.ErrLeaseHeld) {
+	lease, err := req.Store.AcquireRunLease(ctx, item, owner)
+	if errors.Is(err, store.ErrSessionBusy) {
 		return DelegateResult{}, fmt.Errorf("%w: child %s is running", ErrUsage, rr.ChildID)
 	} else if err != nil {
 		return DelegateResult{}, fmt.Errorf("app: delegate: child lease: %w", err)
 	}
-	defer func() { _ = req.Store.ReleaseLease(context.WithoutCancel(ctx), item, owner, token) }()
+	defer func() { _ = lease.Release(context.WithoutCancel(ctx)) }()
 	run, registry, err := planResume(ctx, &req, rr)
 	if err != nil {
 		return DelegateResult{}, err
 	}
-	run.owner, run.slot = owner, slot
+	run.owner, run.slot, run.lease = owner, slot, lease
 	if out, berr := reserveResumeBudget(ctx, &req, run); berr != nil || out.Status != "" {
 		return out, berr
 	}

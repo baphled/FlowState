@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +33,7 @@ type delegateFixture struct {
 	workdir  string
 	streamer *execLoopStreamer
 	profile  agent.Profile
+	dbPath   string
 }
 
 const delegateParentPool int64 = 100
@@ -51,7 +53,17 @@ func must[T any](v T, err error) T {
 }
 
 func newDelegateFixture(turns ...[]provider.StreamEvent) *delegateFixture {
-	st := must(store.OpenMemory())
+	return newDelegateFixtureOn(must(store.OpenMemory()), "", turns...)
+}
+
+// newDelegateFileFixture is newDelegateFixture on a real database file under the spec's temp
+// directory, so a spec can read or alter it through a second connection.
+func newDelegateFileFixture(turns ...[]provider.StreamEvent) *delegateFixture {
+	path := filepath.Join(GinkgoT().TempDir(), "delegate.db")
+	return newDelegateFixtureOn(must(store.Open(path)), path, turns...)
+}
+
+func newDelegateFixtureOn(st *store.Store, path string, turns ...[]provider.StreamEvent) *delegateFixture {
 	DeferCleanup(func() { _ = st.Close() })
 	ctx := context.Background()
 	parent := must(st.CreateSession(ctx, "parent-session", "scripted", "parent-model", "harness", "sha"))
@@ -62,7 +74,7 @@ func newDelegateFixture(turns ...[]provider.StreamEvent) *delegateFixture {
 	}
 	check(w.Close())
 	return &delegateFixture{
-		st: st, parent: parent, pool: NewBudgetPool(delegateParentPool), workdir: GinkgoT().TempDir(),
+		st: st, dbPath: path, parent: parent, pool: NewBudgetPool(delegateParentPool), workdir: GinkgoT().TempDir(),
 		streamer: &execLoopStreamer{turns: turns},
 		profile: agent.Profile{
 			Name: "reviewer", Description: "reviews", Tools: []string{"fs.read"}, Model: agent.InheritModel,
@@ -996,6 +1008,184 @@ var _ = Describe("A parent cancelled during its last turn's delegation", func() 
 		It("reports the session cancelled", func() { Expect(err).To(MatchError(ErrSessionCancelled)) })
 		It("ends the session cancelled, not active or failed", func() {
 			Expect(statusOf(st, sess.ID)).To(Equal("cancelled"))
+		})
+	})
+})
+
+// leaseBusy reports whether a second acquire of the session's exec item is refused as busy. It
+// releases whatever it got, so a refusal is the only lasting outcome.
+func leaseBusy(st *store.Store, id string) bool {
+	h, err := st.AcquireRunLease(context.Background(), "exec:"+id, "run:probe")
+	if err == nil {
+		_ = h.Release(context.Background())
+		return false
+	}
+	return errors.Is(err, store.ErrSessionBusy)
+}
+
+// leaseBusyOwner is the owner a refused acquire of the session's exec item names, "" when it was not refused.
+func leaseBusyOwner(st *store.Store, id string) string {
+	h, err := st.AcquireRunLease(context.Background(), "exec:"+id, "run:probe")
+	if err == nil {
+		_ = h.Release(context.Background())
+		return ""
+	}
+	var busy *store.SessionBusyError
+	if errors.As(err, &busy) {
+		return busy.Owner
+	}
+	return ""
+}
+
+// childrenOf lists the ids of the sessions whose parent is parentID.
+func childrenOf(st *store.Store, parentID string) []string {
+	var out []string
+	for _, s := range must(st.ListSessions(context.Background(), "")) {
+		if s.ParentID == parentID {
+			out = append(out, s.ID)
+		}
+	}
+	return out
+}
+
+// installLeaseProbe makes the database at path record, in lease_probe, how many lease rows a
+// session's exec item has at the moment its status becomes status: what a post-loop writer sees.
+func installLeaseProbe(path, status string) {
+	db := must(sql.Open("sqlite", "file:"+path))
+	defer func() { _ = db.Close() }()
+	for _, stmt := range []string{
+		`CREATE TABLE lease_probe (session_id TEXT NOT NULL, lease_rows INTEGER NOT NULL)`,
+		`CREATE TRIGGER probe_lease AFTER UPDATE OF status ON sessions WHEN NEW.status = '` + status + `' BEGIN ` +
+			`INSERT INTO lease_probe SELECT NEW.id, count(*) FROM leases WHERE item = 'exec:' || NEW.id; END`,
+	} {
+		must(db.Exec(stmt))
+	}
+}
+
+// probedLeaseRows is what installLeaseProbe recorded for the session.
+func probedLeaseRows(path, sessionID string) []int {
+	db := must(sql.Open("sqlite", "file:"+path))
+	defer func() { _ = db.Close() }()
+	rows := must(db.Query(`SELECT lease_rows FROM lease_probe WHERE session_id = ?`, sessionID))
+	defer func() { _ = rows.Close() }()
+	var out []int
+	for rows.Next() {
+		var n int
+		check(rows.Scan(&n))
+		out = append(out, n)
+	}
+	check(rows.Err())
+	return out
+}
+
+var _ = Describe("A delegated child's judged lease", func() {
+	var ctx context.Context
+	BeforeEach(func() { ctx = context.Background() })
+
+	Describe("while the child runs", func() {
+		var busy bool
+		var owner string
+		BeforeEach(func() {
+			f := newDelegateFixture()
+			ps := &probeStreamer{execLoopStreamer: execLoopStreamer{turns: [][]provider.StreamEvent{finishText("ok")}}}
+			ps.probe = func() {
+				id := childrenOf(f.st, f.parent.ID)[0]
+				busy, owner = leaseBusy(f.st, id), leaseBusyOwner(f.st, id)
+			}
+			req := f.request()
+			req.Streamer = ps
+			must(RunDelegatedChild(ctx, req))
+		})
+		It("refuses a second acquire of the child's item", func() { Expect(busy).To(BeTrue()) })
+		It("names the run's delegate owner as the holder", func() { Expect(owner).To(HavePrefix(delegateLeasePrefix)) })
+	})
+
+	DescribeTable("is still held when the child's settlement writes its status",
+		func(status string, turns ...[]provider.StreamEvent) {
+			f := newDelegateFileFixture(turns...)
+			installLeaseProbe(f.dbPath, status)
+			must(RunDelegatedChild(ctx, f.request()))
+			Expect(probedLeaseRows(f.dbPath, childrenOf(f.st, f.parent.ID)[0])).To(Equal([]int{1}))
+		},
+		Entry("completed, in completeExecLoopRun", "completed", finishText("ok")),
+		Entry("failed, in failDelegatedChild", "failed", []provider.StreamEvent{provError("upstream down")}),
+	)
+
+	It("is still held when a cancelled child's settlement writes its status", func() {
+		f := newDelegateFileFixture()
+		installLeaseProbe(f.dbPath, "cancelled")
+		cctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		req := f.request()
+		req.Streamer = &cancelOnStream{n: 1, cancel: cancel}
+		must(RunDelegatedChild(cctx, req))
+		Expect(probedLeaseRows(f.dbPath, childrenOf(f.st, f.parent.ID)[0])).To(Equal([]int{1}))
+	})
+
+	DescribeTable("leaves no lease row once the child's run is over",
+		func(run func(f *delegateFixture)) {
+			f := newDelegateFixture()
+			run(f)
+			Expect(f.st.LeaseToken(ctx, "exec:"+childrenOf(f.st, f.parent.ID)[0])).To(BeZero())
+		},
+		Entry("after success", func(f *delegateFixture) {
+			f.streamer.turns = [][]provider.StreamEvent{finishText("ok")}
+			must(RunDelegatedChild(context.Background(), f.request()))
+		}),
+		Entry("after a provider failure", func(f *delegateFixture) {
+			f.streamer.turns = [][]provider.StreamEvent{{provError("upstream down")}}
+			must(RunDelegatedChild(context.Background(), f.request()))
+		}),
+		Entry("after a panic", func(f *delegateFixture) {
+			req := f.request()
+			req.Streamer = &panicStreamer{}
+			func() {
+				defer func() { _ = recover() }()
+				_, _ = RunDelegatedChild(context.Background(), req)
+			}()
+		}),
+		Entry("after the parent cancelled it", func(f *delegateFixture) {
+			cctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			req := f.request()
+			req.Streamer = &cancelOnStream{n: 1, cancel: cancel}
+			must(RunDelegatedChild(cctx, req))
+		}),
+		Entry("after it stopped at max_turns", func(f *delegateFixture) {
+			ask := func(id string) []provider.StreamEvent {
+				return []provider.StreamEvent{provCall(echoCall(id)), provFinish()}
+			}
+			f.streamer.turns = [][]provider.StreamEvent{ask("a"), ask("b")}
+			f.profile.Tools, f.profile.MaxTurns = []string{"echo"}, 2
+			must(RunDelegatedChild(context.Background(), f.request()))
+		}),
+	)
+
+	It("lets a second acquire of the item succeed after the child has finished", func() {
+		f := newDelegateFixture(finishText("ok"))
+		must(RunDelegatedChild(ctx, f.request()))
+		Expect(leaseBusy(f.st, childrenOf(f.st, f.parent.ID)[0])).To(BeFalse())
+	})
+
+	Describe("a live holder of the child's item", func() {
+		var f *delegateFixture
+		var run *delegateRun
+		BeforeEach(func() {
+			f = newDelegateFixture()
+			child := f.seedChild(f.parent, 1)
+			held := must(f.st.AcquireRunLease(ctx, "exec:"+child.ID, "run:other"))
+			DeferCleanup(func() { _ = held.Release(context.Background()) })
+			run = &delegateRun{owner: "delegate:mine", child: child}
+		})
+		It("is refused with the error the loop's own acquire gave", func() {
+			req := f.request()
+			Expect(holdDelegateLease(ctx, &req, run)).To(MatchError(ErrExecLoopFenced))
+		})
+		It("fails the child, as a refused loop acquire did", func() {
+			req := f.request()
+			req.Pool = nil
+			out, _ := runAndSettleDelegated(ctx, &req, run, must(NewSessionToolRegistry("")))
+			Expect(out.Status).To(Equal(DelegateStatusFailed))
 		})
 	})
 })

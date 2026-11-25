@@ -38,6 +38,10 @@ const (
 // name would let two runs of a child both hold it.
 const delegateLeasePrefix = "delegate:"
 
+// runLeasePrefix starts the lease owner of a run that holds a session on its own behalf, such as
+// the swarm coordinator: the prefix plus a fresh id, unique per run (ADR-011 D1).
+const runLeasePrefix = "run:"
+
 // delegateLegacyOwner is the exact lease owner an earlier build gave a delegated
 // run, without the run id. Nothing else can ever release such a lease, so crash
 // recovery clears it too.
@@ -165,6 +169,10 @@ type delegateRun struct {
 	pool *BudgetPool
 	// slot is the descendant slot the run holds while it executes.
 	slot *runSlot
+	// lease is the judged exec lease of the child, held from before its loop until its settlement
+	// has returned (ADR-011 rule 8). A resume sets it when it claims the child; a fresh run
+	// takes it in runAndSettleDelegated. Release is idempotent.
+	lease *store.RunLease
 }
 
 // resumableLog is what a resume reads from the child's event log.
