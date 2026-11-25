@@ -56,6 +56,18 @@ var _ = Describe("crash recovery detection", func() {
 		Expect(crashed).To(BeTrue())
 	})
 
+	It("still detects a crashed turn that holds a non-terminal provider.error", func() {
+		st := mustOpenCrashStore()
+		sess := mustCreateCrashSession(ctx, st)
+		mustAppendEvent(ctx, st, sess.ID, "user", "turn.start", map[string]any{"task": "x"})
+		mustAppendEvent(ctx, st, sess.ID, "engine", "provider.request", map[string]any{})
+		mustAppendEvent(ctx, st, sess.ID, "engine", TypeProviderError,
+			map[string]any{"error": "x", "reason": ReasonContextOverflow, "terminal": false})
+		crashed, err := DetectCrashedSession(ctx, st, sess.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(crashed).To(BeTrue())
+	})
+
 	It("does not detect a completed turn as crashed", func() {
 		st := mustOpenCrashStore()
 		sess := mustCreateCrashSession(ctx, st)

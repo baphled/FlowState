@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -599,3 +600,227 @@ func (f *nestFixture) setWindow(name string, window int) {
 		}
 	}
 }
+
+// overflowTurn is a request the provider refuses as over the context window.
+func overflowTurn() []provider.StreamEvent {
+	return []provider.StreamEvent{{Kind: provider.StreamEventError,
+		Err: fmt.Errorf("fake: api error 400: %w", provider.ErrContextOverflow)}}
+}
+
+// lengthTurn is a text answer cut off at the token limit, with no tool calls.
+func lengthTurn(text string) []provider.StreamEvent {
+	return []provider.StreamEvent{provText(text), {Kind: provider.StreamEventFinish, FinishReason: provider.FinishLength}}
+}
+
+// typesOf keeps the event types of the log that are in want, in log order.
+func typesOf(cfg ExecLoopConfig, want ...string) []string {
+	keep := map[string]bool{}
+	for _, w := range want {
+		keep[w] = true
+	}
+	kept := []string{}
+	for _, t := range eventTypes(cfg.Store, cfg.Session.ID) {
+		if keep[t] {
+			kept = append(kept, t)
+		}
+	}
+	return kept
+}
+
+// payloadOfFirst is the payload field of the first event of a type.
+func payloadOfFirst(cfg ExecLoopConfig, typ, field string) string {
+	return payloadFieldText(eventsOf(cfg)[indexOfType(cfg, typ, false)].PayloadJSON, field)
+}
+
+// terminalOfFirst is the raw terminal field of the first event of a type.
+func terminalOfFirst(cfg ExecLoopConfig, typ string) string {
+	return payloadFieldRaw(eventsOf(cfg)[indexOfType(cfg, typ, false)].PayloadJSON, "terminal")
+}
+
+var _ = Describe("The reactive overflow net", func() {
+	var (
+		cfg      ExecLoopConfig
+		streamer *execLoopStreamer
+		res      *ExecLoopResult
+		err      error
+	)
+	run := func() { res, err = RunExecLoop(context.Background(), cfg) }
+
+	Context("when the provider refuses a request as over the window and the retry succeeds", func() {
+		BeforeEach(func() {
+			cfg, streamer = autoConfig(usedTurn("c1", 1, 100), usedTurn("c2", 1, 100), overflowTurn(), summaryTurn("the summary"), doneTurn())
+			cfg.Pool, cfg.TurnBudget = NewBudgetPool(6), 1
+			run()
+		})
+		It("answers from the retry", func() { Expect(res.FinalContent).To(Equal("done")) })
+		It("logs the marker, then the compaction, then the answer", func() {
+			Expect(typesOf(cfg, "provider.error", TypeContextCompacted, TypeAssistantMessage)).To(Equal([]string{
+				TypeAssistantMessage, TypeAssistantMessage, "provider.error", TypeContextCompacted, TypeAssistantMessage}))
+		})
+		It("writes the marker with the reason context_overflow", func() {
+			Expect(payloadOfFirst(cfg, "provider.error", "reason")).To(Equal(ReasonContextOverflow))
+		})
+		It("writes the marker as non-terminal", func() { Expect(terminalOfFirst(cfg, "provider.error")).To(Equal("false")) })
+		It("leaves the session active", func() { Expect(statusOf(cfg.Store, cfg.Session.ID)).To(Equal("active")) })
+		It("records the compaction with the reason overflow", func() {
+			Expect(payloadOfFirst(cfg, TypeContextCompacted, "reason")).To(Equal(CompactionReasonOverflow))
+		})
+		It("calls the summariser once", func() { Expect(summaryCalls(streamer.reqs)).To(Equal(1)) })
+		It("makes the request twice", func() { Expect(streamer.reqs).To(HaveLen(5)) })
+		It("sends the retry the compacted history", func() {
+			Expect(streamer.reqs[4].Messages[0].Content).To(ContainSubstring("--- summary ---\nthe summary"))
+		})
+		It("reserves a second unit for the retry and one for the summary", func() {
+			Expect(cfg.Pool.Remaining()).To(Equal(int64(1)))
+		})
+		It("counts the overflowing request as a turn in memory", func() { Expect(res.Turns).To(Equal(int64(4))) })
+		It("writes an assistant.message for the answered requests only", func() {
+			Expect(countOf(cfg, TypeAssistantMessage)).To(Equal(3))
+		})
+	})
+
+	Context("when the retry would exceed max_turns", func() {
+		BeforeEach(func() {
+			cfg, _ = autoConfig(usedTurn("c1", 1, 100), usedTurn("c2", 1, 100), overflowTurn(), summaryTurn("s"), doneTurn())
+			cfg.MaxTurns = 3
+			run()
+		})
+		It("still completes the run", func() { Expect(res.FinalContent).To(Equal("done")) })
+	})
+
+	Context("when the retry overflows again", func() {
+		BeforeEach(func() {
+			cfg, streamer = autoConfig(usedTurn("c1", 1, 100), usedTurn("c2", 1, 100), overflowTurn(), summaryTurn("s"),
+				overflowTurn(), summaryTurn("s2"), doneTurn())
+			run()
+		})
+		It("ends as a provider failure", func() { Expect(ErrorCode(err)).To(Equal(CodeProvider)) })
+		It("keeps the overflow cause", func() { Expect(err).To(MatchError(provider.ErrContextOverflow)) })
+		It("makes no third request", func() { Expect(streamer.reqs).To(HaveLen(5)) })
+		It("calls the summariser once", func() { Expect(summaryCalls(streamer.reqs)).To(Equal(1)) })
+		It("marks the session failed", func() { Expect(statusOf(cfg.Store, cfg.Session.ID)).To(Equal("failed")) })
+		It("ends the log with a terminal provider.error", func() {
+			Expect(payloadFieldRaw(lastPayload(cfg.Store, cfg.Session.ID), "terminal")).To(Equal("true"))
+		})
+	})
+
+	Context("when there is no cut to compact", func() {
+		BeforeEach(func() {
+			cfg, streamer = autoConfig(overflowTurn(), summaryTurn("s"), doneTurn())
+			cfg.Pool, cfg.TurnBudget = NewBudgetPool(3), 1
+			run()
+		})
+		It("ends as a provider failure", func() { Expect(ErrorCode(err)).To(Equal(CodeProvider)) })
+		It("writes the marker and the terminal event", func() { Expect(countOf(cfg, "provider.error")).To(Equal(2)) })
+		It("writes no compaction", func() { Expect(countOf(cfg, TypeContextCompacted)).To(BeZero()) })
+		It("calls no summariser", func() { Expect(summaryCalls(streamer.reqs)).To(BeZero()) })
+		It("gives the summary's unit back", func() { Expect(cfg.Pool.Remaining()).To(Equal(int64(2))) })
+		It("marks the session failed", func() { Expect(statusOf(cfg.Store, cfg.Session.ID)).To(Equal("failed")) })
+	})
+
+	Context("when the pool cannot cover the summary", func() {
+		BeforeEach(func() {
+			cfg, streamer = autoConfig(usedTurn("c1", 1, 100), usedTurn("c2", 1, 100), overflowTurn(), summaryTurn("s"), doneTurn())
+			cfg.Pool, cfg.TurnBudget = NewBudgetPool(3), 1
+			run()
+		})
+		It("ends as a provider failure", func() { Expect(ErrorCode(err)).To(Equal(CodeProvider)) })
+		It("calls no summariser", func() { Expect(summaryCalls(streamer.reqs)).To(BeZero()) })
+	})
+
+	Context("when the window is unknown", func() {
+		BeforeEach(func() {
+			cfg, streamer = autoConfig(usedTurn("c1", 1, 100), usedTurn("c2", 1, 100), overflowTurn(), summaryTurn("s"), doneTurn())
+			cfg.Compaction.ContextWindow = nil
+			run()
+		})
+		It("ends as a provider failure", func() { Expect(ErrorCode(err)).To(Equal(CodeProvider)) })
+		It("never calls the summariser", func() { Expect(summaryCalls(streamer.reqs)).To(BeZero()) })
+		It("writes only the terminal provider.error", func() { Expect(countOf(cfg, "provider.error")).To(Equal(1)) })
+	})
+
+	Context("when compaction is switched off", func() {
+		BeforeEach(func() {
+			cfg, streamer = autoConfig(usedTurn("c1", 1, 100), usedTurn("c2", 1, 100), overflowTurn(), summaryTurn("s"), doneTurn())
+			off := false
+			cfg.Compaction.Enabled = &off
+			run()
+		})
+		It("never calls the summariser", func() { Expect(summaryCalls(streamer.reqs)).To(BeZero()) })
+	})
+
+	Context("when the run is cancelled during the overflow compaction", func() {
+		BeforeEach(func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			DeferCleanup(cancel)
+			cancelling := &cancelOnStream{execLoopStreamer: execLoopStreamer{turns: [][]provider.StreamEvent{
+				usedTurn("c1", 1, 100), usedTurn("c2", 1, 100), overflowTurn(), summaryTurn("s"), doneTurn()}}, n: 4, cancel: cancel}
+			cfg, _ = autoConfig()
+			cfg.Streamer = cancelling
+			res, err = RunExecLoop(ctx, cfg)
+		})
+		It("ends the run cancelled", func() { Expect(err).To(MatchError(context.Canceled)) })
+		It("leaves the session active", func() { Expect(statusOf(cfg.Store, cfg.Session.ID)).To(Equal("active")) })
+		It("appends no compaction", func() { Expect(countOf(cfg, TypeContextCompacted)).To(BeZero()) })
+	})
+
+	Context("when a crash left the marker without a compaction", func() {
+		BeforeEach(func() {
+			cfg, _ = autoConfig(doneTurn())
+			mustAppendEvent(context.Background(), cfg.Store, cfg.Session.ID, "engine", "provider.error",
+				map[string]any{"error": "x", "reason": ReasonContextOverflow, "terminal": false})
+			run()
+		})
+		It("runs on as normal", func() { Expect(res.FinalContent).To(Equal("done")) })
+	})
+
+	Context("when a length finish with no calls follows a baseline over the line", func() {
+		BeforeEach(func() {
+			// The automatic compaction before request 3 returns no summary, so it fails and the
+			// baseline stays over the line for request 4.
+			cfg, streamer = autoConfig(usedTurn("c1", 1, 100), usedTurn("c2", 1, 950), provFinishOnly(),
+				lengthTurn("cut"), summaryTurn("the summary"), doneTurn())
+			run()
+		})
+		It("answers from the retry", func() { Expect(res.FinalContent).To(Equal("done")) })
+		It("compacts once with the reason overflow", func() {
+			Expect(payloadOfFirst(cfg, TypeContextCompacted, "reason")).To(Equal(CompactionReasonOverflow))
+		})
+		It("counts one compaction", func() { Expect(countOf(cfg, TypeContextCompacted)).To(Equal(1)) })
+		It("keeps the truncated assistant.message", func() { Expect(countOf(cfg, TypeAssistantMessage)).To(Equal(4)) })
+		It("writes no provider.error", func() { Expect(countOf(cfg, "provider.error")).To(BeZero()) })
+		It("counts the truncated request as a turn", func() { Expect(res.Turns).To(Equal(int64(4))) })
+		It("makes the request again", func() { Expect(streamer.reqs).To(HaveLen(6)) })
+	})
+
+	Context("when a length finish with no calls follows a baseline over the line and the compaction fails", func() {
+		BeforeEach(func() {
+			cfg, _ = autoConfig(usedTurn("c1", 1, 100), usedTurn("c2", 1, 950), provFinishOnly(),
+				lengthTurn("cut"), provFinishOnly(), doneTurn())
+			run()
+		})
+		It("lets the truncated turn stand", func() { Expect(res.FinalContent).To(Equal("cut")) })
+	})
+
+	Context("when a length finish carries tool calls over the line", func() {
+		BeforeEach(func() {
+			call := lengthTurn("cut")
+			call = append([]provider.StreamEvent{call[0], provCall(echoCall("c3"))}, call[1])
+			cfg, streamer = autoConfig(usedTurn("c1", 1, 100), usedTurn("c2", 1, 950), provFinishOnly(),
+				call, summaryTurn("s"), doneTurn())
+			run()
+		})
+		It("keeps the existing behaviour and calls no second summariser", func() {
+			Expect(summaryCalls(streamer.reqs)).To(Equal(1))
+		})
+	})
+
+	Context("when a length finish with no calls follows a baseline under the line", func() {
+		BeforeEach(func() {
+			cfg, streamer = autoConfig(usedTurn("c1", 1, 100), usedTurn("c2", 1, 100), lengthTurn("cut"), summaryTurn("s"), doneTurn())
+			run()
+		})
+		It("keeps the truncated answer", func() { Expect(res.FinalContent).To(Equal("cut")) })
+		It("never calls the summariser", func() { Expect(summaryCalls(streamer.reqs)).To(BeZero()) })
+	})
+})

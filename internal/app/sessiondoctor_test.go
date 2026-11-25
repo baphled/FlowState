@@ -56,6 +56,19 @@ var _ = Describe("DiagnoseSession", func() {
 		Expect(d.Crashed).To(BeTrue())
 	})
 
+	It("reports a session with a non-terminal provider.error as active, not failed", func() {
+		st := mustOpenCrashStore()
+		DeferCleanup(func() { _ = st.Close() })
+		sess := mustCreateCrashSession(ctx, st)
+		mustAppendEvent(ctx, st, sess.ID, "engine", TypeProviderError,
+			map[string]any{"error": "x", "reason": ReasonContextOverflow, "terminal": false})
+		d, err := DiagnoseSession(ctx, st, sess.ID)
+		if err != nil {
+			panic(err)
+		}
+		Expect(d.Status).To(Equal("active"))
+	})
+
 	It("keeps a fresh never-run session un-crashed", func() {
 		st := mustOpenCrashStore()
 		DeferCleanup(func() { _ = st.Close() })

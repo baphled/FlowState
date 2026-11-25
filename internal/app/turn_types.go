@@ -17,7 +17,12 @@ const TypeAssistantMessage = "assistant.message"
 // TypeTurnEnd is the turn-completion event type.
 const TypeTurnEnd = "turn.end"
 
-// TypeProviderError is the terminal provider-failure event type.
+// TypeProviderError is the provider-failure event type. Its payload says whether it ends the
+// session: terminal true (every failure path) is followed by the failed status, while the one
+// non-terminal use, reason context_overflow with terminal false, marks a request the loop then
+// compacts and retries (ADR-010 D10) and leaves the session active. A reader must read the
+// terminal field, never infer a failure from the type; readers that ignore the type (the doctor,
+// crash detection, the history rebuild and the replay export) already treat both alike.
 const TypeProviderError = "provider.error"
 
 // CancelCause is a context cancellation cause that names the reason

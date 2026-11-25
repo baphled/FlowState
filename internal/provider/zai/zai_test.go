@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -396,5 +397,80 @@ var _ = Describe("general route stream finish reason", func() {
 			}
 		}
 		Expect(rejected).NotTo(HaveOccurred())
+	})
+})
+
+// overflowRoutes are the three delivery routes of the adapter, each with the error body shape
+// it decodes.
+var overflowRoutes = map[string]func(base string) *zai.Provider{
+	"plain": func(base string) *zai.Provider { return zai.New("k", zai.WithBaseURL(base)) },
+	"coding": func(base string) *zai.Provider {
+		return zai.New("k", zai.WithBaseURL(base), zai.WithCoding())
+	},
+	"anthropic": func(base string) *zai.Provider {
+		return zai.New("k", zai.WithBaseURL(base), zai.WithCoding(), zai.WithCodingRoute("anthropic"))
+	},
+}
+
+func overflowFailure(route string, status int, code, message string) error {
+	body := fmt.Sprintf(`{"error":{"code":%q,"message":%q}}`, code, message)
+	if route == "anthropic" {
+		body = fmt.Sprintf(`{"type":"error","error":{"type":%q,"message":%q}}`, code, message)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	DeferCleanup(srv.Close)
+	_, err := overflowRoutes[route](srv.URL).Chat(context.Background(), &provider.ChatRequest{})
+	return err
+}
+
+var _ = Describe("Context overflow classification", func() {
+	DescribeTable("a failure that is an overflow",
+		func(route string, status int, code, message string) {
+			err := overflowFailure(route, status, code, message)
+			Expect(err).To(MatchError(provider.ErrContextOverflow))
+		},
+		Entry("the plain route, code 1261", "plain", 400, "1261", "Prompt exceeds max length"),
+		Entry("the coding route, code 1261", "coding", 400, "1261", "Prompt exceeds max length"),
+		Entry("the anthropic route, prompt is too long", "anthropic", 400, "invalid_request_error",
+			"prompt is too long: 250000 tokens > 200000 maximum"),
+		Entry("the coding route, an invalid_request_error that says prompt is too long", "coding", 400,
+			"invalid_request_error", "prompt is too long: 9 tokens > 8 maximum"),
+		Entry("the plain route, HTTP 413", "plain", 413, "", "too big"),
+		Entry("the anthropic route, HTTP 413", "anthropic", 413, "request_too_large", "Request exceeds the maximum size"),
+	)
+
+	DescribeTable("a failure that is not an overflow",
+		func(route string, status int, code, message string) {
+			err := overflowFailure(route, status, code, message)
+			Expect(err).NotTo(MatchError(provider.ErrContextOverflow))
+		},
+		Entry("another 400 on the plain route", "plain", 400, "1210", "invalid parameters"),
+		Entry("another invalid_request_error on the anthropic route", "anthropic", 400, "invalid_request_error",
+			"max_tokens must be positive"),
+		Entry("a message that only contains prompt is too long", "anthropic", 400, "invalid_request_error",
+			"your prompt is too long"),
+		Entry("a broad limit message", "plain", 400, "1234", "rate limit exceeds the context"),
+		Entry("code 1261 on a status that is not 400", "plain", 500, "1261", "Prompt exceeds max length"),
+		Entry("a prompt is too long message on a 500", "anthropic", 500, "invalid_request_error", "prompt is too long"),
+		Entry("a 429", "coding", 429, "1302", "rate limited"),
+		Entry("a 500", "anthropic", 500, "api_error", "internal error"),
+	)
+
+	It("classifies a streamed failure the same way", func() {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"code":"1261","message":"Prompt exceeds max length"}}`))
+		}))
+		DeferCleanup(srv.Close)
+		var got error
+		for ev := range zai.New("k", zai.WithBaseURL(srv.URL), zai.WithCoding()).Stream(context.Background(), &provider.ChatRequest{}) {
+			if ev.Err != nil {
+				got = ev.Err
+			}
+		}
+		Expect(got).To(MatchError(provider.ErrContextOverflow))
 	})
 })

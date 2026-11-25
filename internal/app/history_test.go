@@ -127,6 +127,12 @@ var _ = Describe("Bounded session history", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(string(encoded)).To(Equal("[]"))
 	})
+	It("keeps the conversation across a non-terminal overflow provider.error", func() {
+		marker := historyRow("provider.error", `{"error":"x","reason":"context_overflow","terminal":false}`)
+		messages, err := replaySessionHistory([]store.RecordedEvent{historyRow("user.message", `{"content":"request"}`), marker, historyRow("assistant.message", `{"content":"answer"}`)}, limits)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(messages).To(Equal([]provider.Message{{Role: "user", Content: "request"}, {Role: "assistant", Content: "answer"}}))
+	})
 	DescribeTable("preserves legacy text across current metadata rows", func(typ string) {
 		messages, err := replaySessionHistory([]store.RecordedEvent{historyRow("user.message", `{"content":"request"}`), historyRow("assistant.message", `{"content":"answer"}`), historyRow(typ, `{}`)}, limits)
 		Expect(err).NotTo(HaveOccurred())

@@ -46,6 +46,20 @@ type compactRun struct {
 	appended int
 }
 
+// execOverflow is runExecTurn's signal that the provider said the request does not fit the context
+// window and the non-terminal marker is written: the loop compacts and retries once.
+type execOverflow struct {
+	// cause is the provider's own error; it wraps provider.ErrContextOverflow.
+	cause error
+}
+
+// retryAfter says what the overflow retry follows: a provider error (cause) or a length finish
+// (truncated, the turn whose answer was cut off).
+type retryAfter struct {
+	cause     error
+	truncated execTurn
+}
+
 // ExecLoopResult reports one completed bounded run.
 type ExecLoopResult struct {
 	Turns           int64
