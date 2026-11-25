@@ -93,6 +93,20 @@ var _ = Describe("Bounded session history", func() {
 		Entry("contradictory result", []store.RecordedEvent{historyStart(), historyRow("tool.result", `{"tool":"echo","tool_call_id":"c","ok":true,"result":null,"error":{}}`)}),
 		Entry("terminal does not resolve calls", []store.RecordedEvent{historyRow("session.cancelled", `{}`)}))
 
+	It("accepts a started call whose arguments differ from the announcement only in key order and escaping", func() {
+		events := []store.RecordedEvent{
+			historyRow("user.message", `{"content":"request"}`),
+			historyRow("assistant.message", `{"content":"w","tool_calls":[{"id":"c","name":"echo","arguments":{"b":"a<b","a":1}}]}`),
+			historyRow("tool.call", `{"tool":"echo","tool_call_id":"c","args":{"a":1,"b":"a\u003cb"}}`),
+			historyResult(),
+		}
+		messages, err := replaySessionHistory(events, limits)
+		if err != nil {
+			panic(err)
+		}
+		Expect(messages).To(HaveLen(3))
+	})
+
 	DescribeTable("rejects invalid independent journal rows", func(events []store.RecordedEvent) {
 		_, err := replaySessionHistory(events, limits)
 		Expect(err).To(HaveOccurred())

@@ -1,7 +1,6 @@
 package app
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -182,6 +181,7 @@ func historyDecode(raw string, target any) error {
 }
 
 func sameHistoryArguments(left, right json.RawMessage) bool {
-	var a, b bytes.Buffer
-	return json.Compact(&a, left) == nil && json.Compact(&b, right) == nil && bytes.Equal(a.Bytes(), b.Bytes())
+	a, errA := canonicalJSON(left)
+	b, errB := canonicalJSON(right)
+	return errA == nil && errB == nil && a == b
 }

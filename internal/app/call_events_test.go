@@ -247,6 +247,115 @@ var _ = Describe("Per-call correlated event sink", func() {
 	})
 })
 
+// callEventAppendArgs binds a sink to a call carrying callArgs and appends
+// the tool.call start with the loop-side args value, returning the error.
+func callEventAppendArgs(callArgs string, loopArgs any) error {
+	_, _, w := callEventFixture()
+	sink, err := NewCallEventSink(w, provider.ToolCall{ID: "call-1", Name: "echo", Arguments: json.RawMessage(callArgs)})
+	if err != nil {
+		panic(err)
+	}
+	_, appendErr := sink.Append(context.Background(), "tool:echo", tool.TypeToolCall, map[string]any{"tool": "echo", "args": loopArgs})
+	return appendErr
+}
+
+var _ = Describe("Semantic call argument comparison", func() {
+	DescribeTable("accepts arguments that are semantically equal", func(callArgs, loopArgs string) {
+		Expect(callEventAppendArgs(callArgs, json.RawMessage(loopArgs))).To(Succeed())
+	},
+		Entry("less-than sign", `{"task":"width < 1"}`, `{"task":"width < 1"}`),
+		Entry("greater-than sign", `{"task":"a > b"}`, `{"task":"a > b"}`),
+		Entry("ampersand", `{"task":"a & b"}`, `{"task":"a & b"}`),
+		Entry("Go source text", `{"content":"if a < b && c > d { x := &y }"}`, `{"content":"if a < b && c > d { x := &y }"}`),
+		Entry("unsorted keys", `{"task":"x","agent":"y"}`, `{"agent":"y","task":"x"}`),
+		Entry("extra whitespace and newlines", "{\n  \"n\" :  2\n}", `{"n":2}`),
+		Entry("unicode escape against literal", `{"s":"\u00e9"}`, `{"s":"é"}`),
+		Entry("HTML escape against literal", `{"s":"\u003c"}`, `{"s":"<"}`),
+		Entry("big integer", `{"n":9007199254740993}`, `{ "n": 9007199254740993 }`),
+		Entry("nested objects and arrays", `{"a":[1,{"z":1,"b":[true,null]}],"c":{}}`, `{"c":{},"a":[1,{"b":[true,null],"z":1}]}`),
+		Entry("empty object", `{}`, ` { } `),
+		Entry("escaped quotes", `{"s":"say \"hi\""}`, `{"s":"say \u0022hi\u0022"}`))
+
+	DescribeTable("rejects arguments that genuinely differ", func(callArgs, loopArgs string) {
+		Expect(callEventAppendArgs(callArgs, json.RawMessage(loopArgs))).To(MatchError(ErrCallEventMismatch))
+	},
+		Entry("changed value", `{"task":"x"}`, `{"task":"y"}`),
+		Entry("extra key", `{"task":"x"}`, `{"task":"x","agent":"y"}`),
+		Entry("missing key", `{"task":"x","agent":"y"}`, `{"task":"x"}`),
+		Entry("changed big integer", `{"n":9007199254740993}`, `{"n":9007199254740992}`),
+		Entry("changed comparison character", `{"s":"a < b"}`, `{"s":"a > b"}`),
+		Entry("trailing data", `{"n":1}`, `{"n":1} {"n":1}`))
+
+	It("rejects arguments that are not valid JSON before any event", func() {
+		_, _, w := callEventFixture()
+		_, err := NewCallEventSink(w, provider.ToolCall{ID: "call-1", Name: "echo", Arguments: json.RawMessage(`{"n":`)})
+		Expect(err).To(MatchError(ErrInvalidCallEventCall))
+	})
+
+	It("rejects arguments with trailing data before any event", func() {
+		_, _, w := callEventFixture()
+		_, err := NewCallEventSink(w, provider.ToolCall{ID: "call-1", Name: "echo", Arguments: json.RawMessage(`{} {}`)})
+		Expect(err).To(MatchError(ErrInvalidCallEventCall))
+	})
+
+	DescribeTable("rejects a call whose meaning depends on the decoder", func(callArgs string) {
+		_, _, w := callEventFixture()
+		_, err := NewCallEventSink(w, provider.ToolCall{ID: "call-1", Name: "echo", Arguments: json.RawMessage(callArgs)})
+		Expect(err).To(MatchError(ErrInvalidCallEventCall))
+	},
+		Entry("an exact duplicate key", `{"a":1,"a":2}`),
+		Entry("keys equal under case folding", `{"path":"safe.txt","Path":"../escape"}`),
+		Entry("a Kelvin sign key against k", "{\"k\":1,\"\u212a\":2}"),
+		Entry("a collision inside a nested object", `{"x":[{"a":1,"A":2}]}`),
+		Entry("invalid UTF-8 in a string", "{\"s\":\"\xff\"}"))
+
+	It("accepts the same key in two sibling objects and after an array", func() {
+		Expect(callEventAppendArgs(`{"a":{"k":1},"b":{"k":2},"c":[{"k":1},{"k":2}]}`, json.RawMessage(`{"c":[{"k":1},{"k":2}],"b":{"k":2},"a":{"k":1}}`))).To(Succeed())
+	})
+
+	It("rejects a loop value whose case-colliding keys differ in document order from the call", func() {
+		Expect(callEventAppendArgs(`{"a":1}`, json.RawMessage(`{"Path":"../escape","path":"safe.txt"}`))).To(MatchError(ErrCallEventMismatch))
+	})
+
+	It("accepts a loop value built from a Go map whose keys are unsorted in the model bytes", func() {
+		Expect(callEventAppendArgs(`{"task":"x<y","agent":"y"}`, map[string]any{"agent": "y", "task": "x<y"})).To(Succeed())
+	})
+
+	It("runs a call carrying Go source through the real loop and records the call and result events", func() {
+		st, sid, w := callEventFixture()
+		code := `{"path":"a.go","content":"if a < b && c > d { p := &x }"}`
+		goCall := provider.ToolCall{ID: "call-1", Name: "echo", Arguments: json.RawMessage(code)}
+		_, l := callEventEchoLoop(w, goCall)
+		_, invokeErr := l.Invoke(context.Background(), "echo", json.RawMessage(code))
+		if invokeErr != nil {
+			panic(invokeErr)
+		}
+		events, _ := st.Replay(context.Background(), sid)
+		Expect(toolEventTypes(events)).To(Equal([]string{tool.TypeToolCall, tool.TypeToolResult}))
+	})
+
+	It("stores the arguments the loop passed without losing information", func() {
+		st, sid, w := callEventFixture()
+		code := `{"n":9007199254740993,"s":"é <&> \"q\"","a":[{"k":null}]}`
+		goCall := provider.ToolCall{ID: "call-1", Name: "echo", Arguments: json.RawMessage(code)}
+		_, l := callEventEchoLoop(w, goCall)
+		if _, err := l.Invoke(context.Background(), "echo", json.RawMessage(code)); err != nil {
+			panic(err)
+		}
+		events, _ := st.Replay(context.Background(), sid)
+		var payload struct {
+			Args json.RawMessage `json:"args"`
+		}
+		if err := json.Unmarshal([]byte(events[0].PayloadJSON), &payload); err != nil {
+			panic(err)
+		}
+		stored := string(payload.Args)
+		want, _ := canonicalJSON([]byte(code))
+		got, _ := canonicalJSON([]byte(stored))
+		Expect(got).To(Equal(want))
+	})
+})
+
 func toolEventTypes(events []store.RecordedEvent) []string {
 	types := make([]string, 0, len(events))
 	for _, event := range events {
