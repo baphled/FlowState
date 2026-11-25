@@ -116,6 +116,10 @@ type CompactLease struct {
 	Item  string
 	Agent string
 	Token int64
+	// Held, when set, is the caller's lease handle: Compact fences through it instead of
+	// checking Item, Agent and Token against the store. Item and Agent must still be non-empty
+	// (Compact refuses a lease without them); their values are not checked against the store.
+	Held ExecLease
 }
 
 // CompactOptions configures Compact.

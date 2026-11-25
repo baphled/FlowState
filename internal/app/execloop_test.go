@@ -784,3 +784,129 @@ var _ = Describe("failExecMaxTurns", func() {
 		Expect(statusOf(st, sess.ID)).To(Equal("active"))
 	})
 })
+
+// heldLeaseFake is a lease handle the caller holds: it counts Fence calls, can fail the n-th
+// Fence, and reports what the log held at each Fence through observe. It has no Release, as the
+// ExecLease interface has none; the real row staying in place is checked in execloop_session_test.go.
+// An emptyItem handle reports an empty Item.
+type heldLeaseFake struct {
+	fences    int
+	failOn    int
+	emptyItem bool
+	observe   func() int
+	seen      []int
+}
+
+func (h *heldLeaseFake) Item() string {
+	if h.emptyItem {
+		return ""
+	}
+	return "exec:held-fake"
+}
+func (h *heldLeaseFake) Owner() string { return "run:held-fake" }
+func (h *heldLeaseFake) Token() int64  { return 7 }
+func (h *heldLeaseFake) Fence(context.Context) error {
+	h.fences++
+	if h.observe != nil {
+		h.seen = append(h.seen, h.observe())
+	}
+	if h.fences == h.failOn {
+		return store.ErrLeaseFenced
+	}
+	return nil
+}
+
+// heldLoopFixture is a loop config with the fake handle and no LeaseItem or LeaseAgent; a foreign
+// legacy row on the session's exec item makes any acquire or config-owner fence by the loop fail.
+func heldLoopFixture(streamer *execLoopStreamer, held *heldLeaseFake) ExecLoopConfig {
+	cfg := execLoopFixture(streamer)
+	if _, err := cfg.Store.AcquireLease(context.Background(), "exec:"+cfg.Session.ID, "agent-b"); err != nil {
+		panic(err)
+	}
+	cfg.LeaseItem, cfg.LeaseAgent, cfg.Lease = "", "", held
+	return cfg
+}
+
+var _ = Describe("Execution loop given a held lease", func() {
+	var (
+		held *heldLeaseFake
+		cfg  ExecLoopConfig
+		res  *ExecLoopResult
+		err  error
+	)
+	BeforeEach(func() { held = &heldLeaseFake{} })
+
+	Context("when the run succeeds", func() {
+		BeforeEach(func() {
+			cfg = heldLoopFixture(&execLoopStreamer{turns: [][]provider.StreamEvent{{provText("done"), provFinish()}}}, held)
+			res, err = RunExecLoop(context.Background(), cfg)
+		})
+		It("runs without acquiring a lease of its own", func() { Expect(res.FinalContent).To(Equal("done")) })
+		It("fences the handle at the start and before the request", func() { Expect(held.fences).To(Equal(2)) })
+	})
+
+	Context("when the third fence of the handle fails", func() {
+		var streamer *execLoopStreamer
+		BeforeEach(func() {
+			held.failOn = 3
+			streamer = &execLoopStreamer{turns: toolsEveryTurn(4)}
+			cfg = heldLoopFixture(streamer, held)
+			cfg.MaxTurns = 4
+			res, err = RunExecLoop(context.Background(), cfg)
+		})
+		It("ends the run fenced", func() { Expect(err).To(MatchError(ErrExecLoopFenced)) })
+		It("makes no provider request after the failed fence", func() { Expect(streamer.reqs).To(HaveLen(1)) })
+	})
+
+	Context("when the first fence of the handle fails", func() {
+		BeforeEach(func() {
+			held.failOn = 1
+			cfg = heldLoopFixture(&execLoopStreamer{}, held)
+			_, err = RunExecLoop(context.Background(), cfg)
+		})
+		It("ends the run fenced, not with the raw fence error", func() { Expect(err).To(MatchError(ErrExecLoopFenced)) })
+	})
+
+	Context("when the fence before the compaction append fails", func() {
+		BeforeEach(func() {
+			held.failOn = 5
+			cfg, _ = autoConfig(usedTurn("c1", 1, 100), usedTurn("c2", 1, 100), overflowTurn(), summaryTurn("the summary"), doneTurn())
+			cfg.LeaseItem, cfg.LeaseAgent, cfg.Lease = "", "", held
+			_, err = RunExecLoop(context.Background(), cfg)
+		})
+		It("ends the run fenced", func() { Expect(err).To(MatchError(ErrExecLoopFenced)) })
+		It("appends no compaction", func() { Expect(countOf(cfg, TypeContextCompacted)).To(BeZero()) })
+	})
+
+	Context("when the handle has an empty item", func() {
+		It("is a misconfiguration, refused before the loop starts", func() {
+			held.emptyItem = true
+			cfg = heldLoopFixture(&execLoopStreamer{}, held)
+			Expect(runExec(context.Background(), cfg).ErrConfig).To(BeTrue())
+		})
+	})
+
+	Context("when a request overflows the window and the retry succeeds", func() {
+		BeforeEach(func() {
+			cfg, _ = autoConfig(usedTurn("c1", 1, 100), usedTurn("c2", 1, 100), overflowTurn(), summaryTurn("the summary"), doneTurn())
+			cfg.LeaseItem, cfg.LeaseAgent, cfg.Lease = "", "", held
+			if _, aerr := cfg.Store.AcquireLease(context.Background(), "exec:"+cfg.Session.ID, "agent-b"); aerr != nil {
+				panic(aerr)
+			}
+			held.observe = func() int { return countOf(cfg, TypeContextCompacted) }
+			_, err = RunExecLoop(context.Background(), cfg)
+		})
+		It("fences the handle at the start, each request, before the compaction append and before the retry", func() {
+			Expect(held.seen).To(Equal([]int{0, 0, 0, 0, 0, 1}))
+		})
+		It("completes the compaction under the handle", func() { Expect(countOf(cfg, TypeContextCompacted)).To(Equal(1)) })
+	})
+
+	Context("when it is given neither a handle nor a lease name", func() {
+		It("is a misconfiguration", func() {
+			cfg = execLoopFixture(&execLoopStreamer{})
+			cfg.LeaseItem, cfg.LeaseAgent = "", ""
+			Expect(runExec(context.Background(), cfg).ErrConfig).To(BeTrue())
+		})
+	})
+})

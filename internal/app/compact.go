@@ -207,7 +207,7 @@ func appendCompaction(ctx context.Context, st *store.Store, sessionID string, op
 	if w.NextSeq() != next {
 		return nil, failCompaction(CompactReasonLogChanged, fmt.Errorf("the log grew from %d to %d events", next, w.NextSeq()))
 	}
-	if err := st.FenceLease(ctx, opts.Lease.Item, opts.Lease.Agent, opts.Lease.Token); err != nil {
+	if err := fenceCompactLease(ctx, st, opts.Lease); err != nil {
 		return nil, cancelledOr(ctx, fmt.Errorf("%w: %v", ErrExecLoopFenced, err))
 	}
 	seq, err := w.Append(ctx, session.ActorEngine, TypeContextCompacted, payload)
@@ -443,4 +443,13 @@ func clearCompactLeases(ctx context.Context, st *store.Store, sessionID string) 
 		return fmt.Errorf("release compaction lease: %w", err)
 	}
 	return nil
+}
+
+// fenceCompactLease checks the compaction's lease is still held: through the caller's handle when
+// it gave one, otherwise by item, owner and token.
+func fenceCompactLease(ctx context.Context, st *store.Store, lease CompactLease) error {
+	if lease.Held != nil {
+		return lease.Held.Fence(ctx)
+	}
+	return st.FenceLease(ctx, lease.Item, lease.Agent, lease.Token)
 }

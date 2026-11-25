@@ -30,12 +30,18 @@ const execLeaseAgent = "cli"
 // RunSessionExecLoop wires one CLI-driven provider-driven execution
 // loop for sess: it composes the session builtin registry rooted at
 // the session workdir, gates tools through the allowlist and runs
-// RunExecLoop under a per-session lease. On success it appends the
+// RunExecLoop under a per-session lease: the one it acquires itself, or the caller-held
+// req.Lease, which must be the handle of "exec:"+sess.ID and which the loop only fences. The
+// caller releases a forwarded handle after this function has returned, that is after the
+// post-loop writers below. On success it appends the
 // terminal turn.end event and marks the session completed; on budget
 // exhaustion it pauses the session; on interruption it cancels the
 // session and returns ErrSessionCancelled. Provider failures keep the
 // loop's own failed-status recording.
 func RunSessionExecLoop(ctx context.Context, st *store.Store, dbPath string, sess *store.Session, streamer provider.Streamer, req SessionExecLoopRequest) (*ExecLoopResult, error) {
+	if err := checkSessionLease(sess, req.Lease); err != nil {
+		return nil, err
+	}
 	allowlist, err := loadToolAllowlist(ToolRequest{Allow: req.Allow, AllowFile: req.AllowFile})
 	if err != nil {
 		return nil, err
@@ -59,10 +65,6 @@ func RunSessionExecLoop(ctx context.Context, st *store.Store, dbPath string, ses
 	if err != nil {
 		return nil, err
 	}
-	maxTurns := req.MaxTurns
-	if maxTurns <= 0 {
-		maxTurns = execDefaultMaxTurns
-	}
 	cfg := ExecLoopConfig{
 		Store:      st,
 		Session:    sess,
@@ -71,9 +73,10 @@ func RunSessionExecLoop(ctx context.Context, st *store.Store, dbPath string, ses
 		Allowlist:  allowlist,
 		LeaseItem:  "exec:" + sess.ID,
 		LeaseAgent: execLeaseAgent,
-		MaxTurns:   maxTurns,
+		MaxTurns:   sessionMaxTurns(req),
 		MaxTokens:  req.MaxTokens,
 		Compaction: req.Compaction,
+		Lease:      req.Lease,
 	}
 	if err := bindRunBudget(ctx, st, sess, req.Budget, &cfg); err != nil {
 		return nil, err
@@ -208,4 +211,21 @@ func bindRunBudget(ctx context.Context, st *store.Store, sess *store.Session, bu
 		cfg.Pool, cfg.TurnBudget = NewBudgetPool(max(res.Granted-res.Consumed, 0)), 1
 	}
 	return nil
+}
+
+// checkSessionLease refuses a forwarded handle that is not the one of sess's exec item, a mix-up
+// of handles; no handle is fine, the loop then takes its own lease.
+func checkSessionLease(sess *store.Session, lease ExecLease) error {
+	if lease != nil && lease.Item() != "exec:"+sess.ID {
+		return fmt.Errorf("%w: lease handle is for %q, not session %s", ErrExecLoopConfig, lease.Item(), sess.ID)
+	}
+	return nil
+}
+
+// sessionMaxTurns is the run's turn limit: req.MaxTurns, or execDefaultMaxTurns when it is not positive.
+func sessionMaxTurns(req SessionExecLoopRequest) int64 {
+	if req.MaxTurns <= 0 {
+		return execDefaultMaxTurns
+	}
+	return req.MaxTurns
 }

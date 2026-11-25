@@ -1,21 +1,46 @@
 package app
 
 import (
+	"context"
+
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/store"
 	"github.com/baphled/flowstate/internal/tool"
 )
 
+// ExecLease is a held exec lease the loop is given by its caller (ADR-011 rule 8). *store.RunLease
+// satisfies it. The loop only fences it: it never acquires or releases a lease it was given,
+// because the caller keeps it held until the post-loop state writers have returned and releases
+// it afterwards. The interface therefore has no Release.
+type ExecLease interface {
+	// Item is the leased item, for example "exec:<session id>".
+	Item() string
+	// Owner is the lease owner the fence is checked for.
+	Owner() string
+	// Token is the fencing token the lease was granted with.
+	Token() int64
+	// Fence fails with store.ErrLeaseFenced once another owner or token replaced the lease.
+	Fence(ctx context.Context) error
+}
+
 // ExecLoopConfig carries the collaborators and limits for one provider-driven run.
 type ExecLoopConfig struct {
-	Store      *store.Store
-	Session    *store.Session
-	Streamer   provider.Streamer
-	Registry   *tool.Registry
-	Allowlist  []string
-	Pool       *BudgetPool
+	Store     *store.Store
+	Session   *store.Session
+	Streamer  provider.Streamer
+	Registry  *tool.Registry
+	Allowlist []string
+	Pool      *BudgetPool
+	// LeaseItem and LeaseAgent name the lease the loop acquires itself; they are required
+	// without a Lease and unused with one.
 	LeaseItem  string
 	LeaseAgent string
+	// Lease, when set, is a lease the caller holds. The loop neither acquires nor releases a
+	// lease then: it fences this one, and the compaction fences it too. The item, owner and
+	// token come from it, not from LeaseItem, LeaseAgent or a fresh grant, so it wins when both
+	// are set. The caller keeps it held until the post-loop state writers have returned and
+	// then releases it; its Item must not be empty.
+	Lease      ExecLease
 	MaxTurns   int64
 	TurnBudget int64
 	// MaxTokens caps each provider turn's response tokens; <= 0 uses
@@ -120,6 +145,11 @@ type SessionExecLoopRequest struct {
 	MaxTurns int64
 	// Compaction is the config's compaction object, applied to the run's sessions.
 	Compaction CompactionConfig
+	// Lease, when set, is the exec lease the caller holds for the run; RunSessionExecLoop
+	// forwards it to the loop, which neither acquires nor releases it. Its Item must be
+	// "exec:"+Session.ID. The caller releases it after RunSessionExecLoop has returned, that is
+	// after the post-loop state writers.
+	Lease ExecLease
 }
 
 // UsageTotals sums the provider usage of the turns that reported it. A turn
