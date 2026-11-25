@@ -78,19 +78,16 @@ flowstate session new --provider anthropic --model haiku --task "Say hello"
 `session compact <id> [--instructions <text>]` summarises the old part of a long session with the session's own
 provider and model (no tools, at most 8192 tokens) and appends one `context.compacted` event; the log is never
 rewritten, and `session replay` still shows everything. The newest turns (about 20000 estimated tokens) stay verbatim.
-It takes the session's exec lease under its own unique owner, so a session that holds an exec lease (a live run, or a
-crashed one) cannot be compacted. A crashed `run:` row of this machine is taken over by the next `session run`; a
-crashed `cli`, `delegate:` or `compact:` row is a legacy row that `session run` refuses, and needs
-`flowstate session unlock <id> --force`. The lease row of a compaction that crashed is cleared by the next
-`session compact`, not by `session run`: `session run` takes its own lease before it recovers anything and refuses a
-`compact:` row, which records no machine and so cannot be judged (exit 1, code `internal`, naming the holder and
-`flowstate session unlock <id>`); clear it with `session compact` or `flowstate session unlock <id> --force`. A
-second compaction started during a compaction still takes its lease, and the one in flight fails fenced and writes
-nothing; a `session run` started then is refused.
-It is refused unless the session is `active` or `paused`; it recovers a crashed turn whose lease
-is gone first; a paused session stays paused. It never releases a lease it did not take. It has no loop, so no budget
-pool applies: every flag that does not apply (`--budget`, `--max-tokens`, `--max-turns`, `--allow`, `--workdir`,
-`--provider`, `--model` and the like) is refused with exit 2 naming it. `--instructions` is one line of at most 1000
+It takes the session's exec lease under its own unique owner, `compact:<uuid>`, by the judged acquire, so a session
+whose lease is held by a live run cannot be compacted (nothing is written). A crashed `run:` or `compact:` row of this
+machine is taken over by the next `session run`, `session compact` or `tool run`. A legacy row, one written by an
+older binary (`cli`, `delegate:` or `compact:`), records no machine and cannot be judged: every one of them refuses it,
+naming the holder (exit 1, code `internal`), and it needs `flowstate session unlock <id> --force`; a leftover
+`compact:` row is no longer cleared silently. A compaction whose row was taken from it fails fenced and writes nothing.
+It is refused unless the session is `active` or `paused`; it recovers a crashed turn under its lease first; a paused
+session stays paused. It never releases a lease it did not take. It has no loop, so no budget pool applies:
+every flag that does not apply (`--budget`, `--max-tokens`, `--max-turns`, `--allow`, `--workdir`, `--provider`,
+`--model` and the like) is refused with exit 2 naming it. `--instructions` is one line of at most 1000
 bytes with no control characters (a tab counts), appended as a focus for the summary. It prints one JSON object:
 `session`, `event_seq`, `first_kept_seq`, `tokens_before`, `tokens_after`, `reason`, `model` and `usage`. The
 summariser's input is capped at 400 KiB: of a very long span only the newest part is summarised, though the events
@@ -144,7 +141,7 @@ on stderr. Flags that do not apply (`--budget`, `--model` and the like) are refu
 | `session budget <id>` | Show a session's budget and reservations |
 | `session message <id>` | Send a steering message from a parent to a child |
 | `session cancel <id>` / `session close <id>` | End a session |
-| `session tool <id>` | Run one allowed tool directly |
+| `session tool <id>` | Run one allowed tool directly (holds the session's run lease, so a live run refuses it) |
 | `swarm validate <manifest>` | Validate a swarm manifest (YAML) |
 | `swarm run <manifest>` | Run one: requires `--parent <id>` and `--budget <n>` |
 | `swarm run <manifest> --execute` | Run one with a coordinator agent that delegates the packets; see [Running a swarm](#running-a-swarm) |
@@ -290,10 +287,10 @@ flowstate session run "$id" --budget 200 --agents user --allow delegate --workdi
   "<id>"} or start a new one`), a finished one lost its result, which is not delivered, and the model starts a new one
   only if it still needs the work. The text says no child had started only when none had. Paths and profile names are
   never repeated to the model. The leases that unfinished children's killed runners left are cleared, so they can be
-  resumed. Each child's start is recorded as a `delegation.started` event in the parent's log. Under `session run`,
-  serve and `delegate resume` a judged lease (ADR-011) keeps other runs out. A call answered late (a log an earlier
-  build left with the call unanswered) gets its result after later events, which a provider that wants the result
-  next to the call may reject.
+  resumed (a live resumed child can be fenced: known limit L1, ADR-011). Each child's start is recorded as a
+  `delegation.started` event in the parent's log. Under `session run`, serve and `delegate resume` a judged lease
+  (ADR-011) keeps other runs out. A call answered late (a log an earlier build left with the call unanswered) gets its
+  result after later events, which a provider that wants the result next to the call may reject.
 - `tasks` runs several children in one call: an array of `{agent, task, cwd?}`, at most 8, exclusive with `agent`,
   `task` and `cwd`. At most 4 run at once; the rest start as slots free (calls in one turn run one after another, so the
   cap of 4 applies per call). Every entry is validated before any child starts: a ninth task, an unknown agent, a blank

@@ -8,8 +8,11 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	sqlite "github.com/libtnb/sqlite"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
@@ -24,6 +27,17 @@ type hookStreamer struct {
 	hook func()
 }
 
+// errSpyFence is what failingFence reports.
+var errSpyFence = errors.New("spy fence")
+
+// failingFence is a lease handle whose Fence always fails, whatever the row says.
+type failingFence struct{}
+
+func (failingFence) Item() string                { return "" }
+func (failingFence) Owner() string               { return "" }
+func (failingFence) Token() int64                { return 0 }
+func (failingFence) Fence(context.Context) error { return errSpyFence }
+
 func (h *hookStreamer) Stream(ctx context.Context, req *provider.ChatRequest) <-chan provider.StreamEvent {
 	if h.hook != nil {
 		h.hook()
@@ -36,6 +50,19 @@ func (h *hookStreamer) Stream(ctx context.Context, req *provider.ChatRequest) <-
 type lateCancelCtx struct{ context.Context }
 
 func (lateCancelCtx) Err() error { return context.Canceled }
+
+// seedLeaseRow writes the lease row of session id as a judged writer of machine would have left it.
+func seedLeaseRow(st *store.Store, id, owner string, token int64, machine, host string, pid int64) {
+	g, err := gorm.Open(sqlite.New(sqlite.Config{Conn: st.DB()}), &gorm.Config{Logger: logger.Discard})
+	if err != nil {
+		panic(err)
+	}
+	err = g.Table("leases").Create(map[string]any{"item": "exec:" + id, "agent": owner, "token": token,
+		"acquired_at_utc": "2026-01-02T03:04:05.000Z", "machine": machine, "host": host, "pid": pid}).Error
+	if err != nil {
+		panic(err)
+	}
+}
 
 // failureReason is the reason of a CompactionFailure that matches ErrCompactionFailed, else "".
 func failureReason(err error) string {
@@ -164,6 +191,19 @@ var _ = Describe("Compact", func() {
 		}
 		lease = CompactLease{Item: "exec:" + sessID, Agent: "cli", Token: token}
 		streamer = &hookStreamer{execLoopStreamer: execLoopStreamer{turns: [][]provider.StreamEvent{summaryTurn("SUM")}}}
+	})
+
+	Context("a lease handle whose fence fails while the row still matches", func() {
+		var before []store.RecordedEvent
+		var err error
+		BeforeEach(func() {
+			lease.Held = failingFence{}
+			before = rows()
+			_, err = compact(CompactOptions{})
+		})
+
+		It("fails as fenced", func() { Expect(err).To(MatchError(ErrExecLoopFenced)) })
+		It("appends nothing", func() { Expect(rows()).To(Equal(before)) })
 	})
 
 	Context("on success", func() {
@@ -583,32 +623,111 @@ var _ = Describe("CompactSession", func() {
 		}
 	})
 
-	Context("a leftover compact row of a crashed compaction", func() {
-		var types []string
+	Context("a leftover compact row written by the legacy acquire", func() {
+		var before []store.RecordedEvent
+		var token int64
+		var err error
 		BeforeEach(func() {
 			seed(true, words("ALPHA", "BRAVO", "CHARLIE")...)
-			must(st.AcquireLease(ctx, "exec:"+sessID, compactLeasePrefix+"dead"))
-			if _, err := run(); err != nil {
-				panic(err)
-			}
-			types = nil
-			for _, e := range rows() {
-				types = append(types, e.Type)
-			}
+			token = must(st.AcquireLease(ctx, "exec:"+sessID, compactLeasePrefix+"dead"))
+			before = rows()
+			_, err = run()
 		})
 
-		It("is cleared and the compaction is written", func() { Expect(types).To(ContainElement(TypeContextCompacted)) })
-		It("leaves no lease row", func() { Expect(st.LeaseToken(ctx, "exec:"+sessID)).To(Equal(int64(0))) })
+		// ADR-011 packet 12: the row used to be cleared silently; it records no machine, so it cannot be judged.
+		It("is refused as unjudgeable", func() { Expect(err).To(MatchError(ContainSubstring("(a row that cannot be judged"))) })
+		It("names the unlock command", func() {
+			Expect(err).To(MatchError(ContainSubstring("`flowstate session unlock " + sessID + " --force`")))
+		})
+		It("names the owner", func() { Expect(err).To(MatchError(ContainSubstring(compactLeasePrefix + "dead"))) })
+		It("is refused as fenced, as every held lease", func() { Expect(err).To(MatchError(ErrExecLoopFenced)) })
+		It("writes nothing", func() { Expect(rows()).To(Equal(before)) })
+		It("leaves the row in place", func() { Expect(st.LeaseToken(ctx, "exec:"+sessID)).To(Equal(token)) })
 	})
 
-	Context("a compaction whose row was cleared and taken by a run during the summary", func() {
+	Context("a live holder of the lease", func() {
+		var before []store.RecordedEvent
+		var held *store.RunLease
+		var err error
+		BeforeEach(func() {
+			seed(true, words("ALPHA", "BRAVO", "CHARLIE")...)
+			held = must(st.AcquireRunLease(ctx, "exec:"+sessID, "run:live"))
+			DeferCleanup(func() { _ = held.Release(ctx) })
+			before = rows()
+			_, err = run()
+		})
+
+		It("is refused, naming the holder", func() { Expect(err).To(MatchError(ContainSubstring("run:live"))) })
+		It("is not called unjudgeable", func() { Expect(err).NotTo(MatchError(ContainSubstring("a row that cannot be judged"))) })
+		It("does not suggest unlock --force", func() { Expect(err).NotTo(MatchError(ContainSubstring("--force"))) })
+		It("says the holder is running", func() { Expect(err).To(MatchError(ContainSubstring("the holder is running"))) })
+		It("leaves the log byte-identical", func() { Expect(rows()).To(Equal(before)) })
+		It("leaves the holder's lease valid", func() { Expect(held.Fence(ctx)).To(Succeed()) })
+	})
+
+	Context("a row of another machine", func() {
+		var err error
+		BeforeEach(func() {
+			seed(true, words("ALPHA", "BRAVO")...)
+			seedLeaseRow(st, sessID, "run:away", 3, "other-machine", "otherhost", 4321)
+			_, err = run()
+		})
+
+		It("names the host of the holder", func() { Expect(err).To(MatchError(ContainSubstring("host otherhost"))) })
+		It("names the pid of the holder", func() { Expect(err).To(MatchError(ContainSubstring("pid 4321"))) })
+		It("names when the holder took it", func() {
+			Expect(err).To(MatchError(ContainSubstring("since 2026-01-02T03:04:05.000Z")))
+		})
+	})
+
+	for _, owner := range []string{compactLeasePrefix + "dead", "run:dead"} {
+		Context("a crashed judged row of this machine, held by "+owner, func() {
+			var types []string
+			var duringToken int64
+			BeforeEach(func() {
+				seed(true, words("ALPHA", "BRAVO", "CHARLIE")...)
+				seedLeaseRow(st, sessID, owner, 4, store.MachineIdentity(), "deadhost", 1)
+				hooked := &hookStreamer{execLoopStreamer: execLoopStreamer{turns: [][]provider.StreamEvent{summaryTurn("SUM")}}}
+				hooked.hook = func() { duringToken = must(st.LeaseToken(ctx, "exec:"+sessID)) }
+				must(CompactSession(ctx, st, sessID, CompactOptions{Streamer: hooked, KeepRecent: 1}))
+				types = nil
+				for _, e := range rows() {
+					types = append(types, e.Type)
+				}
+			})
+
+			It("is taken over and the compaction is written", func() { Expect(types).To(ContainElement(TypeContextCompacted)) })
+			It("is taken over with the next token", func() { Expect(duringToken).To(Equal(int64(5))) })
+			It("leaves no lease row after", func() { Expect(st.LeaseToken(ctx, "exec:"+sessID)).To(Equal(int64(0))) })
+		})
+	}
+
+	Context("while it summarises", func() {
+		var probe error
+		BeforeEach(func() {
+			seed(true, words("ALPHA", "BRAVO", "CHARLIE")...)
+			hooked := &hookStreamer{execLoopStreamer: execLoopStreamer{turns: [][]provider.StreamEvent{summaryTurn("SUM")}}}
+			hooked.hook = func() {
+				if other, err := st.AcquireRunLease(ctx, "exec:"+sessID, "run:other"); err != nil {
+					probe = err
+				} else {
+					_ = other.Release(ctx)
+				}
+			}
+			must(CompactSession(ctx, st, sessID, CompactOptions{Streamer: hooked, KeepRecent: 1}))
+		})
+
+		It("holds the lease, so a second run is refused", func() { Expect(probe).To(MatchError(store.ErrSessionBusy)) })
+	})
+
+	Context("a compaction whose row was taken from it during the summary", func() {
 		var before []store.RecordedEvent
 		var err error
 		BeforeEach(func() {
 			seed(true, words("ALPHA", "BRAVO", "CHARLIE")...)
 			hooked := &hookStreamer{execLoopStreamer: execLoopStreamer{turns: [][]provider.StreamEvent{summaryTurn("SUM")}}}
 			hooked.hook = func() {
-				check(RecoverCrashedSession(ctx, st, sessID))
+				check(st.ClearLeaseOwnedBy(ctx, "exec:"+sessID, compactLeasePrefix))
 				must(st.AcquireLease(ctx, "exec:"+sessID, "cli"))
 			}
 			before = rows()
@@ -634,13 +753,22 @@ var _ = Describe("CompactSession", func() {
 		It("is refused before recovery writes its marker", func() { Expect(types).NotTo(ContainElement("session.interrupted")) })
 	})
 
-	It("says in the refusal which session is in use and who holds it", func() {
-		seed(true, words("ALPHA", "BRAVO")...)
-		must(st.AcquireLease(ctx, "exec:"+sessID, "cli"))
-		_, err := run()
-		Expect(err).To(MatchError("session " + sessID + " is in use: lease held by cli; if that run crashed, " +
-			"`session run` takes over a run: holder and `flowstate session unlock " + sessID + " --force` clears any other, " +
-			"else wait for it to finish"))
+	Context("the refusal of a legacy row", func() {
+		var err error
+		BeforeEach(func() {
+			seed(true, words("ALPHA", "BRAVO")...)
+			must(st.AcquireLease(ctx, "exec:"+sessID, "cli"))
+			_, err = run()
+		})
+
+		It("says which session is in use", func() { Expect(err).To(MatchError(ContainSubstring("session " + sessID + " is in use"))) })
+		It("says who holds it", func() { Expect(err).To(MatchError(ContainSubstring("lease held by cli"))) })
+		It("says what takes over a crashed holder", func() {
+			Expect(err).To(MatchError(ContainSubstring("`session run`, `session compact` or `tool run`")))
+		})
+		It("names the unlock command", func() {
+			Expect(err).To(MatchError(ContainSubstring("`flowstate session unlock " + sessID + " --force`")))
+		})
 	})
 
 	Context("a failed compaction", func() {
@@ -708,16 +836,18 @@ var _ = Describe("crash recovery of a leftover lease row", func() {
 		sessionID = sess.ID
 	})
 
-	It("clears the row of a crashed compaction", func() {
-		must(st.AcquireLease(ctx, item, compactLeasePrefix+"dead"))
+	// ADR-011 packet 12: recovery no longer touches lease rows; a legacy compact: row records no machine.
+	It("leaves the legacy row of a crashed compaction in place", func() {
+		token := must(st.AcquireLease(ctx, item, compactLeasePrefix+"dead"))
 		check(RecoverCrashedSession(ctx, st, sessionID))
-		Expect(st.LeaseToken(ctx, item)).To(Equal(int64(0)))
+		Expect(st.LeaseToken(ctx, item)).To(Equal(token))
 	})
 
-	It("lets a run take the lease after it", func() {
+	It("leaves a run that wants the lease refused by that row, as unjudgeable", func() {
 		must(st.AcquireLease(ctx, item, compactLeasePrefix+"dead"))
 		check(RecoverCrashedSession(ctx, st, sessionID))
-		Expect(must(st.AcquireLease(ctx, item, "cli"))).To(BeNumerically(">", 0))
+		_, err := st.AcquireRunLease(ctx, item, "run:next")
+		Expect(err).To(MatchError(store.ErrSessionBusy))
 	})
 
 	for _, owner := range []string{"cli", "run:other"} {

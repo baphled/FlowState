@@ -78,14 +78,13 @@ told apart.
 
 PR #458 (merged; read in `internal/app/compact.go`) found the live-run version of this: `session compact` shared the
 owner `cli`, ran recovery under the live run and released the live run's lease. `CompactSession` now takes its own
-owner, `compact:<uuid>` (`newCompactOwner`), and `AcquireLease` refuses any row of another owner, so a session that
-has a `cli` or `run:` row, live or crashed, is refused with nothing written (as `CompactLeaseHeld`, which matches
-`ErrExecLoopFenced`, so it too reaches the user as `internal`). That is a conservative patch, not a rule: a crashed
-session must be resumed with `session run` before it can be compacted. A crashed compaction leaves a `compact:<uuid>`
-row that nothing would clear, so `clearCompactLeases` deletes rows of that prefix at the start of `CompactSession` and
-in `RecoverCrashedSession`. That clearing is the interim this ADR's liveness rule supersedes: a crashed
-`compact:<uuid>` row is then taken over like any other. Until the packets that move compact and recovery land (see
-the packet order), it stays.
+owner, `compact:<uuid>` (`newCompactOwner`, since removed), and `AcquireLease` refuses any row of another owner, so a
+session that has a `cli` or `run:` row, live or crashed, is refused with nothing written (as `CompactLeaseHeld`, which
+matches `ErrExecLoopFenced`, so it too reaches the user as `internal`). That is a conservative patch, not a rule: a
+crashed session must be resumed with `session run` before it can be compacted. A crashed compaction leaves a
+`compact:<uuid>` row that nothing would clear, so `clearCompactLeases` deleted rows of that prefix at the start of
+`CompactSession` and in `RecoverCrashedSession`. That clearing was the interim this ADR's liveness rule superseded:
+packet 12 removed it, and a crashed judged `compact:<uuid>` row is now taken over like any other.
 
 What the other harnesses do:
 
@@ -146,10 +145,10 @@ a refusal can name the holder. Recovery runs only after ownership is established
   The same holds for the macOS and Windows identities. The `host:<name>` fallback is stored as is: a host name is not
   confidential, and the host column shows it anyway. The refusal message prints the host, never `machine`.
 - **Who writes them.** Only the new `AcquireRunLease` (see the rule) writes `machine`, `host` and `pid`. The existing
-  `Store.AcquireLease` (legacy: the coordinator, delegate children, `session compact`, and every other caller until
-  its packet moves it) never writes them: its rows keep `machine = ''`, which the judgement table reads as unjudgeable
-  and refuses. This is what makes the packet order safe (rule 10), so no packet may make the legacy acquire
-  record a machine.
+  `Store.AcquireLease` (legacy: the coordinator, delegate children, and every other caller until its packet moves it;
+  `session compact` moved in packet 12) never writes them: its rows keep `machine = ''`, which the judgement table reads
+  as unjudgeable and refuses. This is what makes the packet order safe (rule 10), so no packet may make the legacy
+  acquire record a machine.
 - **Migration.** Schema version 10. The migrator adds the columns and records version 10.
   - **Constants.** `foreignKeyVersion` stays `int64(9)`: it is the version that introduced the foreign keys (#426), and
     `migrateForeignKeys`, `backupExistingDatabase` and `backupTaken` in `fkrebuild.go` mean exactly "below v9".
@@ -284,8 +283,8 @@ A heartbeat is not added now; it is open question 2.
    handle until they return; the loop does not release it. No line numbers are cited anywhere in this ADR, because they
    move.
 9. **Children.** The lease of a delegated child uses the same acquire. When a crashed parent is recovered, the
-   parent's lock is already held by the recoverer, and each child's lock is free because the process that held it is
-   gone, so `ClearLeaseOwnedBy` keeps its role, run only after ownership.
+   parent's lock is already held by the recoverer, and each child's lock is assumed free (its runner is presumed gone;
+   this is not checked, see known limit L1), so `ClearLeaseOwnedBy` keeps its role, run only after ownership.
 
 10. **Legacy rows and ordering.** `AcquireRunLease` is the only writer of `machine`, and the only acquire that takes a
     lock file. The legacy `AcquireLease` keeps its owner-based re-grant and writes `machine = ''`, no lock and no host
@@ -297,10 +296,11 @@ A heartbeat is not added now; it is open question 2.
     "unjudgeable, refused" rather than "dead, taken". Without this rule, a live `delegate:<uuid>` child or
     `compact:<uuid>` row, written by the legacy acquire on this machine and holding no lock, would be judged dead and
     taken over: the false "dead" this ADR exists to prevent. The interim cost is the one D9 accepts for old rows: a
-    legacy row left by a crash needs `session unlock --force` once `session run` has switched (a crashed `compact:` row
-    is still cleared by the next `session compact`, as today). `README.md` says that such a row "is cleared by the next
-    `session run` or `session compact`"; that stops being true when `session run` switches, because `session run` then
-    refuses it (empty `machine`) and only `session compact`, `RecoverCrashedSession` or `unlock --force` clears it. The
+    legacy row left by a crash needs `session unlock --force` once `session run` has switched (a crashed legacy
+    `compact:` row was cleared by the next `session compact` until packet 12, which removed that clearing).
+    `README.md` said that such a row "is cleared by the next `session run` or `session compact`"; that stops being
+    true when `session run` switches, because `session run` then refuses it (empty `machine`) and only
+    `unlock --force` clears it (after packet 12, neither `session compact` nor `RecoverCrashedSession` does). The
     same sentence stands in `docs/architecture/OVERVIEW.md` (the paragraph on `session compact`). The wiring packet
     therefore rewrites both, and the packet that moves compact rewrites both again (the whole passage, which ends "a
     `session run` or a second compaction started during a compaction takes its lease, and the one in flight fails
@@ -375,7 +375,7 @@ A heartbeat is not added now; it is open question 2.
   refused on a live holder, and on a crashed one it takes over and runs recovery first, as `session run` does. That
   removes the "resume with `session run` before compacting" limit of the conservative patch, and the interim
   `compact:` row clearing of #458 (`clearCompactLeases`, called from `CompactSession` and `RecoverCrashedSession`),
-  which the packet that moves compact deletes. #458 is merged, so this builds on `CompactSession` as it is.
+  which packet 12 deleted. #458 is merged, so this builds on `CompactSession` as it is.
 - **Writers that take the lease.** `session run` (text turn and loop), a serve run, the swarm coordinator, compact,
   delegate runs (already), and `tool run`, which appends `tool.call` and `tool.result` events with an event writer
   and no lease today. The resume of a paused session and the steering drain are part of the run's preamble, so they
@@ -501,6 +501,9 @@ remains.
 - Fencing is still checked once per turn and once before the compaction append. The takeover rule does not rely on
   it (the holder it replaces is gone), but a design that ever judged a live holder dead would have to fence appends
   in their own transaction first. Not done here.
+- **Known limit L1: parent recovery clears unfinished children's `delegate:` rows without checking their lock.**
+  `ClearLeaseOwnedBy` deletes by owner prefix and token only, so recovering a parent can delete the judged row of a
+  live resumed child and let it be fenced. A later change should delete only legacy rows, or check the lock first.
 - A `session close` or `session cancel` in another process while a run is live is still two writers of the log. It is
   the next gap after this one.
 - **Open, unchecked: the cancel race.** `session cancel`, run against a session with two live runs
@@ -604,9 +607,10 @@ before packets 1 to 8 have merged; packets 10 and 12 may follow in either order,
   enforces that assumption with a lease instead of assuming it. Detection and the `session.interrupted` marker are
   unchanged, and recovery now has a precondition: ownership.
 - ADR-009 (delegation): D8's "assumes no other process runs the session" limit is lifted. `delegate:<run id>` owners
-  stay; `ClearLeaseOwnedBy` stays for the children of a recovered parent. D11 ("No run-level lease: each child is an
-  ordinary session with the existing per-session protection") stays true: the lease is per session, and this ADR
-  makes that protection real across processes.
+  stay; `ClearLeaseOwnedBy` stays for the children of a recovered parent. Known limit L1 (Consequences), not fixed by
+  packet 12: it deletes a child's `delegate:` row without judging it, so it can fence a live resumed child. D11 ("No
+  run-level lease: each child is an ordinary session with the existing per-session protection") stays true: the lease is
+  per session, and this ADR makes that protection real across processes.
 - ADR-007 (transport adapters): `serve` is an `internal/server` adapter; the refusal reaches it through the shared
   error-code table (D11), and no lock code lives in the adapter.
 - ADR-010 (compaction): D9 (`session compact` takes the exec lease) is the rule here, with `compact:<uuid>`; the

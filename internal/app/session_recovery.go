@@ -87,23 +87,19 @@ func crashedFromEvents(events []store.RecordedEvent) bool {
 // that requires a tool result right after its tool call may reject the request.
 // Nothing here reorders the log, so a re-request is not always valid.
 //
-// Limit: nothing here can tell a dead run from a live one. `session run`,
-// serve and `delegate resume` hold a judged lease (AcquireSessionRunLease,
-// AcquireRunLease) when they call it, so a live run elsewhere is refused
-// first (ADR-009 D8, ADR-011).
-//
-// It also clears the exec lease row of a crashed `session compact` (clearCompactLeases, whose
-// comment argues the safety), so that a run can proceed. CompactSession does not call this: it
-// holds such a row itself.
+// Limit (liveness): this function does not judge liveness; its callers do.
+// Every writer that calls it holds a judged lease (ADR-011): `session run`,
+// serve and `delegate resume` (AcquireSessionRunLease, AcquireRunLease) and
+// `session compact` (owner compact:<uuid>), so a live run elsewhere is refused
+// before anything is written here. It does not touch the session's own lease
+// row (and no longer clears compact: rows): a crashed judged row of this
+// machine is taken over by the next acquirer, and a legacy row (one the older
+// acquire wrote, which records no machine) is refused by every acquirer as
+// unjudgeable until `session unlock <id> --force`. Known limit L1 (ADR-011): it
+// still clears the unfinished delegate children's delegate: rows
+// (Store.ClearLeaseOwnedBy) without judging them, which can fence a live
+// resumed child.
 func RecoverCrashedSession(ctx context.Context, st *store.Store, sessionID string) error {
-	if err := clearCompactLeases(ctx, st, sessionID); err != nil {
-		return err
-	}
-	return recoverCrashedSession(ctx, st, sessionID)
-}
-
-// recoverCrashedSession is RecoverCrashedSession without the compact-row clearing.
-func recoverCrashedSession(ctx context.Context, st *store.Store, sessionID string) error {
 	events, rerr := st.Replay(ctx, sessionID)
 	if rerr != nil {
 		return fmt.Errorf("crash recovery detection: crash detection replay: %w", rerr)
@@ -160,8 +156,8 @@ func unansweredDelegateCalls(events []store.RecordedEvent) []int {
 // resume an unfinished one, or start anew for one that finished but whose
 // result was lost. The engine does not re-issue the call. The leases of those
 // children are released first: no live run holds the parent, so their runners
-// died with its process and a lease, which never expires, would block their
-// resume. Releasing first keeps a retry safe: a crash before the result leaves
+// are assumed gone (not checked: known limit L1, ADR-011) and a lease, which
+// never expires, would block their resume. Releasing first keeps a retry safe: a crash before the result leaves
 // the call dangling, so it is answered and released again. A call that already
 // has a result is skipped, so running recovery again never adds a second one.
 // Other dangling tools are left alone.
@@ -252,8 +248,9 @@ func interruptedDelegateMessage(children []danglingChild) string {
 
 // AcquireSessionRunLease takes the exec lease of sess for one `session run` or
 // serve run under a fresh owner, run:<uuid>, by the judging acquire (ADR-011
-// rules 5 and 7). Callers load the session and reject terminal states first
-// (ADR-002 phase 1), then call this, and run RecoverCrashedSession, the resume
+// rules 5 and 7); acquireOwnedRunLease does the work for any owner prefix.
+// Callers load the session and reject terminal states first (ADR-002 phase
+// 1), then call this, and run RecoverCrashedSession, the resume
 // and the steering drain only on success: a refused run writes nothing. The
 // status is read again once the lease is held, because it may have changed in
 // between; the returned session is that fresh row, and a session that became
@@ -264,11 +261,18 @@ func interruptedDelegateMessage(children []danglingChild) string {
 // the run's last writer has returned (the loop, the text-only turn, the
 // post-loop writers) and then releases it, on every path.
 func AcquireSessionRunLease(ctx context.Context, st *store.Store, sess *store.Session) (*store.RunLease, *store.Session, error) {
+	return acquireOwnedRunLease(ctx, st, sess, "run:")
+}
+
+// acquireOwnedRunLease is AcquireSessionRunLease for the owner prefix (run: or
+// compact:), followed by a fresh uuid.
+func acquireOwnedRunLease(ctx context.Context, st *store.Store, sess *store.Session, prefix string,
+) (*store.RunLease, *store.Session, error) {
 	id, err := session.NewID()
 	if err != nil {
 		return nil, nil, fmt.Errorf("run lease owner: %w", err)
 	}
-	lease, err := st.AcquireRunLease(ctx, "exec:"+sess.ID, "run:"+id)
+	lease, err := st.AcquireRunLease(ctx, "exec:"+sess.ID, prefix+id)
 	if err != nil {
 		return nil, nil, fmt.Errorf("run lease: %w", err)
 	}

@@ -165,6 +165,9 @@ type CompactLeaseHeld struct {
 	SessionID string
 	// Holder is the owner of the lease row.
 	Holder string
+	// Unjudgeable is true when the row cannot be judged (another machine or an older writer), so only
+	// `session unlock --force` clears it; false for a live holder, which unlock refuses.
+	Unjudgeable bool
 }
 
 // CompactionFailure is the error of a compaction that wrote nothing. It matches

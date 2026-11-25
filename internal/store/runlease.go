@@ -46,6 +46,7 @@ func (e *SessionBusyError) Error() string {
 	why := "held"
 	if e.Unjudgeable {
 		why = "held by a lease that cannot be judged (another machine or an older writer)"
+		cmd += " --force"
 	}
 	host, pid := e.Host, "unknown"
 	if host == "" {

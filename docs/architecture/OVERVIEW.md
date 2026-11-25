@@ -250,24 +250,24 @@ object (count, `invalid`, last `tokens_after`, summary token totals, separate fr
 `session compact` (`CompactSession`) appends the event: it picks the cut (`ChooseCut`: a `turn.start` or an
 `assistant.message`, never inside a call and its result, never inside a pending `delegate` call, strictly after the
 previous cut), asks the session's own provider for the summary with no tools, validates it, fences the exec lease and
-appends once. It takes that lease under a unique owner, so any exec lease row (a live or a crashed run) refuses it.
-A crashed `run:` row of this machine is taken over by the next `session run`; a crashed `cli`, `delegate:` or
-`compact:` row needs `flowstate session unlock <id> --force`. The row of a crashed compaction is cleared by the next
-`session compact`, not by `session run`: `session run` takes its own lease first (ADR-011) and refuses a `compact:`
-row, which records no machine and cannot be judged, until `session compact` or `session unlock --force` clears it.
-The clearing is safe for
-the log because the append fences the lease first, so a compaction whose row was cleared fails fenced and writes
-nothing; a second compaction started during a compaction takes its lease, and a `session run` started then is
-refused. A failed
-compaction writes no compaction event (crash recovery may add its interruption marker first).
-The tool loop also appends it, with reason `auto`: before each provider request it compares the context (the last
-reported turn context plus an estimate of the tool results since, or the estimate of the whole rebuilt history) with
-`window - reserve`, draws one pool unit, summarises, appends and continues from the rebuilt history; a failed automatic
-compaction writes nothing, is not retried in the run and the run continues. In `swarm run --execute` the coordinator
-and its children compact by the config's `compaction` settings (including `enabled: false`), the coordinator by its
-profile's `context_window`. A provider context-overflow error (or a `length` finish with no calls over the line)
-compacts with reason `overflow` and retries the request once, after a non-terminal `provider.error` (`terminal` false,
-`reason` `context_overflow`) that leaves the session `active`; every other `provider.error` is terminal.
+appends once. It takes that lease through the judged acquire (ADR-011) under a unique owner, `compact:<uuid>`, so a
+live holder refuses it and nothing is written. A crashed `run:` or `compact:` row of this machine is taken over by the
+next `session run`, `session compact` or `tool run`; `session run` and `session compact` then recover the crash, `tool
+run` does not. A legacy row (a `cli`, `delegate:` or `compact:` row written by an older binary) records no machine and
+cannot be judged: every acquirer refuses it until `flowstate session unlock <id> --force`; a leftover `compact:` row is
+no longer cleared silently, and `RecoverCrashedSession` no longer touches the session's own lease row or clears
+`compact:` rows (it still clears the unfinished delegate children's `delegate:` rows, known limit L1 (ADR-011), which
+can fence a live resumed child). The append fences the lease through the handle, so a compaction whose row was taken
+from it fails fenced and writes nothing. `tool run` holds the same lease around its appends. A failed compaction writes
+no compaction event (crash recovery may add its interruption marker first). The tool loop also appends it, with reason
+`auto`: before each provider request it compares the context (the last reported turn context plus an estimate of the
+tool results since, or the estimate of the whole rebuilt history) with `window - reserve`, draws one pool unit,
+summarises, appends and continues from the rebuilt history; a failed automatic compaction writes nothing, is not retried
+in the run and the run continues. In `swarm run --execute` the coordinator and its children compact by the config's
+`compaction` settings (including `enabled: false`), the coordinator by its profile's `context_window`. A provider
+context-overflow error (or a `length` finish with no calls over the line) compacts with reason `overflow` and retries
+the request once, after a non-terminal `provider.error` (`terminal` false, `reason` `context_overflow`) that leaves the
+session `active`; every other `provider.error` is terminal.
 
 ## Verified conversation history
 
