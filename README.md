@@ -59,7 +59,8 @@ flowstate session doctor <id>  # crash state, messages, budget, finish reason, t
 
 By default everything is stored in `./flowstate.db`; pass `--db <path>` to any subcommand to use another file.
 
-Run with tools by allowing them explicitly, and say where they operate:
+Run with tools by allowing them explicitly, and say where they operate (a relative `--workdir`, such as `.`, is
+resolved against the current directory; `~` is not expanded):
 
 ```sh
 flowstate session run <id> --allow fs.read --allow fs.write --workdir ./work

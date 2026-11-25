@@ -173,6 +173,12 @@ func validateDelegateRequest(req *DelegateRequest) error {
 // errParentWorkdirRefused message; neither carries an OS path or an OS error. The
 // resolved directory is returned for the caller to use, not to show the model.
 func confineChildWorkdir(parent, child string) (string, error) {
+	// A relative parent (`--workdir .`) is anchored first: pathWithin cannot
+	// compare it with an absolute child.
+	parent, err := filepath.Abs(parent)
+	if err != nil {
+		return "", errParentWorkdirRefused()
+	}
 	root, err := filepath.EvalSymlinks(parent)
 	if err != nil || !isDirectory(root) {
 		return "", errParentWorkdirRefused()

@@ -218,6 +218,49 @@ func escapeEntries() []TableEntry {
 	return entries
 }
 
+var _ = Describe("confineChildWorkdir with a relative parent", func() {
+	var base string
+
+	BeforeEach(func() {
+		base = GinkgoT().TempDir()
+		check(os.Mkdir(filepath.Join(base, "sub"), 0o750))
+		previous, err := os.Getwd()
+		check(err)
+		check(os.Chdir(base))
+		DeferCleanup(func() { check(os.Chdir(previous)) })
+	})
+
+	It("accepts an absolute child inside a relative parent", func() {
+		// The child is named by its physical path: on macOS the temporary directory
+		// sits behind a symlink and a relative parent is anchored at the physical
+		// current directory.
+		got, err := confineChildWorkdir(".", filepath.Join(resolvedPath(base), "sub"))
+		check(err)
+		Expect(got).To(Equal(resolvedPath(filepath.Join(base, "sub"))))
+	})
+	It("accepts a relative child of a relative parent", func() {
+		got, err := confineChildWorkdir(".", "sub")
+		check(err)
+		Expect(got).To(Equal(resolvedPath(filepath.Join(base, "sub"))))
+	})
+	It("returns an absolute directory when the child is empty", func() {
+		got, err := confineChildWorkdir(".", "")
+		check(err)
+		Expect(filepath.IsAbs(got)).To(BeTrue())
+	})
+	It("refuses a child that leaves a relative parent", func() {
+		_, err := confineChildWorkdir("sub", "..")
+		Expect(err).To(MatchError(errWorkdirRefused()))
+	})
+})
+
+// resolvedPath is dir with symbolic links resolved (temp dirs may sit behind one).
+func resolvedPath(dir string) string {
+	resolved, err := filepath.EvalSymlinks(dir)
+	check(err)
+	return resolved
+}
+
 var _ = Describe("RunDelegatedChild", func() {
 	var ctx context.Context
 	BeforeEach(func() { ctx = context.Background() })

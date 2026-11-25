@@ -178,6 +178,119 @@ var _ = Describe("fs.write", func() {
 	})
 })
 
+// chdirTo makes dir the current directory for one spec and restores the previous
+// one afterwards (Ginkgo runs these specs serially in-process).
+func chdirTo(dir string) {
+	previous, err := os.Getwd()
+	if err != nil {
+		panic(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		panic(err)
+	}
+	DeferCleanup(func() {
+		if err := os.Chdir(previous); err != nil {
+			panic(err)
+		}
+	})
+}
+
+var _ = Describe("fs tools under a relative workdir", func() {
+	var base string
+
+	BeforeEach(func() {
+		base = GinkgoT().TempDir()
+		write(base, "big.txt", "top")
+		write(base, "sub/x.txt", "nested")
+		chdirTo(base)
+	})
+
+	DescribeTable("fs.read resolves the path against the current directory",
+		func(workdir, path, want string) {
+			l, _ := newFSLoop(NewFSRead(workdir), []string{FSReadName})
+			res, err := invoke(l, FSReadName, `{"path":`+strconv.Quote(path)+`}`)
+			if err != nil {
+				panic(err)
+			}
+			Expect(res.(map[string]any)["content"]).To(Equal(want))
+		},
+		Entry("with workdir . and a plain name", ".", "big.txt", "top"),
+		Entry("with workdir . and a ./ prefixed name", ".", "./big.txt", "top"),
+		Entry("with workdir ./sub", "./sub", "x.txt", "nested"),
+		Entry("with workdir sub", "sub", "x.txt", "nested"),
+		Entry("with workdir sub/..", "sub/..", "big.txt", "top"),
+	)
+
+	DescribeTable("fs.read still refuses an escape",
+		func(workdir, path string) {
+			l, _ := newFSLoop(NewFSRead(workdir), []string{FSReadName})
+			_, err := invoke(l, FSReadName, `{"path":`+strconv.Quote(path)+`}`)
+			Expect(errors.Is(err, ErrPathOutsideWorkdir)).To(BeTrue())
+		},
+		Entry("a .. traversal from workdir .", ".", "../big.txt"),
+		Entry("a .. traversal from workdir sub", "sub", "../big.txt"),
+		Entry("an absolute path", ".", hostAbsolutePath()),
+	)
+
+	It("refuses an absolute path naming a file inside the workdir", func() {
+		l, _ := newFSLoop(NewFSRead("."), []string{FSReadName})
+		_, err := invoke(l, FSReadName, `{"path":`+strconv.Quote(filepath.Join(base, "big.txt"))+`}`)
+		Expect(errors.Is(err, ErrPathOutsideWorkdir)).To(BeTrue())
+	})
+
+	It("refuses an empty workdir", func() {
+		l, _ := newFSLoop(NewFSRead(""), []string{FSReadName})
+		_, err := invoke(l, FSReadName, `{"path":"big.txt"}`)
+		Expect(errors.Is(err, ErrPathOutsideWorkdir)).To(BeTrue())
+	})
+
+	It("treats ~ as a missing relative directory and refuses it as before", func() {
+		l, _ := newFSLoop(NewFSRead("~"), []string{FSReadName})
+		_, err := invoke(l, FSReadName, `{"path":"big.txt"}`)
+		Expect(errors.Is(err, ErrPathOutsideWorkdir)).To(BeTrue())
+	})
+
+	if runtime.GOOS != "windows" {
+		It("refuses a symlink that leaves a relative workdir", func() {
+			outside := GinkgoT().TempDir()
+			write(outside, "secret.txt", "secret")
+			must(os.Symlink(outside, filepath.Join(base, "link")))
+			l, _ := newFSLoop(NewFSRead("."), []string{FSReadName})
+			_, err := invoke(l, FSReadName, `{"path":"link/secret.txt"}`)
+			Expect(errors.Is(err, ErrPathOutsideWorkdir)).To(BeTrue())
+		})
+
+		It("reads through an absolute workdir that is a symlink to a directory", func() {
+			viaLink := filepath.Join(GinkgoT().TempDir(), "rootlink")
+			must(os.Symlink(base, viaLink))
+			l, _ := newFSLoop(NewFSRead(viaLink), []string{FSReadName})
+			res, err := invoke(l, FSReadName, `{"path":"big.txt"}`)
+			if err != nil {
+				panic(err)
+			}
+			Expect(res.(map[string]any)["content"]).To(Equal("top"))
+		})
+	}
+
+	It("fs.write creates a file under a relative workdir", func() {
+		l, _ := newFSLoop(NewFSWrite("."), []string{FSWriteName})
+		_, err := invoke(l, FSWriteName, `{"path":"made/new.txt","content":"fresh"}`)
+		if err != nil {
+			panic(err)
+		}
+		Expect(read(base, "made/new.txt")).To(Equal("fresh"))
+	})
+
+	It("fs.edit edits a file under a relative workdir", func() {
+		l, _ := newFSLoop(NewFSEdit("."), []string{FSEditName})
+		_, err := invoke(l, FSEditName, `{"path":"big.txt","old_text":"top","new_text":"changed"}`)
+		if err != nil {
+			panic(err)
+		}
+		Expect(read(base, "big.txt")).To(Equal("changed"))
+	})
+})
+
 var _ = Describe("Loop typed fs error codes", func() {
 	It("maps ErrPathOutsideWorkdir to its code", func() {
 		l, rs := newFSLoop(NewFSRead(GinkgoT().TempDir()), []string{FSReadName})
@@ -237,3 +350,12 @@ var _ = Describe("import lint", func() {
 		Expect(importLintViolations()).To(BeEmpty())
 	})
 })
+
+// hostAbsolutePath returns a path that is absolute on the host: on Windows a
+// bare "/x" has no volume and is relative, so a volume-qualified one is used.
+func hostAbsolutePath() string {
+	if runtime.GOOS == "windows" {
+		return `C:\Windows\win.ini`
+	}
+	return "/big.txt"
+}

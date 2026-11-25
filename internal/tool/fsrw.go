@@ -84,11 +84,19 @@ func WithMaxReadBytes(n int64) FSOption { return func(o *fsOptions) { o.maxRead 
 // WithMaxWriteBytes overrides the write byte cap.
 func WithMaxWriteBytes(n int64) FSOption { return func(o *fsOptions) { o.maxWrite = n } }
 
-// resolveConfined cleans rel and joins it onto workdir, rejecting
+// resolveConfined cleans rel and joins it onto workdir (made absolute), rejecting
 // empty/absolute/traversing paths and symlink escapes.
 func resolveConfined(workdir, rel string) (string, error) {
-	if rel == "" || filepath.IsAbs(rel) {
+	if rel == "" || filepath.IsAbs(rel) || workdir == "" {
 		return "", ErrPathOutsideWorkdir
+	}
+	// A relative workdir (`--workdir .`) is anchored to the current directory
+	// first: filepath.Join cleans "./" away, so the prefix check below would
+	// otherwise refuse every path. Symlinks stay unresolved here; the root is
+	// resolved separately below.
+	workdir, err := filepath.Abs(workdir)
+	if err != nil {
+		return "", err
 	}
 	clean := filepath.Clean(rel)
 	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
@@ -102,6 +110,15 @@ func resolveConfined(workdir, rel string) (string, error) {
 	if resolved, err := filepath.EvalSymlinks(workdir); err == nil {
 		root = resolved
 	}
+	if err := confineSymlinks(root, joined); err != nil {
+		return "", err
+	}
+	return joined, nil
+}
+
+// confineSymlinks refuses a target whose deepest existing ancestor resolves
+// outside root.
+func confineSymlinks(root, joined string) error {
 	// The deepest existing ancestor of the target must evaluate back
 	// under workdir; missing tails are created by fs.write but must
 	// not route out via a symlink.
@@ -110,12 +127,12 @@ func resolveConfined(workdir, rel string) (string, error) {
 		resolved, err := filepath.EvalSymlinks(probe)
 		if err == nil {
 			if resolved != root && !strings.HasPrefix(resolved, root+string(filepath.Separator)) {
-				return "", ErrPathOutsideWorkdir
+				return ErrPathOutsideWorkdir
 			}
 			break
 		}
 		if !os.IsNotExist(err) {
-			return "", err
+			return err
 		}
 		parent := filepath.Dir(probe)
 		if parent == probe {
@@ -123,7 +140,7 @@ func resolveConfined(workdir, rel string) (string, error) {
 		}
 		probe = parent
 	}
-	return joined, nil
+	return nil
 }
 
 // NewFSRead returns fs.read rooted at workdir; cap defaults to
