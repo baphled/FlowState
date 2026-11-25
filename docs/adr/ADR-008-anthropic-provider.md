@@ -155,7 +155,9 @@ runs `claude`, and sends no OAuth, `Authorization` or `anthropic-beta` header, o
    block index, a tool input above 1 MiB and a `message_stop` with an unfinished `tool_use` (unless `max_tokens`)
    are the same error; whitespace-only assistant text is not re-sent as a text block.
    Not verified against the live API (no account credit); the shapes follow the documented
-   Messages API. Unsupported: token usage is not reported; an unset `max_tokens` becomes 8192 and an explicit one
+   Messages API. Token usage is reported (input, output, cache read and cache write tokens, from the stream's
+   `message_start` and `message_delta` usage) and the loop records it; the subscription route still reports none, as
+   Claude Code's output is not parsed for it. An unset `max_tokens` becomes 8192 and an explicit one
    is sent as given, capped at 131072 (a small limit can be spent on hidden reasoning, giving finish reason
    `length`); no retries.
 
@@ -191,7 +193,7 @@ runs `claude`, and sends no OAuth, `Authorization` or `anthropic-beta` header, o
 
 ### Negative (API-key route)
 
-1. No usage reporting, no retries, redirects not followed.
+1. No retries; redirects not followed. (Usage is reported on this route; the subscription route reports none.)
 2. A truncated stream is an error; truncation at `max_tokens` is finish reason `length`.
 
 ### Follow-ups
