@@ -58,6 +58,11 @@ var _ = Describe("stream parsing", func() {
 			`{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn"}`),
 	)
 
+	It("reports no usage even when the result line carries one: the claude route's figures are unverified", func() {
+		result := `{"type":"result","is_error":false,"stop_reason":"end_turn","usage":{"input_tokens":9,"output_tokens":4}}`
+		Expect(last(stream(result)).Usage).To(BeNil())
+	})
+
 	DescribeTable("the finish reason follows the result stop_reason",
 		func(result, want string) {
 			Expect(last(stream(result)).FinishReason).To(Equal(want))

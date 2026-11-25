@@ -21,6 +21,7 @@ type anthropicResponse struct {
 		Name  string          `json:"name"`
 		Input json.RawMessage `json:"input"`
 	} `json:"content"`
+	Usage json.RawMessage `json:"usage"`
 }
 
 // anthropicEvent is one SSE event from a streaming Messages response.
@@ -41,6 +42,12 @@ type anthropicEvent struct {
 		// StopReason is set on message_delta events.
 		StopReason string `json:"stop_reason"`
 	} `json:"delta"`
+	// Message is set on message_start events (an object holding the usage) and
+	// may be any JSON on others (an error event can carry a string), so it is
+	// kept raw and decoded only for message_start.
+	Message json.RawMessage `json:"message"`
+	// Usage is set on message_delta events; it is cumulative for the message.
+	Usage json.RawMessage `json:"usage"`
 	// Error is set on error events.
 	Error struct {
 		Type    string `json:"type"`

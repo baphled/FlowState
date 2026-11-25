@@ -490,6 +490,10 @@ var _ = Describe("APIKey", func() {
 			Expect(events[len(events)-1].Kind).To(Equal(provider.StreamEventFinish))
 		})
 
+		It("carries no usage when the API reported none", func() {
+			Expect(events[len(events)-1].Usage).To(BeNil())
+		})
+
 		It("passes the stream validator", func() {
 			var v provider.StreamValidator
 			var first error
@@ -499,6 +503,33 @@ var _ = Describe("APIKey", func() {
 				}
 			}
 			Expect(first).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("reported usage", func() {
+		const start = `data: {"type":"message_start","message":{"usage":{"input_tokens":12,` +
+			`"cache_read_input_tokens":3,"output_tokens":1}}}` + "\n\n"
+		const delta = `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":9}}` + "\n\n"
+		var want *provider.Usage
+
+		BeforeEach(func() { want = &provider.Usage{InputTokens: 12, OutputTokens: 9, CacheReadTokens: 3} })
+
+		It("reaches the finish event of a stream", func() {
+			reply = start + delta + `data: {"type":"message_stop"}` + "\n\n"
+			var last provider.StreamEvent
+			for ev := range p.Stream(context.Background(), hello()) {
+				last = ev
+			}
+			Expect(last.Usage).To(Equal(want))
+		})
+
+		It("reaches a non-streaming response", func() {
+			reply = `{"content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":12,"output_tokens":9,"cache_read_input_tokens":3}}`
+			resp, err := p.Chat(context.Background(), hello())
+			if err != nil {
+				panic(err)
+			}
+			Expect(resp.Usage).To(Equal(want))
 		})
 	})
 

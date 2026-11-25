@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -88,6 +89,28 @@ var _ = Describe("provider validation boundaries", func() {
 		Entry("missing finish reason", StreamEvent{Kind: StreamEventFinish}),
 		Entry("missing error", StreamEvent{Kind: StreamEventError}),
 		Entry("untyped structured call", StreamEvent{ToolCall: &ToolCall{ID: "call_1", Name: "lookup", Arguments: json.RawMessage(`{}`)}}))
+	DescribeTable("rejects usage anywhere but a finish event", func(event StreamEvent) {
+		event.Usage = &Usage{InputTokens: 1}
+		validator := &StreamValidator{}
+		Expect(validator.Accept(event)).NotTo(Succeed())
+	},
+		Entry("on a text delta", StreamEvent{Kind: StreamEventText, Content: "hi"}),
+		Entry("on a legacy delta", StreamEvent{Content: "hi"}),
+		Entry("on a tool call", StreamEvent{Kind: StreamEventToolCall, ToolCall: &ToolCall{ID: "call_1", Name: "lookup", Arguments: json.RawMessage(`{}`)}}),
+		Entry("on an error", StreamEvent{Kind: StreamEventError, Err: errors.New("boom")}))
+	It("rejects a negative usage on a finish event", func() {
+		validator := &StreamValidator{}
+		Expect(validator.Accept(StreamEvent{Kind: StreamEventFinish, FinishReason: "stop", Usage: &Usage{OutputTokens: -3}})).NotTo(Succeed())
+	})
+	It("accepts a usage-bearing finish event", func() {
+		validator := &StreamValidator{}
+		Expect(validator.Accept(StreamEvent{Kind: StreamEventFinish, FinishReason: "stop", Usage: &Usage{InputTokens: 4}})).To(Succeed())
+	})
+	It("keeps a rejected usage from ending the stream", func() {
+		validator := &StreamValidator{}
+		_ = validator.Accept(StreamEvent{Kind: StreamEventText, Content: "hi", Usage: &Usage{}})
+		Expect(validator.Accept(StreamEvent{Kind: StreamEventFinish, FinishReason: "stop"})).To(Succeed())
+	})
 	It("rejects events after a finish", func() {
 		validator := &StreamValidator{}
 		err := validator.Accept(StreamEvent{Kind: StreamEventFinish, FinishReason: "stop"})
@@ -118,3 +141,25 @@ var _ = DescribeTable("namespaced tools", func(name string) {
 	call := ToolCall{ID: "call_1", Name: name, Arguments: json.RawMessage(`{}`)}
 	Expect(call.Validate()).To(Succeed())
 }, Entry("read", "fs.read"), Entry("write", "fs.write"), Entry("edit", "fs.edit"), Entry("execute", "exec.run"))
+
+var _ = Describe("Usage.Validate", func() {
+	DescribeTable("fails closed on a count no provider can report",
+		func(usage Usage) {
+			Expect(usage.Validate()).NotTo(Succeed())
+		},
+		Entry("negative input", Usage{InputTokens: -1}),
+		Entry("negative output", Usage{OutputTokens: -1}),
+		Entry("negative cache read", Usage{CacheReadTokens: -1}),
+		Entry("negative cache write", Usage{CacheWriteTokens: -1}),
+		Entry("input above the cap", Usage{InputTokens: MaxUsageTokens + 1}),
+		Entry("output above the cap", Usage{OutputTokens: MaxUsageTokens + 1}),
+	)
+
+	It("accepts a reported zero", func() {
+		Expect(Usage{}.Validate()).To(Succeed())
+	})
+
+	It("accepts counts at the cap", func() {
+		Expect(Usage{InputTokens: MaxUsageTokens, CacheWriteTokens: 5}.Validate()).To(Succeed())
+	})
+})

@@ -51,11 +51,13 @@ type codingChunk struct {
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
+	Usage *openAIUsage `json:"usage"`
 }
 type codingAssembly struct {
 	calls  []codingCall
 	finish string
 	strict bool
+	usage  *provider.Usage
 }
 type codingResponse struct {
 	Choices []struct {
@@ -64,4 +66,5 @@ type codingResponse struct {
 			ToolCalls json.RawMessage `json:"tool_calls"`
 		} `json:"message"`
 	} `json:"choices"`
+	Usage *openAIUsage `json:"usage"`
 }
