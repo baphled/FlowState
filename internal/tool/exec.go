@@ -2,8 +2,8 @@ package tool
 
 // exec.run session tool (M2-P3): runs owner-allow-listed binaries
 // with deny-by-default subcommand gating, always in the session
-// workdir, under a hard timeout, with a scrubbed child environment
-// and byte-capped output capture.
+// workdir, under a hard timeout, with an allowlisted child
+// environment and byte-capped output capture.
 //
 // SECURITY POSTURE — honest limitations: network access is NOT
 // enforced (git push/fetch, gh, go mod download may reach the
@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -165,14 +166,121 @@ func allowed(b ExecBinary, args []string) bool {
 	return true
 }
 
-// childEnv builds the minimal scrubbed environment: PATH only, all
-// FLOWSTATE_* stripped so a child cannot re-enter the harness.
-func childEnv() []string {
-	path := os.Getenv("PATH")
-	if path == "" {
-		path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+// execSecretEnv matches variable names that look like credentials. It is
+// applied AFTER the allowlist, so a secret-looking name is never forwarded
+// even when a default lists it by mistake.
+var execSecretEnv = regexp.MustCompile(`(?i)key|token|secret|password|credential|auth`)
+
+// commonExecEnv is the fixed list of variables forwarded to EVERY exec.run
+// child: locale, terminal, time zone, temp directories and the Windows system
+// names. None of them locates or holds a credential.
+func commonExecEnv() []string {
+	return []string{"PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TZ", "TMPDIR", "TMP", "TEMP",
+		"SYSTEMROOT", "PATHEXT", "COMSPEC", "WINDIR"}
+}
+
+// toolchainExecEnv is forwarded ONLY to the allowlisted binaries named go or
+// make: the go tool cannot run without HOME or a cache directory. git and gh
+// never receive it, because HOME and the XDG/Windows profile directories are
+// how they find ~/.gitconfig credential helpers, netrc and ~/.config/gh
+// hosts.yml (the user's GitHub token). make is an owner-accepted escape: its
+// recipes can run anything, including the go tool, so it is treated as go.
+// HTTP(S)_PROXY, NO_PROXY and GOAUTH are never forwarded (they may carry
+// credentials). GOFLAGS, XDG_CONFIG_HOME and XDG_DATA_HOME are not forwarded
+// either: GOFLAGS can run a program (-toolexec) in forms no filter reliably
+// catches, and without the XDG config dir neither go nor a make-launched gh
+// finds a user config file through XDG (HOME-based paths stay reachable
+// through make, the accepted escape). Residual risks: see goNeutralisers and
+// unsafeGoValue; `go
+// test` runs arbitrary code by design, so the exec allowlist, not the
+// environment, is the control for that.
+func toolchainExecEnv() []string {
+	return []string{
+		"HOME", "USER", "LOGNAME",
+		"GOPATH", "GOCACHE", "GOMODCACHE", "GOTOOLCHAIN", "GOROOT", "GOENV", "GOPROXY", "GOSUMDB",
+		"GOPRIVATE", "GONOSUMDB", "GONOPROXY", "GONOSUMCHECK", "GOINSECURE", "GOVCS", "GOOS", "GOARCH",
+		"CGO_ENABLED", "CC", "CXX",
+		"XDG_CACHE_HOME",
+		"USERPROFILE", "LOCALAPPDATA", "APPDATA",
 	}
-	return []string{"PATH=" + path}
+}
+
+// goNeutralisers are fixed values set for the go and make child, never taken
+// from the engine and never overridable: the go tool, and the git it spawns,
+// then read no user git config, credential helper, insteadOf rule or ~/.netrc.
+// A private-module fetch needs the operator's GOPRIVATE and own transport.
+func goNeutralisers() []string {
+	return []string{"GIT_CONFIG_GLOBAL=" + os.DevNull, "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0",
+		"NETRC=" + os.DevNull}
+}
+
+// unsafeGoURLList reports whether a GOPROXY/GOSUMDB list has an entry with
+// userinfo in its authority or a query token. The authority of a URL entry
+// ends at the first "/", "?" or "#" after "://"; a scheme-less entry (which
+// go accepts) ends at its first "/". off, direct and file:// stay valid.
+func unsafeGoURLList(v string) bool {
+	for _, f := range strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == '|' || r == ' ' }) {
+		if strings.ContainsAny(f, "?&") {
+			return true
+		}
+		authority, _, _ := strings.Cut(f, "/")
+		if _, rest, ok := strings.Cut(f, "://"); ok {
+			authority = rest
+			if i := strings.IndexAny(rest, "/?#"); i >= 0 {
+				authority = rest[:i]
+			}
+		}
+		if strings.Contains(authority, "@") {
+			return true
+		}
+	}
+	return false
+}
+
+// unsafeGoValue reports whether the value of a go-tool variable must not be
+// forwarded: GOPROXY and GOSUMDB carrying URL userinfo or a query token.
+// GOFLAGS is never forwarded at all, so it needs no value filter.
+func unsafeGoValue(name, v string) bool {
+	return (name == "GOPROXY" || name == "GOSUMDB") && unsafeGoURLList(v)
+}
+
+// childEnv builds the allowlisted child environment for the allowlisted
+// binary bin: the common names, the toolchain names when bin is go or make,
+// and the fixed goNeutralisers for go and make. Each is forwarded only when set in the engine's
+// environment, never when it looks like a secret (the filter runs after the
+// allowlist) or unsafeGoValue rejects it, once each. A rejected GOPROXY becomes
+// GOPROXY=off, so go fails closed instead of using the public proxy; a rejected
+// GOSUMDB is left unset, which keeps the default checksum verification on. Nothing else is inherited,
+// so FLOWSTATE_* is stripped and a child cannot re-enter the harness.
+func childEnv(bin string) []string {
+	names := commonExecEnv()
+	if bin == "go" || bin == "make" {
+		names = append(names, toolchainExecEnv()...)
+	}
+	seen := map[string]bool{}
+	var env []string
+	for _, name := range names {
+		if seen[name] || execSecretEnv.MatchString(name) {
+			continue
+		}
+		seen[name] = true
+		if v, ok := os.LookupEnv(name); ok && (name != "PATH" || v != "") {
+			if unsafeGoValue(name, v) {
+				if name == "GOPROXY" {
+					env = append(env, "GOPROXY=off")
+				}
+				continue
+			}
+			env = append(env, name+"="+v)
+		}
+	}
+	if os.Getenv("PATH") == "" {
+		env = append(env, "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+	}
+	if bin == "go" || bin == "make" {
+		env = append(env, goNeutralisers()...)
+	}
+	return env
 }
 
 // Write copies up to the configured limit while consuming all child output.
@@ -210,7 +318,7 @@ func waitExec(ctx context.Context, cmd *exec.Cmd) error {
 
 // run uses an absolute path resolved from trusted constructor policy,
 // never argv0 supplied by the tool caller. It does not invoke a shell.
-func (t *execTool) run(ctx context.Context, path string, args []string) (map[string]any, error) {
+func (t *execTool) run(ctx context.Context, name, path string, args []string) (map[string]any, error) {
 	cctx, cancel := context.WithTimeout(ctx, t.timeout)
 	defer cancel()
 	cwd, err := filepath.EvalSymlinks(t.workdir)
@@ -219,7 +327,7 @@ func (t *execTool) run(ctx context.Context, path string, args []string) (map[str
 	}
 	buf := &cappedExecOutput{limit: t.maxOut}
 	cmd := &exec.Cmd{Path: path, Args: append([]string{path}, args...),
-		Dir: cwd, Env: childEnv(), Stdout: buf, Stderr: buf}
+		Dir: cwd, Env: childEnv(name), Stdout: buf, Stderr: buf}
 	runErr := waitExec(cctx, cmd)
 	if errors.Is(runErr, context.DeadlineExceeded) {
 		return nil, fmt.Errorf("%w after %s", ErrExecTimeout, t.timeout)
@@ -270,5 +378,5 @@ func (t *execTool) Invoke(ctx context.Context, args json.RawMessage) (any, error
 	if !allowed(b, a.Args) {
 		return nil, fmt.Errorf("%w: %s %v", ErrExecDeniedSubcommand, a.Cmd, a.Args)
 	}
-	return t.run(ctx, b.Path, a.Args)
+	return t.run(ctx, a.Cmd, b.Path, a.Args)
 }
