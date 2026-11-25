@@ -43,6 +43,59 @@ var windowTable = map[string]int{
 	"z.ai/glm-5.3-highspeed":               1000000,
 }
 
+// outputTable maps "provider/model" to the model's maximum output tokens, the
+// maxTokens of the same registry entries (same SOURCE, date and exact-id rule
+// as windowTable). It bounds the default and the escalation of max_tokens.
+var outputTable = map[string]int{
+	"anthropic/claude-fable-5":             128000,
+	"anthropic/claude-fable-5-1":           128000,
+	"anthropic/claude-fable-5-2":           128000,
+	"anthropic/claude-haiku-4-5":           64000,
+	"anthropic/claude-haiku-4-5-20251001":  64000,
+	"anthropic/claude-haiku-5-5":           128000,
+	"anthropic/claude-opus-4-5":            64000,
+	"anthropic/claude-opus-4-5-20251101":   64000,
+	"anthropic/claude-opus-4-6":            128000,
+	"anthropic/claude-opus-4-7":            128000,
+	"anthropic/claude-opus-4-8":            128000,
+	"anthropic/claude-opus-5":              128000,
+	"anthropic/claude-opus-5-5":            128000,
+	"anthropic/claude-sonnet-4-5":          64000,
+	"anthropic/claude-sonnet-4-5-20250929": 64000,
+	"anthropic/claude-sonnet-4-6":          128000,
+	"anthropic/claude-sonnet-5":            128000,
+	"anthropic/claude-sonnet-5-5":          128000,
+	"z.ai/glm-4.7":                         131072,
+	"z.ai/glm-5-turbo":                     131072,
+	"z.ai/glm-5.2":                         131072,
+	"z.ai/glm-5.2-highspeed":               131072,
+	"z.ai/glm-5.3":                         131072,
+	"z.ai/glm-5.3-flash":                   131072,
+	"z.ai/glm-5.3-highspeed":               131072,
+}
+
+// ResolveMaxOutput returns the max_tokens a run sends: the explicit
+// --max-tokens or config value when positive, else the model's table maximum
+// capped at DefaultOutputCap, else (an unknown model) DefaultMaxOutput. The
+// compaction line (window - max(reserve, max_tokens)) follows this value, so
+// a table model's line sits DefaultOutputCap below its window at most.
+func ResolveMaxOutput(providerName, model string, explicit int64) int64 {
+	if explicit > 0 {
+		return explicit
+	}
+	if capped, ok := tableMaxOutput(providerName, model); ok {
+		return capped
+	}
+	return DefaultMaxOutput
+}
+
+// tableMaxOutput is the table maximum of a known model capped at
+// DefaultOutputCap; ok is false for a model the table lacks.
+func tableMaxOutput(providerName, model string) (capped int64, ok bool) {
+	limit, ok := outputTable[tableKey(providerName, model)]
+	return int64(min(limit, DefaultOutputCap)), ok
+}
+
 // tableKey builds the windowTable key, accepting the "zai" alias the provider
 // registry accepts for "z.ai".
 func tableKey(providerName, model string) string {

@@ -28,8 +28,20 @@ func compactLimit(cfg *ExecLoopConfig) (limit int, ok bool) {
 	if window <= 0 {
 		return 0, false
 	}
-	limit = window - max(settings.Reserve, int(cfg.MaxTokens))
+	limit = window - max(settings.Reserve, int(outputReserve(cfg, window)))
 	return limit, limit > 0
+}
+
+// outputReserve is the output the line leaves room for: the explicit MaxTokens, else the capped table
+// maximum of a known model limited to a quarter of the window, so a defaulted cap never empties a
+// small window's line, else 0: an unknown model's line is the reserve alone, as before the default
+// cap existed (its 8192 default is below the default reserve).
+func outputReserve(cfg *ExecLoopConfig, window int) int64 {
+	if cfg.MaxTokens > 0 {
+		return cfg.MaxTokens
+	}
+	capped, _ := tableMaxOutput(cfg.Session.Provider, cfg.Session.ModelID)
+	return min(capped, int64(window/4))
 }
 
 // estimateOverhead is the bytes/4 estimate of what each request carries besides the history: the

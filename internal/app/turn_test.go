@@ -755,3 +755,19 @@ var _ = Describe("OpenStore on a database with orphan rows", func() {
 		Expect(openErr).To(MatchError(store.ErrReferentialIntegrity))
 	})
 })
+
+var _ = Describe("TurnWithOptions max_tokens", func() {
+	It("sends the capped table maximum of a known model when none is set", func() {
+		st := newStore()
+		ctx := context.Background()
+		sess, err := session.Create(ctx, st, "z.ai", "glm-5.3", session.DefaultHarness, "sha", "say hi")
+		if err != nil {
+			panic(err)
+		}
+		fake := &capturingStreamer{fakeStreamer: fakeStreamer{events: []provider.StreamEvent{{Content: "hi"}}}}
+		if _, err = TurnWithOptions(ctx, st, sess, fake, TurnOptions{}); err != nil {
+			panic(err)
+		}
+		Expect(fake.got.MaxTokens).To(Equal(int64(32768)))
+	})
+})

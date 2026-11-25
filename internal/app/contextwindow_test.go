@@ -147,3 +147,33 @@ var _ = DescribeTable("the window table holds the registry value for",
 	Entry("glm-5.3", "z.ai", "glm-5.3", 1000000),
 	Entry("glm-5.3-flash", "z.ai", "glm-5.3-flash", 1000000),
 )
+
+var _ = DescribeTable("ResolveMaxOutput",
+	func(providerName, model string, explicit, want int64) {
+		Expect(ResolveMaxOutput(providerName, model, explicit)).To(Equal(want))
+	},
+	Entry("caps a large table maximum at the default cap", "z.ai", "glm-5.3", int64(0), int64(32768)),
+	Entry("accepts the zai alias", "zai", "glm-5.3", int64(0), int64(32768)),
+	Entry("caps an anthropic maximum at the default cap", "anthropic", "claude-sonnet-5-5", int64(0), int64(32768)),
+	Entry("falls back to 8192 for an unknown model", "ollama", "llama3", int64(0), int64(8192)),
+	Entry("lets an explicit value win over the table", "z.ai", "glm-5.3", int64(100), int64(100)),
+	Entry("lets an explicit value above the maximum through", "z.ai", "glm-5.3", int64(500000), int64(500000)),
+)
+
+var _ = Describe("the output table", func() {
+	It("holds an entry for every model of the window table", func() {
+		var missing []string
+		for key := range windowTable {
+			if _, ok := outputTable[key]; !ok {
+				missing = append(missing, key)
+			}
+		}
+		Expect(missing).To(BeEmpty())
+	})
+	It("holds the registry maximum of glm-5.3", func() {
+		Expect(outputTable["z.ai/glm-5.3"]).To(Equal(131072))
+	})
+	It("holds the registry maximum of claude-haiku-4-5", func() {
+		Expect(outputTable["anthropic/claude-haiku-4-5"]).To(Equal(64000))
+	})
+})

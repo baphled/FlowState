@@ -176,3 +176,11 @@ type SessionUsage struct {
 	// usage; it is meaningful only when Totals.UsageTurns > 0.
 	LastContextTokens int64
 }
+
+const (
+	// DefaultOutputCap bounds the default max_tokens of a model whose table
+	// maximum is larger (ResolveMaxOutput).
+	DefaultOutputCap = 32768
+	// DefaultMaxOutput is the max_tokens of a model the output table lacks.
+	DefaultMaxOutput int64 = 8192
+)

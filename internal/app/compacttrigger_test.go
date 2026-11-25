@@ -489,6 +489,30 @@ var _ = Describe("The trigger's bounds and failure modes", func() {
 		})
 	})
 
+	Context("when a known model leaves max_tokens unset", func() {
+		BeforeEach(func() {
+			cfg = seededTwoTurns()
+			cfg.Session.Provider, cfg.Session.ModelID = "z.ai", "glm-5.3"
+			cfg.Compaction.ContextWindow = intPtr(200000)
+		})
+		It("places the line a default output cap below the window", func() {
+			limit, _ := compactLimit(&cfg)
+			Expect(limit).To(Equal(200000 - 32768))
+		})
+	})
+
+	Context("when a known model leaves max_tokens unset in a small window", func() {
+		BeforeEach(func() {
+			cfg = seededTwoTurns()
+			cfg.Session.Provider, cfg.Session.ModelID = "z.ai", "glm-5.3"
+			cfg.Compaction.ContextWindow, cfg.Compaction.Reserve = intPtr(4000), intPtr(1)
+		})
+		It("limits the defaulted output to a quarter of the window", func() {
+			limit, _ := compactLimit(&cfg)
+			Expect(limit).To(Equal(3000))
+		})
+	})
+
 	Context("when the summary call fails with a provider error", func() {
 		BeforeEach(func() {
 			cfg, streamer = autoConfig(usedTurn("c1", 1, 100), usedTurn("c2", 1, 950), failingSummary(),

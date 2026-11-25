@@ -472,10 +472,12 @@ turn and does not count against `max_turns`. A compaction that fails (no eligibl
 a failed summary call, a pool that cannot cover it, or a `tokens_after` still above the line) writes nothing, is not
 retried in that run (so a `no_cut` on the first over-the-line turn turns compaction off for the rest of the run), and
 the run continues; a `no_cut` gives its pool unit back. A window not larger than the reserve (or `--max-tokens`) never
-compacts: raise the window or lower the reserve or `max_tokens`. In `swarm run --execute` the coordinator and its
-children, nested ones included, compact by the same `compaction` settings, including `enabled: false`; the coordinator's
-window is its profile's `context_window` when set, and each compaction draws from the swarm pool. `session compact`
-summarises by hand.
+compacts: raise the window or lower the reserve or `max_tokens`. Without `--max-tokens` a run sends the model's
+maximum output from the registry table, capped at 32768 (an unknown model: 8192), and a known model's line is
+`window - max(reserve, that value)`, the value limited to a quarter of the window. In
+`swarm run --execute` the coordinator and its children, nested ones included, compact by the same `compaction`
+settings, including `enabled: false`; the coordinator's window is its profile's `context_window` when set, and each
+compaction draws from the swarm pool. `session compact` summarises by hand.
 
 **Overflow retry.** The tool loop also has a reactive net: when the provider says a request does not fit the window
 (`provider.ErrContextOverflow`), or answers with a `length` finish and no tool calls on a request whose context was
