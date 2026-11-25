@@ -27,18 +27,24 @@ import (
 //
 // A failed or cancelled child, and a refused budget, come back as a result with
 // a nil error so the caller can show them to the model. A refused request (a
-// terminal parent, depth, `delegate` among the tools, an unknown tool, a
-// working directory outside the parent's) and an infrastructure failure are
-// errors. A child that reaches MaxTurns while the model still asks for tools
+// terminal parent, depth, `delegate` among the tools of a child already at the
+// nesting limit, an unknown tool, a working directory outside the parent's) and
+// an infrastructure failure are errors. A child whose profile lists `delegate`
+// gets its own delegate tool, bound to it as the parent (see bindNestedDelegate). A child that reaches MaxTurns while the model still asks for tools
 // fails with max_turns (ADR-009 D13): its session is failed, and like any
 // failed child it comes back as a result with a nil error.
 // The child runs under ctx: a cancelled ctx cancels it with ctx's reason, and
 // the settlement runs on a detached context.
 func RunDelegatedChild(ctx context.Context, req DelegateRequest) (DelegateResult, error) {
-	registry, modelID, err := planDelegation(ctx, &req)
+	plan, err := planDelegation(ctx, &req)
 	if err != nil {
 		return DelegateResult{}, err
 	}
+	slot, ok := req.limiter.acquire(ctx)
+	if !ok {
+		return DelegateResult{Status: DelegateStatusCancelled, Reason: CancelReason(ctx)}, nil
+	}
+	defer slot.release()
 	childID, err := session.NewID()
 	if err != nil {
 		return DelegateResult{}, fmt.Errorf("generate session id: %w", err)
@@ -52,7 +58,7 @@ func RunDelegatedChild(ctx context.Context, req DelegateRequest) (DelegateResult
 		return out, rerr
 	}
 	child, err := openChildSession(context.WithoutCancel(ctx), req.Store, childSpec{
-		id: childID, parentID: req.Parent.ID, provider: req.Parent.Provider, modelID: modelID,
+		id: childID, parentID: req.Parent.ID, provider: req.Parent.Provider, modelID: plan.modelID,
 		harness: req.Parent.Harness, configSHA: req.Parent.ConfigSHA, task: req.Task,
 		profile: profileRef(req.Profile),
 	})
@@ -60,7 +66,8 @@ func RunDelegatedChild(ctx context.Context, req DelegateRequest) (DelegateResult
 		unwindDelegateBudget(ctx, &req, childID, grant)
 		return DelegateResult{}, fmt.Errorf("app: delegate: create child: %w", err)
 	}
-	return runAndSettleDelegated(ctx, &req, &delegateRun{owner: owner, child: child, grant: grant}, registry)
+	run := &delegateRun{owner: owner, child: child, grant: grant, workdir: plan.workdir, slot: slot}
+	return runAndSettleDelegated(ctx, &req, run, plan.registry)
 }
 
 // runAndSettleDelegated is the tail a fresh and a resumed child share: record
@@ -71,9 +78,13 @@ func RunDelegatedChild(ctx context.Context, req DelegateRequest) (DelegateResult
 func runAndSettleDelegated(ctx context.Context, req *DelegateRequest, run *delegateRun, registry *tool.Registry) (DelegateResult, error) {
 	defer settleDelegatedPanic(ctx, req, run)
 	startErr := appendDelegationStarted(context.WithoutCancel(ctx), req, run)
-	res, runErr := RunExecLoop(ctx, delegateLoopConfig(req, run, registry))
-	out, err := finishDelegatedChild(ctx, req, run, res, runErr)
-	return out, errors.Join(startErr, err)
+	cfg, err := delegateLoopConfig(ctx, req, run, registry)
+	var res *ExecLoopResult
+	if err == nil {
+		res, err = RunExecLoop(ctx, cfg)
+	}
+	out, ferr := finishDelegatedChild(ctx, req, run, res, err)
+	return out, errors.Join(startErr, ferr)
 }
 
 // errDelegatePanic is the failure recorded for a child whose loop panicked. The
@@ -91,28 +102,35 @@ func settleDelegatedPanic(ctx context.Context, req *DelegateRequest, run *delega
 }
 
 // planDelegation validates the request without writing anything and returns the
-// child's registry and model.
-func planDelegation(ctx context.Context, req *DelegateRequest) (*tool.Registry, string, error) {
+// child's registry, model and working directory.
+func planDelegation(ctx context.Context, req *DelegateRequest) (*delegatePlan, error) {
 	if err := validateDelegateRequest(req); err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	modelID := req.Parent.ModelID
 	if m := req.Profile.Model; m != "" && m != agent.InheritModel {
 		modelID = m // sent as ChatRequest.Model, which every provider passes through
 	}
 	if err := checkChildCreation(ctx, req.Store, req.Parent.ID, req.Parent.Provider, modelID, req.Task); err != nil {
-		return nil, "", err
+		return nil, err
 	}
-	registry, err := childRegistry(req)
-	return registry, modelID, err
+	if err := checkNestDepth(ctx, req.Store, req.Parent.ID, req.Profile); err != nil {
+		return nil, err
+	}
+	registry, workdir, err := childRegistry(req)
+	if err != nil {
+		return nil, err
+	}
+	return &delegatePlan{registry: registry, modelID: modelID, workdir: workdir}, nil
 }
 
 // childRegistry builds the child's registry in its confined working directory
-// and checks that the profile's tools exist in it.
-func childRegistry(req *DelegateRequest) (*tool.Registry, error) {
+// and checks that the profile's tools exist in it, apart from `delegate`, which
+// the run binds to the child once it exists. It returns the resolved directory.
+func childRegistry(req *DelegateRequest) (*tool.Registry, string, error) {
 	workdir, err := confineChildWorkdir(req.ParentWorkdir, req.Workdir)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	build := req.NewRegistry
 	if build == nil {
@@ -120,16 +138,17 @@ func childRegistry(req *DelegateRequest) (*tool.Registry, error) {
 	}
 	registry, err := build(workdir)
 	if err != nil {
-		return nil, fmt.Errorf("app: delegate: child registry: %w", err)
+		return nil, "", fmt.Errorf("app: delegate: child registry: %w", err)
 	}
-	if _, derr := SessionToolDefinitions(registry, req.Profile.Tools); derr != nil {
-		return nil, fmt.Errorf("%w: profile %s tools: %v", ErrUsage, req.Profile.Name, derr)
+	tools := slices.DeleteFunc(slices.Clone(req.Profile.Tools), func(n string) bool { return n == agent.DelegateTool })
+	if _, derr := SessionToolDefinitions(registry, tools); derr != nil {
+		return nil, "", fmt.Errorf("%w: profile %s tools: %v", ErrUsage, req.Profile.Name, derr)
 	}
-	return registry, nil
+	return registry, workdir, nil
 }
 
-// validateDelegateRequest rejects missing collaborators and a profile that asks
-// for `delegate`, which children cannot use yet.
+// validateDelegateRequest rejects missing collaborators and a terminal parent.
+// Whether a profile may list `delegate` depends on the depth (see checkNestDepth).
 func validateDelegateRequest(req *DelegateRequest) error {
 	switch {
 	case req.Store == nil, req.Parent == nil, req.Streamer == nil:
@@ -140,8 +159,6 @@ func validateDelegateRequest(req *DelegateRequest) error {
 		return fmt.Errorf("%w: delegate: the parent working directory is required", ErrUsage)
 	case delegatedParentTerminal[req.Parent.Status]:
 		return fmt.Errorf("%w: parent session %s is %s", ErrUsage, req.Parent.ID, req.Parent.Status)
-	case slices.Contains(req.Profile.Tools, agent.DelegateTool):
-		return fmt.Errorf("%w: profile %s: delegate is not available to children yet", ErrUsage, req.Profile.Name)
 	}
 	return nil
 }
@@ -255,7 +272,9 @@ func newDelegateOwner() (string, error) {
 // delegateLoopConfig composes the loop for the child: exactly the profile's
 // tools, prompt and turn cap, drawing one unit per turn from its grant. Its lease
 // owner is the run's, so it re-grants a resume's claim and its release ends it.
-func delegateLoopConfig(req *DelegateRequest, run *delegateRun, registry *tool.Registry) ExecLoopConfig {
+// A profile that lists `delegate` gets its own tool, drawing from the same pool.
+func delegateLoopConfig(ctx context.Context, req *DelegateRequest, run *delegateRun,
+	registry *tool.Registry) (ExecLoopConfig, error) {
 	child, grant := run.child, run.grant
 	cfg := ExecLoopConfig{
 		Store: req.Store, Session: child, Streamer: req.Streamer, Registry: registry,
@@ -264,8 +283,12 @@ func delegateLoopConfig(req *DelegateRequest, run *delegateRun, registry *tool.R
 	}
 	if req.Pool != nil {
 		cfg.Pool, cfg.TurnBudget = NewBudgetPool(grant), 1
+		run.pool = cfg.Pool
 	}
-	return cfg
+	if slices.Contains(req.Profile.Tools, agent.DelegateTool) {
+		return cfg, bindNestedDelegate(ctx, req, run, registry)
+	}
+	return cfg, nil
 }
 
 // finishDelegatedChild ends the child in the status the run implies and settles
@@ -281,6 +304,9 @@ func finishDelegatedChild(ctx context.Context, req *DelegateRequest, run *delega
 		out.Turns, out.ToolCalls, out.FinalContent = res.Turns, res.ToolCalls, res.FinalContent
 	}
 	consumed := out.Turns
+	if run.pool != nil {
+		consumed = max(consumed, grant-run.pool.Remaining()) // the child's turns and its descendants' spend
+	}
 	if req.Pool != nil && consumed > grant || errors.Is(runErr, errDelegatePanic) {
 		consumed = grant
 	}

@@ -324,9 +324,10 @@ var _ = Describe("RunDelegatedChild", func() {
 			_, err := RunDelegatedChild(ctx, req)
 			Expect(err).To(want)
 		},
-		Entry("a profile that lists delegate", func(_ *delegateFixture, r *DelegateRequest) {
+		Entry("a profile that lists delegate for a child at the nesting limit", func(f *delegateFixture, r *DelegateRequest) {
 			r.Profile.Tools = []string{"fs.read", "delegate"}
-		}, MatchError(ContainSubstring("delegate is not available to children yet"))),
+			r.Parent = must(CreateChildSession(ctx, f.st, f.parent.ID, "scripted", "m", "h", "s", "t"))
+		}, MatchError(ContainSubstring("delegate is not available at depth 2: the nesting limit is 2"))),
 		Entry("an unknown tool, as a usage error", func(_ *delegateFixture, r *DelegateRequest) {
 			r.Profile.Tools = []string{"fs.nope"}
 		}, MatchError(ErrUsage)),
@@ -344,8 +345,10 @@ var _ = Describe("RunDelegatedChild", func() {
 	It("creates no child for a refused profile", func() {
 		f := newDelegateFixture()
 		f.profile.Tools = []string{"delegate"}
-		_, _ = RunDelegatedChild(ctx, f.request())
-		Expect(f.sessionCount()).To(Equal(1))
+		req := f.request()
+		req.Parent = must(CreateChildSession(ctx, f.st, f.parent.ID, "scripted", "m", "h", "s", "t"))
+		_, _ = RunDelegatedChild(ctx, req)
+		Expect(f.sessionCount()).To(Equal(2))
 	})
 
 	Describe("the child's working directory", func() {

@@ -87,6 +87,15 @@ type DelegateRequest struct {
 	// the parent's event writer (the store allows one per session); nil opens a
 	// writer on the parent for the append.
 	ParentEvents tool.EventSink
+	// Profiles are the profiles loaded for the run. A child whose profile lists
+	// `delegate` offers exactly these to its own children.
+	Profiles []agent.Profile
+	// allow restricts which profiles the delegating profile may spawn or resume;
+	// nil allows every loaded profile (the root's own tool).
+	allow *profileAllowance
+	// limiter is the descendant cap of the root run, shared down the tree; nil
+	// means no cap.
+	limiter *descendantLimiter
 	// BatchIndex is the entry's position in a parallel `tasks` call; when set the
 	// receipt carries it as "index". Nil for a single delegation.
 	BatchIndex *int
@@ -146,6 +155,13 @@ type delegateRun struct {
 	grant   int64
 	prior   int64
 	resumed bool
+	// workdir is the child's resolved directory, the root of its own children's.
+	workdir string
+	// pool is the child's loop pool, nil when the child is unlimited: its own
+	// turns and its descendants' grants are drawn from it.
+	pool *BudgetPool
+	// slot is the descendant slot the run holds while it executes.
+	slot *runSlot
 }
 
 // resumableLog is what a resume reads from the child's event log.

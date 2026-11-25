@@ -300,7 +300,10 @@ context, so the `delegation.started` and `delegation.completed` events are appen
 call and its result. `delegate {resume: <child id>}` continues an interrupted child (ADR-009 D8), and crash recovery
 answers a parent's dangling `delegate` call from the `delegation.started` events. A failed, cancelled or partial child
 is returned to the parent model as an `error:` tool result; the parent run does not
-fail, and a cancelled parent still ends cancelled. The HTTP run has no `--agents` yet.
+fail, and a cancelled parent still ends cancelled. A child whose profile lists `delegate` may itself delegate, to a
+depth of 2 (root, child, grandchild), inside its own grant and under one cap of 8 running descendants (ADR-009 D14).
+It may spawn only the profiles its own `delegates` names, and none when it lists `delegate` with no `delegates`.
+The HTTP run has no `--agents` yet.
 
 ## Session config composition
 

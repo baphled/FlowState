@@ -24,6 +24,28 @@ type DelegateToolConfig struct {
 	Workdir string
 	// Profiles are the profiles loaded for this run; the tool offers exactly these.
 	Profiles []agent.Profile
+	// DelegatorProfile names the profile this tool is bound to when that profile
+	// is itself a delegated child; empty for the root's own tool, which offers
+	// every loaded profile (the user's explicit run). When set, the tool may
+	// spawn only AllowedProfiles, the profile's `delegates` list, and an empty
+	// list allows nothing: delegating is fail-closed (ADR-009 D14).
+	DelegatorProfile string
+	// AllowedProfiles are the profile names a DelegatorProfile may spawn.
+	AllowedProfiles []string
+	// DescendantLimit caps the descendant runs of this tool's root run that run at
+	// once; zero means DefaultDescendantLimit. Nested tools share the root's cap.
+	DescendantLimit int
+	// limiter is the cap shared down the tree and slot the descendant slot of the
+	// run this tool is bound to; both are nil for the root's own tool.
+	limiter *descendantLimiter
+	slot    *runSlot
+}
+
+// profileAllowance is the `delegates` list of the profile a nested delegate tool
+// is bound to. A nil *profileAllowance allows every loaded profile (the root).
+type profileAllowance struct {
+	delegator string
+	names     []string
 }
 
 // DelegateTool is the `delegate` tool: it runs one profile-driven child of the

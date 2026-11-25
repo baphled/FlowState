@@ -45,6 +45,9 @@ func NewDelegateTool(cfg DelegateToolConfig) *DelegateTool {
 	cfg.Profiles = slices.SortedFunc(slices.Values(cfg.Profiles), func(a, b agent.Profile) int {
 		return strings.Compare(a.Name, b.Name)
 	})
+	if cfg.limiter == nil {
+		cfg.limiter = newDescendantLimiter(cfg.DescendantLimit)
+	}
 	return &DelegateTool{cfg: cfg}
 }
 
@@ -75,19 +78,21 @@ func (*DelegateTool) Name() string { return agent.DelegateTool }
 func (t *DelegateTool) Definition() provider.ToolDefinition {
 	var b strings.Builder
 	b.WriteString("Delegate one task (agent and task) to a child agent that runs in its own session with its own tools " +
-		"and turn cap, and return its final message. A failed or cancelled child comes back as an error you can act on. " +
+		"and turn cap, and return its final message. A child may delegate in turn only if its profile lists delegate " +
+		"and it is not already two levels down. A failed or cancelled child comes back as an error you can act on. " +
 		"Or pass tasks, up to 8 entries of agent, task and optional cwd (not with agent or task): they run 4 at a time " +
 		"and return {results: [...]} in input order; a child that did not complete is an entry with its status and " +
 		"reason, not an error. Or pass resume, the id of an interrupted child of yours, with an optional follow-up task " +
 		"(not with agent, cwd or tasks): it continues with the turns it has left.")
-	if len(t.cfg.Profiles) == 0 {
-		b.WriteString("\nNo agents are available: no profile was loaded.")
+	profiles := t.offered()
+	if len(profiles) == 0 {
+		b.WriteString("\nNo agents are available: no profile was loaded or this agent's delegates list names none.")
 	} else {
 		b.WriteString("\nAvailable agents:")
 	}
-	for i, p := range t.cfg.Profiles {
+	for i, p := range profiles {
 		if i == delegateListMax {
-			fmt.Fprintf(&b, "\n(and %d more)", len(t.cfg.Profiles)-delegateListMax)
+			fmt.Fprintf(&b, "\n(and %d more)", len(profiles)-delegateListMax)
 			break
 		}
 		b.WriteString("\n- " + p.Name + ": " + clipRunes(p.Description, delegateDescriptionMaxChars))
@@ -105,13 +110,13 @@ func (t *DelegateTool) Invoke(ctx context.Context, raw json.RawMessage) (any, er
 	if err != nil {
 		return nil, err
 	}
+	t.cfg.slot.yield() // a run waiting for its own children holds no descendant slot
+	defer t.cfg.slot.reclaim(ctx)
 	if args.batch != nil {
 		return t.invokeParallel(ctx, args.batch)
 	}
-	req := DelegateRequest{
-		Store: t.cfg.Store, Parent: t.cfg.Parent, Streamer: t.cfg.Streamer, Pool: t.cfg.Pool,
-		ParentWorkdir: t.cfg.Workdir, Task: args.Task, Workdir: args.Cwd,
-	}
+	req := t.baseRequest()
+	req.Task, req.Workdir = args.Task, args.Cwd
 	if sink, ok := ctx.Value(delegateParentEventsKey{}).(tool.EventSink); ok && sink != nil {
 		req.ParentEvents = appendFailureSink{inner: sink}
 	}
@@ -132,11 +137,14 @@ func (t *DelegateTool) Invoke(ctx context.Context, raw json.RawMessage) (any, er
 
 // profile finds a loaded profile; an unknown name lists the available ones.
 func (t *DelegateTool) profile(name string) (agent.Profile, error) {
-	if len(t.cfg.Profiles) == 0 {
+	if err := t.allowance().check(name); err != nil {
+		return agent.Profile{}, err
+	}
+	if len(t.offered()) == 0 {
 		return agent.Profile{}, errors.New("no agents are available: no profile was loaded")
 	}
 	names := make([]string, 0, len(t.cfg.Profiles))
-	for _, p := range t.cfg.Profiles {
+	for _, p := range t.offered() {
 		if p.Name == name {
 			return p, nil
 		}

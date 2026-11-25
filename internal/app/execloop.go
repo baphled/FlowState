@@ -210,18 +210,25 @@ func executeCalls(ctx context.Context, cfg ExecLoopConfig, calls []provider.Tool
 	results := make([]provider.Message, 0, len(calls))
 	allowed := allowSet(cfg.Allowlist)
 	for _, call := range calls {
-		w, werr := cfg.Store.NewEventWriter(ctx, cfg.Session.ID)
-		if werr != nil {
-			return nil, werr
-		}
-		var serr error
-		results, serr = runCall(ctx, cfg, w, call, allowed, results)
-		_ = w.Close()
-		if serr != nil {
-			return nil, serr
+		var err error
+		if results, err = executeCall(ctx, cfg, call, allowed, results); err != nil {
+			return nil, err
 		}
 	}
 	return results, nil
+}
+
+// executeCall runs one call under its own per-call writer, closed by defer so a
+// panic through a delegating tool releases it before the panicking child's
+// settlement, which needs a writer on the same session.
+func executeCall(ctx context.Context, cfg ExecLoopConfig, call provider.ToolCall, allowed map[string]bool,
+	results []provider.Message) ([]provider.Message, error) {
+	w, err := cfg.Store.NewEventWriter(ctx, cfg.Session.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = w.Close() }()
+	return runCall(ctx, cfg, w, call, allowed, results)
 }
 
 func appendResult(ctx context.Context, loop *tool.Loop, call provider.ToolCall, results []provider.Message) ([]provider.Message, error) { // appends one call outcome; persistence failures terminate the run
