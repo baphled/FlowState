@@ -359,6 +359,24 @@ var _ = Describe("The delegate tool with tasks", func() {
 		})
 	})
 
+	Describe("four children running at once", func() {
+		It("holds a lease of its own for each", func() {
+			f = newParallelFixture(ps, 3, nil)
+			ps.gate(taskNames(4)...)
+			done := f.start(context.Background(), tasksJSON(4))
+			f.awaitEntered(4)
+			busy := 0
+			for _, id := range childrenOf(f.st, f.parent.ID) {
+				if leaseBusy(f.st, id) {
+					busy++
+				}
+			}
+			ps.releaseAll()
+			_ = awaitOutcome(done)
+			Expect(busy).To(Equal(4))
+		})
+	})
+
 	Describe("four children that finish in reverse order", func() {
 		var out parallelOutcome
 		BeforeEach(func() {

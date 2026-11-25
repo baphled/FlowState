@@ -76,15 +76,42 @@ func RunDelegatedChild(ctx context.Context, req DelegateRequest) (DelegateResult
 // write, like a failed receipt, does not stop the child: the failure is
 // returned beside its result. The write is detached from ctx, as the receipt is.
 func runAndSettleDelegated(ctx context.Context, req *DelegateRequest, run *delegateRun, registry *tool.Registry) (DelegateResult, error) {
+	leaseErr := holdDelegateLease(ctx, req, run)
+	defer func() { // after settleDelegatedPanic and finishDelegatedChild: the handle outlives their writes
+		if run.lease != nil {
+			_ = run.lease.Release(context.WithoutCancel(ctx))
+		}
+	}()
 	defer settleDelegatedPanic(ctx, req, run)
 	startErr := appendDelegationStarted(context.WithoutCancel(ctx), req, run)
 	cfg, err := delegateLoopConfig(ctx, req, run, registry)
+	if err == nil {
+		err = leaseErr
+	}
 	var res *ExecLoopResult
 	if err == nil {
 		res, err = RunExecLoop(ctx, cfg)
 	}
 	out, ferr := finishDelegatedChild(ctx, req, run, res, err)
 	return out, errors.Join(startErr, ferr)
+}
+
+// holdDelegateLease gives run its judged lease when it has none: a fresh child takes
+// "exec:<child id>" under the run's owner. A refusal comes back as ErrExecLoopFenced, the error the
+// loop's own acquire gave, so the child fails exactly as it did.
+func holdDelegateLease(ctx context.Context, req *DelegateRequest, run *delegateRun) error {
+	if run.lease != nil {
+		return nil
+	}
+	lease, err := req.Store.AcquireRunLease(ctx, "exec:"+run.child.ID, run.owner)
+	if err != nil {
+		if errors.Is(err, store.ErrSessionBusy) {
+			return fmt.Errorf("%w: %v", ErrExecLoopFenced, err)
+		}
+		return fmt.Errorf("exec loop lease: %w", err)
+	}
+	run.lease = lease
+	return nil
 }
 
 // errDelegatePanic is the failure recorded for a child whose loop panicked. The
@@ -276,8 +303,8 @@ func newDelegateOwner() (string, error) {
 }
 
 // delegateLoopConfig composes the loop for the child: exactly the profile's
-// tools, prompt and turn cap, drawing one unit per turn from its grant. Its lease
-// owner is the run's, so it re-grants a resume's claim and its release ends it.
+// tools, prompt and turn cap, drawing one unit per turn from its grant. It runs under
+// the run's judged handle (run.lease), which the loop fences and never releases.
 // A profile that lists `delegate` gets its own tool, drawing from the same pool.
 func delegateLoopConfig(ctx context.Context, req *DelegateRequest, run *delegateRun,
 	registry *tool.Registry) (ExecLoopConfig, error) {
@@ -287,6 +314,9 @@ func delegateLoopConfig(ctx context.Context, req *DelegateRequest, run *delegate
 		Allowlist: req.Profile.Tools, LeaseItem: "exec:" + child.ID, LeaseAgent: run.owner,
 		MaxTurns: grant, SystemPrompt: req.Profile.Body,
 		Compaction: req.Compaction, ProfileWindow: req.Profile.ContextWindow,
+	}
+	if run.lease != nil {
+		cfg.Lease = run.lease
 	}
 	if req.Pool != nil {
 		cfg.Pool, cfg.TurnBudget = NewBudgetPool(grant), 1

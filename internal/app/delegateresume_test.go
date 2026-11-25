@@ -430,3 +430,77 @@ func bigReadTurn(id string) []provider.StreamEvent {
 	turn := append([]provider.StreamEvent{provText(strings.Repeat("a", 200000))}, usedCall(provCallToolReadID(id), 90000)...)
 	return turn
 }
+
+var _ = Describe("ResumeDelegatedChild under a judged handle", func() {
+	var ctx context.Context
+	BeforeEach(func() { ctx = context.Background() })
+
+	It("runs: the loop takes no lease of its own, which would conflict with the claim", func() {
+		f := newDelegateFixture(finishText("ok"))
+		res := must(ResumeDelegatedChild(ctx, f.resumeRequest(f.seedChild(f.parent, 2).ID, "")))
+		Expect(res.Status).To(Equal(DelegateStatusCompleted))
+	})
+
+	Describe("while the resumed child runs", func() {
+		var busy bool
+		var owner string
+		BeforeEach(func() {
+			f := newDelegateFixture()
+			id := f.seedChild(f.parent, 2).ID
+			ps := &probeStreamer{execLoopStreamer: execLoopStreamer{turns: [][]provider.StreamEvent{finishText("ok")}}}
+			ps.probe = func() { busy, owner = leaseBusy(f.st, id), leaseBusyOwner(f.st, id) }
+			rr := f.resumeRequest(id, "")
+			rr.Streamer = ps
+			must(ResumeDelegatedChild(ctx, rr))
+		})
+		It("refuses a second acquire of the child's item", func() { Expect(busy).To(BeTrue()) })
+		It("names a fresh delegate owner as the holder", func() { Expect(owner).To(HavePrefix(delegateLeasePrefix)) })
+		It("names an owner other than the one that seeded the child", func() {
+			Expect(owner).NotTo(Equal(delegateLeasePrefix + "seed"))
+		})
+	})
+
+	DescribeTable("is still held when the resumed child's settlement writes its status",
+		func(status string, turns ...[]provider.StreamEvent) {
+			f := newDelegateFileFixture(turns...)
+			id := f.seedChild(f.parent, 2).ID
+			installLeaseProbe(f.dbPath, status)
+			must(ResumeDelegatedChild(ctx, f.resumeRequest(id, "")))
+			Expect(probedLeaseRows(f.dbPath, id)).To(Equal([]int{1}))
+		},
+		Entry("completed", "completed", finishText("ok")),
+		Entry("failed", "failed", []provider.StreamEvent{provError("upstream down")}),
+	)
+
+	It("leaves no lease row once the resumed child has finished", func() {
+		f := newDelegateFixture(finishText("ok"))
+		id := f.seedChild(f.parent, 2).ID
+		must(ResumeDelegatedChild(ctx, f.resumeRequest(id, "")))
+		Expect(f.st.LeaseToken(ctx, "exec:"+id)).To(BeZero())
+	})
+
+	It("lets a following resume of a finished-active child claim the item again", func() {
+		f := newDelegateFixture([]provider.StreamEvent{provError("upstream down")})
+		id := f.seedChild(f.parent, 2).ID
+		must(ResumeDelegatedChild(ctx, f.resumeRequest(id, "")))
+		Expect(leaseBusy(f.st, id)).To(BeFalse())
+	})
+
+	It("refuses a live judged holder as running", func() {
+		f := newDelegateFixture(finishText("never"))
+		id := f.seedChild(f.parent, 2).ID
+		held := must(f.st.AcquireRunLease(ctx, "exec:"+id, delegateLeasePrefix+"live"))
+		DeferCleanup(func() { _ = held.Release(context.Background()) })
+		_, err := ResumeDelegatedChild(ctx, f.resumeRequest(id, ""))
+		Expect(err).To(MatchError(ContainSubstring("is running")))
+	})
+
+	It("leaves a live judged holder's row in place when it refuses", func() {
+		f := newDelegateFixture(finishText("never"))
+		id := f.seedChild(f.parent, 2).ID
+		held := must(f.st.AcquireRunLease(ctx, "exec:"+id, delegateLeasePrefix+"live"))
+		DeferCleanup(func() { _ = held.Release(context.Background()) })
+		_, _ = ResumeDelegatedChild(ctx, f.resumeRequest(id, ""))
+		Expect(held.Fence(ctx)).To(Succeed())
+	})
+})

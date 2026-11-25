@@ -31,6 +31,7 @@ func (execRejectAll) Admit(swarm.Packet, []byte) error { return errors.New("fixt
 // executor writes a marker file, so a spec can tell whether a gate ran.
 type swarmExecFixture struct {
 	st      *store.Store
+	dbPath  string
 	scripts *nestStreamer
 	cfg     ExecuteSwarmConfig
 	marker  string
@@ -58,9 +59,19 @@ func swarmExecProfile(name string, tools ...string) agent.Profile {
 }
 
 func newSwarmExecFixture() *swarmExecFixture {
-	st := must(store.OpenMemory())
+	return newSwarmExecFixtureOn(must(store.OpenMemory()), "")
+}
+
+// newSwarmExecFileFixture is newSwarmExecFixture on a real database file under the spec's temp
+// directory, so a spec can alter it through a second connection.
+func newSwarmExecFileFixture() *swarmExecFixture {
+	path := filepath.Join(GinkgoT().TempDir(), "swarm.db")
+	return newSwarmExecFixtureOn(must(store.Open(path)), path)
+}
+
+func newSwarmExecFixtureOn(st *store.Store, path string) *swarmExecFixture {
 	DeferCleanup(func() { _ = st.Close() })
-	f := &swarmExecFixture{st: st, scripts: &nestStreamer{
+	f := &swarmExecFixture{st: st, dbPath: path, scripts: &nestStreamer{
 		byRole: map[string][][]provider.StreamEvent{}, byTask: map[string][][]provider.StreamEvent{},
 		reqs: map[string][]*provider.ChatRequest{},
 	}}
@@ -693,5 +704,63 @@ var _ = Describe("Compaction in an executed swarm", func() {
 		It("applies the built-in reserve, so a line of 83616 is crossed by 90000", func() {
 			Expect(compactions(res.CoordinatorID)).To(Equal(1))
 		})
+	})
+})
+
+var _ = Describe("The swarm coordinator's judged lease", func() {
+	var ctx context.Context
+	BeforeEach(func() { ctx = context.Background() })
+
+	Describe("while the coordinator runs", func() {
+		var busy bool
+		var owner string
+		BeforeEach(func() {
+			f := newSwarmExecFixture()
+			f.both("done")
+			f.scripts.hook = func(_ context.Context, role string) {
+				if role != "coord-body" || busy {
+					return
+				}
+				for _, s := range must(f.st.ListSessions(context.Background(), "")) {
+					if s.ParentID == "" {
+						busy, owner = leaseBusy(f.st, s.ID), leaseBusyOwner(f.st, s.ID)
+					}
+				}
+			}
+			f.execute(ctx)
+		})
+		It("refuses a second acquire of the coordinator's item", func() { Expect(busy).To(BeTrue()) })
+		It("names a run owner as the holder", func() { Expect(owner).To(HavePrefix(runLeasePrefix)) })
+		It("does not name the constant cli owner", func() { Expect(owner).NotTo(Equal(execLeaseAgent)) })
+	})
+
+	DescribeTable("is still held when the coordinator's completion is written",
+		func(status string, script func(*swarmExecFixture)) {
+			f := newSwarmExecFileFixture()
+			script(f)
+			installLeaseProbe(f.dbPath, status)
+			res := f.execute(ctx)
+			Expect(probedLeaseRows(f.dbPath, res.CoordinatorID)).To(Equal([]int{1}))
+		},
+		Entry("completed, in completeExecLoopRun", "completed", func(f *swarmExecFixture) { f.both("done") }),
+		Entry("failed, in finishExecLoopState", "failed", func(f *swarmExecFixture) {
+			f.scripts.byRole["coord-body"] = [][]provider.StreamEvent{{provError("upstream down")}}
+		}),
+	)
+
+	It("leaves no lease row once the run is over", func() {
+		f := newSwarmExecFixture()
+		f.both("done")
+		res := f.execute(ctx)
+		Expect(f.st.LeaseToken(ctx, "exec:"+res.CoordinatorID)).To(BeZero())
+	})
+
+	It("refuses a coordinator whose session is held, writing nothing", func() {
+		f := newSwarmExecFixture()
+		sess := must(f.st.CreateSession(ctx, "coord-session", "scripted", "m", "h", "sha"))
+		held := must(f.st.AcquireRunLease(ctx, "exec:"+sess.ID, "run:other"))
+		DeferCleanup(func() { _ = held.Release(context.Background()) })
+		_, err := acquireCoordinatorLease(ctx, f.st, sess.ID)
+		Expect(err).To(MatchError(store.ErrSessionBusy))
 	})
 })

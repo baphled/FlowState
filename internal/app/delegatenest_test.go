@@ -364,6 +364,25 @@ var _ = Describe("Nested delegation", func() {
 		})
 	})
 
+	Describe("a lead and its specialist running at once", func() {
+		var leadBusy, specBusy bool
+		BeforeEach(func() {
+			f := newNestFixture(0)
+			f.scripts.hook = func(_ context.Context, role string) {
+				if role != "specialist-body" {
+					return
+				}
+				lead := f.childOf(f.parent.ID)
+				leadBusy, specBusy = leaseBusy(f.st, lead), leaseBusy(f.st, f.childOf(lead))
+			}
+			f.say("root", delegates(`{"agent":"lead","task":"plan it"}`), finishText("root done"))
+			f.say("lead", delegates(`{"agent":"specialist","task":"read it"}`), finishText("lead done"))
+			must(f.runRoot(ctx))
+		})
+		It("holds the lead's own lease", func() { Expect(leadBusy).To(BeTrue()) })
+		It("holds the specialist's own lease", func() { Expect(specBusy).To(BeTrue()) })
+	})
+
 	Describe("a root cancelled while a grandchild runs", func() {
 		var f *nestFixture
 		var lead, spec string
