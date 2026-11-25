@@ -36,7 +36,8 @@ settling the session's budget reservation fails, the answer is still 500 but wit
 `reservation_unsettled` and a structured `session` field `{"id","status":"cancelled"}`, so a client can tell it
 from "nothing happened"; the CLI prints the cancelled state before the error, whose code stays `internal` and
 whose exit stays 1),
-and `GET /sessions/{id}/doctor` reusing the CLI `session-doctor` output shape,
+and `GET /sessions/{id}/doctor` reusing the CLI `session-doctor` output shape (which includes the provider token
+usage the loop recorded on each `assistant.message`, `null` when no turn reported it),
 wired through narrow `server.Ports`; no store
 type crosses into transport and `cmd` only builds the closures and listener.
 S3 adds the budget and steering resources: `GET /sessions/{id}/budget`

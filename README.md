@@ -26,8 +26,11 @@ govern how it is changed. There is no TUI yet: the command line and the HTTP API
   children.
 - **Recovery and diagnosis.** A crashed run is detected from its log, and the next `session run` (or the server's
   run endpoint) recovers it automatically. `session doctor` reports
-  whether a session crashed, its pending messages and budget, the last finish reason and whether an answer was
-  truncated; `session replay` re-verifies the log.
+  whether a session crashed, its pending messages and budget, the last finish reason, whether an answer was
+  truncated and the provider token usage the loop recorded (`usage`: input, output and cache tokens, `turns_reported`
+  against `turns_total`, and the context size of the last reporting turn; the totals are `null` when no turn
+  reported usage, as for the subscription route and for older logs; the totals are a lower bound on spend, a child's
+  usage is not in its parent's, and the context figure can be stale); `session replay` re-verifies the log.
 - **HTTP API.** `flowstate serve` exposes the same operations, with server-sent events for a live log.
 
 **Not built yet:** a swarm run does not yet execute provider turns for its children (it creates, budgets and gates
@@ -48,7 +51,7 @@ flowstate session new --provider z.ai --model glm-4.5-flash --task "Say hello in
 flowstate session run <id>     # prints the session's events as JSON lines
 flowstate session events <id>  # the log again; add --follow to tail it
 flowstate session replay <id>  # re-verifies the log's hash chain
-flowstate session doctor <id>  # crash state, pending messages, budget, finish reason, truncation
+flowstate session doctor <id>  # crash state, messages, budget, finish reason, truncation, usage
 ```
 
 By default everything is stored in `./flowstate.db`; pass `--db <path>` to any subcommand to use another file.
