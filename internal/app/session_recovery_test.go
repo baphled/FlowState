@@ -426,3 +426,62 @@ var _ = Describe("crash recovery of a dangling delegate call", func() {
 		})
 	})
 })
+
+var _ = Describe("AcquireSessionRunLease", func() {
+	var ctx context.Context
+	var st *store.Store
+	var stale *store.Session
+	// canTake reports whether the run lease of the session can be taken now, and releases it again.
+	canTake := func(id string) bool {
+		h, err := st.AcquireRunLease(ctx, "exec:"+id, "run:probe")
+		if err != nil {
+			return false
+		}
+		if rerr := h.Release(ctx); rerr != nil {
+			panic(rerr)
+		}
+		return true
+	}
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		st = mustOpenCrashStore()
+		stale = mustCreateCrashSession(ctx, st)
+	})
+
+	Context("a session that became terminal after the caller loaded it", func() {
+		var err error
+		BeforeEach(func() {
+			if cerr := st.UpdateSessionStatus(ctx, stale.ID, "completed"); cerr != nil {
+				panic(cerr)
+			}
+			_, _, err = AcquireSessionRunLease(ctx, st, stale)
+		})
+
+		It("is refused with ErrTerminal", func() { Expect(err).To(MatchError(ErrTerminal)) })
+		It("has released the lease for the next holder", func() { Expect(canTake(stale.ID)).To(BeTrue()) })
+	})
+
+	Context("a session whose row cannot be read once the lease is held", func() {
+		var err error
+		var ghost *store.Session
+		BeforeEach(func() {
+			ghost = &store.Session{ID: "01JZ0000000000000000000000", Status: "active"}
+			_, _, err = AcquireSessionRunLease(ctx, st, ghost)
+		})
+
+		It("is refused with the read failure", func() { Expect(err).To(MatchError(store.ErrUnknownSession)) })
+		It("has released the lease for the next holder", func() { Expect(canTake(ghost.ID)).To(BeTrue()) })
+	})
+
+	Context("an active session", func() {
+		It("returns the row read under the lease", func() {
+			lease, fresh, err := AcquireSessionRunLease(ctx, st, &store.Session{ID: stale.ID, Status: "stale"})
+			if err != nil {
+				panic(err)
+			}
+			DeferCleanup(func() { _ = lease.Release(ctx) })
+			Expect(fresh.Status).To(Equal("active"))
+		})
+	})
+})

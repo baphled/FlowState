@@ -37,8 +37,8 @@ func serveSessionStatus(ctx context.Context, st *app.Store, id string) (string, 
 }
 
 // serveRun wires POST /sessions/{id}/run onto the `session run <id>`
-// machinery: the identical preamble (load-runnable, crash recovery,
-// pause resume, steering drain, budget resolve), turn loop and replay
+// machinery: the identical preamble (load-runnable, run lease, crash
+// recovery, pause resume, steering drain, budget resolve), turn loop and replay
 // projection; the CLI's exit classes ride the shared code table.
 func serveRun(ctx context.Context, st *app.Store, fl *flags, id string, opts server.RunOptions) ([]server.Event, error) {
 	if id == "" {
@@ -55,6 +55,11 @@ func serveRun(ctx context.Context, st *app.Store, fl *flags, id string, opts ser
 	if err != nil {
 		return nil, err
 	}
+	lease, sess, err := app.AcquireSessionRunLease(ctx, st, sess)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = lease.Release(context.WithoutCancel(ctx)) }()
 	if rerr := app.RecoverCrashedSession(ctx, st, id); rerr != nil {
 		return nil, recoveryFailure(rerr)
 	}
@@ -71,7 +76,7 @@ func serveRun(ctx context.Context, st *app.Store, fl *flags, id string, opts ser
 		return nil, berr
 	}
 	runFl.budget = budget
-	return serveRunTurn(ctx, st, sess, &runFl)
+	return serveRunTurn(ctx, st, sess, lease, &runFl)
 }
 
 // serveRunTurn mirrors runSessionTurn for the transport: provider
@@ -79,7 +84,7 @@ func serveRun(ctx context.Context, st *app.Store, fl *flags, id string, opts ser
 // projection; a client disconnect surfaces as session_cancelled (the
 // request context plays the signal's role; the engine records
 // client_disconnected or shutdown).
-func serveRunTurn(ctx context.Context, st *app.Store, sess *app.Session, runFl *flags) ([]server.Event, error) {
+func serveRunTurn(ctx context.Context, st *app.Store, sess *app.Session, lease app.ExecLease, runFl *flags) ([]server.Event, error) {
 	p, perr := providerResolver(sess.Provider)
 	if perr != nil {
 		return nil, providerFailure(perr)
@@ -88,7 +93,7 @@ func serveRunTurn(ctx context.Context, st *app.Store, sess *app.Session, runFl *
 	if !ok {
 		return nil, providerFailure(fmt.Errorf("provider %s does not support streaming turns", sess.Provider))
 	}
-	res, terr := runTurnOrLoop(ctx, st, sess, s, runFl)
+	res, terr := runTurnOrLoop(ctx, st, sess, s, runFl, lease)
 	if terr == nil && res != nil && res.BudgetExceeded {
 		return nil, fmt.Errorf("%w: budget of %d exceeded after %d tokens; session paused",
 			app.ErrBudgetExceeded, runFl.budget, res.ConsumedBudget)

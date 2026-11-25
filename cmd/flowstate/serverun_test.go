@@ -484,3 +484,105 @@ var _ = Describe("Serve run max_turns", func() {
 		Expect(status).To(Equal(http.StatusOK))
 	})
 })
+
+var _ = Describe("Serve run takes the judged run lease", func() {
+	// bootCrashedRun boots serve on a database holding one session whose log ends in a crashed turn.
+	bootCrashedRun := func() (string, string, string, func() int) {
+		db := filepath.Join(GinkgoT().TempDir(), "serve.db")
+		id := seedCrashSession(db, crashedLog)
+		base, stop := serveBootAt(db, nil)
+		return base, id, db, stop
+	}
+
+	Context("a second run against a live one", func() {
+		var res *http.Response
+		var before, after string
+		var code string
+		BeforeEach(func() {
+			base, id, db, stop := bootCrashedRun()
+			DeferCleanup(func() { mustExit(stop()) })
+			holdLeaseAt(db, id)
+			read := func() string {
+				data, err := io.ReadAll(serveReq(http.MethodGet, base+"/sessions/"+id+"/events?after=-1", "").Body)
+				must(err)
+				return string(data)
+			}
+			before = read()
+			res = serveReq(http.MethodPost, base+"/sessions/"+id+"/run", "")
+			var ec map[string]string
+			serveJSON(res, &ec)
+			code = ec["code"]
+			after = read()
+		})
+		It("is refused with the status the held-lease mapping gives today", func() {
+			Expect(res.StatusCode).To(Equal(http.StatusInternalServerError))
+		})
+		It("reports the internal code until the error contract moves", func() { Expect(code).To(Equal("internal")) })
+		It("leaves the log byte-identical", func() { Expect(after).To(Equal(before)) })
+	})
+
+	Context("a run that ends", func() {
+		var seen atomic.Value
+		var db, id string
+		BeforeEach(func() {
+			var base string
+			var stop func() int
+			base, id, db, stop = bootCrashedRun()
+			DeferCleanup(func() { mustExit(stop()) })
+			withFakeZai(observingZai(db, id, &seen))
+			if res := serveReq(http.MethodPost, base+"/sessions/"+id+"/run", ""); res.StatusCode != http.StatusOK {
+				panic("serve run failed: " + res.Status)
+			}
+		})
+		It("held a run:<uuid> lease while it ran", func() {
+			Expect(seen.Load().(store.LeaseInfo).Owner).To(HavePrefix("run:"))
+		})
+		It("has released the lease row", func() {
+			_, found := leaseAt(db, id)
+			Expect(found).To(BeFalse())
+		})
+		It("has released the lock for the next holder", func() { Expect(canAcquireAt(db, id)).To(BeTrue()) })
+	})
+
+	Context("a run that fails after the acquire", func() {
+		var db, id string
+		BeforeEach(func() {
+			var base string
+			var stop func() int
+			base, id, db, stop = bootCrashedRun()
+			DeferCleanup(func() { mustExit(stop()) })
+			tamperFirstEvent(db, id)
+			if res := serveReq(http.MethodPost, base+"/sessions/"+id+"/run", ""); res.StatusCode == http.StatusOK {
+				panic("serve run on a corrupt log succeeded")
+			}
+		})
+		It("has released the lease row", func() {
+			_, found := leaseAt(db, id)
+			Expect(found).To(BeFalse())
+		})
+		It("has released the lock for the next holder", func() { Expect(canAcquireAt(db, id)).To(BeTrue()) })
+	})
+
+	Context("a run that panics after the acquire", func() {
+		var db, id string
+		BeforeEach(func() {
+			var base string
+			var stop func() int
+			base, id, db, stop = bootCrashedRun()
+			DeferCleanup(func() { mustExit(stop()) })
+			old := providerResolver
+			providerResolver = func(string) (provider.Provider, error) { panic("provider seam panic") }
+			DeferCleanup(func() { providerResolver = old })
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, base+"/sessions/"+id+"/run", nil)
+			must(err)
+			if res, derr := http.DefaultClient.Do(req); derr == nil { // the server drops the connection on a panic
+				_ = res.Body.Close()
+			}
+		})
+		It("has released the lease row", func() {
+			_, found := leaseAt(db, id)
+			Expect(found).To(BeFalse())
+		})
+		It("has released the lock for the next holder", func() { Expect(canAcquireAt(db, id)).To(BeTrue()) })
+	})
+})

@@ -74,9 +74,10 @@ func crashedFromEvents(events []store.RecordedEvent) bool {
 // DetectCrashedSession.
 //
 // The answer lives here, not in the loop's replay, because ADR-006 puts every
-// write that records a crash in this step: it runs once, before the lease and
-// the first provider request, and the replay stays a read-only rebuild of the
-// history that skips a dangling call and never re-issues it.
+// write that records a crash in this step: it runs once, after the run lease
+// (AcquireSessionRunLease) is held and before the first provider request, and
+// the replay stays a read-only rebuild of the history that skips a dangling
+// call and never re-issues it.
 //
 // Limit (adjacency): an answer is appended at the end of the log, whenever the
 // call happened. A call left unanswered by an earlier build, or behind a paused
@@ -86,12 +87,10 @@ func crashedFromEvents(events []store.RecordedEvent) bool {
 // that requires a tool result right after its tool call may reject the request.
 // Nothing here reorders the log, so a re-request is not always valid.
 //
-// Limit: nothing here can tell a dead run from a live one in another process.
-// The writer registry is per process and leases never expire (a crashed run's
-// own lease carries the same owner name as a live one), so a second
-// `session run` on a session that is running elsewhere would answer its live
-// calls. This is the same assumption the session.interrupted marker has always
-// made: one process runs a session at a time (ADR-009 D8).
+// Limit: nothing here can tell a dead run from a live one. `session run`,
+// serve and `delegate resume` hold a judged lease (AcquireSessionRunLease,
+// AcquireRunLease) when they call it, so a live run elsewhere is refused
+// first (ADR-009 D8, ADR-011).
 //
 // It also clears the exec lease row of a crashed `session compact` (clearCompactLeases, whose
 // comment argues the safety), so that a run can proceed. CompactSession does not call this: it
@@ -249,4 +248,37 @@ func interruptedDelegateMessage(children []danglingChild) string {
 		}
 	}
 	return b.String()
+}
+
+// AcquireSessionRunLease takes the exec lease of sess for one `session run` or
+// serve run under a fresh owner, run:<uuid>, by the judging acquire (ADR-011
+// rules 5 and 7). Callers load the session and reject terminal states first
+// (ADR-002 phase 1), then call this, and run RecoverCrashedSession, the resume
+// and the steering drain only on success: a refused run writes nothing. The
+// status is read again once the lease is held, because it may have changed in
+// between; the returned session is that fresh row, and a session that became
+// terminal is refused with ErrTerminal and the lease released.
+//
+// A held or unjudgeable lease is refused with an error that matches
+// store.ErrSessionBusy and names the holder. The caller keeps the handle until
+// the run's last writer has returned (the loop, the text-only turn, the
+// post-loop writers) and then releases it, on every path.
+func AcquireSessionRunLease(ctx context.Context, st *store.Store, sess *store.Session) (*store.RunLease, *store.Session, error) {
+	id, err := session.NewID()
+	if err != nil {
+		return nil, nil, fmt.Errorf("run lease owner: %w", err)
+	}
+	lease, err := st.AcquireRunLease(ctx, "exec:"+sess.ID, "run:"+id)
+	if err != nil {
+		return nil, nil, fmt.Errorf("run lease: %w", err)
+	}
+	fresh, err := st.GetSession(ctx, sess.ID)
+	if err == nil && fresh.Status != "active" && fresh.Status != "paused" {
+		err = fmt.Errorf("%w: session %s is %s", ErrTerminal, sess.ID, fresh.Status)
+	}
+	if err != nil {
+		_ = lease.Release(context.WithoutCancel(ctx))
+		return nil, nil, err
+	}
+	return lease, fresh, nil
 }

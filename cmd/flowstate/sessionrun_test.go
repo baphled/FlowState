@@ -1625,3 +1625,271 @@ var _ = Describe("Session run crash recovery", func() {
 		})
 	})
 })
+
+// crashedLog marks a session's log as a run that died mid-turn: provider
+// activity after the initial turn.start and no turn.end.
+func crashedLog(w *store.EventWriter) {
+	_, err := w.Append(context.Background(), "engine", "provider.request", map[string]any{"model": "glm-5.3"})
+	must(err)
+}
+
+// leaseAt reads the exec lease row of session id from the database at db through a store handle of its own.
+func leaseAt(db, id string) (store.LeaseInfo, bool) {
+	st, err := app.OpenStore(db)
+	must(err)
+	defer func() { must(st.Close()) }()
+	info, found, err := st.ReadLease(context.Background(), "exec:"+id)
+	must(err)
+	return info, found
+}
+
+// holdLeaseAt takes the run lease of session id in the database at db from a second store handle: a live holder.
+func holdLeaseAt(db, id string) {
+	st, err := app.OpenStore(db)
+	must(err)
+	h, err := st.AcquireRunLease(context.Background(), "exec:"+id, "run:live")
+	must(err)
+	DeferCleanup(func() {
+		must(h.Release(context.Background()))
+		must(st.Close())
+	})
+}
+
+// legacyLeaseAt writes a row with the legacy acquire, as the writers that have not moved still do: no machine, no lock.
+func legacyLeaseAt(db, id, owner string) {
+	st, err := app.OpenStore(db)
+	must(err)
+	defer func() { must(st.Close()) }()
+	_, err = st.AcquireLease(context.Background(), "exec:"+id, owner)
+	must(err)
+}
+
+// canAcquire reports whether the run lease of session id can be taken now, and releases it again.
+func canAcquire(id string) bool { return canAcquireAt(dbFor(), id) }
+
+// canAcquireAt is canAcquire for the database at db.
+func canAcquireAt(db, id string) bool {
+	st, err := app.OpenStore(db)
+	must(err)
+	defer func() { must(st.Close()) }()
+	h, err := st.AcquireRunLease(context.Background(), "exec:"+id, "run:probe")
+	if err != nil {
+		return false
+	}
+	must(h.Release(context.Background()))
+	return true
+}
+
+// stopChunk is one provider chunk that ends a turn.
+const stopChunk = `{"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}`
+
+// observingZai answers every request with one stop chunk, after recording the session's lease row as a second store
+// handle sees it while the run is in flight.
+func observingZai(db, id string, seen *atomic.Value) *httptest.Server {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		info, _ := leaseAt(db, id)
+		seen.Store(info)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: " + stopChunk + "\n\ndata: [DONE]\n\n"))
+	}))
+	DeferCleanup(srv.Close)
+	return srv
+}
+
+// runQuiet runs argv under ctx with its output discarded and returns the exit status.
+func runQuiet(ctx context.Context, argv []string) int {
+	null, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	must(err)
+	defer func() { _ = null.Close() }()
+	return dispatchContexted(ctx, argv, null, null)
+}
+
+// cancellingStreamer cancels the run's context as soon as the loop asks it for a turn.
+type cancellingStreamer struct {
+	scriptedStreamer
+	cancel context.CancelFunc
+}
+
+func (c *cancellingStreamer) Stream(ctx context.Context, req *provider.ChatRequest) <-chan provider.StreamEvent {
+	c.cancel()
+	return c.scriptedStreamer.Stream(ctx, req)
+}
+
+// probeLeaseAtCompletion installs a trigger that records, each time a session is marked completed, how many lease
+// rows its exec item has at that moment, and returns a reader of those counts.
+func probeLeaseAtCompletion(db string) func() []int {
+	conn, err := sql.Open("sqlite", db)
+	must(err)
+	defer func() { _ = conn.Close() }()
+	_, err = conn.Exec(`CREATE TABLE lease_probe (n INTEGER)`)
+	must(err)
+	_, err = conn.Exec(`CREATE TRIGGER lease_probe_trg AFTER UPDATE OF status ON sessions WHEN NEW.status = 'completed' ` +
+		`BEGIN INSERT INTO lease_probe SELECT count(*) FROM leases WHERE item = 'exec:' || NEW.id; END`)
+	must(err)
+	return func() []int {
+		c, err := sql.Open("sqlite", db)
+		must(err)
+		defer func() { _ = c.Close() }()
+		rows, err := c.Query(`SELECT n FROM lease_probe`)
+		must(err)
+		defer func() { _ = rows.Close() }()
+		var out []int
+		for rows.Next() {
+			var n int
+			must(rows.Scan(&n))
+			out = append(out, n)
+		}
+		must(rows.Err())
+		return out
+	}
+}
+
+// leaseSurfaces are the two run surfaces the preamble covers: the text-only turn and the tool-surface loop.
+var leaseSurfaces = []struct {
+	name string
+	args []string
+}{{"text-only", nil}, {"loop", []string{"--allow", "echo"}}}
+
+// releaseCases are the ways a run ends; each drives one run of session id.
+var releaseCases = []struct {
+	name string
+	run  func(id string)
+}{
+	{"a completed run", func(id string) {
+		withFakeZai(fakeZaiServer(stopChunk))
+		runCLILoop(id)
+	}},
+	{"a provider failure", func(id string) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte(`{"error":{"code":"502","message":"down"}}`))
+		}))
+		DeferCleanup(srv.Close)
+		withFakeZai(srv)
+		runCLILoop(id, "--allow", "echo")
+	}},
+	{"a max_turns failure", func(id string) {
+		withFakeZai(fakeZaiServer(
+			`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"echo","arguments":"{}"}}]}}]}`,
+			`{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`))
+		runCLILoop(id, "--allow", "echo", "--max-turns", "1")
+	}},
+	{"a budget stop", func(id string) {
+		withFakeZai(fakeZaiServer(
+			`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"echo","arguments":"{}"}}]}}]}`,
+			`{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`))
+		runCLILoop(id, "--allow", "echo", "--budget", "1")
+	}},
+	{"a cancellation", func(id string) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		withProvider(&cancellingStreamer{cancel: cancel})
+		runQuiet(ctx, []string{"session", "run", "--db", dbFor(), "--allow", "echo", id})
+	}},
+	{"a panic in the run", func(id string) {
+		old := providerResolver
+		providerResolver = func(string) (provider.Provider, error) { panic("boom") }
+		DeferCleanup(func() { providerResolver = old })
+		func() {
+			defer func() { _ = recover() }()
+			runQuiet(context.Background(), []string{"session", "run", "--db", dbFor(), id})
+		}()
+	}},
+}
+
+var _ = Describe("Session run takes the judged run lease", func() {
+	var id string
+
+	BeforeEach(func() { id = seedCrashSession(dbFor(), crashedLog) })
+
+	for _, sf := range leaseSurfaces {
+		Context("a live holder, "+sf.name+" run", func() {
+			var before string
+			var run result
+			BeforeEach(func() {
+				holdLease(id)
+				before = runCLIEvents(id).stdout
+				run = runCLILoop(id, sf.args...)
+			})
+			It("is refused with the internal status", func() { Expect(run.exit).To(Equal(1)) })
+			It("names the holder", func() {
+				Expect(stderrMessage(run.stderr)).To(ContainSubstring("run:live"))
+			})
+			It("names the unlock command", func() {
+				Expect(stderrMessage(run.stderr)).To(ContainSubstring("flowstate session unlock " + id))
+			})
+			It("leaves the log byte-identical", func() { Expect(runCLIEvents(id).stdout).To(Equal(before)) })
+		})
+
+		Context("a crashed row of this machine, "+sf.name+" run", func() {
+			var run result
+			var seen atomic.Value
+			BeforeEach(func() {
+				seedLeaseFor(id, "run:dead", store.MachineIdentity(), "deadhost", 1)
+				withFakeZai(observingZai(dbFor(), id, &seen))
+				run = runCLILoop(id, sf.args...)
+			})
+			It("runs to completion", func() { Expect(run.exit).To(Equal(0)) })
+			It("takes the row over with the next token", func() {
+				Expect(seen.Load().(store.LeaseInfo).Token).To(Equal(int64(2)))
+			})
+			It("holds it under a run:<uuid> owner during the run", func() {
+				Expect(seen.Load().(store.LeaseInfo).Owner).To(HavePrefix("run:"))
+			})
+			It("holds it under an owner that is not the old constant", func() {
+				Expect(seen.Load().(store.LeaseInfo).Owner).NotTo(Equal("cli"))
+			})
+			It("records the machine in the row", func() {
+				Expect(seen.Load().(store.LeaseInfo).Machine).To(Equal(store.MachineIdentity()))
+			})
+			It("then recovers the crash", func() { Expect(stdoutEventTypes(run.stdout)).To(ContainElement("session.interrupted")) })
+			It("releases the row after the run", func() {
+				_, found := leaseAt(dbFor(), id)
+				Expect(found).To(BeFalse())
+			})
+		})
+
+		Context("the post-loop writers, "+sf.name+" run", func() {
+			It("completes the session while the lease row is still held", func() {
+				read := probeLeaseAtCompletion(dbFor())
+				withFakeZai(fakeZaiServer(stopChunk))
+				if run := runCLILoop(id, sf.args...); run.exit != 0 {
+					panic("session run failed")
+				}
+				Expect(read()).To(Equal([]int{1}))
+			})
+		})
+	}
+
+	for _, owner := range []string{"delegate:0190-legacy", "compact:0190-legacy"} {
+		Context("a live legacy row of owner "+owner, func() {
+			var before string
+			var run result
+			BeforeEach(func() {
+				legacyLeaseAt(dbFor(), id, owner)
+				before = runCLIEvents(id).stdout
+				run = runCLIRun(id)
+			})
+			It("is refused, not taken over", func() { Expect(run.exit).To(Equal(1)) })
+			It("leaves the log byte-identical", func() { Expect(runCLIEvents(id).stdout).To(Equal(before)) })
+			It("leaves the row with its owner", func() {
+				info, _ := leaseAt(dbFor(), id)
+				Expect(info.Owner).To(Equal(owner))
+			})
+			It("names the unlock command", func() {
+				Expect(stderrMessage(run.stderr)).To(ContainSubstring("flowstate session unlock " + id))
+			})
+		})
+	}
+
+	for _, c := range releaseCases {
+		Context("after "+c.name, func() {
+			BeforeEach(func() { c.run(id) })
+			It("has deleted the lease row", func() {
+				_, found := leaseAt(dbFor(), id)
+				Expect(found).To(BeFalse())
+			})
+			It("has released the lock for the next holder", func() { Expect(canAcquire(id)).To(BeTrue()) })
+		})
+	}
+})
