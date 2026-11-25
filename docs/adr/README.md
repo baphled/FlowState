@@ -44,7 +44,7 @@ The Go CLI's architecture decision records, in the vault template. The prototype
 | 007 | [[ADR - Transport Adapter Packages]] | internal/server classified as transport adapter; cmd allowlist app+config+server; net/http subtree banned from cmd |
 | 008 | [[ADR - Anthropic Provider]] | anthropic provider (OAuth route) runs the user's own unmodified `claude` binary headless; API key to follow; no credentials handled by FlowState |
 | 009 | [[ADR - Delegation to Child Agents]] | delegation is a model-called `delegate` tool with markdown agent profiles, isolated child sessions and final-message results; no engine scheduler |
-| 010 | [[ADR - Context Management and Compaction]] | compaction is an appended `context.compacted` event (summary, first kept seq); replay rebuilds from the last one; trigger on provider-reported context over window minus reserve; log never rewritten |
+| 010 | [[ADR - Context Management and Compaction]] | compaction is an appended `context.compacted` event (summary, first kept seq); replay rebuilds from the last one; trigger on provider-reported context over window minus max(reserve, output); log never rewritten |
 | 011 | [[ADR - Session Lease Ownership and Liveness]] | every log writer holds a per-run-owner exec lease; a lease is taken over only when a kernel-released lock file shows its same-host holder dead; unjudgeable rows are refused until `session unlock --force`; recovery runs only after ownership |
 
 ## Reading order

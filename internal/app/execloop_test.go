@@ -950,3 +950,24 @@ var _ = Describe("Execution loop given a held lease", func() {
 		})
 	})
 })
+
+var _ = Describe("the max_tokens of a provider request", func() {
+	requested := func(providerName, model string, explicit int64) int64 {
+		streamer := &execLoopStreamer{turns: [][]provider.StreamEvent{{{Kind: provider.StreamEventFinish, FinishReason: "stop"}}}}
+		cfg := execLoopFixture(streamer)
+		cfg.Session.Provider, cfg.Session.ModelID, cfg.MaxTokens = providerName, model, explicit
+		if out := runExec(context.Background(), cfg); !out.NoErr {
+			panic("the scripted run failed")
+		}
+		return streamer.reqs[0].MaxTokens
+	}
+	It("defaults to the capped table maximum for a known model", func() {
+		Expect(requested("z.ai", "glm-5.3", 0)).To(Equal(int64(32768)))
+	})
+	It("defaults to 8192 for an unknown model", func() {
+		Expect(requested("scripted", "scripted-model", 0)).To(Equal(int64(8192)))
+	})
+	It("takes the explicit value for a known model", func() {
+		Expect(requested("z.ai", "glm-5.3", 1000)).To(Equal(int64(1000)))
+	})
+})

@@ -467,23 +467,28 @@ match case-insensitively and a repeated key takes its last value.
 **Automatic compaction.** In the tool loop (`session run` with a tool surface, and the `delegate` children it starts)
 the engine measures the context before each provider request: the last reported turn context plus an estimate (bytes /
 4) of the tool results appended since, or, when no turn has reported usage or the session was just resumed, an
-estimate of the whole rebuilt history with the system prompt and tool definitions. Above `window - reserve` (`reserve`
-raised to the run's `--max-tokens` when larger) it summarises the older turns with the session's own model, appends
-one `context.compacted` event (reason `auto`) and continues from the rebuilt history, keeping about `keep_recent`
-tokens verbatim. `enabled`, `reserve`, `keep_recent` and `context_window` take effect there. The summary draws one
-unit from the budget pool before the turn's own reservation, so it can spend a pool's last unit; a compaction is not a
-turn and does not count against `max_turns`. A compaction that fails (no eligible cut, an empty or truncated summary,
-a failed summary call, a pool that cannot cover it, or a `tokens_after` still above the line) writes nothing, is not
-retried in that run (so a `no_cut` on the first over-the-line turn turns compaction off for the rest of the run), and
-the run continues; a `no_cut` gives its pool unit back. A window not larger than the reserve (or `--max-tokens`) never
-compacts: raise the window or lower the reserve or `max_tokens`. In `swarm run --execute` the coordinator and its
-children, nested ones included, compact by the same `compaction` settings, including `enabled: false`; the coordinator's
-window is its profile's `context_window` when set, and each compaction draws from the swarm pool. `session compact`
-summarises by hand.
+estimate of the whole rebuilt history with the system prompt and tool definitions. Above `window - max(reserve,
+output)` (`output` is the run's `--max-tokens` when set, else the default described below) it summarises the older
+turns with the session's own model, appends one `context.compacted` event (reason `auto`) and continues from the
+rebuilt history, keeping about `keep_recent` tokens verbatim. `enabled`, `reserve`, `keep_recent` and `context_window`
+take effect there. The summary draws one unit from the budget pool before the turn's own reservation, so it can spend
+a pool's last unit; a compaction is not a turn and does not count against `max_turns`. A compaction that fails (no
+eligible cut, an empty or truncated summary, a failed summary call, a pool that cannot cover it, or a `tokens_after`
+still above the line) writes nothing, is not retried in that run (so a `no_cut` on the first over-the-line turn turns
+compaction off for the rest of the run), and the run continues; a `no_cut` gives its pool unit back. A window not
+larger than the reserve (or `--max-tokens`) never compacts: raise the window or lower the reserve or `max_tokens`.
+Without `--max-tokens` a run sends the model's maximum output from the registry table, capped at 32768 (an unknown
+model: 8192), and a known model's line is `window - max(reserve, that value)`, the value limited to a quarter of the
+window (an unknown model's line is the reserve alone). An explicit `--max-tokens` is not limited. A delegate or swarm
+child sends its own model's default, not the parent's explicit cap (passing it down is a follow-up). With
+`compaction.enabled` false the larger default cap shrinks the input headroom, and the reactive overflow retry below is
+the only net. In `swarm run --execute` the coordinator and its children, nested ones included, compact by the same
+`compaction` settings, including `enabled: false`; the coordinator's window is its profile's `context_window` when
+set, and each compaction draws from the swarm pool. `session compact` summarises by hand.
 
 **Overflow retry.** The tool loop also has a reactive net: when the provider says a request does not fit the window
 (`provider.ErrContextOverflow`), or answers with a `length` finish and no tool calls on a request whose context was
-already over `window - reserve`, the engine compacts (reason `overflow`) and retries that request once; it needs a
+already over the compaction line, the engine compacts (reason `overflow`) and retries that request once; it needs a
 known window and `compaction.enabled`, as the automatic trigger does. The first overflow writes a `provider.error`
 event with `reason` `context_overflow` and `terminal` false, which leaves the session `active`; the retry draws a
 second pool unit and counts as a second turn in the run result, but the log counts only the answered requests, so a

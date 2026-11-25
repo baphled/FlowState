@@ -64,7 +64,7 @@ type turnState struct {
 type TurnOptions struct {
 	// Budget caps the turn; values <= 0 mean unlimited.
 	Budget int64
-	// MaxTokens caps the provider response; <= 0 means provider default.
+	// MaxTokens caps the provider response; <= 0 uses the model-table default (ResolveMaxOutput).
 	MaxTokens int64
 	// ModelID overrides the session's stored model for this turn
 	// when non-empty; empty keeps the config-driven session default.
