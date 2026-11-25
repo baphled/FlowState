@@ -65,8 +65,7 @@ func ValidateCompaction(p CompactionPayload, seq int64) error {
 
 // NewCompactionEvent validates p for an event that will be appended with seq nextSeq (the
 // log's last seq plus one) and returns the payload to give the event writer, with
-// TypeContextCompacted and session.ActorEngine. Nothing in production calls it
-// yet: the summariser and the cut chooser that do are later ADR-010 packets.
+// TypeContextCompacted and session.ActorEngine. Compact calls it before it appends.
 func NewCompactionEvent(p CompactionPayload, nextSeq int64) (CompactionPayload, error) {
 	if err := ValidateCompaction(p, nextSeq); err != nil {
 		return CompactionPayload{}, err
