@@ -406,3 +406,108 @@ var _ = Describe("serve startup refusal", func() {
 		Expect(msg).To(ContainSubstring(server.TokenEnv))
 	})
 })
+
+// httpDoctor boots `flowstate serve` on the per-spec database and returns the status and body
+// of GET /sessions/{id}/doctor; extra are further serve flags.
+func httpDoctor(id string, extra ...string) (int, string) {
+	base, stop := serveBootAt(dbFor(), nil, extra...)
+	defer func() { mustExit(stop()) }()
+	res := serveReq(http.MethodGet, base+"/sessions/"+id+"/doctor", "")
+	defer res.Body.Close()
+	data, err := io.ReadAll(res.Body)
+	must(err)
+	return res.StatusCode, string(data)
+}
+
+// httpDoctorRecord is httpDoctor with the body decoded as JSON.
+func httpDoctorRecord(id string, extra ...string) map[string]any {
+	_, body := httpDoctor(id, extra...)
+	var rec map[string]any
+	must(json.Unmarshal([]byte(body), &rec))
+	return rec
+}
+
+// newWindowSession creates a session on providerName/model in the per-spec database.
+func newWindowSession(providerName, model string) string {
+	created := runCLINew("--provider", providerName, "--model", model, "--task", "window probe")
+	if created.exit != 0 {
+		panic("session new failed: " + created.stderr)
+	}
+	return decodeNew(created.stdout).ID
+}
+
+// malformedCompactionSession creates a session whose log holds one context.compacted event
+// the rebuild would refuse (first_kept_seq 0).
+func malformedCompactionSession() string {
+	id := newWindowSession("z.ai", "glm-5.3")
+	st, err := app.OpenStore(dbFor())
+	must(err)
+	defer func() { must(st.Close()) }()
+	w, werr := st.NewEventWriter(context.Background(), id)
+	must(werr)
+	_, aerr := w.Append(context.Background(), "engine", "context.compacted", map[string]any{
+		"summary": "SUM", "first_kept_seq": 0, "tokens_before": 900, "tokens_after": 300, "reason": "manual", "model": "m"})
+	must(aerr)
+	must(w.Close())
+	return id
+}
+
+var _ = Describe("HTTP doctor parity with session doctor", Label("e2e"), func() {
+	It("reports the same compactions object as the CLI for the same log", func() {
+		id := compactedDoctorSession()
+		_, cli := doctorRecord(id)
+		Expect(httpDoctorRecord(id)["compactions"]).To(Equal(cli["compactions"]))
+	})
+
+	It("reports the same diagnosis as the CLI for the same log", func() {
+		id := compactedDoctorSession()
+		_, cli := doctorRecord(id)
+		Expect(httpDoctorRecord(id)).To(Equal(cli))
+	})
+
+	It("reports a null window and the unknown source for an unknown model", func() {
+		Expect(httpDoctorRecord(newWindowSession("ollama", "llama3"))["context_window"]).To(
+			Equal(map[string]any{"tokens": nil, "source": "unknown"}))
+	})
+
+	It("warns over HTTP for an unknown model, naming the fix", func() {
+		Expect(httpDoctorRecord(newWindowSession("ollama", "llama3"))["warnings"]).To(ConsistOf(
+			"no context window is known for this model; set compaction.context_window in the config " +
+				"(automatic compaction will need it)"))
+	})
+
+	It("reports the table window over HTTP", func() {
+		Expect(httpDoctorRecord(newWindowSession("anthropic", "claude-sonnet-5-5"))["context_window"]).To(
+			HaveKeyWithValue("source", "table"))
+	})
+
+	It("reports the window of the server's loaded config", func() {
+		id := newWindowSession("ollama", "llama3")
+		rec := httpDoctorRecord(id, "--config", writeConfigFixture(`{"compaction":{"context_window":50000}}`))
+		Expect(rec["context_window"]).To(Equal(map[string]any{"tokens": float64(50000), "source": "config"}))
+	})
+
+	It("omits the warnings over HTTP when the window is known", func() {
+		Expect(httpDoctorRecord(newWindowSession("z.ai", "glm-5.3"))).NotTo(HaveKey("warnings"))
+	})
+
+	It("validates the unknown-window HTTP output against the session-doctor schema", func() {
+		_, body := httpDoctor(newWindowSession("ollama", "llama3"))
+		Expect(validateAgainst("session-doctor", body)).To(Succeed())
+	})
+
+	It("validates the compacted HTTP output against the session-doctor schema", func() {
+		_, body := httpDoctor(compactedDoctorSession())
+		Expect(validateAgainst("session-doctor", body)).To(Succeed())
+	})
+
+	It("counts a malformed compaction as invalid over HTTP", func() {
+		compactions := httpDoctorRecord(malformedCompactionSession())["compactions"]
+		Expect(compactions).To(HaveKeyWithValue("invalid", float64(1)))
+	})
+
+	It("answers 200 for a session with a malformed compaction", func() {
+		status, _ := httpDoctor(malformedCompactionSession())
+		Expect(status).To(Equal(http.StatusOK))
+	})
+})

@@ -94,6 +94,30 @@ type Diagnosis struct {
 	FinishReason    string
 	Truncated       bool
 	Usage           DiagnosisUsage
+	Compactions     DiagnosisCompactions
+	ContextWindow   DiagnosisWindow
+	// Warnings are the diagnosis notes; the wire field is omitted when empty.
+	Warnings []string
+}
+
+// DiagnosisCompactions is what the event log records about context
+// compactions. LastTokensAfter is nil without a compaction and renders as
+// JSON null; the summary totals render as null while SummariesReported is 0.
+type DiagnosisCompactions struct {
+	Count               int64
+	Invalid             int64
+	LastTokensAfter     *int64
+	SummariesReported   int64
+	SummaryInputTokens  int64
+	SummaryOutputTokens int64
+}
+
+// DiagnosisWindow is the resolved context window. Tokens is 0 when the window
+// is unknown and renders as JSON null, never 0; Source is one of profile,
+// config, table or unknown.
+type DiagnosisWindow struct {
+	Tokens int
+	Source string
 }
 
 // DiagnosisUsage is the provider usage the event log records. The totals and
@@ -337,17 +361,38 @@ type streamStatusBody struct {
 // diagnosisBody mirrors the session-doctor item field-for-field; a nil
 // pool renders budget_pool/available as JSON null, as the CLI does.
 type diagnosisBody struct {
-	SessionID       string    `json:"session_id"`
-	Status          string    `json:"status"`
-	Crashed         bool      `json:"crashed"`
-	RunActivity     bool      `json:"run_activity"`
-	PendingMessages int       `json:"pending_messages"`
-	Reserved        int64     `json:"reserved"`
-	BudgetPool      *int64    `json:"budget_pool"`
-	Available       *int64    `json:"available"`
-	FinishReason    string    `json:"finish_reason,omitempty"`
-	Truncated       bool      `json:"truncated,omitempty"`
-	Usage           usageBody `json:"usage"`
+	SessionID       string          `json:"session_id"`
+	Status          string          `json:"status"`
+	Crashed         bool            `json:"crashed"`
+	RunActivity     bool            `json:"run_activity"`
+	PendingMessages int             `json:"pending_messages"`
+	Reserved        int64           `json:"reserved"`
+	BudgetPool      *int64          `json:"budget_pool"`
+	Available       *int64          `json:"available"`
+	FinishReason    string          `json:"finish_reason,omitempty"`
+	Truncated       bool            `json:"truncated,omitempty"`
+	Usage           usageBody       `json:"usage"`
+	Compactions     compactionsBody `json:"compactions"`
+	ContextWindow   windowBody      `json:"context_window"`
+	Warnings        []string        `json:"warnings,omitempty"`
+}
+
+// compactionsBody is the compactions object of the session-doctor item; the
+// pointers are nil (JSON null) as the CLI renders them.
+type compactionsBody struct {
+	Count               int64  `json:"count"`
+	Invalid             int64  `json:"invalid"`
+	LastTokensAfter     *int64 `json:"last_tokens_after"`
+	SummariesReported   int64  `json:"summaries_reported"`
+	SummaryInputTokens  *int64 `json:"summary_input_tokens"`
+	SummaryOutputTokens *int64 `json:"summary_output_tokens"`
+}
+
+// windowBody is the context_window object of the session-doctor item; tokens
+// is nil (JSON null) when the window is unknown.
+type windowBody struct {
+	Tokens *int   `json:"tokens"`
+	Source string `json:"source"`
 }
 
 // usageBody is the usage object of the session-doctor item; the pointers are
