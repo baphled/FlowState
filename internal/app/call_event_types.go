@@ -24,3 +24,16 @@ type callEventSink struct {
 	started bool
 	done    bool
 }
+
+// keyFrame is one open JSON container while rejectAmbiguousKeys walks the
+// tokens; seen holds the folded keys of an object.
+type keyFrame struct {
+	object  bool
+	wantKey bool
+	seen    map[string]struct{}
+}
+
+// keyWalker holds the open containers while rejectAmbiguousKeys walks tokens.
+type keyWalker struct {
+	stack []keyFrame
+}
