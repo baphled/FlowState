@@ -17,6 +17,10 @@ const (
 	EventTurnCancelled EventKind = "turn.cancelled"
 )
 
+// TypeSessionUnlocked is the event type `session unlock --force` appends after
+// deleting a session's exec lease row (ADR-011); the actor is ActorEngine.
+const TypeSessionUnlocked = "session.unlocked"
+
 // Event is an immutable, ordered record of something that happened inside a
 // session. Sequence numbers are assigned by the session and strictly
 // increase in append order.

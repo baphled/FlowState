@@ -104,6 +104,11 @@ var _ = Describe("Bounded session history", func() {
 		Entry("unfinished stream", []store.RecordedEvent{historyRow("assistant.delta", `{"delta":"partial"}`)}),
 		Entry("unknown event", []store.RecordedEvent{historyRow("future.message", `{}`)}))
 
+	It("rejects session.unlocked with ErrInvalidHistory (ADR-011 pins today's behaviour)", func() {
+		_, err := replaySessionHistory([]store.RecordedEvent{historyRow(session.TypeSessionUnlocked, `{"forced":true}`)}, limits)
+		Expect(err).To(MatchError(ErrInvalidHistory))
+	})
+
 	It("returns no partial history on rejection", func() {
 		messages, _ := replaySessionHistory(append(historyBatch(), historyResult()), limits)
 		Expect(messages).To(BeNil())
