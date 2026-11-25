@@ -81,7 +81,7 @@ func crashedFromEvents(events []store.RecordedEvent) bool {
 // Limit (adjacency): an answer is appended at the end of the log, whenever the
 // call happened. A call left unanswered by an earlier build, or behind a paused
 // session, is answered late, after unrelated events, so the rebuilt history can
-// be assistant(d1), assistant(e1), tool(e1), tool(d1). That passes
+// be assistant{d1} "a", assistant{e1} "b", tool(e1), tool(d1). That passes
 // ChatRequest.Validate, which checks pairing and not adjacency, but a provider
 // that requires a tool result right after its tool call may reject the request.
 // Nothing here reorders the log, so a re-request is not always valid.
