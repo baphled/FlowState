@@ -258,8 +258,8 @@ The tool loop also appends it, with reason `auto`: before each provider request 
 reported turn context plus an estimate of the tool results since, or the estimate of the whole rebuilt history) with
 `window - reserve`, draws one pool unit, summarises, appends and continues from the rebuilt history; a failed automatic
 compaction writes nothing, is not retried in the run and the run continues. In `swarm run --execute` the coordinator
-and its children compact with the built-in defaults; the `compaction` settings do not apply to them yet. The overflow
-retry is a later ADR-010 packet.
+and its children compact by the config's `compaction` settings (including `enabled: false`), the coordinator by its
+profile's `context_window`. The overflow retry is a later ADR-010 packet.
 
 ## Verified conversation history
 

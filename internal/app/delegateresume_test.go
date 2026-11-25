@@ -416,6 +416,17 @@ var _ = DescribeTable("countTurns",
 )
 
 // provCallToolRead is a call the resumed child's profile allows.
-func provCallToolRead() provider.ToolCall {
-	return provider.ToolCall{ID: "r1", Name: "fs.read", Arguments: []byte(`{"path":"absent.txt"}`)}
+func provCallToolRead() provider.ToolCall { return provCallToolReadID("r1") }
+
+// provCallToolReadID is provCallToolRead with the call's id given.
+func provCallToolReadID(id string) provider.ToolCall {
+	return provider.ToolCall{ID: id, Name: "fs.read", Arguments: []byte(`{"path":"absent.txt"}`)}
+}
+
+// bigReadTurn is a call the resumed child's profile allows, after a message that holds more than the
+// default keep_recent (20000 tokens), reporting a context of 90000: over the default line of a
+// window of 100000, with a cut before the turn.
+func bigReadTurn(id string) []provider.StreamEvent {
+	turn := append([]provider.StreamEvent{provText(strings.Repeat("a", 200000))}, usedCall(provCallToolReadID(id), 90000)...)
+	return turn
 }

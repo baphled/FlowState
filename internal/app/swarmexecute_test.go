@@ -6,6 +6,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -514,6 +516,182 @@ var _ = Describe("ExecuteSwarm", func() {
 
 		It("stores the run as fail", func() {
 			Expect(f.storedRun().Outcome).To(Equal(store.SwarmRunOutcomeFail))
+		})
+	})
+})
+
+// seqStreamer plays a scripted sequence per role: the nth request of a role (its system prompt)
+// gets the nth script, whatever the history holds, as a compaction rewrites the history; an
+// exhausted script answers "done". The summariser is the role compactSystemPrompt.
+type seqStreamer struct {
+	mu    sync.Mutex
+	seqs  map[string][][]provider.StreamEvent
+	calls map[string]int
+}
+
+func (*seqStreamer) Name() string     { return "scripted" }
+func (*seqStreamer) Models() []string { return []string{"scripted-model"} }
+func (*seqStreamer) Chat(context.Context, *provider.ChatRequest) (*provider.ChatResponse, error) {
+	return &provider.ChatResponse{Content: "ignored"}, nil
+}
+
+func (s *seqStreamer) Stream(_ context.Context, req *provider.ChatRequest) <-chan provider.StreamEvent {
+	role := req.Messages[0].Content
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := s.calls[role]
+	s.calls[role]++
+	if n < len(s.seqs[role]) {
+		return streamOf(s.seqs[role][n]...)
+	}
+	return streamOf(finishText("done")...)
+}
+
+// summaries is how many summary calls the run made.
+func (s *seqStreamer) summaries() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls[compactSystemPrompt]
+}
+
+// usedCall is a tool-call turn that reports a context of ctxTokens.
+func usedCall(c provider.ToolCall, ctxTokens int64) []provider.StreamEvent {
+	finish := provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: "stop",
+		Usage: &provider.Usage{InputTokens: ctxTokens}}
+	return []provider.StreamEvent{provCall(c), finish}
+}
+
+// compactingSwarm scripts the swarm so that the coordinator (when coordOver) and the writer (when
+// childOver) cross a line of 900 tokens on their second turn; the summariser answers "s".
+func (f *swarmExecFixture) compactingSwarm(coordOver, childOver bool) *seqStreamer {
+	delegate := func(id, role, task string, ctxTokens int64) []provider.StreamEvent {
+		args := must(json.Marshal(map[string]string{"agent": role, "task": task}))
+		return usedCall(provider.ToolCall{ID: id, Name: "delegate", Arguments: args}, ctxTokens)
+	}
+	read := func(id string, ctxTokens int64) []provider.StreamEvent {
+		return usedCall(provider.ToolCall{ID: id, Name: "fs.read", Arguments: json.RawMessage(`{"path":"missing.txt"}`)}, ctxTokens)
+	}
+	second := map[bool]int64{true: 950, false: 100}
+	seq := &seqStreamer{calls: map[string]int{}, seqs: map[string][][]provider.StreamEvent{
+		"coord-body": {delegate("ca", "writer", "[packet p1] write it", 100),
+			delegate("cb", "reviewer", "[packet p2] review it", second[coordOver]), summaryTurn("s"), finishText("done")},
+		"writer-body":       {read("r1", 100), read("r2", second[childOver]), summaryTurn("s"), finishText("written")},
+		compactSystemPrompt: {summaryTurn("s")},
+	}}
+	f.cfg.Streamer = seq
+	return seq
+}
+
+// withWindows gives the named profiles a context_window and the config the small reserve and
+// keep_recent the specs use, so that a window of 1000 puts the line at 900.
+func (f *swarmExecFixture) withWindows(enabled *bool, windows map[string]int) {
+	for i := range f.cfg.Profiles {
+		f.cfg.Profiles[i].ContextWindow = windows[f.cfg.Profiles[i].Name]
+		if f.cfg.Profiles[i].Name == "writer" {
+			f.cfg.Profiles[i].MaxTurns = 4
+		}
+	}
+	f.cfg.Compaction = CompactionConfig{Enabled: enabled, Reserve: intPtr(100), KeepRecent: intPtr(1)}
+}
+
+// crossDefaultLine makes the second turn of the role hold more than the default keep_recent (20000
+// tokens), so a cut exists before it, and report 90000 tokens: over the default line of a window of 100000.
+func crossDefaultLine(seq *seqStreamer, role string) {
+	turn := append([]provider.StreamEvent{provText(strings.Repeat("a", 200000))}, seq.seqs[role][1]...)
+	turn[2].Usage.InputTokens = 90000
+	seq.seqs[role][1] = turn
+}
+
+var _ = Describe("Compaction in an executed swarm", func() {
+	var (
+		f   *swarmExecFixture
+		seq *seqStreamer
+		res ExecuteSwarmResult
+		off bool
+	)
+	compactions := func(id string) int {
+		n := 0
+		for _, t := range eventTypes(f.st, id) {
+			if t == TypeContextCompacted {
+				n++
+			}
+		}
+		return n
+	}
+	BeforeEach(func() {
+		f, off = newSwarmExecFixture(), false
+	})
+
+	Context("with compaction.enabled false and only the coordinator over its default line", func() {
+		BeforeEach(func() {
+			// Only enabled is set: were the object not passed on, the defaults would compact the coordinator.
+			f.withWindows(&off, map[string]int{"coord": 100000})
+			f.cfg.Compaction = CompactionConfig{Enabled: &off}
+			seq = f.compactingSwarm(true, false)
+			crossDefaultLine(seq, "coord-body")
+			res = f.execute(context.Background())
+		})
+		It("never calls the summariser for the coordinator", func() { Expect(seq.summaries()).To(BeZero()) })
+	})
+
+	Context("with compaction.enabled false and only a child over its default line", func() {
+		BeforeEach(func() {
+			// Only enabled is set: were the object not passed on, the defaults would compact the child.
+			f.withWindows(&off, map[string]int{"writer": 100000})
+			f.cfg.Compaction = CompactionConfig{Enabled: &off}
+			seq = f.compactingSwarm(false, true)
+			crossDefaultLine(seq, "writer-body")
+			res = f.execute(context.Background())
+		})
+		It("never calls the summariser for the child", func() { Expect(seq.summaries()).To(BeZero()) })
+	})
+
+	Context("with a coordinator profile window and no configured window", func() {
+		BeforeEach(func() {
+			f.withWindows(nil, map[string]int{"coord": 1000})
+			// The writer has no window and reports 950 tokens: it would cross the line were a window to leak.
+			seq = f.compactingSwarm(true, true)
+			res = f.execute(context.Background())
+		})
+		It("compacts the coordinator by its profile's window", func() {
+			Expect(compactions(res.CoordinatorID)).To(Equal(1))
+		})
+		It("leaves the children uncompacted", func() { Expect(compactions(res.Children[0].ID)).To(BeZero()) })
+	})
+
+	Context("with a child profile window and a coordinator with none", func() {
+		BeforeEach(func() {
+			f.withWindows(nil, map[string]int{"writer": 1000})
+			// The coordinator has no window and reports 950 tokens: it would cross the line were a window to leak.
+			seq = f.compactingSwarm(true, true)
+			res = f.execute(context.Background())
+		})
+		It("compacts the child by its profile's window", func() { Expect(compactions(res.Children[0].ID)).To(Equal(1)) })
+		It("leaves the coordinator uncompacted", func() { Expect(compactions(res.CoordinatorID)).To(BeZero()) })
+	})
+
+	Context("with the configured window in the config and no profile window", func() {
+		BeforeEach(func() {
+			f.withWindows(nil, nil)
+			f.cfg.Compaction.ContextWindow = intPtr(1000)
+			seq = f.compactingSwarm(true, false)
+			res = f.execute(context.Background())
+		})
+		It("compacts the coordinator by compaction.context_window", func() {
+			Expect(compactions(res.CoordinatorID)).To(Equal(1))
+		})
+	})
+
+	Context("with the compaction object left unset", func() {
+		BeforeEach(func() {
+			f.cfg.Compaction = CompactionConfig{}
+			f.cfg.Profiles[0].ContextWindow = 100000
+			seq = f.compactingSwarm(true, false)
+			crossDefaultLine(seq, "coord-body")
+			res = f.execute(context.Background())
+		})
+		It("applies the built-in reserve, so a line of 83616 is crossed by 90000", func() {
+			Expect(compactions(res.CoordinatorID)).To(Equal(1))
 		})
 	})
 })

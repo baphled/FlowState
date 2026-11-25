@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -103,6 +104,13 @@ func decodeExecutedSwarm(out string) executedSwarm {
 // counting the tool results already in the request), the reviewer writes
 // REVIEW.md when write is set, every other turn answers with text.
 func swarmScriptServer(work string, write bool) *httptest.Server {
+	return countingSwarmServer(work, write, new(atomic.Int32), 0)
+}
+
+// countingSwarmServer is swarmScriptServer that also counts the summary requests of a compaction
+// in summaries (a request whose system prompt starts "You summarise a conversation"). A child's final
+// text is "done" followed by bulk bytes, so the coordinator's history grows with each result.
+func countingSwarmServer(work string, write bool, summaries *atomic.Int32, bulk int) *httptest.Server {
 	m, err := swarm.LoadManifest(filepath.Join(work, "review-swarm.yaml"))
 	if err != nil {
 		panic(err)
@@ -118,7 +126,13 @@ func swarmScriptServer(work string, write bool) *httptest.Server {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		body := string(raw)
-		chunk := `{"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}`
+		text := "done"
+		if strings.Contains(body, "You summarise a conversation") {
+			summaries.Add(1)
+		} else {
+			text += strings.Repeat("x", bulk)
+		}
+		chunk := `{"choices":[{"delta":{"content":"` + text + `"},"finish_reason":"stop"}]}`
 		results := strings.Count(body, `"role":"tool"`)
 		switch {
 		case strings.Contains(body, `"name":"delegate"`) && results < len(m.Packets):
@@ -176,6 +190,37 @@ var _ = Describe("swarm run --execute", func() {
 		})
 		It("conforms to the swarm-run-execute schema", func() {
 			Expect(validateAgainst("swarm-run-execute", run.stdout)).To(Succeed())
+		})
+	})
+
+	Context("with a config whose compaction object reaches the swarm", func() {
+		var summaries *atomic.Int32
+		// compactingRun runs the example under a config file holding the compaction object: a window
+		// of 4000 tokens and a reserve of 1: the first two requests are under the line of 3999 and the
+		// third, after two results of 2000 tokens each, is over it.
+		compactingRun := func(extra string) result {
+			work := stageExampleSwarm(unedited)
+			summaries = new(atomic.Int32)
+			withFakeZai(countingSwarmServer(work, true, summaries, 8000))
+			path := filepath.Join(GinkgoT().TempDir(), "config.json")
+			body := `{"compaction":{` + extra + `"context_window":4000,"reserve":1,"keep_recent":1}}`
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				panic(err)
+			}
+			return runSwarmExecute(work, "--config", path)
+		}
+
+		It("compacts the coordinator by the config's window", func() {
+			// The scripted coordinator counts results in the request, so it loses its place once the
+			// history is compacted: the run's own outcome is not the subject here.
+			_ = compactingRun("")
+			Expect(summaries.Load()).To(BeNumerically(">", 0))
+		})
+		It("never calls the summariser with compaction.enabled false", func() {
+			if run := compactingRun(`"enabled":false,`); run.exit != 0 {
+				panic("run failed: " + run.stderr)
+			}
+			Expect(summaries.Load()).To(BeZero())
 		})
 	})
 

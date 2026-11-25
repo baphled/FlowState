@@ -49,6 +49,10 @@ type ExecuteSwarmConfig struct {
 	// Budget is the turn pool of the coordinator, from which every child's
 	// grant is reserved; zero means unlimited.
 	Budget int64
+	// Compaction is the config's compaction object (ADR-010, D7). The coordinator and every
+	// child, nested ones included, compact by it; the coordinator's window is its profile's
+	// context_window when set. The zero value applies the built-in defaults.
+	Compaction CompactionConfig
 	// Admitter decides each packet once the coordinator and the gates are done.
 	Admitter swarm.RunAdmitter
 	// Gates runs the manifest's gates; the engine runs them, never the model.
