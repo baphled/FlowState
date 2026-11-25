@@ -105,4 +105,40 @@ var _ = Describe("Leases", func() {
 
 		Expect(err).To(MatchError(ErrLeaseNotFound))
 	})
+
+	It("keeps a row of the legacy acquire with no machine", func() {
+		s := newTestStore()
+		leaseFixture{s, ctx}.acquire("swarm-item", "agent-a")
+
+		var machine string
+		if err := s.db.QueryRow(`SELECT machine FROM leases WHERE item='swarm-item'`).Scan(&machine); err != nil {
+			panic(err)
+		}
+
+		Expect(machine).To(BeEmpty())
+	})
+
+	It("keeps a row of the legacy acquire with no host", func() {
+		s := newTestStore()
+		leaseFixture{s, ctx}.acquire("swarm-item", "agent-a")
+
+		var host string
+		if err := s.db.QueryRow(`SELECT host FROM leases WHERE item='swarm-item'`).Scan(&host); err != nil {
+			panic(err)
+		}
+
+		Expect(host).To(BeEmpty())
+	})
+
+	It("keeps a row of the legacy acquire with pid 0", func() {
+		s := newTestStore()
+		leaseFixture{s, ctx}.acquire("swarm-item", "agent-a")
+
+		var pid int64
+		if err := s.db.QueryRow(`SELECT pid FROM leases WHERE item='swarm-item'`).Scan(&pid); err != nil {
+			panic(err)
+		}
+
+		Expect(pid).To(BeZero())
+	})
 })

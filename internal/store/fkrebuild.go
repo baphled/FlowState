@@ -43,19 +43,21 @@ func (s *Store) unkeyedSpecs() []fkSpec {
 	return unkeyed
 }
 
-// backupExistingDatabase takes the pre-v9 backup BEFORE any schema change, so
-// it is a true snapshot: a file database that already has a version history
-// and is below v9 is about to change, unless it is v8 with every key declared.
+// backupExistingDatabase takes the pre-migration backup BEFORE any schema
+// change, so it is a true snapshot. A file database below v9 is about to be
+// rebuilt and takes .pre-v9.bak (which also precedes the v10 change of the same
+// open); one at v9, or at v8 with every key declared, is about to be changed
+// only by v10 and takes .pre-v10.bak; a v10 database takes none.
 func (s *Store) backupExistingDatabase() error {
 	if s.path == "" || !s.gdb.Migrator().HasTable(&schemaMigrationRow{}) {
 		return nil
 	}
 	maxApplied, err := s.maxAppliedVersion()
-	if err != nil || maxApplied >= foreignKeyVersion {
+	if err != nil || maxApplied >= leaseLivenessVersion {
 		return err
 	}
-	if maxApplied == foreignKeyVersion-1 && len(s.unkeyedSpecs()) == 0 {
-		return nil
+	if maxApplied == foreignKeyVersion || (maxApplied == foreignKeyVersion-1 && len(s.unkeyedSpecs()) == 0) {
+		return s.backupBefore(leaseLivenessVersion)
 	}
 	return s.backupBeforeRebuild()
 }
@@ -69,58 +71,66 @@ func (s *Store) recordVersion(tx *gorm.DB, v int64) error {
 	return nil
 }
 
-func (s *Store) backupPath() string { return s.path + ".pre-v9.bak" }
+// backupPath is the pre-v9 backup, the one a rebuild reports.
+func (s *Store) backupPath() string { return s.backupPathFor(foreignKeyVersion) }
 
-// backupBeforeRebuild copies the database, WAL included, with the driver's
+// backupPathFor names the backup taken before the database reaches version v.
+func (s *Store) backupPathFor(v int64) string { return fmt.Sprintf("%s.pre-v%d.bak", s.path, v) }
+
+// backupBeforeRebuild takes the pre-v9 backup; see backupBefore.
+func (s *Store) backupBeforeRebuild() error { return s.backupBefore(foreignKeyVersion) }
+
+// backupBefore copies the database, WAL included, with the driver's
 // online backup API into a temporary file of its own (<backup>.tmp-<random>,
 // created exclusively with mode 0600) and links it to backupPath only once
 // the copy succeeded, so a crash never leaves a truncated file under the
 // final name. It removes only its own temporary file: another opener's may
 // be in progress, and a crash leftover is harmless and left alone. A file
 // under the final name is never overwritten: that is ErrBackupExists, or
-// ErrMigratedElsewhere when another process has meanwhile recorded v9.
-func (s *Store) backupBeforeRebuild() error {
-	dst := s.backupPath()
+// ErrMigratedElsewhere when another process has meanwhile recorded the target
+// version (the one the backup precedes).
+func (s *Store) backupBefore(target int64) error {
+	dst := s.backupPathFor(target)
 	dir, err := os.OpenRoot(filepath.Dir(dst))
 	if err != nil {
-		return fmt.Errorf("open the directory for the pre-v9 backup %s: %w", dst, err)
+		return fmt.Errorf("open the directory for the pre-v%d backup %s: %w", target, dst, err)
 	}
 	defer func() { _ = dir.Close() }()
 	name := filepath.Base(dst)
 	if _, err := dir.Lstat(name); err == nil {
-		return s.backupTaken(dst)
+		return s.backupTaken(dst, target)
 	}
 	var salt [8]byte
 	if _, err := rand.Read(salt[:]); err != nil {
-		return fmt.Errorf("name the pre-v9 backup temporary file: %w", err)
+		return fmt.Errorf("name the pre-v%d backup temporary file: %w", target, err)
 	}
 	tmp := name + ".tmp-" + hex.EncodeToString(salt[:])
 	f, err := dir.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
-		return fmt.Errorf("create pre-v9 backup %s: %w", filepath.Join(filepath.Dir(dst), tmp), err)
+		return fmt.Errorf("create pre-v%d backup %s: %w", target, filepath.Join(filepath.Dir(dst), tmp), err)
 	}
 	defer func() { _ = dir.Remove(tmp) }()
 	if err := errors.Join(f.Close(), s.copyDatabase(filepath.Join(filepath.Dir(dst), tmp))); err != nil {
-		return fmt.Errorf("write pre-v9 backup %s: %w", dst, err)
+		return fmt.Errorf("write pre-v%d backup %s: %w", target, dst, err)
 	}
 	if err := dir.Link(tmp, name); errors.Is(err, os.ErrExist) {
-		return s.backupTaken(dst)
+		return s.backupTaken(dst, target)
 	} else if err != nil {
-		return fmt.Errorf("publish pre-v9 backup %s (the filesystem may not support hard links): %w", dst, err)
+		return fmt.Errorf("publish pre-v%d backup %s (the filesystem may not support hard links): %w", target, dst, err)
 	}
 	return nil
 }
 
 // backupTaken explains why the backup name is occupied: another process
-// that recorded v9 meanwhile migrated the database; otherwise another
+// that recorded the target version meanwhile migrated the database; otherwise another
 // process may still be migrating, or the file is an old backup, so the
 // operator retries and moves the file away only if the refusal persists.
-func (s *Store) backupTaken(dst string) error {
+func (s *Store) backupTaken(dst string, target int64) error {
 	v, err := s.maxAppliedVersion()
 	if err != nil {
 		return err
 	}
-	if v >= foreignKeyVersion {
+	if v >= target {
 		return fmt.Errorf("%w: %s", ErrMigratedElsewhere, s.path)
 	}
 	return fmt.Errorf("%w: %s; another process may be migrating: retry, and move it away only if this persists", ErrBackupExists, dst)

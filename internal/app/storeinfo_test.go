@@ -59,9 +59,9 @@ var _ = Describe("ReadStoreInfo", func() {
 		Expect(info.SQLiteVersion).NotTo(BeEmpty())
 	})
 
-	It("reports schema version 9", func() {
+	It("reports schema version 10", func() {
 		info, _ := ReadStoreInfo(path)
-		Expect(info.SchemaVersion).To(Equal(int64(9)))
+		Expect(info.SchemaVersion).To(Equal(int64(10)))
 	})
 
 	It("reports that the handle enforces foreign keys", func() {

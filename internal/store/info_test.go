@@ -58,7 +58,7 @@ var _ = Describe("Store.Info", func() {
 	})
 
 	It("reports the current schema version", func() {
-		Expect(infoOf(path).SchemaVersion).To(Equal(foreignKeyVersion))
+		Expect(infoOf(path).SchemaVersion).To(Equal(knownSchemaVersion))
 	})
 
 	It("reports the file's journal mode", func() {
@@ -211,7 +211,7 @@ func moveTo(from, name string) string {
 var _ = Describe("Store.Info on a path SQLite would read as a URI", func() {
 	DescribeTable("reports the named file's data",
 		func(name string) {
-			Expect(infoOf(moveTo(freshDB(), name)).SchemaVersion).To(Equal(foreignKeyVersion))
+			Expect(infoOf(moveTo(freshDB(), name)).SchemaVersion).To(Equal(knownSchemaVersion))
 		},
 		questionMarkEntries(),
 		Entry("a hash", "h#x.db"),
@@ -232,7 +232,7 @@ var _ = Describe("Store.Info on a path SQLite would read as a URI", func() {
 	)
 
 	It("reads a path that begins with two slashes as the file it names", func() {
-		Expect(infoOf(doubleSlashed(freshDB())).SchemaVersion).To(Equal(foreignKeyVersion))
+		Expect(infoOf(doubleSlashed(freshDB())).SchemaVersion).To(Equal(knownSchemaVersion))
 	})
 
 	DescribeTable("writes a relative path as a file name, never as a special database",
@@ -290,7 +290,7 @@ var _ = Describe("Store.Info on a path SQLite would read as a URI", func() {
 			if err := st.Close(); err != nil {
 				panic(err)
 			}
-			Expect(infoOf(path).SchemaVersion).To(Equal(foreignKeyVersion))
+			Expect(infoOf(path).SchemaVersion).To(Equal(knownSchemaVersion))
 		})
 	}
 })

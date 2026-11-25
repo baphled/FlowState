@@ -11,15 +11,17 @@ import (
 // v5 adds sessions.budget_pool and the budget_reservations table for
 // durable shared budgets; v7 adds the swarm run tables; v8 adds
 // swarm_run_children, the child sessions a swarm run created; v9 adds
-// the foreign keys older databases lack (see migrateForeignKeys).
-const knownSchemaVersion = foreignKeyVersion
+// the foreign keys older databases lack (see migrateForeignKeys); v10 adds
+// the lease liveness columns and is a downgrade barrier (ADR-011).
+const knownSchemaVersion = leaseLivenessVersion
 
 // migrate applies forward-only schema management through the ORM:
 // idempotent AutoMigrate (v4 parent_id, v5 budget_pool and
 // budget_reservations, missing tables/indexes; never drops or
-// rewrites rows), then v1..v8 bookkeeping and the v9 foreign-key
-// rebuild. A database whose recorded version exceeds knownSchemaVersion
-// fails with ErrFutureSchema, checked before any migration touches the schema.
+// rewrites rows), then v1..v8 bookkeeping, the v9 foreign-key
+// rebuild and the v10 record. A database whose recorded version exceeds
+// knownSchemaVersion fails with ErrFutureSchema, checked before any migration
+// touches the schema.
 // A database with orphan rows in tables that declare no foreign key is
 // refused with ErrReferentialIntegrity before anything is changed.
 func (s *Store) migrate() error {
@@ -50,10 +52,15 @@ func (s *Store) migrate() error {
 			return err
 		}
 	}
-	if maxApplied >= foreignKeyVersion {
+	if maxApplied < foreignKeyVersion {
+		if err := s.migrateForeignKeys(); err != nil {
+			return err
+		}
+	}
+	if maxApplied >= leaseLivenessVersion {
 		return nil
 	}
-	return s.migrateForeignKeys()
+	return s.recordVersion(s.gdb, leaseLivenessVersion)
 }
 
 // autoMigrateModels migrates the models parents-first. A table that
@@ -85,6 +92,12 @@ func (s *Store) autoMigrateModels() error {
 // rejectFutureSchema fails opening a database that already records a
 // version newer than this build, before AutoMigrate could mutate it.
 func (s *Store) rejectFutureSchema() error {
+	return s.rejectSchemaAbove(knownSchemaVersion)
+}
+
+// rejectSchemaAbove fails with ErrFutureSchema when the database records a
+// version above limit; a build that knows only limit refuses such a database.
+func (s *Store) rejectSchemaAbove(limit int64) error {
 	if !s.gdb.Migrator().HasTable(&schemaMigrationRow{}) {
 		return nil
 	}
@@ -92,8 +105,8 @@ func (s *Store) rejectFutureSchema() error {
 	if err != nil {
 		return err
 	}
-	if maxApplied > knownSchemaVersion {
-		return fmt.Errorf("%w: db at %d, code knows %d", ErrFutureSchema, maxApplied, knownSchemaVersion)
+	if maxApplied > limit {
+		return fmt.Errorf("%w: db at %d, code knows %d", ErrFutureSchema, maxApplied, limit)
 	}
 	return nil
 }

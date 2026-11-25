@@ -738,7 +738,7 @@ var _ = Describe("OpenStore on a database with orphan rows", func() {
 			`CREATE TABLE swarm_run_children (id text PRIMARY KEY, run_id text NOT NULL, packet_id text NOT NULL,
 				session_id text NOT NULL, created_at_utc text NOT NULL)`,
 			`INSERT INTO swarm_run_children VALUES ('c','ghost','p','s','t')`,
-			`DELETE FROM schema_migrations WHERE version = 9`,
+			`DELETE FROM schema_migrations WHERE version >= 9`,
 		} {
 			if _, err := db.Exec(q); err != nil {
 				panic(err)

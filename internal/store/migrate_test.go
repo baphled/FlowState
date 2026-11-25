@@ -201,10 +201,10 @@ var _ = Describe("Legacy v3 database upgrade", func() {
 		store = s
 	})
 
-	It("records schema version 9 after the first migrated open", func() {
+	It("records schema version 10 after the first migrated open", func() {
 		v, err := store.SchemaVersion()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(v).To(Equal(int64(9)))
+		Expect(v).To(Equal(int64(10)))
 	})
 
 	It("takes the backup before any schema change", func() {
@@ -216,12 +216,12 @@ var _ = Describe("Legacy v3 database upgrade", func() {
 		Expect(tableDDL(db, "sessions")).To(Equal(f.before["sessions"]))
 	})
 
-	It("appends versions 4 through 9 to the recorded schema_migrations", func() {
-		// version is INTEGER PRIMARY KEY, so count 9 with max 9 pins {1..9}.
+	It("appends versions 4 through 10 to the recorded schema_migrations", func() {
+		// version is INTEGER PRIMARY KEY, so count 10 with max 10 pins {1..10}.
 		var n, maxV int64
 		err := store.db.QueryRow(`SELECT count(*), max(version) FROM schema_migrations`).Scan(&n, &maxV)
 		Expect(err).NotTo(HaveOccurred())
-		Expect([2]int64{n, maxV}).To(Equal([2]int64{9, 9}))
+		Expect([2]int64{n, maxV}).To(Equal([2]int64{10, 10}))
 	})
 
 	It("creates the swarm_run_children table on a migrated legacy database", func() {
@@ -308,9 +308,19 @@ var _ = Describe("Legacy v3 database upgrade", func() {
 		Expect(n).To(Equal(1))
 	})
 
-	It("keeps the leases DDL untouched and WITHOUT ROWID", func() {
-		Expect([2]string{tableDDL(store.db, "leases"), tableDDL(store.db, "lease_history")}).
-			To(Equal([2]string{f.before["leases"], f.before["lease_history"]}))
+	It("keeps the leases table WITHOUT ROWID after it gains its v10 columns", func() {
+		Expect(tableDDL(store.db, "leases")).To(HaveSuffix("WITHOUT ROWID"))
+	})
+
+	It("adds the v10 lease columns to the legacy leases table", func() {
+		var n int
+		err := store.db.QueryRow(`SELECT count(*) FROM pragma_table_info('leases') WHERE name IN ('machine','host','pid')`).Scan(&n)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(3))
+	})
+
+	It("keeps the lease_history DDL untouched and WITHOUT ROWID", func() {
+		Expect(tableDDL(store.db, "lease_history")).To(Equal(f.before["lease_history"]))
 	})
 
 	It("keeps the receipts DDL untouched (no named-constraint rebuild)", func() {

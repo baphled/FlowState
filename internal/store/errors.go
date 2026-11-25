@@ -54,14 +54,15 @@ var (
 	// refuses to open it. Nothing has been changed.
 	ErrReferentialIntegrity = errors.New("store: database holds rows that reference missing rows")
 
-	// ErrBackupExists is returned when the v9 pre-migration backup
+	// ErrBackupExists is returned when the pre-migration backup
 	// path is already taken; the file is never overwritten.
-	ErrBackupExists = errors.New("store: pre-v9 backup already exists")
+	ErrBackupExists = errors.New("store: pre-migration backup already exists")
 
 	// ErrMigratedElsewhere is returned when the backup name is taken and
-	// the database now records v9: another process migrated it first.
+	// the database now records the version the backup precedes: another
+	// process migrated it first.
 	// Opening again succeeds.
-	ErrMigratedElsewhere = errors.New("store: another process migrated the database to v9")
+	ErrMigratedElsewhere = errors.New("store: another process migrated the database")
 
 	// ErrRowCountMismatch is returned when a rebuilt table loses or gains rows.
 	ErrRowCountMismatch = errors.New("store: rebuilt table row count differs")
