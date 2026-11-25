@@ -1,17 +1,19 @@
 package tool
 
-// Filesystem session tools fs.read / fs.write (M2-P1): cleaned
-// relative paths confined to a per-session workdir (no traversal,
-// absolute paths or symlink escapes) with byte-capped transfers.
+// Filesystem session tools fs.read / fs.write (M2-P1): relative paths
+// confined to a per-session workdir through os.Root (no traversal, absolute
+// paths or symlink escapes) with byte-capped transfers.
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 const (
@@ -84,63 +86,96 @@ func WithMaxReadBytes(n int64) FSOption { return func(o *fsOptions) { o.maxRead 
 // WithMaxWriteBytes overrides the write byte cap.
 func WithMaxWriteBytes(n int64) FSOption { return func(o *fsOptions) { o.maxWrite = n } }
 
-// resolveConfined cleans rel and joins it onto workdir (made absolute), rejecting
-// empty/absolute/traversing paths and symlink escapes.
-func resolveConfined(workdir, rel string) (string, error) {
-	if rel == "" || filepath.IsAbs(rel) || workdir == "" {
-		return "", ErrPathOutsideWorkdir
-	}
-	// A relative workdir (`--workdir .`) is anchored to the current directory
-	// first: filepath.Join cleans "./" away, so the prefix check below would
-	// otherwise refuse every path. Symlinks stay unresolved here; the root is
-	// resolved separately below.
-	workdir, err := filepath.Abs(workdir)
-	if err != nil {
-		return "", err
-	}
-	clean := filepath.Clean(rel)
-	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return "", ErrPathOutsideWorkdir
-	}
-	joined := filepath.Join(workdir, clean) // must stay under workdir
-	if joined != workdir && !strings.HasPrefix(joined, workdir+string(filepath.Separator)) {
-		return "", ErrPathOutsideWorkdir
-	}
-	root := workdir
-	if resolved, err := filepath.EvalSymlinks(workdir); err == nil {
-		root = resolved
-	}
-	if err := confineSymlinks(root, joined); err != nil {
-		return "", err
-	}
-	return joined, nil
+// rootEscapeMessage is the text os.Root puts in the error for a path (or a
+// symlink met on the way) that leaves the root. The standard library keeps the
+// sentinel unexported, so it is captured once from a probe (rootEscapeSentinel);
+// the message is matched only if that capture fails. Specs pin both.
+const rootEscapeMessage = "path escapes from parent"
+
+var (
+	rootEscapeOnce sync.Once
+	rootEscapeErr  error
+)
+
+// rootEscapeSentinel returns the os.Root escape sentinel, taken from the error
+// of a ".." probe on a root over the temp directory, or nil if the probe fails.
+func rootEscapeSentinel() error {
+	rootEscapeOnce.Do(func() {
+		root, err := os.OpenRoot(os.TempDir())
+		if err != nil {
+			return
+		}
+		defer func() { _ = root.Close() }()
+		_, perr := root.Stat("..")
+		rootEscapeErr = errors.Unwrap(perr)
+	})
+	return rootEscapeErr
 }
 
-// confineSymlinks refuses a target whose deepest existing ancestor resolves
-// outside root.
-func confineSymlinks(root, joined string) error {
-	// The deepest existing ancestor of the target must evaluate back
-	// under workdir; missing tails are created by fs.write but must
-	// not route out via a symlink.
-	probe := joined
-	for {
-		resolved, err := filepath.EvalSymlinks(probe)
-		if err == nil {
-			if resolved != root && !strings.HasPrefix(resolved, root+string(filepath.Separator)) {
-				return ErrPathOutsideWorkdir
-			}
-			break
-		}
-		if !os.IsNotExist(err) {
-			return err
-		}
-		parent := filepath.Dir(probe)
-		if parent == probe {
-			break // reached filesystem root without a hit
-		}
-		probe = parent
+// isRootEscape reports whether err is an os.Root escape error.
+func isRootEscape(err error) bool {
+	if sentinel := rootEscapeSentinel(); sentinel != nil {
+		return errors.Is(err, sentinel)
 	}
-	return nil
+	return err != nil && strings.Contains(err.Error(), rootEscapeMessage)
+}
+
+// openConfined opens an os.Root on the (absolute) workdir for one invocation.
+// Empty, absolute or missing-workdir input is ErrPathOutsideWorkdir. The caller
+// must Close the root. Every later operation resolves symlinks and ".." inside
+// the root physically, so no lexical check can be bypassed.
+func openConfined(workdir, rel string) (*os.Root, error) {
+	if rel == "" || filepath.IsAbs(rel) || workdir == "" {
+		return nil, ErrPathOutsideWorkdir
+	}
+	// A relative workdir (`--workdir .`) is anchored to the current directory.
+	abs, err := filepath.Abs(workdir)
+	if err != nil {
+		return nil, err
+	}
+	root, err := os.OpenRoot(abs)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, ErrPathOutsideWorkdir
+	}
+	return root, err
+}
+
+// mapRootErr turns an os.Root escape error into ErrPathOutsideWorkdir and
+// leaves every other error unchanged.
+func mapRootErr(err error) error {
+	if isRootEscape(err) {
+		return fmt.Errorf("%w: %v", ErrPathOutsideWorkdir, err)
+	}
+	return err
+}
+
+// parentOf returns rel without its last element, WITHOUT lexically cleaning it:
+// filepath.Dir would fold "link/../x" to "." although ".." follows the link's
+// physical directory, so the root must see the dots.
+func parentOf(rel string) string {
+	slashed := strings.TrimRight(filepath.ToSlash(rel), "/")
+	i := strings.LastIndex(slashed, "/")
+	if i < 0 {
+		return "."
+	}
+	return slashed[:i]
+}
+
+// readBounded reads rel through root: missing is ErrFileNotFound, a file over
+// max bytes is ErrOversize.
+func readBounded(root *os.Root, rel string, limit int64) ([]byte, error) {
+	info, err := root.Stat(rel)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("%w: %s", ErrFileNotFound, rel)
+		}
+		return nil, mapRootErr(err)
+	}
+	if info.Size() > limit {
+		return nil, fmt.Errorf("%w: %s is %d bytes (cap %d)", ErrOversize, rel, info.Size(), limit)
+	}
+	b, err := root.ReadFile(rel)
+	return b, mapRootErr(err)
 }
 
 // NewFSRead returns fs.read rooted at workdir; cap defaults to
@@ -165,21 +200,12 @@ func (t *fsReadTool) Invoke(_ context.Context, args json.RawMessage) (any, error
 	if err := json.Unmarshal(args, &a); err != nil {
 		return nil, fmt.Errorf("tool: fs.read args: %w", err)
 	}
-	full, err := resolveConfined(t.workdir, a.Path)
+	root, err := openConfined(t.workdir, a.Path)
 	if err != nil {
 		return nil, err
 	}
-	info, err := os.Stat(full)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("%w: %s", ErrFileNotFound, a.Path)
-		}
-		return nil, err
-	}
-	if info.Size() > t.max {
-		return nil, fmt.Errorf("%w: %s is %d bytes (cap %d)", ErrOversize, a.Path, info.Size(), t.max)
-	}
-	b, err := os.ReadFile(filepath.Clean(full)) // #nosec G304 -- full is confinement-checked against the session workdir
+	defer func() { _ = root.Close() }()
+	b, err := readBounded(root, a.Path, t.max)
 	if err != nil {
 		return nil, err
 	}
@@ -212,15 +238,16 @@ func (t *fsWriteTool) Invoke(_ context.Context, args json.RawMessage) (any, erro
 	if int64(len(a.Content)) > t.max {
 		return nil, fmt.Errorf("%w: %s is %d bytes (cap %d)", ErrOversize, a.Path, len(a.Content), t.max)
 	}
-	full, err := resolveConfined(t.workdir, a.Path)
+	root, err := openConfined(t.workdir, a.Path)
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
-		return nil, err
+	defer func() { _ = root.Close() }()
+	if err := root.MkdirAll(parentOf(a.Path), 0o750); err != nil {
+		return nil, mapRootErr(err)
 	}
-	if err := os.WriteFile(full, []byte(a.Content), 0o600); err != nil {
-		return nil, err
+	if err := root.WriteFile(a.Path, []byte(a.Content), 0o600); err != nil {
+		return nil, mapRootErr(err)
 	}
 	return map[string]any{"path": a.Path, "bytes": len(a.Content)}, nil
 }
