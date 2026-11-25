@@ -45,7 +45,10 @@ import (
 //
 // A crashed child gets session.interrupted, a paused one session.resumed, and a
 // task becomes a turn.start user message, before the loop rebuilds the history
-// from the log. The child runs in the parent's working directory.
+// from the log. The child runs in the parent's working directory. Its recovery
+// is a crashed root's (RecoverCrashedSession): a dangling delegate call of the
+// child is answered with ITS grandchildren, whose stale leases are cleared, and a
+// profile that lists `delegate` gets its own tool again (see bindNestedDelegate).
 func ResumeDelegatedChild(ctx context.Context, rr DelegateResumeRequest) (DelegateResult, error) {
 	req := rr.DelegateRequest
 	if req.Store == nil || req.Parent == nil || req.Streamer == nil {
@@ -54,9 +57,15 @@ func ResumeDelegatedChild(ctx context.Context, rr DelegateResumeRequest) (Delega
 	if !validResumeID(rr.ChildID) {
 		return DelegateResult{}, fmt.Errorf("%w: %q is not a child of this session", ErrUsage, capDelegateText(rr.ChildID))
 	}
+	req.Profiles = rr.Profiles
 	if _, _, _, err := inspectResume(ctx, req.Store, req.Parent.ID, rr); err != nil {
 		return DelegateResult{}, err
 	}
+	slot, ok := req.limiter.acquire(ctx)
+	if !ok {
+		return DelegateResult{ChildID: rr.ChildID, Status: DelegateStatusCancelled, Reason: CancelReason(ctx)}, nil
+	}
+	defer slot.release()
 	owner, err := newDelegateOwner()
 	if err != nil {
 		return DelegateResult{}, err
@@ -73,7 +82,7 @@ func ResumeDelegatedChild(ctx context.Context, rr DelegateResumeRequest) (Delega
 	if err != nil {
 		return DelegateResult{}, err
 	}
-	run.owner = owner
+	run.owner, run.slot = owner, slot
 	if out, berr := reserveResumeBudget(ctx, &req, run); berr != nil || out.Status != "" {
 		return out, berr
 	}
@@ -114,6 +123,9 @@ func inspectResume(ctx context.Context, st *store.Store, parentID string, rr Del
 	if err != nil {
 		return nil, agent.Profile{}, 0, err
 	}
+	if aerr := rr.allow.check(log.profile.Name); aerr != nil {
+		return nil, agent.Profile{}, 0, aerr
+	}
 	profile, err := currentProfile(rr.Profiles, log.profile)
 	if err != nil {
 		return nil, agent.Profile{}, 0, err
@@ -139,11 +151,15 @@ func planResume(ctx context.Context, req *DelegateRequest, rr DelegateResumeRequ
 	if verr := validateDelegateRequest(req); verr != nil {
 		return nil, nil, verr
 	}
-	registry, err := childRegistry(req)
+	if nerr := checkNestDepth(ctx, req.Store, req.Parent.ID, profile); nerr != nil {
+		return nil, nil, nerr
+	}
+	registry, workdir, err := childRegistry(req)
 	if err != nil {
 		return nil, nil, err
 	}
-	return &delegateRun{child: child, grant: remaining, prior: int64(profile.MaxTurns) - remaining, resumed: true}, registry, nil
+	run := &delegateRun{child: child, grant: remaining, prior: int64(profile.MaxTurns) - remaining, resumed: true, workdir: workdir}
+	return run, registry, nil
 }
 
 // loadResumableChild loads the child and its log and refuses anything but an

@@ -120,9 +120,8 @@ You review. You do not edit. Begin your final message with VERDICT: pass or VERD
 - `delegates` is a list of profile names (each `^[a-z][a-z0-9-]{0,63}$`, at most 32, no duplicate, never the profile
   itself): the only profiles this profile's `delegate` tool may spawn. It needs `delegate` in `tools`, otherwise the
   load fails with "delegates needs delegate in tools". `delegate` in `tools` without `delegates` loads, with
-  `delegates: []` (visible in `agents list`): it fails closed, nothing is allowed. The allowlist is defined and
-  validated now; it is enforced when nested delegation lands (#445). Until then a profile that lists `delegate`
-  still cannot be spawned as a child: the spawn refuses it with "delegate is not available to children yet".
+  `delegates: []` (visible in `agents list`): it fails closed, nothing is allowed. A delegating child may spawn
+  only the names in its own `delegates` (see nested delegation below); the root run is not restricted by it.
   A name outside the loaded scope fails `agents list`, `session run` and the other loaders at load
   (`config_invalid`), naming both profiles; `agents validate` checks files one by one, so it does not cross-check.
   Cycles (a delegates b, b delegates a) are allowed: the depth cap bounds the recursion.
@@ -161,8 +160,7 @@ delegates: [engineer, reviewer]
 You plan. You never edit. Delegate each part to an engineer, then to the reviewer.
 ```
 
-Note: this profile loads and validates today, but it cannot be spawned as a child until nested delegation lands
-(#445), which is also when its `delegates` list is enforced (ADR-009).
+As a child, this profile may start `engineer` and `reviewer` and nothing else; see nested delegation below.
 
 ### Turn limit
 
@@ -248,9 +246,39 @@ flowstate session run "$id" --budget 200 --agents user --allow delegate --workdi
   A failed, cancelled or partial child comes back as an error result (`error: ...` with the child id, status, turns,
   reason and any partial text): the parent model decides what to do and the parent run does not fail. Cancelling the
   parent cancels the child with the same reason.
-- The child gets exactly its profile's tools, prompt and `max_turns`, never `delegate`. With `--budget`, its grant is
-  drawn from the parent's pool and the unspent part returns. A `delegation.completed` receipt lands in the parent's
-  log between the call and its result.
+- The child gets exactly its profile's tools, prompt and `max_turns`; it can delegate only if its profile lists
+  `delegate` (see the nested delegation item below). With `--budget`, its grant is drawn from the parent's pool and the
+  unspent part returns. A `delegation.completed` receipt lands in the parent's log between the call and its result.
+- Nested delegation: a coordinator can delegate to a team lead that delegates to specialists. A child whose profile
+  lists `delegate` gets its own `delegate` tool, bound to it, and may start grandchildren; a grandchild may not
+  delegate. The depth is at most 2 (root, child, grandchild): a profile that lists `delegate` for a grandchild is
+  refused when it would start (`delegate is not available at depth 2: the nesting limit is 2`) and no session is
+  created. A child without `delegate` in its profile cannot delegate. A delegating child may start only the profiles its
+  own `delegates` names, for a single `agent`, every `tasks` entry (one other name refuses the whole call, no child
+  starts) and `resume`; its tool description lists only those. A profile that lists `delegate` with no `delegates`
+  may start nothing. The root run keeps every loaded profile. Each level works inside its parent's directory.
+  The child's grant bounds its whole subtree: a grandchild's grant is carved out of the child's, and the unspent part
+  returns up the chain. Cancelling the root cancels every level with the root's reason. A grandchild's receipts are
+  in the child's log and the child's in the root's. At most 8 descendant runs of one root run execute at once; a
+  call past that waits for a slot. A run that waits for its own children does not hold a slot.
+
+  ```sh
+  cat > ~/.config/flowstate/agents/team-lead.md <<'EOF'
+  ---
+  name: team-lead
+  description: Splits a task and delegates the parts to specialists
+  tools: [delegate, fs.read]
+  delegates: [reader, reviewer]
+  max_turns: 20
+  ---
+  Delegate each part to a specialist, then summarise their results.
+  EOF
+  ```
+
+  With the `reader` and `reviewer` profiles above as specialists, the coordinator (the root run, with
+  `--agents user --allow delegate`) delegates `{"agent": "team-lead", "task": "Review main.go"}`, and the team lead
+  delegates to `reader` and `reviewer`, the only profiles its `delegates` allows.
+  The root's result holds only the team lead's final text.
 - Project profiles come from `<workdir>/.flowstate/agents` when `--workdir` is given, otherwise from
   `.flowstate/agents` in the process's current directory, never from the default workdir beside the database. With
   `--agents` and no `--workdir`, that default directory is created (mode 0700) before the run.

@@ -102,11 +102,9 @@ func (t *DelegateTool) runEntry(ctx context.Context, i int, e delegateTaskArg, p
 			slot.result.Status, slot.result.Reason = DelegateStatusFailed, errDelegatePanic.Error()
 		}
 	}()
-	res, err := RunDelegatedChild(ctx, DelegateRequest{
-		Store: t.cfg.Store, Parent: t.cfg.Parent, Streamer: t.cfg.Streamer, Pool: t.cfg.Pool,
-		ParentWorkdir: t.cfg.Workdir, Profile: profile, Task: e.Task, Workdir: e.Cwd,
-		ParentEvents: sink, BatchIndex: &i,
-	})
+	req := t.baseRequest()
+	req.Profile, req.Task, req.Workdir, req.ParentEvents, req.BatchIndex = profile, e.Task, e.Cwd, sink, &i
+	res, err := RunDelegatedChild(ctx, req)
 	slot.result = delegateEntryResult(i, e.Agent, res, err)
 	if errors.Is(err, tool.ErrEventAppend) {
 		slot.fatal = err
