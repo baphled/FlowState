@@ -244,8 +244,13 @@ the summary between fixed `--- summary ---` lines, as untrusted text, then the e
 never below the previous compaction's. A malformed event is a corrupt log (`replay_mismatch`,
 exit 7). `session doctor` reports a `compactions` object (count, `invalid`, last `tokens_after`,
 summary token totals, separate from turn usage); a nonzero `invalid` means `session run` will
-refuse the session with `replay_mismatch`, though the doctor still exits 0. Nothing appends the event yet:
-the summariser and trigger are later ADR-010 packets.
+refuse the session with `replay_mismatch`, though the doctor still exits 0. The tool loop appends it with
+reason `auto`: before each provider request it compares the context (the last reported turn context plus an estimate of
+the tool results since, or the estimate of the whole rebuilt history) with `window - reserve`, draws one pool unit,
+summarises, appends and continues from the rebuilt history; a failed compaction writes nothing, is not retried in the
+run and the run continues. In `swarm run --execute` the coordinator and its children compact with the built-in
+defaults; the `compaction` settings do not apply to them yet. The overflow retry and the manual command are later
+ADR-010 packets.
 
 ## Verified conversation history
 

@@ -35,6 +35,9 @@ type DelegateToolConfig struct {
 	// DescendantLimit caps the descendant runs of this tool's root run that run at
 	// once; zero means DefaultDescendantLimit. Nested tools share the root's cap.
 	DescendantLimit int
+	// Compaction is the config's compaction object; each child compacts by it and by its
+	// profile's context_window.
+	Compaction CompactionConfig
 	// limiter is the cap shared down the tree and slot the descendant slot of the
 	// run this tool is bound to; both are nil for the root's own tool.
 	limiter *descendantLimiter

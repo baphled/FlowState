@@ -410,6 +410,7 @@ func runTurnOrLoop(ctx context.Context, st *app.Store, sess *app.Session, s app.
 		MaxTokens:        fl.maxTokens,
 		MaxTurns:         fl.maxTurns,
 		RequireAllowlist: true,
+		Compaction:       fl.config.Compaction,
 	})
 	return toTurnResult(sess, loopRes), err
 }

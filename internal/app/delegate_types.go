@@ -90,6 +90,9 @@ type DelegateRequest struct {
 	// Profiles are the profiles loaded for the run. A child whose profile lists
 	// `delegate` offers exactly these to its own children.
 	Profiles []agent.Profile
+	// Compaction is the config's compaction object the child's loop applies, with the
+	// profile's context_window.
+	Compaction CompactionConfig
 	// allow restricts which profiles the delegating profile may spawn or resume;
 	// nil allows every loaded profile (the root's own tool).
 	allow *profileAllowance

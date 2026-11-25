@@ -25,6 +25,25 @@ type ExecLoopConfig struct {
 	// in every provider request of the loop. It is not persisted as an event
 	// and is not part of replayed history.
 	SystemPrompt string
+	// Compaction is the config's compaction object; its zero value means the ADR-010
+	// defaults. It decides the automatic compaction before each provider request.
+	Compaction CompactionConfig
+	// ProfileWindow is the context_window of the profile the session runs under (a
+	// delegated child, the swarm coordinator); 0 for a plain root session.
+	ProfileWindow int
+}
+
+// compactRun is the run-scoped state of the automatic trigger (ADR-010 "When"): the baseline
+// of the context size and whether a compaction has already failed in this run.
+type compactRun struct {
+	// failed is set by the first failed automatic compaction: it is not retried in the run.
+	failed bool
+	// base is the baseline in tokens (the last reported turn context, or the last
+	// compaction's tokens_after) when hasBase is true; otherwise the whole history is estimated.
+	base    int
+	hasBase bool
+	// appended is the estimate in tokens of what was appended since base.
+	appended int
 }
 
 // ExecLoopResult reports one completed bounded run.
@@ -85,6 +104,8 @@ type SessionExecLoopRequest struct {
 	MaxTokens int64
 	// MaxTurns bounds the loop; <= 0 uses execDefaultMaxTurns (25).
 	MaxTurns int64
+	// Compaction is the config's compaction object, applied to the run's sessions.
+	Compaction CompactionConfig
 }
 
 // UsageTotals sums the provider usage of the turns that reported it. A turn
