@@ -40,6 +40,7 @@ func cmdDoctor(ctx context.Context, st *app.Store, id string, stdout, stderr *os
 		out["available"] = nil
 	}
 	out["usage"] = doctorUsage(d.Usage)
+	out["compactions"] = doctorCompactions(d.Compactions)
 	if d.FinishReason != "" {
 		out["finish_reason"] = d.FinishReason
 	}
@@ -67,6 +68,22 @@ func doctorUsage(u app.SessionUsage) map[string]any {
 		} else {
 			out[key] = nil
 		}
+	}
+	return out
+}
+
+// doctorCompactions is the compactions object of the doctor output. last_tokens_after is
+// null without a compaction and the summary token totals are null until a compaction
+// reported usage (summaries_reported 0), as the usage object does for turns. invalid counts
+// the events the rebuild would refuse; above 0, `session run` exits 7 replay_mismatch.
+func doctorCompactions(c app.CompactionStats) map[string]any {
+	out := map[string]any{"count": c.Count, "invalid": c.Invalid, "summaries_reported": c.SummariesReported,
+		"last_tokens_after": nil, "summary_input_tokens": nil, "summary_output_tokens": nil}
+	if c.LastTokensAfter != nil {
+		out["last_tokens_after"] = *c.LastTokensAfter
+	}
+	if c.SummariesReported > 0 {
+		out["summary_input_tokens"], out["summary_output_tokens"] = c.SummaryInputTokens, c.SummaryOutputTokens
 	}
 	return out
 }

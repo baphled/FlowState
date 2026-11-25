@@ -232,6 +232,21 @@ With the Go toolchain and module dependencies installed, run from repository roo
 go run github.com/onsi/ginkgo/v2/ginkgo --procs=2 --randomize-all --randomize-suites --race --fail-on-pending --fail-on-empty --timeout=3m ./internal/app
 ```
 
+## Context compaction event
+
+`context.compacted` (ADR-010) is an engine event that replaces the conversation before its
+`first_kept_seq` with a summary; the log is never rewritten. Its payload is `summary`,
+`first_kept_seq`, `tokens_before`, `tokens_after`, `reason` (`auto`, `manual` or `overflow`), `model`
+and the summarising call's optional `usage`. A resumed run rebuilds its history from the last
+such event: one user message holding the original task (when it falls before the cut) and then
+the summary between fixed `--- summary ---` lines, as untrusted text, then the events from
+`first_kept_seq` on. `first_kept_seq` is at least 1, as the first `turn.start` is at seq 0, and
+never below the previous compaction's. A malformed event is a corrupt log (`replay_mismatch`,
+exit 7). `session doctor` reports a `compactions` object (count, `invalid`, last `tokens_after`,
+summary token totals, separate from turn usage); a nonzero `invalid` means `session run` will
+refuse the session with `replay_mismatch`, though the doctor still exits 0. Nothing appends the event yet:
+the summariser and trigger are later ADR-010 packets.
+
 ## Verified conversation history
 
 `LoadSessionHistory(ctx, store, sessionID, HistoryLimits)` calls the existing
@@ -241,7 +256,8 @@ tool outcomes in journal order. Only explicit `tool_denied` outcomes may omit an
 execution start. Orphan, duplicate, mismatched, incomplete or ambiguous batches
 return `ErrInvalidHistory` and no partial conversation. Bootstrap metadata and
 manual tool rows outside pending batches create no synthetic messages; unfinished
-assistant deltas reject continuation projection. Unknown event types fail closed.
+assistant deltas reject continuation projection. Unknown event types fail closed,
+so a log holding a `context.compacted` event returns `ErrInvalidHistory`.
 Assistant messages and deltas require the engine actor or a nonempty `provider:`
 actor.
 

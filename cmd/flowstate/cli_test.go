@@ -1654,6 +1654,17 @@ var _ = Describe("replay transcript", func() {
 		defer func() { _ = f.Close() }()
 		Expect(string(transcriptFor(f, []byte("{\"p\":\"a\x9bb\"}\n")))).To(Equal("{\"p\":\"a\\ufffdb\"}\n"))
 	})
+
+	It("escapes a context.compacted summary's control and bidi characters on a terminal", func() {
+		f, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+		if err != nil {
+			panic(err)
+		}
+		defer func() { _ = f.Close() }()
+		line := "{\"payload\":{\"summary\":\"\\u001b[2Jx\x7f\u202ey\"},\"type\":\"context.compacted\"}\n"
+		Expect(string(transcriptFor(f, []byte(line)))).To(Equal(
+			"{\"payload\":{\"summary\":\"\\u001b[2Jx\\u007f\\u202ey\"},\"type\":\"context.compacted\"}\n"))
+	})
 })
 
 var _ = Describe("The max_turns failure at the CLI", func() {

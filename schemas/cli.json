@@ -519,6 +519,27 @@
           "turns_total": { "type": "integer", "minimum": 0 },
           "last_context_tokens": { "type": ["integer", "null"], "minimum": 0 }
         }
+      },
+      "compactions": {
+        "description": "Present in the CLI output; the HTTP doctor route does not carry it yet.",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "count",
+          "invalid",
+          "last_tokens_after",
+          "summaries_reported",
+          "summary_input_tokens",
+          "summary_output_tokens"
+        ],
+        "properties": {
+          "count": { "type": "integer", "minimum": 0 },
+          "invalid": { "type": "integer", "minimum": 0 },
+          "last_tokens_after": { "type": ["integer", "null"], "minimum": 0 },
+          "summaries_reported": { "type": "integer", "minimum": 0 },
+          "summary_input_tokens": { "type": ["integer", "null"], "minimum": 0 },
+          "summary_output_tokens": { "type": ["integer", "null"], "minimum": 0 }
+        }
       }
     }
   }

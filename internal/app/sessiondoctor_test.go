@@ -8,6 +8,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/store"
 )
 
@@ -468,3 +469,125 @@ var _ = Describe("session doctor truncated turn", func() {
 		Expect(diagnose().Truncated).To(BeTrue())
 	})
 })
+
+var _ = Describe("session doctor compactions", func() {
+	var (
+		ctx      context.Context
+		st       *store.Store
+		sess     *store.Session
+		diagnose func() SessionDiagnosis
+	)
+	BeforeEach(func() {
+		ctx = context.Background()
+		st = mustOpenCrashStore()
+		DeferCleanup(func() { _ = st.Close() })
+		sess = mustCreateCrashSession(ctx, st)
+		mustAppendEvent(ctx, st, sess.ID, "user", "turn.start", map[string]any{"task": "x"})
+		diagnose = func() SessionDiagnosis {
+			d, err := DiagnoseSession(ctx, st, sess.ID)
+			if err != nil {
+				panic(err)
+			}
+			return d
+		}
+	})
+	compact := func(tokensAfter int, usage *provider.Usage) {
+		p := validCompaction()
+		p.FirstKeptSeq, p.TokensAfter, p.Usage = 1, tokensAfter, usage
+		mustAppendCompaction(ctx, st, sess.ID, p)
+	}
+
+	It("reports no compactions for a log without one", func() {
+		Expect(diagnose().Compactions).To(Equal(CompactionStats{}))
+	})
+
+	It("counts the compaction events", func() {
+		mustAppendEvent(ctx, st, sess.ID, "engine", TypeAssistantMessage, map[string]any{"content": "a"})
+		compact(300, nil)
+		compact(200, nil)
+		Expect(diagnose().Compactions.Count).To(Equal(int64(2)))
+	})
+
+	It("reports the tokens_after of the last compaction", func() {
+		compact(300, nil)
+		compact(200, nil)
+		Expect(*diagnose().Compactions.LastTokensAfter).To(Equal(int64(200)))
+	})
+
+	It("totals the summarising calls' usage separately", func() {
+		compact(300, &provider.Usage{InputTokens: 100, OutputTokens: 10})
+		compact(200, &provider.Usage{InputTokens: 50, OutputTokens: 5})
+		got := diagnose().Compactions
+		Expect([]int64{got.SummariesReported, got.SummaryInputTokens, got.SummaryOutputTokens}).To(Equal([]int64{2, 150, 15}))
+	})
+
+	It("keeps a compaction's usage out of the turn usage", func() {
+		compact(300, &provider.Usage{InputTokens: 100, OutputTokens: 10})
+		Expect(diagnose().Usage).To(Equal(SessionUsage{}))
+	})
+
+	It("does not count a malformed compaction event as a compaction", func() {
+		mustAppendEvent(ctx, st, sess.ID, "engine", TypeContextCompacted, map[string]any{"summary": ""})
+		Expect(diagnose().Compactions.Count).To(Equal(int64(0)))
+	})
+
+	It("counts only the valid compactions in Count when an invalid one is present", func() {
+		mustAppendEvent(ctx, st, sess.ID, "engine", TypeContextCompacted, map[string]any{"summary": ""})
+		compact(300, nil)
+		Expect(diagnose().Compactions.Count).To(Equal(int64(1)))
+	})
+
+	It("does not count a valid compaction as invalid", func() {
+		compact(300, nil)
+		Expect(diagnose().Compactions.Invalid).To(Equal(int64(0)))
+	})
+
+	DescribeTable("counts a malformed compaction event as invalid",
+		func(payload map[string]any) {
+			mustAppendEvent(ctx, st, sess.ID, "engine", TypeContextCompacted, payload)
+			Expect(diagnose().Compactions.Invalid).To(Equal(int64(1)))
+		},
+		Entry("a payload that does not decode", map[string]any{"summary": 5}),
+		Entry("an empty summary", map[string]any{"summary": "", "first_kept_seq": 1, "reason": "auto"}),
+		Entry("a first_kept_seq at its own seq or later",
+			map[string]any{"summary": "S", "first_kept_seq": 99, "reason": "auto"}),
+	)
+
+	It("counts a compaction whose first_kept_seq is below the previous one's as invalid", func() {
+		mustAppendEvent(ctx, st, sess.ID, "engine", TypeAssistantMessage, map[string]any{"content": "a"})
+		first := validCompaction()
+		first.FirstKeptSeq = 2
+		mustAppendCompaction(ctx, st, sess.ID, first)
+		compact(300, nil) // first_kept_seq 1, below 2
+		Expect(diagnose().Compactions.Invalid).To(Equal(int64(1)))
+	})
+
+	It("does not make a compaction run activity", func() {
+		compact(300, nil)
+		Expect(diagnose().RunActivity).To(BeFalse())
+	})
+
+	It("does not make a fresh session with a compaction crashed", func() {
+		compact(300, nil)
+		Expect(diagnose().Crashed).To(BeFalse())
+	})
+
+	It("does not flag a dangling turn after a compaction as crashed without run activity", func() {
+		compact(300, nil)
+		mustAppendEvent(ctx, st, sess.ID, "user", "turn.start", map[string]any{"task": "again"})
+		Expect(crashedFromEvents(replayOrPanic(ctx, st, sess.ID))).To(BeFalse())
+	})
+
+	It("ignores a compaction event in hasRunActivity", func() {
+		Expect(hasRunActivity([]store.RecordedEvent{{Type: TypeContextCompacted}})).To(BeFalse())
+	})
+})
+
+// replayOrPanic replays the session's log, panicking on errors.
+func replayOrPanic(ctx context.Context, st *store.Store, id string) []store.RecordedEvent {
+	events, err := st.Replay(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return events
+}
