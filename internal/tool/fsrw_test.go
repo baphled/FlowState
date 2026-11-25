@@ -178,6 +178,245 @@ var _ = Describe("fs.write", func() {
 	})
 })
 
+// rootLinkSpecs pins the symlink confinement of the file tools: every path is
+// resolved physically inside an os.Root, so ".." after a link and dangling links
+// cannot leave the workdir.
+func rootLinkSpecs() {
+	var outer, workdir string
+	link := func(target, name string) {
+		must(os.MkdirAll(filepath.Dir(filepath.Join(workdir, name)), 0o755))
+		must(os.Symlink(target, filepath.Join(workdir, name)))
+	}
+	writeVia := func(path string) error {
+		_, err := NewFSWrite(workdir).Invoke(context.Background(),
+			json.RawMessage(`{"path":`+strconv.Quote(path)+`,"content":"pwn"}`))
+		return err
+	}
+	exists := func(p string) bool { _, err := os.Lstat(p); return err == nil }
+	BeforeEach(func() {
+		outer = GinkgoT().TempDir()
+		workdir = filepath.Join(outer, "w")
+		must(os.Mkdir(workdir, 0o755))
+	})
+	It("refuses the three-link layout whose .. follows a link", func() {
+		must(os.Mkdir(filepath.Join(workdir, "a"), 0o755))
+		link("../../a", "p/q/s")
+		link("p/q/s/../../esc", "dl")
+		Expect(errors.Is(writeVia("dl"), ErrPathOutsideWorkdir)).To(BeTrue())
+	})
+	It("creates nothing outside the workdir for the three-link layout", func() {
+		must(os.Mkdir(filepath.Join(workdir, "a"), 0o755))
+		link("../../a", "p/q/s")
+		link("p/q/s/../../esc", "dl")
+		_ = writeVia("dl")
+		Expect(exists(filepath.Join(outer, "esc"))).To(BeFalse())
+	})
+	It("applies .. after a link to the physical directory, inside the workdir", func() {
+		must(os.MkdirAll(filepath.Join(workdir, "out", "deep"), 0o755))
+		link("out/deep", "s")
+		link("s/../newfile", "dl")
+		must(writeVia("dl"))
+		Expect(read(workdir, "out/newfile")).To(Equal("pwn"))
+	})
+	It("leaves no file at the lexical place for the physical .. variant", func() {
+		must(os.MkdirAll(filepath.Join(workdir, "out", "deep"), 0o755))
+		link("out/deep", "s")
+		link("s/../newfile", "dl")
+		must(writeVia("dl"))
+		Expect(exists(filepath.Join(workdir, "newfile"))).To(BeFalse())
+	})
+	It("refuses a dangling link to a missing absolute target outside", func() {
+		link(filepath.Join(outer, "created"), "dl")
+		Expect(errors.Is(writeVia("dl"), ErrPathOutsideWorkdir)).To(BeTrue())
+	})
+	It("creates nothing outside through a dangling link", func() {
+		link(filepath.Join(outer, "created"), "dl")
+		_ = writeVia("dl")
+		Expect(exists(filepath.Join(outer, "created"))).To(BeFalse())
+	})
+	It("refuses a dangling relative link escaping with ..", func() {
+		link("../created", "dl")
+		Expect(errors.Is(writeVia("dl"), ErrPathOutsideWorkdir)).To(BeTrue())
+	})
+	It("refuses a dangling link in the middle of the path", func() {
+		link(filepath.Join(outer, "missing"), "dl")
+		Expect(errors.Is(writeVia("dl/x"), ErrPathOutsideWorkdir)).To(BeTrue())
+	})
+	It("refuses a chain of links ending outside", func() {
+		link(filepath.Join(outer, "created"), "b")
+		link("b", "a")
+		Expect(errors.Is(writeVia("a"), ErrPathOutsideWorkdir)).To(BeTrue())
+	})
+	It("refuses a link to an existing file outside", func() {
+		must(os.WriteFile(filepath.Join(outer, "f"), []byte("x"), 0o644))
+		link(filepath.Join(outer, "f"), "fl")
+		Expect(errors.Is(writeVia("fl"), ErrPathOutsideWorkdir)).To(BeTrue())
+	})
+	It("refuses a new file under a link to a directory outside", func() {
+		link(outer, "d")
+		Expect(errors.Is(writeVia("d/new"), ErrPathOutsideWorkdir)).To(BeTrue())
+	})
+	It("fails a link loop without hanging", func() {
+		link("b", "a")
+		link("a", "b")
+		Expect(writeVia("a")).To(HaveOccurred())
+	})
+	It("creates the target inside for a dangling link that stays inside", func() {
+		link("inside.txt", "dl")
+		must(writeVia("dl"))
+		Expect(read(workdir, "inside.txt")).To(Equal("pwn"))
+	})
+	It("refuses a .. in the middle of a path that leaves the workdir", func() {
+		Expect(errors.Is(writeVia("a/../../x"), ErrPathOutsideWorkdir)).To(BeTrue())
+	})
+	It("creates the missing parent of a path whose .. follows a link", func() {
+		must(os.MkdirAll(filepath.Join(workdir, "out", "deep"), 0o755))
+		link("out/deep", "s")
+		must(writeVia("s/../sub/f.txt"))
+		Expect(read(workdir, "out/sub/f.txt")).To(Equal("pwn"))
+	})
+	It("allows a .. in the middle of a path that stays inside", func() {
+		must(os.Mkdir(filepath.Join(workdir, "a"), 0o755))
+		must(writeVia("a/../x.txt"))
+		Expect(read(workdir, "x.txt")).To(Equal("pwn"))
+	})
+	It("reads through a symlink that stays inside", func() {
+		write(workdir, "real/f.txt", "inner")
+		link("real", "alias")
+		res, err := NewFSRead(workdir).Invoke(context.Background(), json.RawMessage(`{"path":"alias/f.txt"}`))
+		must(err)
+		Expect(res.(map[string]any)["content"]).To(Equal("inner"))
+	})
+	It("refuses to read through a symlink to a file outside", func() {
+		must(os.WriteFile(filepath.Join(outer, "secret"), []byte("s"), 0o644))
+		link(filepath.Join(outer, "secret"), "sl")
+		_, err := NewFSRead(workdir).Invoke(context.Background(), json.RawMessage(`{"path":"sl"}`))
+		Expect(errors.Is(err, ErrPathOutsideWorkdir)).To(BeTrue())
+	})
+	editVia := func(path string) {
+		_, err := NewFSEdit(workdir).Invoke(context.Background(),
+			json.RawMessage(`{"path":`+strconv.Quote(path)+`,"old_text":"old","new_text":"NEW"}`))
+		must(err)
+	}
+	linkBeyondDotDot := func() {
+		must(os.MkdirAll(filepath.Join(workdir, "a", "b", "c"), 0o755))
+		write(workdir, "a/f", "old")
+		must(os.WriteFile(filepath.Join(outer, "f"), []byte("old"), 0o644))
+		link("a/b/c", "l")
+	}
+	It("edits the physical file when .. follows a link", func() {
+		linkBeyondDotDot()
+		editVia("l/../../f")
+		Expect(read(workdir, "a/f")).To(Equal("NEW"))
+	})
+	It("leaves the lexical file outside untouched when .. follows a link", func() {
+		linkBeyondDotDot()
+		editVia("l/../../f")
+		Expect(read(outer, "f")).To(Equal("old"))
+	})
+	It("edits through a symlink that stays inside", func() {
+		write(workdir, "real.txt", "old")
+		link("real.txt", "sl")
+		_, err := NewFSEdit(workdir).Invoke(context.Background(),
+			json.RawMessage(`{"path":"sl","old_text":"old","new_text":"new"}`))
+		must(err)
+		Expect(read(workdir, "real.txt")).To(Equal("new"))
+	})
+	It("refuses to edit through a symlink to a file outside", func() {
+		must(os.WriteFile(filepath.Join(outer, "secret"), []byte("old"), 0o644))
+		link(filepath.Join(outer, "secret"), "sl")
+		_, err := NewFSEdit(workdir).Invoke(context.Background(),
+			json.RawMessage(`{"path":"sl","old_text":"old","new_text":"new"}`))
+		Expect(errors.Is(err, ErrPathOutsideWorkdir)).To(BeTrue())
+	})
+	It("leaves an outside file untouched when an edit through a link is refused", func() {
+		must(os.WriteFile(filepath.Join(outer, "secret"), []byte("old"), 0o644))
+		link(filepath.Join(outer, "secret"), "sl")
+		_, _ = NewFSEdit(workdir).Invoke(context.Background(),
+			json.RawMessage(`{"path":"sl","old_text":"old","new_text":"new"}`))
+		b, err := os.ReadFile(filepath.Join(outer, "secret"))
+		must(err)
+		Expect(string(b)).To(Equal("old"))
+	})
+}
+
+var _ = Describe("file tools confined by os.Root", func() {
+	if runtime.GOOS != "windows" {
+		rootLinkSpecs()
+	}
+	It("pins the os.Root escape message the error mapping matches", func() {
+		root, err := os.OpenRoot(GinkgoT().TempDir())
+		must(err)
+		defer func() { _ = root.Close() }()
+		_, err = root.Stat("../x")
+		Expect(err).To(MatchError(ContainSubstring(rootEscapeMessage)))
+	})
+	It("captures the os.Root escape sentinel from the probe on this toolchain", func() {
+		root, err := os.OpenRoot(GinkgoT().TempDir())
+		must(err)
+		defer func() { _ = root.Close() }()
+		_, err = root.Stat("../x")
+		Expect(errors.Is(err, rootEscapeSentinel())).To(BeTrue())
+	})
+	It("does not take a file named like the escape message for an escape", func() {
+		Expect(isRootEscape(errors.New("open " + rootEscapeMessage + ": denied"))).To(BeFalse())
+	})
+	It("maps a missing workdir to ErrPathOutsideWorkdir for fs.read", func() {
+		_, err := NewFSRead(filepath.Join(GinkgoT().TempDir(), "missing")).Invoke(context.Background(),
+			json.RawMessage(`{"path":"x"}`))
+		Expect(errors.Is(err, ErrPathOutsideWorkdir)).To(BeTrue())
+	})
+	It("maps a missing workdir to ErrPathOutsideWorkdir for fs.write", func() {
+		_, err := NewFSWrite(filepath.Join(GinkgoT().TempDir(), "missing")).Invoke(context.Background(),
+			json.RawMessage(`{"path":"x","content":"c"}`))
+		Expect(errors.Is(err, ErrPathOutsideWorkdir)).To(BeTrue())
+	})
+	if runtime.GOOS != "windows" {
+		It("creates files 0600 and directories 0750 as before", func() {
+			workdir := GinkgoT().TempDir()
+			_, err := NewFSWrite(workdir).Invoke(context.Background(), json.RawMessage(`{"path":"d/f","content":"c"}`))
+			must(err)
+			info, serr := os.Stat(filepath.Join(workdir, "d", "f"))
+			must(serr)
+			Expect(info.Mode().Perm()).To(Equal(os.FileMode(0o600)))
+		})
+		It("creates missing parent directories 0750", func() {
+			workdir := GinkgoT().TempDir()
+			_, err := NewFSWrite(workdir).Invoke(context.Background(), json.RawMessage(`{"path":"d/f","content":"c"}`))
+			must(err)
+			info, serr := os.Stat(filepath.Join(workdir, "d"))
+			must(serr)
+			Expect(info.Mode().Perm()).To(Equal(os.FileMode(0o750)))
+		})
+	}
+	if runtime.GOOS == "linux" {
+		It("does not leak file descriptors across invocations", func() {
+			workdir := GinkgoT().TempDir()
+			write(workdir, "f.txt", "x")
+			count := func() int {
+				entries, err := os.ReadDir("/proc/self/fd")
+				must(err)
+				return len(entries)
+			}
+			tools := []Tool{NewFSRead(workdir), NewFSWrite(workdir), NewFSEdit(workdir)}
+			args := []string{`{"path":"f.txt"}`, `{"path":"f.txt","content":"x"}`,
+				`{"path":"f.txt","old_text":"x","new_text":"x"}`}
+			run := func() {
+				for i, t := range tools {
+					_, _ = t.Invoke(context.Background(), json.RawMessage(args[i]))
+					_, _ = t.Invoke(context.Background(), json.RawMessage(`{"path":"../x","old_text":"a","content":"a"}`))
+				}
+			}
+			run()
+			before := count()
+			for range 20 {
+				run()
+			}
+			Expect(count()).To(Equal(before))
+		})
+	}
+})
+
 // chdirTo makes dir the current directory for one spec and restores the previous
 // one afterwards (Ginkgo runs these specs serially in-process).
 func chdirTo(dir string) {
