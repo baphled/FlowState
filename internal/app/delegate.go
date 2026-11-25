@@ -311,8 +311,8 @@ func delegateLoopConfig(ctx context.Context, req *DelegateRequest, run *delegate
 	child, grant := run.child, run.grant
 	cfg := ExecLoopConfig{
 		Store: req.Store, Session: child, Streamer: req.Streamer, Registry: registry,
-		Allowlist: req.Profile.Tools, LeaseItem: "exec:" + child.ID, LeaseAgent: run.owner,
-		MaxTurns: grant, SystemPrompt: req.Profile.Body,
+		Allowlist: req.Profile.Tools,
+		MaxTurns:  grant, SystemPrompt: req.Profile.Body,
 		Compaction: req.Compaction, ProfileWindow: req.Profile.ContextWindow,
 	}
 	if run.lease != nil {

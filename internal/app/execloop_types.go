@@ -31,15 +31,10 @@ type ExecLoopConfig struct {
 	Registry  *tool.Registry
 	Allowlist []string
 	Pool      *BudgetPool
-	// LeaseItem and LeaseAgent name the lease the loop acquires itself; they are required
-	// without a Lease and unused with one.
-	LeaseItem  string
-	LeaseAgent string
-	// Lease, when set, is a lease the caller holds. The loop neither acquires nor releases a
-	// lease then: it fences this one, and the compaction fences it too. The item, owner and
-	// token come from it, not from LeaseItem, LeaseAgent or a fresh grant, so it wins when both
-	// are set. The caller keeps it held until the post-loop state writers have returned and
-	// then releases it; its Item must not be empty.
+	// Lease is the lease the caller holds for the run, and is required: the loop never acquires or
+	// releases a lease, it fences this one, and the compaction fences it too. The item, owner and
+	// token come from it. The caller keeps it held until the post-loop state writers have returned
+	// and then releases it; its Item must not be empty.
 	Lease      ExecLease
 	MaxTurns   int64
 	TurnBudget int64
@@ -145,7 +140,7 @@ type SessionExecLoopRequest struct {
 	MaxTurns int64
 	// Compaction is the config's compaction object, applied to the run's sessions.
 	Compaction CompactionConfig
-	// Lease, when set, is the exec lease the caller holds for the run; RunSessionExecLoop
+	// Lease is the exec lease the caller holds for the run, and is required; RunSessionExecLoop
 	// forwards it to the loop, which neither acquires nor releases it. Its Item must be
 	// "exec:"+Session.ID. The caller releases it after RunSessionExecLoop has returned, that is
 	// after the post-loop state writers.

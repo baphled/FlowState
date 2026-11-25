@@ -208,7 +208,7 @@ func runSwarmCoordinator(ctx context.Context, st *Store, sess *store.Session, co
 	}
 	loop := ExecLoopConfig{
 		Store: st, Session: sess, Streamer: cfg.Streamer, Registry: registry, Allowlist: coord.Tools,
-		LeaseItem: "exec:" + sess.ID, LeaseAgent: execLeaseAgent, MaxTurns: maxTurns, MaxTokens: cfg.MaxTokens,
+		MaxTurns: maxTurns, MaxTokens: cfg.MaxTokens,
 		SystemPrompt: coord.Body, Compaction: cfg.Compaction, ProfileWindow: coord.ContextWindow,
 	}
 	if err := bindRunBudget(ctx, st, sess, cfg.Budget, &loop); err != nil {

@@ -71,7 +71,7 @@ var _ = Describe("Child run budget binding", func() {
 			streamer := &execLoopStreamer{turns: [][]provider.StreamEvent{
 				toolTurn("c1"), toolTurn("c2"), toolTurn("c3"),
 			}}
-			_, err := RunSessionExecLoop(context.Background(), st, dbPath, child, streamer, SessionExecLoopRequest{MaxTurns: 8})
+			_, err := RunSessionExecLoop(context.Background(), st, dbPath, child, streamer, SessionExecLoopRequest{MaxTurns: 8, Lease: heldSessionLease(st, child)})
 			budgetStopped = errors.Is(err, ErrBudgetExceeded)
 			got, gerr := st.GetSession(context.Background(), child.ID)
 			if gerr != nil {
@@ -98,7 +98,7 @@ var _ = Describe("Child run budget binding", func() {
 			streamer := &execLoopStreamer{turns: [][]provider.StreamEvent{
 				finishTurn("done"),
 			}}
-			_, runErr = RunSessionExecLoop(context.Background(), st, dbPath, child, streamer, SessionExecLoopRequest{MaxTurns: 4})
+			_, runErr = RunSessionExecLoop(context.Background(), st, dbPath, child, streamer, SessionExecLoopRequest{MaxTurns: 4, Lease: heldSessionLease(st, child)})
 			res, rerr := st.ReservationFor(context.Background(), child.ID)
 			if rerr != nil {
 				panic(rerr)
@@ -132,7 +132,9 @@ var _ = Describe("Child run budget binding", func() {
 			stopper := &execLoopStreamer{turns: [][]provider.StreamEvent{
 				toolTurn("s1"), toolTurn("s2"), toolTurn("s3"),
 			}}
-			_, stopErr := RunSessionExecLoop(context.Background(), st, dbPath, child, stopper, SessionExecLoopRequest{MaxTurns: 8})
+			stopLease, releaseStop := acquireTestLease(st, "exec:"+child.ID, "cli")
+			_, stopErr := RunSessionExecLoop(context.Background(), st, dbPath, child, stopper, SessionExecLoopRequest{MaxTurns: 8, Lease: stopLease})
+			releaseStop() // the rerun takes its own handle
 			firstStopped = errors.Is(stopErr, ErrBudgetExceeded)
 			if stopErr != nil && !firstStopped {
 				panic(stopErr)
@@ -149,7 +151,7 @@ var _ = Describe("Child run budget binding", func() {
 			finisher := &execLoopStreamer{turns: [][]provider.StreamEvent{
 				finishTurn("final answer"),
 			}}
-			_, rerunErr := RunSessionExecLoop(context.Background(), st, dbPath, childAfter, finisher, SessionExecLoopRequest{MaxTurns: 4})
+			_, rerunErr := RunSessionExecLoop(context.Background(), st, dbPath, childAfter, finisher, SessionExecLoopRequest{MaxTurns: 4, Lease: heldSessionLease(st, childAfter)})
 			rerunErrFree = rerunErr == nil
 			res, resErr := st.ReservationFor(context.Background(), child.ID)
 			if resErr != nil {
@@ -219,7 +221,7 @@ var _ = Describe("Loop completion finish reason", func() {
 			cut := provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: provider.FinishLength}
 			streamer := &execLoopStreamer{turns: [][]provider.StreamEvent{{provText("cut"), cut}}}
 			dbPath := filepath.Join(GinkgoT().TempDir(), "finish.db")
-			if _, err := RunSessionExecLoop(context.Background(), st, dbPath, sess, streamer, SessionExecLoopRequest{MaxTurns: 2}); err != nil {
+			if _, err := RunSessionExecLoop(context.Background(), st, dbPath, sess, streamer, SessionExecLoopRequest{MaxTurns: 2, Lease: heldSessionLease(st, sess)}); err != nil {
 				panic(err)
 			}
 		})
@@ -251,7 +253,7 @@ var _ = Describe("Loop allowlist requirement", func() {
 		func(require, wantUsage bool) {
 			streamer := &execLoopStreamer{turns: [][]provider.StreamEvent{{provText("ok"), provFinish()}}}
 			_, err := RunSessionExecLoop(context.Background(), st, dbPath, sess, streamer,
-				SessionExecLoopRequest{MaxTurns: 2, RequireAllowlist: require})
+				SessionExecLoopRequest{MaxTurns: 2, RequireAllowlist: require, Lease: heldSessionLease(st, sess)})
 			Expect(errors.Is(err, ErrUsage)).To(Equal(wantUsage))
 		},
 		Entry("required and empty", true, true),
@@ -270,7 +272,7 @@ var _ = Describe("Delegation wiring of a session run", func() {
 	var delegateTurn []provider.StreamEvent
 
 	run := func(streamer provider.Streamer, req SessionExecLoopRequest) error {
-		req.Workdir, req.MaxTurns = workdir, 4
+		req.Workdir, req.MaxTurns, req.Lease = workdir, 4, heldSessionLease(st, sess)
 		_, err := RunSessionExecLoop(context.Background(), st, dbPath, sess, streamer, req)
 		return err
 	}
@@ -354,7 +356,7 @@ var _ = Describe("Delegation wiring of a session run", func() {
 		var streamer *execLoopStreamer
 		var projectDir string
 		runDefault := func(req SessionExecLoopRequest) error {
-			req.Allow, req.MaxTurns = []string{"delegate"}, 4
+			req.Allow, req.MaxTurns, req.Lease = []string{"delegate"}, 4, heldSessionLease(st, sess)
 			_, err := RunSessionExecLoop(context.Background(), st, dbPath, sess, streamer, req)
 			return err
 		}
@@ -401,9 +403,10 @@ var _ = Describe("Delegation wiring of a session run", func() {
 			cctx, cancel := context.WithCancelCause(context.Background())
 			defer cancel(nil)
 			done := make(chan error, 1)
+			lease := heldSessionLease(st, sess)
 			go func() {
 				_, e := RunSessionExecLoop(cctx, st, dbPath, sess, blocker, SessionExecLoopRequest{
-					Workdir: workdir, MaxTurns: 4, Allow: []string{"delegate"}, Agents: "user",
+					Workdir: workdir, MaxTurns: 4, Allow: []string{"delegate"}, Agents: "user", Lease: lease,
 				})
 				done <- e
 			}()
@@ -450,7 +453,7 @@ var _ = Describe("Loop turn limit of a session run", func() {
 		}
 		turns = append(turns, []provider.StreamEvent{provText("answer"), provFinish()})
 		_, err := RunSessionExecLoop(context.Background(), st, dbPath, sess, &execLoopStreamer{turns: turns},
-			SessionExecLoopRequest{Allow: []string{"echo"}, MaxTurns: maxTurns})
+			SessionExecLoopRequest{Allow: []string{"echo"}, MaxTurns: maxTurns, Lease: heldSessionLease(st, sess)})
 		return err
 	}
 
@@ -502,7 +505,7 @@ var _ = Describe("Loop turn limit of a delegating parent", func() {
 		}
 		streamer := &execLoopStreamer{turns: turns}
 		_, err = RunSessionExecLoop(context.Background(), st, filepath.Join(workdir, "run.db"), sess, streamer,
-			SessionExecLoopRequest{Allow: []string{"delegate"}, Agents: "user", Workdir: workdir, MaxTurns: parentTurns})
+			SessionExecLoopRequest{Allow: []string{"delegate"}, Agents: "user", Workdir: workdir, MaxTurns: parentTurns, Lease: heldSessionLease(st, sess)})
 		reqs = len(streamer.reqs)
 	}
 
@@ -601,6 +604,63 @@ var _ = Describe("RunSessionExecLoop given a held lease", func() {
 		DeferCleanup(func() { _ = other.Release(context.Background()) })
 		_, err = RunSessionExecLoop(context.Background(), st, dbPath, sess, &execLoopStreamer{}, SessionExecLoopRequest{Lease: other})
 		Expect(err).To(MatchError(ErrExecLoopConfig))
+	})
+
+	Context("given no handle and a budget", func() {
+		var (
+			before []store.RecordedEvent
+			snap   store.BudgetSnapshot
+			runErr error
+		)
+		BeforeEach(func() {
+			// The fixture's own row would mask a lease taken by the refused run.
+			if err := handle.Release(context.Background()); err != nil {
+				panic(err)
+			}
+			var err error
+			if before, err = st.Replay(context.Background(), sess.ID); err != nil {
+				panic(err)
+			}
+			if snap, err = st.BudgetSnapshot(context.Background(), sess.ID); err != nil {
+				panic(err)
+			}
+			streamer := &execLoopStreamer{turns: [][]provider.StreamEvent{{provText("never"), provFinish()}}}
+			_, runErr = RunSessionExecLoop(context.Background(), st, dbPath, sess, streamer, SessionExecLoopRequest{Budget: 7})
+		})
+
+		It("refuses it as a configuration error", func() {
+			Expect(runErr).To(MatchError(ErrExecLoopConfig))
+		})
+
+		It("appends no event", func() {
+			after, err := st.Replay(context.Background(), sess.ID)
+			if err != nil {
+				panic(err)
+			}
+			Expect(after).To(HaveLen(len(before)))
+		})
+
+		It("writes no budget pool", func() {
+			after, err := st.BudgetSnapshot(context.Background(), sess.ID)
+			if err != nil {
+				panic(err)
+			}
+			Expect(after).To(Equal(snap))
+		})
+
+		It("takes no lease", func() {
+			_, found, err := st.ReadLease(context.Background(), "exec:"+sess.ID)
+			if err != nil {
+				panic(err)
+			}
+			Expect(found).To(BeFalse())
+		})
+	})
+
+	It("makes no provider request without a handle", func() {
+		streamer := &execLoopStreamer{turns: [][]provider.StreamEvent{{provText("never"), provFinish()}}}
+		_, _ = RunSessionExecLoop(context.Background(), st, dbPath, sess, streamer, SessionExecLoopRequest{})
+		Expect(streamer.reqs).To(BeEmpty())
 	})
 
 	It("keeps the row so a second run stays out while the caller holds the handle", func() {

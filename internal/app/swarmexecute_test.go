@@ -731,7 +731,7 @@ var _ = Describe("The swarm coordinator's judged lease", func() {
 		})
 		It("refuses a second acquire of the coordinator's item", func() { Expect(busy).To(BeTrue()) })
 		It("names a run owner as the holder", func() { Expect(owner).To(HavePrefix(runLeasePrefix)) })
-		It("does not name the constant cli owner", func() { Expect(owner).NotTo(Equal(execLeaseAgent)) })
+		It("does not name the constant cli owner", func() { Expect(owner).NotTo(Equal("cli")) })
 	})
 
 	DescribeTable("is still held when the coordinator's completion is written",

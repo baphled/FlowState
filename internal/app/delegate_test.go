@@ -768,9 +768,10 @@ var _ = Describe("RunDelegatedChild", func() {
 			panic(err)
 		}
 		registry := must(NewSessionToolRegistry(""))
+		lease, _ := acquireTestLease(f.st, "exec:"+f.parent.ID, "cli")
 		_, err := RunExecLoop(ctx, ExecLoopConfig{
 			Store: f.st, Session: f.parent, Streamer: f.streamer, Registry: registry,
-			LeaseItem: "exec:parent", LeaseAgent: "cli", MaxTurns: 1,
+			Lease: lease, MaxTurns: 1,
 		})
 		if err != nil {
 			panic(err)
@@ -983,9 +984,10 @@ var _ = Describe("A parent cancelled during its last turn's delegation", func() 
 			check(registry.Register(NewDelegateTool(DelegateToolConfig{
 				Store: st, Parent: sess, Streamer: streamer, Workdir: workdir, Profiles: profiles,
 			})))
+			lease, _ := acquireTestLease(st, "exec:"+sess.ID, "cli")
 			_, err = RunExecLoop(cctx, ExecLoopConfig{
 				Store: st, Session: sess, Streamer: streamer, Registry: registry, Allowlist: []string{"delegate"},
-				LeaseItem: "exec:" + sess.ID, LeaseAgent: "cli", MaxTurns: 1,
+				Lease: lease, MaxTurns: 1,
 			})
 		})
 
@@ -1002,6 +1004,7 @@ var _ = Describe("A parent cancelled during its last turn's delegation", func() 
 			streamer := &execLoopStreamer{turns: turns}
 			_, err = RunSessionExecLoop(cctx, st, filepath.Join(workdir, "run.db"), sess, streamer, SessionExecLoopRequest{
 				Allow: []string{"delegate"}, Agents: "user", Workdir: workdir, MaxTurns: 1,
+				Lease: heldSessionLease(st, sess),
 			})
 		})
 

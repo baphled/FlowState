@@ -59,7 +59,36 @@ func execLoopFixture(streamer *execLoopStreamer) ExecLoopConfig {
 	DeferCleanup(func() { _ = st.Close() })
 	registry, err := NewSessionToolRegistry("")
 	execMust(err)
-	return ExecLoopConfig{Store: st, Session: sess, Streamer: streamer, Registry: registry, Allowlist: []string{"echo"}, LeaseItem: "exec:" + sess.ID, LeaseAgent: "agent-a", MaxTurns: 4}
+	lease, _ := acquireTestLease(st, "exec:"+sess.ID, "agent-a")
+	return ExecLoopConfig{Store: st, Session: sess, Streamer: streamer, Registry: registry, Allowlist: []string{"echo"}, Lease: lease, MaxTurns: 4}
+}
+
+// acquireTestLease takes the judged exec lease for item under owner on st, as a caller of the loop does,
+// and returns the handle with its release. The release is also registered with DeferCleanup, so the
+// handle is held for the whole spec; the release is idempotent, so a spec may call it earlier.
+func acquireTestLease(st *store.Store, item, owner string) (*store.RunLease, func()) {
+	lease, err := st.AcquireRunLease(context.Background(), item, owner)
+	if err != nil {
+		panic(err)
+	}
+	release := func() { _ = lease.Release(context.Background()) }
+	DeferCleanup(release)
+	return lease, release
+}
+
+// heldSessionLease is the judged exec lease of sess under the owner "cli", held until the spec ends.
+func heldSessionLease(st *store.Store, sess *store.Session) ExecLease {
+	lease, _ := acquireTestLease(st, "exec:"+sess.ID, "cli")
+	return lease
+}
+
+// stealTestLease replaces the lease held by handle with one of thief, as a second process taking over a
+// dead row would: the handle fails its fence from then on.
+func stealTestLease(cfg ExecLoopConfig, thief string) {
+	if err := cfg.Lease.(*store.RunLease).Release(context.Background()); err != nil {
+		panic(err)
+	}
+	acquireTestLease(cfg.Store, cfg.Lease.Item(), thief)
 }
 func echoCall(id string) provider.ToolCall { // an allowlisted echo invocation
 	return provider.ToolCall{ID: id, Name: "echo", Arguments: json.RawMessage(`{"message":"hi"}`)}
@@ -166,7 +195,7 @@ func budgetLoopFixture(ctx context.Context) ExecLoopConfig { // two budgeted tur
 func fencedLoopFixture(ctx context.Context) ExecLoopConfig { // lease already held by agent-b
 	streamer := &execLoopStreamer{turns: [][]provider.StreamEvent{{provText("late")}}}
 	cfg := execLoopFixture(streamer)
-	_, _ = cfg.Store.AcquireLease(ctx, cfg.LeaseItem, "agent-b")
+	stealTestLease(cfg, "agent-b")
 	return cfg
 }
 func annotatedCallIDs(ctx context.Context, cfg ExecLoopConfig) []string {
@@ -816,14 +845,11 @@ func (h *heldLeaseFake) Fence(context.Context) error {
 	return nil
 }
 
-// heldLoopFixture is a loop config with the fake handle and no LeaseItem or LeaseAgent; a foreign
-// legacy row on the session's exec item makes any acquire or config-owner fence by the loop fail.
+// heldLoopFixture is a loop config with the fake handle; the fixture's real handle stays held on the
+// session's exec item, so any acquire by the loop fails.
 func heldLoopFixture(streamer *execLoopStreamer, held *heldLeaseFake) ExecLoopConfig {
 	cfg := execLoopFixture(streamer)
-	if _, err := cfg.Store.AcquireLease(context.Background(), "exec:"+cfg.Session.ID, "agent-b"); err != nil {
-		panic(err)
-	}
-	cfg.LeaseItem, cfg.LeaseAgent, cfg.Lease = "", "", held
+	cfg.Lease = held
 	return cfg
 }
 
@@ -871,7 +897,7 @@ var _ = Describe("Execution loop given a held lease", func() {
 		BeforeEach(func() {
 			held.failOn = 5
 			cfg, _ = autoConfig(usedTurn("c1", 1, 100), usedTurn("c2", 1, 100), overflowTurn(), summaryTurn("the summary"), doneTurn())
-			cfg.LeaseItem, cfg.LeaseAgent, cfg.Lease = "", "", held
+			cfg.Lease = held
 			_, err = RunExecLoop(context.Background(), cfg)
 		})
 		It("ends the run fenced", func() { Expect(err).To(MatchError(ErrExecLoopFenced)) })
@@ -889,10 +915,7 @@ var _ = Describe("Execution loop given a held lease", func() {
 	Context("when a request overflows the window and the retry succeeds", func() {
 		BeforeEach(func() {
 			cfg, _ = autoConfig(usedTurn("c1", 1, 100), usedTurn("c2", 1, 100), overflowTurn(), summaryTurn("the summary"), doneTurn())
-			cfg.LeaseItem, cfg.LeaseAgent, cfg.Lease = "", "", held
-			if _, aerr := cfg.Store.AcquireLease(context.Background(), "exec:"+cfg.Session.ID, "agent-b"); aerr != nil {
-				panic(aerr)
-			}
+			cfg.Lease = held
 			held.observe = func() int { return countOf(cfg, TypeContextCompacted) }
 			_, err = RunExecLoop(context.Background(), cfg)
 		})
@@ -902,11 +925,28 @@ var _ = Describe("Execution loop given a held lease", func() {
 		It("completes the compaction under the handle", func() { Expect(countOf(cfg, TypeContextCompacted)).To(Equal(1)) })
 	})
 
-	Context("when it is given neither a handle nor a lease name", func() {
-		It("is a misconfiguration", func() {
-			cfg = execLoopFixture(&execLoopStreamer{})
-			cfg.LeaseItem, cfg.LeaseAgent = "", ""
-			Expect(runExec(context.Background(), cfg).ErrConfig).To(BeTrue())
+	Context("when it is given no handle", func() {
+		BeforeEach(func() {
+			cfg = execLoopFixture(&execLoopStreamer{turns: [][]provider.StreamEvent{{provText("never")}}})
+			_ = cfg.Lease.(*store.RunLease).Release(context.Background())
+			cfg.Lease = nil
+			_, err = RunExecLoop(context.Background(), cfg)
+		})
+		It("is a misconfiguration", func() { Expect(err).To(MatchError(ErrExecLoopConfig)) })
+		It("takes no lease", func() {
+			_, found, rerr := cfg.Store.ReadLease(context.Background(), "exec:"+cfg.Session.ID)
+			if rerr != nil {
+				panic(rerr)
+			}
+			Expect(found).To(BeFalse())
+		})
+		It("makes no provider request", func() { Expect(cfg.Streamer.(*execLoopStreamer).reqs).To(BeEmpty()) })
+		It("appends no event beyond the seed", func() {
+			events, rerr := cfg.Store.Replay(context.Background(), cfg.Session.ID)
+			if rerr != nil {
+				panic(rerr)
+			}
+			Expect(events).To(HaveLen(1))
 		})
 	})
 })

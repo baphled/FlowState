@@ -161,9 +161,10 @@ func (f *nestFixture) turnsOf(name string, turns int) {
 
 // runRoot runs the root loop, which may call delegate, under ctx.
 func (f *nestFixture) runRoot(ctx context.Context) (*ExecLoopResult, error) {
+	lease, _ := acquireTestLease(f.st, "exec:"+f.parent.ID, "cli")
 	return RunExecLoop(ctx, ExecLoopConfig{
 		Store: f.st, Session: f.parent, Streamer: f.scripts, Registry: f.registry, Allowlist: []string{"delegate"},
-		Pool: f.pool, TurnBudget: 1, LeaseItem: "exec:" + f.parent.ID, LeaseAgent: "cli", MaxTurns: 4,
+		Pool: f.pool, TurnBudget: 1, Lease: lease, MaxTurns: 4,
 	})
 }
 

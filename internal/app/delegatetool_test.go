@@ -49,9 +49,10 @@ func newToolFixture(turns ...[]provider.StreamEvent) *toolFixture {
 
 // runParent runs the parent loop under ctx with the fixture's allowlist.
 func (f *toolFixture) runParent(ctx context.Context) (*ExecLoopResult, error) {
+	lease, _ := acquireTestLease(f.st, "exec:"+f.parent.ID, "cli")
 	return RunExecLoop(ctx, ExecLoopConfig{
 		Store: f.st, Session: f.parent, Streamer: f.streamer, Registry: f.registry, Allowlist: f.allow,
-		Pool: f.pool, TurnBudget: 1, LeaseItem: "exec:" + f.parent.ID, LeaseAgent: "cli", MaxTurns: 4,
+		Pool: f.pool, TurnBudget: 1, Lease: lease, MaxTurns: 4,
 	})
 }
 
@@ -444,10 +445,11 @@ var _ = Describe("The delegate tool", func() {
 			cctx, cancel := context.WithCancelCause(context.Background())
 			defer cancel(nil)
 			done := make(chan error, 1)
+			lease, _ := acquireTestLease(f.st, "exec:"+f.parent.ID, "cli")
 			go func() {
 				_, e := RunExecLoop(cctx, ExecLoopConfig{
 					Store: f.st, Session: f.parent, Streamer: blocker, Registry: f.registry, Allowlist: f.allow,
-					LeaseItem: "exec:" + f.parent.ID, LeaseAgent: "cli", MaxTurns: 4,
+					Lease: lease, MaxTurns: 4,
 				})
 				done <- e
 			}()

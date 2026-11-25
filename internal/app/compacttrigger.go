@@ -73,7 +73,7 @@ func (c *compactRun) afterResults(results []provider.Message) {
 // request. A failed compaction writes nothing, is not retried in the run and the run continues;
 // only a cancelled context or a fenced lease ends it. After a compaction the history is rebuilt
 // from the log and the baseline is the event's tokens_after.
-func (c *compactRun) before(ctx context.Context, cfg *ExecLoopConfig, token int64,
+func (c *compactRun) before(ctx context.Context, cfg *ExecLoopConfig,
 	definitions []provider.ToolDefinition, history *[]provider.Message) error {
 	limit, ok := compactLimit(cfg)
 	if c.failed || !ok {
@@ -87,7 +87,7 @@ func (c *compactRun) before(ctx context.Context, cfg *ExecLoopConfig, token int6
 		c.failed = true
 		return nil
 	}
-	res, err := compactOnce(ctx, cfg, token, CompactionReasonAuto, overhead, limit)
+	res, err := compactOnce(ctx, cfg, CompactionReasonAuto, overhead, limit)
 	if err != nil {
 		return c.fail(ctx, cfg, err)
 	}
@@ -95,11 +95,11 @@ func (c *compactRun) before(ctx context.Context, cfg *ExecLoopConfig, token int6
 }
 
 // compactOnce runs one compaction under the loop lease with the line as the ceiling on tokens_after.
-func compactOnce(ctx context.Context, cfg *ExecLoopConfig, token int64, reason string, overhead, limit int) (*CompactionResult, error) {
+func compactOnce(ctx context.Context, cfg *ExecLoopConfig, reason string, overhead, limit int) (*CompactionResult, error) {
 	return Compact(ctx, cfg.Store, cfg.Session.ID, CompactOptions{
 		Streamer: cfg.Streamer, Model: cfg.Session.ModelID, Reason: reason,
 		KeepRecent: cfg.Compaction.Resolved().KeepRecent, OverheadTokens: overhead, MaxTokensAfter: limit,
-		Lease: execCompactLease(cfg, token),
+		Lease: execCompactLease(cfg),
 	})
 }
 
@@ -183,7 +183,7 @@ func failExecOverflow(ctx context.Context, cfg *ExecLoopConfig, cause error) err
 // each request has at most one retry, which is itself never retried. A failed compaction after
 // an error ends the run as the provider failure; after a length finish the truncated turn stands
 // (the existing behaviour), because that turn was a success.
-func (c *compactRun) request(ctx context.Context, cfg *ExecLoopConfig, token int64, definitions []provider.ToolDefinition,
+func (c *compactRun) request(ctx context.Context, cfg *ExecLoopConfig, definitions []provider.ToolDefinition,
 	history *[]provider.Message, res *ExecLoopResult) (execTurn, error) {
 	limit, enabled := compactLimit(cfg)
 	overhead := estimateOverhead(cfg.SystemPrompt, definitions)
@@ -194,9 +194,9 @@ func (c *compactRun) request(ctx context.Context, cfg *ExecLoopConfig, token int
 	var overflow *execOverflow
 	switch {
 	case errors.As(err, &overflow):
-		return c.retry(ctx, cfg, token, definitions, history, res, retryAfter{cause: overflow.cause}, limit, overhead)
+		return c.retry(ctx, cfg, definitions, history, res, retryAfter{cause: overflow.cause}, limit, overhead)
 	case err == nil && over && len(turn.Calls) == 0 && turn.FinishReason == provider.FinishLength:
-		return c.retry(ctx, cfg, token, definitions, history, res, retryAfter{truncated: turn}, limit, overhead)
+		return c.retry(ctx, cfg, definitions, history, res, retryAfter{truncated: turn}, limit, overhead)
 	}
 	return turn, err
 }
@@ -205,12 +205,12 @@ func (c *compactRun) request(ctx context.Context, cfg *ExecLoopConfig, token int
 // unit and counts as a second turn in memory (ADR-010 packet (d)). The history is rebuilt from the
 // log. After a length finish the truncated assistant message stays in the log, but the retry request does not
 // end on an assistant message, so rebuildHistory omits it from the retry request.
-func (c *compactRun) retry(ctx context.Context, cfg *ExecLoopConfig, token int64, definitions []provider.ToolDefinition,
+func (c *compactRun) retry(ctx context.Context, cfg *ExecLoopConfig, definitions []provider.ToolDefinition,
 	history *[]provider.Message, res *ExecLoopResult, after retryAfter, limit, overhead int) (execTurn, error) {
-	if err := c.compactForRetry(ctx, cfg, token, history, limit, overhead); err != nil {
+	if err := c.compactForRetry(ctx, cfg, history, limit, overhead); err != nil {
 		return c.retryFailed(ctx, cfg, after, err)
 	}
-	if err := beginExecRequest(ctx, cfg, token, res); err != nil {
+	if err := beginExecRequest(ctx, cfg, res); err != nil {
 		return execTurn{}, err
 	}
 	turn, err := runExecTurn(ctx, *cfg, definitions, *history, false)
@@ -220,12 +220,12 @@ func (c *compactRun) retry(ctx context.Context, cfg *ExecLoopConfig, token int64
 }
 
 // compactForRetry makes the overflow compaction: its pool unit, the summary, the rebuilt history.
-func (c *compactRun) compactForRetry(ctx context.Context, cfg *ExecLoopConfig, token int64,
+func (c *compactRun) compactForRetry(ctx context.Context, cfg *ExecLoopConfig,
 	history *[]provider.Message, limit, overhead int) error {
 	if cfg.Pool != nil && cfg.Pool.Reserve(compactUnit) < compactUnit {
 		return errNoCompactUnit
 	}
-	cres, err := compactOnce(ctx, cfg, token, CompactionReasonOverflow, overhead, limit)
+	cres, err := compactOnce(ctx, cfg, CompactionReasonOverflow, overhead, limit)
 	if err != nil {
 		releaseNoCut(cfg, err)
 		return err

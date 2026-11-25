@@ -24,16 +24,12 @@ const execDefaultMaxTurns int64 = 25
 // `session run --max-turns` or the run body's max_turns.
 const MaxTurnsLimit int64 = 1000
 
-// execLeaseAgent is the lease owner recorded for CLI-driven loop runs.
-const execLeaseAgent = "cli"
-
 // RunSessionExecLoop wires one CLI-driven provider-driven execution
 // loop for sess: it composes the session builtin registry rooted at
 // the session workdir, gates tools through the allowlist and runs
-// RunExecLoop under a per-session lease: the one it acquires itself, or the caller-held
-// req.Lease, which must be the handle of "exec:"+sess.ID and which the loop only fences. The
-// caller releases a forwarded handle after this function has returned, that is after the
-// post-loop writers below. On success it appends the
+// RunExecLoop under the caller-held req.Lease, which is required, must be the handle of
+// "exec:"+sess.ID and which the loop only fences. The caller releases the handle after this
+// function has returned, that is after the post-loop writers below. On success it appends the
 // terminal turn.end event and marks the session completed; on budget
 // exhaustion it pauses the session; on interruption it cancels the
 // session and returns ErrSessionCancelled. Provider failures keep the
@@ -71,8 +67,6 @@ func RunSessionExecLoop(ctx context.Context, st *store.Store, dbPath string, ses
 		Streamer:   streamer,
 		Registry:   registry,
 		Allowlist:  allowlist,
-		LeaseItem:  "exec:" + sess.ID,
-		LeaseAgent: execLeaseAgent,
 		MaxTurns:   sessionMaxTurns(req),
 		MaxTokens:  req.MaxTokens,
 		Compaction: req.Compaction,
@@ -213,10 +207,13 @@ func bindRunBudget(ctx context.Context, st *store.Store, sess *store.Session, bu
 	return nil
 }
 
-// checkSessionLease refuses a forwarded handle that is not the one of sess's exec item, a mix-up
-// of handles; no handle is fine, the loop then takes its own lease.
+// checkSessionLease refuses a missing handle, and a handle that is not the one of sess's exec item,
+// a mix-up of handles, before anything is written.
 func checkSessionLease(sess *store.Session, lease ExecLease) error {
-	if lease != nil && lease.Item() != "exec:"+sess.ID {
+	if lease == nil {
+		return fmt.Errorf("%w: a held lease handle is required", ErrExecLoopConfig)
+	}
+	if lease.Item() != "exec:"+sess.ID {
 		return fmt.Errorf("%w: lease handle is for %q, not session %s", ErrExecLoopConfig, lease.Item(), sess.ID)
 	}
 	return nil
