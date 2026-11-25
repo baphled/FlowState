@@ -5,7 +5,7 @@ type: adr-index
 status: current
 adr_group: Go CLI
 created: 2026-11-18
-modified: 2026-11-23T00:00
+modified: 2026-11-23T12:00
 deciders:
   - Engineering Team
 consulted:
@@ -44,6 +44,7 @@ The Go CLI's architecture decision records, in the vault template. The prototype
 | 007 | [[ADR - Transport Adapter Packages]] | internal/server classified as transport adapter; cmd allowlist app+config+server; net/http subtree banned from cmd |
 | 008 | [[ADR - Anthropic Provider]] | anthropic provider (OAuth route) runs the user's own unmodified `claude` binary headless; API key to follow; no credentials handled by FlowState |
 | 009 | [[ADR - Delegation to Child Agents]] | delegation is a model-called `delegate` tool with markdown agent profiles, isolated child sessions and final-message results; no engine scheduler |
+| 010 | [[ADR - Context Management and Compaction]] | compaction is an appended `context.compacted` event (summary, first kept seq); replay rebuilds from the last one; trigger on provider-reported context over window minus reserve; log never rewritten |
 
 ## Reading order
 
@@ -53,6 +54,6 @@ New contributors: 001 → 002 → 005 covers the layering, runtime, and configur
 ## Vault relationship
 
 The vault corpus (78 ADRs — 37 accepted, 22 proposed, 19 superseded) documents the prototype architecture. This
-  index's nine ADRs are the greenfield Go CLI's own decisions, written in the same template and cross-linked to their
+  index's ten ADRs are the greenfield Go CLI's own decisions, written in the same template and cross-linked to their
   vault ancestors. Where a vault ADR is superseded (TUI-era patterns), it has no Go CLI descendant; where it is
   accepted and carried forward, the Go CLI ADR cites it under Cross-links.
