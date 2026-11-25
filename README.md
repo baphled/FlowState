@@ -103,6 +103,27 @@ compaction on its next run, compacts itself automatically near the window (see C
 counts the compactions. The plain text-turn path never rebuilds history from the log, so a compaction does not
 change what it sends; for the retry after a provider overflow see [Overflow retry](#compaction).
 
+## Unlocking a lease
+
+`session unlock <id> [--force]` deals with the exec lease row that a run leaves while it works on a session (ADR-011).
+Use it when a run refuses a session because a row that cannot be judged is in the way: a row written by another
+machine, or one from before the lease columns existed (a legacy row, with no machine and no lock). Without `--force`
+it only reports: it prints one JSON object (`session`, `item`, `outcome`, `holder` with `owner`, `host`, `pid`, `token`
+and `acquired_at`, `machine_matches`, `legacy_row`, `event_appended` and `message`), deletes nothing and exits 1 when a
+row exists (outcome `reported`); with no row it exits 0 (outcome `no_lease`). The report writes nothing to the lease row
+or the log, but it may create the lock directory beside the database.
+
+With `--force` it deletes the row it read, only if the row is still the one it showed (a replaced row survives and the
+exit is 1), appends one `session.unlocked` event to the log (none for a finished session), writes one line on stderr
+naming the owner, host and pid, and prints the report (outcome `deleted`). It runs no recovery: the next `session run`
+acquires the lease, recovers a crashed turn from the log and runs. A lease whose lock is held by a live process on this
+machine is refused even with `--force` (the holder is printed, exit 1): stop that process instead.
+
+**Danger.** A legacy row holds no lock, so `--force` cannot tell whether its run is still alive. If it is, deleting the
+row leaves two writers on one log. Check that nothing is running the session before you force; the stderr line repeats
+the warning for a legacy row. The owner and host come from the row, so both are escaped for a terminal in the JSON and
+on stderr. Flags that do not apply (`--budget`, `--model` and the like) are refused with exit 2 naming the first.
+
 ## Commands
 
 | Command | Purpose |
@@ -110,6 +131,7 @@ change what it sends; for the retry after a provider overflow see [Overflow retr
 | `session new` | Create a session: `--provider`, `--model`, `--task <text\|@file>`, `--parent`, `--reserve` |
 | `session run <id>` | One turn or tool loop: `--budget`, `--max-tokens`, `--max-turns`, `--allow`, `--allow-file`, `--workdir`, `--agents` |
 | `session compact <id>` | Compact a tool-loop session's context by hand: `--instructions <text>`; see [Compaction](#compaction) |
+| `session unlock <id>` | Report, or with `--force` delete, a lease row that cannot be judged; see [Unlocking a lease](#unlocking-a-lease) |
 | `session list [--status <s>]` | List sessions |
 | `session events <id> [--follow]` | Print or follow the event log |
 | `session replay <id>` | Replay and verify the log |

@@ -67,13 +67,7 @@ func dispatchContexted(ctx context.Context, args []string, stdout, stderr *os.Fi
 		writeError(stderr, fmt.Errorf("%w: %v", errUsageCmd, err))
 		return exitUsage
 	}
-	if args[1] == "new" || args[1] == "list" {
-		if len(rest) > 0 {
-			writeError(stderr, fmt.Errorf("%w: unexpected argument %q", errUsageCmd, rest[0]))
-			return exitUsage
-		}
-	} else if len(rest) > 1 {
-		writeError(stderr, fmt.Errorf("%w: unexpected argument %q", errUsageCmd, rest[1]))
+	if refuseSessionArgs(fl, args[1], rest, stderr) {
 		return exitUsage
 	}
 	id := ""
@@ -166,6 +160,8 @@ func dispatchSession(ctx context.Context, sub string, fl *flags, id string, stdo
 		return cmdMessage(ctx, st, id, fl, stdout, stderr)
 	case "compact":
 		return cmdCompact(ctx, st, id, fl, stdout, stderr)
+	case "unlock":
+		return cmdUnlock(ctx, st, id, fl, stdout, stderr)
 	default:
 		writeError(stderr, fmt.Errorf("%w: unknown session subcommand %q", errUsageCmd, sub))
 		return exitUsage
@@ -204,10 +200,8 @@ func parseFlags(args []string) (*flags, []string, error) {
 			}
 			fl.db = v
 			fl.dbSet = true
-		case a == "--json":
-			fl.json = true
-		case a == "--follow":
-			fl.follow = true
+		case a == "--json", a == "--follow", a == "--force":
+			fl.setSwitch(a)
 		case strings.HasPrefix(a, "--status"), strings.HasPrefix(a, "--provider"),
 			strings.HasPrefix(a, "--model"), strings.HasPrefix(a, "--task"),
 			strings.HasPrefix(a, "--parent"), strings.HasPrefix(a, "--config"),
@@ -385,6 +379,9 @@ session run    <id> [--budget <n>] [--max-tokens <n>] [--max-turns <n>] [--allow
 session events <id> [--follow] [--db path]
 session close  <id> [--db path]
 session compact <id> [--instructions <text>] [--db path]
+session unlock <id> [--force] [--db path]
+               (without --force: report the lease holder, delete nothing, exit 1 if a lease row exists;
+               --force deletes a lease that cannot be judged, never one held by a live process here)
 session cancel <id> [--db path]
 session replay <id> [--db path]
 receipt validate <file...>
@@ -395,4 +392,36 @@ agents validate <file...>
 
 common flags: --db <path> (default ./flowstate.db), --config <path> (default ./flowstate.json), --json
 `)
+}
+
+// setSwitch sets one flag that takes no value (--json, --follow, --force).
+func (f *flags) setSwitch(name string) {
+	switch name {
+	case "--json":
+		f.json = true
+	case "--follow":
+		f.follow = true
+	case "--force":
+		f.force = true
+	}
+}
+
+// refuseSessionArgs reports a usage error for the positional arguments of a
+// session subcommand (new and list take none, the others at most the id) and
+// for --force given to anything but unlock.
+func refuseSessionArgs(fl *flags, sub string, rest []string, stderr *os.File) bool {
+	if sub == "new" || sub == "list" {
+		if len(rest) > 0 {
+			writeError(stderr, fmt.Errorf("%w: unexpected argument %q", errUsageCmd, rest[0]))
+			return true
+		}
+	} else if len(rest) > 1 {
+		writeError(stderr, fmt.Errorf("%w: unexpected argument %q", errUsageCmd, rest[1]))
+		return true
+	}
+	if fl.force && sub != "unlock" {
+		writeError(stderr, fmt.Errorf("%w: --force applies only to `session unlock`", errUsageCmd))
+		return true
+	}
+	return false
 }

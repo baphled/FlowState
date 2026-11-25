@@ -448,6 +448,32 @@
       }
     }
   },
+  "session-unlock": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["session", "item", "outcome", "holder", "machine_matches", "legacy_row", "event_appended", "message"],
+    "properties": {
+      "session": { "type": "string" },
+      "item": { "type": "string" },
+      "outcome": { "type": "string", "enum": ["no_lease", "reported", "deleted"] },
+      "holder": {
+        "type": ["object", "null"],
+        "additionalProperties": false,
+        "required": ["owner", "host", "pid", "token", "acquired_at"],
+        "properties": {
+          "owner": { "type": "string" },
+          "host": { "type": "string" },
+          "pid": { "type": "integer", "minimum": 0 },
+          "token": { "type": "integer", "minimum": 0 },
+          "acquired_at": { "type": "string" }
+        }
+      },
+      "machine_matches": { "type": "boolean" },
+      "legacy_row": { "type": "boolean" },
+      "event_appended": { "type": "boolean" },
+      "message": { "type": "string" }
+    }
+  },
   "session-compact": {
     "type": "object",
     "additionalProperties": false,
