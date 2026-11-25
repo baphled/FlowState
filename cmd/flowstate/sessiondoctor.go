@@ -14,12 +14,12 @@ import (
 // it — recovery stays in the run preamble. Exit 0 for any
 // successfully diagnosed session (including a crashed one); 1
 // unknown session; 2 usage; 4 configuration/database failure.
-func cmdDoctor(ctx context.Context, st *app.Store, id string, stdout, stderr *os.File) int {
+func cmdDoctor(ctx context.Context, st *app.Store, id string, fl *flags, stdout, stderr *os.File) int {
 	if id == "" {
 		writeError(stderr, fmt.Errorf("%w: session id required", app.ErrUsage))
 		return exitUsage
 	}
-	d, err := app.DiagnoseSession(ctx, st, id)
+	d, err := app.DiagnoseSessionWith(ctx, st, id, fl.config.Compaction)
 	if err != nil {
 		writeError(stderr, err)
 		return exitCodeFor(err)
@@ -41,6 +41,10 @@ func cmdDoctor(ctx context.Context, st *app.Store, id string, stdout, stderr *os
 	}
 	out["usage"] = doctorUsage(d.Usage)
 	out["compactions"] = doctorCompactions(d.Compactions)
+	out["context_window"] = doctorWindow(d.ContextWindow)
+	if len(d.Warnings) > 0 {
+		out["warnings"] = d.Warnings
+	}
 	if d.FinishReason != "" {
 		out["finish_reason"] = d.FinishReason
 	}
@@ -86,4 +90,13 @@ func doctorCompactions(c app.CompactionStats) map[string]any {
 		out["summary_input_tokens"], out["summary_output_tokens"] = c.SummaryInputTokens, c.SummaryOutputTokens
 	}
 	return out
+}
+
+// doctorWindow is the context_window object of the doctor output: tokens is
+// null when the window is unknown, never 0.
+func doctorWindow(w app.ContextWindow) map[string]any {
+	if w.Tokens == 0 {
+		return map[string]any{"tokens": nil, "source": w.Source}
+	}
+	return map[string]any{"tokens": w.Tokens, "source": w.Source}
 }

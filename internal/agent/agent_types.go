@@ -40,6 +40,8 @@ const (
 	MaxDelegates = 32
 	// MaxDescriptionChars is the longest description a profile may set.
 	MaxDescriptionChars = 500
+	// MaxContextWindow is the largest context_window, in tokens, a profile or the config may set.
+	MaxContextWindow = 100_000_000
 )
 
 // Profile is one validated agent profile.
@@ -60,6 +62,9 @@ type Profile struct {
 	Model string `json:"model"`
 	// MaxTurns bounds the child's provider turns, 1..MaxTurnsLimit.
 	MaxTurns int `json:"max_turns"`
+	// ContextWindow is the model's context window in tokens (ADR-010, D3):
+	// 1..MaxContextWindow, or 0 when the profile does not set one.
+	ContextWindow int `json:"context_window"`
 	// Source is the directory class the profile came from.
 	Source Source `json:"source"`
 	// Path is the file the profile was read from.

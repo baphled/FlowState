@@ -394,6 +394,7 @@
         "delegates": { "type": "array", "items": { "type": "string" } },
         "model": { "type": "string" },
         "max_turns": { "type": "integer" },
+        "context_window": { "type": "integer", "minimum": 0, "maximum": 100000000 },
         "source": { "type": "string", "enum": ["user", "project"] },
         "path": { "type": "string" },
         "sha256": { "type": "string" }
@@ -497,6 +498,19 @@
       },
       "truncated": {
         "type": "boolean"
+      },
+      "context_window": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tokens", "source"],
+        "properties": {
+          "tokens": { "type": ["integer", "null"], "minimum": 1 },
+          "source": { "type": "string", "enum": ["profile", "config", "table", "unknown"] }
+        }
+      },
+      "warnings": {
+        "type": "array",
+        "items": { "type": "string" }
       },
       "usage": {
         "type": "object",

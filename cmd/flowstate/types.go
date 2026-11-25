@@ -1,5 +1,7 @@
 package main
 
+import "github.com/baphled/flowstate/internal/app"
+
 // cliError is a failure carrying one of the closed error codes; it
 // renders as a single JSON object on stderr.
 type cliError struct {
@@ -52,6 +54,8 @@ type cliConfig struct {
 	DefaultBudget   int64    `json:"default_budget"`
 	StoragePath     string   `json:"storage_path"`
 	ToolAllowlist   []string `json:"tool_allowlist"`
+	// Compaction is the optional compaction object (ADR-010, D7).
+	Compaction app.CompactionConfig `json:"compaction"`
 }
 
 // usageSentinel satisfies errors.Is against app.ErrUsage while

@@ -167,7 +167,8 @@ var _ = Describe("Session doctor CLI", func() {
 			"reserved": float64(0), "budget_pool": nil, "available": nil,
 			"usage": map[string]any{"input_tokens": nil, "output_tokens": nil, "cache_read_tokens": nil,
 				"cache_write_tokens": nil, "last_context_tokens": nil, "turns_reported": float64(0), "turns_total": float64(0)},
-			"compactions": noCompactions,
+			"compactions":    noCompactions,
+			"context_window": map[string]any{"tokens": float64(1000000), "source": "table"},
 		}))
 	})
 
@@ -278,7 +279,8 @@ var _ = Describe("Session doctor CLI", func() {
 			"reserved": float64(0), "budget_pool": nil, "available": nil,
 			"usage": map[string]any{"input_tokens": nil, "output_tokens": nil, "cache_read_tokens": nil,
 				"cache_write_tokens": nil, "last_context_tokens": nil, "turns_reported": float64(0), "turns_total": float64(0)},
-			"compactions": noCompactions,
+			"compactions":    noCompactions,
+			"context_window": map[string]any{"tokens": float64(1000000), "source": "table"},
 		}))
 	})
 })
@@ -423,5 +425,68 @@ var _ = Describe("Session doctor usage through the serve port", func() {
 		must(err)
 		Expect(d.Usage).To(Equal(server.DiagnosisUsage{InputTokens: 4, OutputTokens: 1, CacheReadTokens: 2,
 			CacheWriteTokens: 3, TurnsReported: 1, TurnsTotal: 1, LastContextTokens: 10}))
+	})
+})
+
+// windowDoctor creates a session on provider/model and returns its doctor record, run with
+// the config body written to a file (no --config when body is empty).
+func windowDoctor(providerName, model, body string) (result, map[string]any) {
+	created := runCLINew("--provider", providerName, "--model", model, "--task", "window probe")
+	if created.exit != 0 {
+		panic("session new failed: " + created.stderr)
+	}
+	argv := []string{"session", "doctor", decodeNew(created.stdout).ID, "--db", dbFor()}
+	if body != "" {
+		argv = append(argv, "--config", writeConfigFixture(body))
+	}
+	r := runArgv(argv)
+	var rec map[string]any
+	if uerr := json.Unmarshal([]byte(firstLine(r.stdout)), &rec); uerr != nil {
+		panic(uerr)
+	}
+	return r, rec
+}
+
+var _ = Describe("Session doctor context window", func() {
+	It("warns for a model with no window, naming the fix", func() {
+		_, rec := windowDoctor("ollama", "llama3", "")
+		Expect(rec["warnings"]).To(ConsistOf(
+			"no context window is known for this model; set compaction.context_window in the config " +
+				"(automatic compaction will need it)"))
+	})
+
+	It("reports a null window and the unknown source for it", func() {
+		_, rec := windowDoctor("ollama", "llama3", "")
+		Expect(rec["context_window"]).To(Equal(map[string]any{"tokens": nil, "source": "unknown"}))
+	})
+
+	It("validates the unknown-window diagnosis against the schema", func() {
+		r, _ := windowDoctor("ollama", "llama3", "")
+		Expect(validateAgainst("session-doctor", firstLine(r.stdout))).To(Succeed())
+	})
+
+	It("does not warn for a model the table knows", func() {
+		_, rec := windowDoctor("z.ai", "glm-5.3", "")
+		Expect(rec).NotTo(HaveKey("warnings"))
+	})
+
+	It("does not warn for a near-miss id that the config covers", func() {
+		_, rec := windowDoctor("anthropic", "claude-sonnet-5-5-extra", `{"compaction":{"context_window":50000}}`)
+		Expect(rec).NotTo(HaveKey("warnings"))
+	})
+
+	It("reports the config window and source", func() {
+		_, rec := windowDoctor("ollama", "llama3", `{"compaction":{"context_window":50000}}`)
+		Expect(rec["context_window"]).To(Equal(map[string]any{"tokens": float64(50000), "source": "config"}))
+	})
+
+	It("lets the config beat the table", func() {
+		_, rec := windowDoctor("z.ai", "glm-5.3", `{"compaction":{"context_window":50000}}`)
+		Expect(rec["context_window"]).To(Equal(map[string]any{"tokens": float64(50000), "source": "config"}))
+	})
+
+	It("validates the table-window diagnosis against the schema", func() {
+		r, _ := windowDoctor("anthropic", "claude-sonnet-5-5", "")
+		Expect(validateAgainst("session-doctor", firstLine(r.stdout))).To(Succeed())
 	})
 })

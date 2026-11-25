@@ -31,13 +31,16 @@ govern how it is changed. There is no TUI yet: the command line and the HTTP API
   truncated and the provider token usage the loop recorded (`usage`: input, output and cache tokens, `turns_reported`
   against `turns_total`, and the context size of the last reporting turn; the totals are `null` when no turn
   reported usage, as for the subscription route and for older logs; the totals are a lower bound on spend, a child's
-  usage is not in its parent's, and the context figure can be stale); `session replay` re-verifies the log.
+  usage is not in its parent's, and the context figure can be stale), the `context_window` (tokens and source,
+  `null` and `unknown` when none is known), `warnings` and `compactions` (the valid and the invalid count of
+  `context.compacted` events); `session replay` re-verifies the log.
 - **HTTP API.** `flowstate serve` exposes the same operations, with server-sent events for a live log.
 
 **Not built yet:** the receipts-only `swarm run` does not execute provider turns for its children (it creates,
-budgets and gates them; `swarm run --execute` is the path that runs them). Skills, hooks, MCP, context compaction,
-provider failover and a frontend are also outstanding. Nothing here is claimed to be production ready;
-see [the architecture overview](docs/architecture/OVERVIEW.md) for the exact current behaviour.
+budgets and gates them; `swarm run --execute` is the path that runs them). Skills, hooks, MCP, context compaction
+(none exists yet, automatic or manual), provider failover and a frontend are also outstanding. Nothing here is
+claimed to be production ready; see [the architecture overview](docs/architecture/OVERVIEW.md) for the exact
+current behaviour.
 
 ## Quick start
 
@@ -122,6 +125,8 @@ You review. You do not edit. Begin your final message with VERDICT: pass or VERD
 - `name` (`^[a-z][a-z0-9-]{0,63}$`) and `description` are required. `tools` is the allowlist; omitted means no tools.
   Names must be registered (`echo`, `fs.read`, `fs.write`, `fs.edit`, `exec.run`) or the reserved `delegate`, and may
   not repeat. `model` is a model name or `inherit` (the default). `max_turns` is 1 to 100 and defaults to 25.
+  `context_window` is optional: a plain integer of 1 to 100000000 tokens, the model's context window for a session
+  running under this profile (shown by `agents list`; 0 there means unset).
 - `delegates` is a list of profile names (each `^[a-z][a-z0-9-]{0,63}$`, at most 32, no duplicate, never the profile
   itself): the only profiles this profile's `delegate` tool may spawn. It needs `delegate` in `tools`, otherwise the
   load fails with "delegates needs delegate in tools". `delegate` in `tools` without `delegates` loads, with
@@ -389,9 +394,24 @@ subscription. Only `FLOWSTATE_ANTHROPIC_AUTH=api_key` does.
   "default_model": "glm-4.5-flash",
   "default_budget": 20000,
   "storage_path": "./flowstate.db",
-  "tool_allowlist": ["fs.read"]
+  "tool_allowlist": ["fs.read"],
+  "compaction": { "enabled": true, "reserve": 16384, "keep_recent": 20000, "context_window": 200000 }
 }
 ```
+
+`compaction` is optional, and so is each of its keys (the values above, except `context_window`, are the defaults):
+`enabled` is a boolean, `reserve` and `keep_recent` are counts of tokens of at least 1, and `context_window` is
+1 to 100000000. Config only: there is no flag or environment override, an unknown key inside it is rejected, keys
+match case-insensitively and a repeated key takes its last value.
+
+**Nothing compacts yet.** The `compaction` settings and a profile's `context_window` are parsed, validated and shown
+only; automatic compaction does not exist, and `enabled`, `reserve` and `keep_recent` have no effect (a manual
+`session compact` is a later packet). `session doctor` resolves a window from `compaction.context_window`, else a
+built-in table of `anthropic` and `z.ai` models matched by exact, case-sensitive id (it follows Pi's registry); there
+is no default. It does not yet read a profile's `context_window`: a root session has no profile, and the profile of a
+swarm coordinator or child is not known to the doctor. A model outside the table gets a warning, for example the
+subscription aliases `haiku`, `sonnet` and `opus`, z.ai `glm-4.5-flash` and every free or local model (a local model's
+window is whatever you loaded it with); set `compaction.context_window` to silence it.
 
 Explicit flags override the file. `--allow` and `--allow-file` replace `tool_allowlist`; `--workdir` only says where the
 tools operate. A file holding anything that looks like a secret is rejected.

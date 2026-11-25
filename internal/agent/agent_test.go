@@ -3,6 +3,7 @@ package agent_test
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -450,5 +451,79 @@ var _ = Describe("model field", func() {
 	It("quotes a hidden character in a YAML tag error", func() {
 		_, err := load("!<tag:%c2%9b31m> v")
 		Expect(err).To(MatchError(ContainSubstring(`\u009b`)))
+	})
+})
+
+var _ = Describe("context_window", func() {
+	It("defaults to 0 when absent", func() {
+		p, err := agent.Parse([]byte(reviewer), known)
+		if err != nil {
+			panic(err)
+		}
+		Expect(p.ContextWindow).To(Equal(0))
+	})
+
+	It("loads 200000", func() {
+		p, err := agent.Parse([]byte(profileText("context_window: 200000\n", "b")), known)
+		if err != nil {
+			panic(err)
+		}
+		Expect(p.ContextWindow).To(Equal(200000))
+	})
+
+	It("is printed by agents list as context_window", func() {
+		p, err := agent.Parse([]byte(profileText("context_window: 200000\n", "b")), known)
+		if err != nil {
+			panic(err)
+		}
+		out, merr := json.Marshal(p)
+		if merr != nil {
+			panic(merr)
+		}
+		Expect(string(out)).To(ContainSubstring(`"context_window":200000`))
+	})
+
+	It("accepts the largest window", func() {
+		p, err := agent.Parse([]byte(profileText("context_window: 100000000\n", "b")), known)
+		if err != nil {
+			panic(err)
+		}
+		Expect(p.ContextWindow).To(Equal(100000000))
+	})
+
+	DescribeTable("fails the load, naming the file and the field, for",
+		func(value string) {
+			dir := GinkgoT().TempDir()
+			path := put(dir, "a.md", profileText("context_window: "+value+"\n", "b"))
+			_, err := agent.LoadFile(path, agent.SourceUser, known)
+			Expect(err).To(MatchError(And(ContainSubstring(path), ContainSubstring("context_window"))))
+		},
+		Entry("0", "0"),
+		Entry("-1", "-1"),
+		Entry("a word", "abc"),
+		Entry("a fraction", "1.5"),
+		Entry("an exponent", "1e9"),
+		Entry("more than the limit", "100000001"),
+		Entry("a quoted number", `"200000"`),
+		Entry("a plus sign", "+5"),
+		Entry("a leading zero", "0200"),
+		Entry("hexadecimal", "0x10"),
+		Entry("an underscore", "200_000"),
+	)
+
+	It("treats null as unset", func() {
+		p, err := agent.Parse([]byte(profileText("context_window: null\n", "b")), known)
+		if err != nil {
+			panic(err)
+		}
+		Expect(p.ContextWindow).To(Equal(0))
+	})
+
+	It("treats an empty value as unset", func() {
+		p, err := agent.Parse([]byte(profileText("context_window:\n", "b")), known)
+		if err != nil {
+			panic(err)
+		}
+		Expect(p.ContextWindow).To(Equal(0))
 	})
 })
