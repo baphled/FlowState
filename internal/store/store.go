@@ -27,7 +27,7 @@ func openDSN(dsn, path string, migrate bool) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("ping sqlite: %w", err)
 	}
-	s := &Store{db: db, path: path}
+	s := &Store{db: db, path: path, locks: NewLockTable()}
 	if err := s.openORM(); err != nil {
 		_ = db.Close()
 		return nil, err

@@ -19,6 +19,10 @@ type Store struct {
 	// path is the database file, empty for an in-memory database; the
 	// v9 rebuild needs it to open its dedicated connection and backup.
 	path string
+
+	// locks is the process-local lock table AcquireRunLease uses when the
+	// store has no path; each store owns one, so stores never share state.
+	locks *LockTable
 }
 
 // Session is the persisted session record per DATA-MODEL §2.
