@@ -269,30 +269,7 @@ func replayInto(ctx context.Context, st *store.Store, sessionID string, history 
 	if rerr != nil {
 		return rerr
 	}
-	persisted := answeredResultIDs(events) // two-pass replay invariants: see below
-	for _, e := range events {
-		switch e.Type {
-		case session.TypeTurnStart:
-			*history = append(*history, provider.Message{Role: "user", Content: payloadFieldText(e.PayloadJSON, "task")})
-		case tool.TypeToolCall:
-			if id := payloadFieldText(e.PayloadJSON, "tool_call_id"); id == "" || !persisted[id] {
-				continue // uncorrelated or dangling call: skip, never orphan
-			}
-			*history = append(*history, provider.Message{Role: "assistant", ToolCalls: []provider.ToolCall{{
-				ID:        payloadFieldText(e.PayloadJSON, "tool_call_id"),
-				Name:      payloadFieldText(e.PayloadJSON, "tool"),
-				Arguments: json.RawMessage(payloadFieldRaw(e.PayloadJSON, "args")),
-			}}})
-		case tool.TypeToolResult:
-			if id := payloadFieldText(e.PayloadJSON, "tool_call_id"); id != "" {
-				res := payloadFieldRaw(e.PayloadJSON, "result")
-				if res == "null" {
-					res = payloadFieldRaw(e.PayloadJSON, "error")
-				}
-				*history = append(*history, provider.Message{Role: "tool", ToolCallID: id, Content: res})
-			} // empty id = result-only denial: skip, never orphan
-		}
-	}
+	*history = append(*history, rebuildHistory(events)...)
 	return nil
 }
 

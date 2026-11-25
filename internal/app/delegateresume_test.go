@@ -322,6 +322,9 @@ var _ = Describe("ResumeDelegatedChild", func() {
 		It("sends the earlier turns in the first request", func() {
 			Expect(roles(probe.reqs[0])).To(Equal([]string{"system", "user", "assistant", "tool", "assistant", "tool"}))
 		})
+		It("sends the assistant text of the earlier turns in the first request", func() {
+			Expect(assistantTexts(probe.reqs[0].Messages)).To(Equal([]string{"t", "t"}))
+		})
 		It("records the receipt as resumed", func() { Expect(f.receiptPayload()).To(HaveKeyWithValue("resumed", true)) })
 		It("records delegation.started before the receipt, as resumed", func() {
 			Expect(f.events(f.parent.ID, TypeDelegationStarted)[0].PayloadJSON).To(ContainSubstring(`"resumed":true`))

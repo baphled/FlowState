@@ -518,9 +518,9 @@ var _ = Describe("Nested delegation", func() {
 			must(f.st.AcquireLease(ctx, "exec:"+spec, delegateLeasePrefix+"dead-spec"))
 			check(RecoverCrashedSession(ctx, f.st, f.parent.ID))
 			unused := finishText("unused")
-			// The replay keeps a crashed call as an assistant turn, so a script starts after those.
+			// The replay folds a turn's calls, the crashed one included, into one assistant message, so a script starts after those.
 			f.say("root", unused, delegates(`{"resume":"lead-1"}`), finishText("root done"))
-			f.say("lead", unused, unused, delegates(`{"resume":"spec-1"}`), finishText("lead done"))
+			f.say("lead", unused, delegates(`{"resume":"spec-1"}`), finishText("lead done"))
 			f.say("specialist", unused, finishText("specialist done"))
 			must(f.runRoot(ctx))
 		})
