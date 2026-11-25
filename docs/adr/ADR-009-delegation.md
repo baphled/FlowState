@@ -118,7 +118,13 @@ You review. You do not edit. Begin your final message with VERDICT: pass or VERD
   because the allowlist is checked in the engine. Pi's own reviewer prompt says to assume tool permissions are not
   perfectly enforceable.
   A profile that lists `exec.run` is not filesystem-confined: `exec.run` runs allowlisted binaries (`make`, `go`,
-  `git`) that can execute arbitrary code, and its confinement is its existing policy (cwd and a PATH-only environment).
+  `git`) that can execute arbitrary code, and its confinement is its existing policy (cwd and a per-binary
+  allowlisted, secret-free environment: only `go` and `make` get `HOME` and the Go cache variables, with git
+  config and netrc neutralised for them). Residual risks: the split only stops `HOME`/XDG/netrc/gitconfig-file
+  credential discovery; it does not stop OS-keyring tokens, system-level credential helpers or ssh keys, and the exec
+  allowlist (the subcommand gate) is the real control for `gh` and `git`. It is not a confidentiality boundary against
+  allowlisted code runners (`git fetch --upload-pack`, `go test -exec`/`-toolexec`, `make`), and same-UID code can read
+  `/proc/<engine>/environ` and the passwd home, as before.
 - A child delegates only if its `tools` lists `delegate`, and only while a level is left below it. Claude Code allows
   nesting by default, OpenCode gates it by permission and Pi by the child's tool list; FlowState starts closed, so
   deny-by-default still holds at every level. Nesting is bounded at depth 2 (root, child, grandchild), so a

@@ -446,6 +446,37 @@ secret.
 `ANTHROPIC_API_KEY` alone never selects the API route: many tools export that key, and you may still want the
 subscription. Only `FLOWSTATE_ANTHROPIC_AUTH=api_key` does.
 
+**`exec.run` environment.** The child gets an allowlisted pass-through of the engine's own environment, chosen per
+binary. Every binary gets `PATH`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TERM`, `TZ`, `TMPDIR`, `TMP`, `TEMP` and the Windows
+`SYSTEMROOT`, `PATHEXT`, `COMSPEC` and `WINDIR`. Only `go` and `make` also get `HOME`, `USER`, `LOGNAME`, `GOPATH`,
+`GOCACHE`, `GOMODCACHE`, `GOTOOLCHAIN`, `GOROOT`, `GOENV`, `GOPROXY`, `GOSUMDB`, `GOPRIVATE`, `GONOSUMDB`,
+`GONOPROXY`, `GONOSUMCHECK`, `GOINSECURE`, `GOVCS`, `GOOS`, `GOARCH`, `CGO_ENABLED`, `CC`, `CXX`, `XDG_CACHE_HOME` and the
+Windows `USERPROFILE`, `LOCALAPPDATA` and `APPDATA`; `git` and `gh` never see them. `go`
+and `make` also always get `GIT_CONFIG_GLOBAL` and `NETRC` set to the null device, `GIT_CONFIG_NOSYSTEM=1` and
+`GIT_TERMINAL_PROMPT=0`, so `go` and the `git` it spawns read no user git config, credential helper, `insteadOf` rule
+or `~/.netrc`; fetching a private module then needs your own `GOPRIVATE` and transport. A name unset in the engine is
+not set in the child. Any name matching `key`, `token`, `secret`, `password`, `credential` or `auth`
+(case-insensitively) is never forwarded, and neither is `FLOWSTATE_*`, `HTTP(S)_PROXY`, `NO_PROXY`, `GOAUTH` or anything
+else unlisted. A `GOPROXY` or `GOSUMDB` entry with userinfo (`user:pass@host`, with or without a scheme) or a query
+token is dropped: the WHOLE variable is dropped, and a dropped `GOPROXY` becomes `GOPROXY=off` (go fails closed rather
+than using the public proxy); a dropped `GOSUMDB` stays unset, so default checksum verification stays on. The
+neutraliser claims were verified with git 2.56 and libcurl 8.22 only: `GIT_CONFIG_GLOBAL` needs git 2.32 or later, and
+`NETRC` needs a libcurl that honours it. `GOFLAGS`, `XDG_CONFIG_HOME` and `XDG_DATA_HOME` are never forwarded (`GOFLAGS`
+can run a program through `-toolexec` and no value filter is reliable; an operator who needs `-mod=vendor` uses the
+`go.mod`/vendor layout).
+
+Residual risks: the split only stops `HOME`, XDG, netrc and gitconfig-file credential discovery for `gh` and `git`, and
+stops `go` reading your git and netrc credentials. It does not stop OS-keyring tokens (`gh auth token` still returns one
+through the session bus), system-level credential helpers or ssh keys read through the passwd home. The exec allowlist
+(the subcommand gate: `gh pr`/`gh run`, the listed `git` subcommands) is the real control for `gh` and `git`. It is not
+a confidentiality boundary against an allowlisted binary that runs code (`git fetch --upload-pack`, `go test
+-exec`/`-toolexec`/`-vettool`, `make`), and same-UID code can read `/proc/<engine>/environ` and the passwd home
+directory. That was true before the split. `go env -w` is not allowlisted. A `make` recipe can use `gh` and `git` with
+your credentials: it gets `HOME`, so `~/.config/gh` and `~/.gitconfig` stay reachable (this is the accepted `make`
+escape; the XDG directories are not forwarded). Because `XDG_CONFIG_HOME` is not forwarded, `go` does not read your go
+env file through XDG, but it does read `$HOME/.config/go/env` through the forwarded `HOME`, so a `GOPROXY`, `GOAUTH` or
+`GOFLAGS` set there bypasses the value filter (only you can write that file).
+
 **Session defaults** come from an optional `flowstate.json` (the working directory's file, or `--config <path>`):
 
 ```json
