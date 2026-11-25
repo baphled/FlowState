@@ -148,7 +148,11 @@ func recoveryFailure(err error) error {
 }
 
 // cmdRun implements `flowstate session run <id>` (or, with --task,
-// a gated live self-test): runs one bounded provider turn, explicitly
+// a gated live self-test): takes the session's run lease (owner run:<uuid>,
+// held until the run's last writer returns; a held or unjudgeable lease is
+// refused as ErrSessionBusy, which reports code `internal`, exit 1, with the
+// holder and `flowstate session unlock <id>` in the message), then runs one
+// bounded provider turn, explicitly
 // resuming a paused session first, projects the persisted events as
 // JSONL on stdout and ends with a terminal event envelope. Exit 0
 // completed (a truncated answer, finish reason length, is still 0 and
@@ -182,6 +186,15 @@ func cmdRun(ctx context.Context, st *app.Store, id string, fl *flags, stdout, st
 		writeError(stderr, loadErr)
 		return exitCodeFor(loadErr)
 	}
+	// Ownership first (ADR-011 rule 7): the run lease, then recovery, resume and
+	// drain under it. It is released after runSessionTurn returns, so the
+	// post-loop writers run under it, on every path including a panic.
+	lease, sess, aerr := app.AcquireSessionRunLease(ctx, st, sess)
+	if aerr != nil {
+		writeError(stderr, aerr)
+		return exitCodeFor(aerr)
+	}
+	defer func() { _ = lease.Release(context.WithoutCancel(ctx)) }()
 	// Crash-recovery: detect an active session whose last turn was left
 	// incomplete (process died mid-turn) and append session.interrupted
 	// before proceeding, so the event log records the gap.
@@ -209,7 +222,7 @@ func cmdRun(ctx context.Context, st *app.Store, id string, fl *flags, stdout, st
 		return exitCodeFor(berr)
 	}
 	fl.budget = budget
-	return runSessionTurn(ctx, st, sess, fl, stdout, stderr)
+	return runSessionTurn(ctx, st, sess, lease, fl, stdout, stderr)
 }
 
 // applyRunDefaults resolves config-supplied run defaults for flags
@@ -269,10 +282,11 @@ func loadRunnableSession(ctx context.Context, st *app.Store, id string) (*app.Se
 	return sess, nil
 }
 
-// runSessionTurn resolves the provider, runs one bounded turn, fires
+// runSessionTurn resolves the provider, runs one bounded turn under the
+// caller-held run lease (the loop fences it, the caller releases it), fires
 // the receipt hook for live self-tests, projects the persisted events
 // and maps the outcome onto its exit code.
-func runSessionTurn(ctx context.Context, st *app.Store, sess *app.Session, fl *flags, stdout, stderr *os.File) int {
+func runSessionTurn(ctx context.Context, st *app.Store, sess *app.Session, lease app.ExecLease, fl *flags, stdout, stderr *os.File) int {
 	id := sess.ID
 	p, perr := providerResolver(sess.Provider)
 	if perr != nil {
@@ -287,7 +301,7 @@ func runSessionTurn(ctx context.Context, st *app.Store, sess *app.Session, fl *f
 		writeError(stderr, providerFailure(fmt.Errorf("provider %s does not support streaming turns", sess.Provider)))
 		return exitProviderError
 	}
-	res, terr := runTurnOrLoop(ctx, st, sess, s, fl)
+	res, terr := runTurnOrLoop(ctx, st, sess, s, fl, lease)
 	// Receipt hook: live self-test runs emit their attempt record as
 	// a post-turn side-effect of the same run path.
 	if selfTestRun {
@@ -389,10 +403,11 @@ func noteTruncation(res *app.TurnResult, stderr *os.File) {
 // runTurnOrLoop selects the execution surface for one run: a
 // tool-surface invocation (--allow, --allow-file, --workdir, or a
 // config-derived allowlist) drives the bounded provider execution
-// loop; a plain invocation keeps the single-turn path. The loop
+// loop under lease, the handle the caller holds; a plain invocation keeps the
+// single-turn path, which runs under the same held lease. The loop
 // refuses an empty effective allowlist with a usage error instead of
 // running with no tools.
-func runTurnOrLoop(ctx context.Context, st *app.Store, sess *app.Session, s app.Streamer, fl *flags) (*app.TurnResult, error) {
+func runTurnOrLoop(ctx context.Context, st *app.Store, sess *app.Session, s app.Streamer, fl *flags, lease app.ExecLease) (*app.TurnResult, error) {
 	allow := effectiveAllowlist(fl)
 	if !hasToolSurface(fl) {
 		return app.TurnWithOptions(ctx, st, sess, s, app.TurnOptions{
@@ -411,6 +426,7 @@ func runTurnOrLoop(ctx context.Context, st *app.Store, sess *app.Session, s app.
 		MaxTurns:         fl.maxTurns,
 		RequireAllowlist: true,
 		Compaction:       fl.config.Compaction,
+		Lease:            lease,
 	})
 	return toTurnResult(sess, loopRes), err
 }

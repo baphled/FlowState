@@ -78,11 +78,16 @@ flowstate session new --provider anthropic --model haiku --task "Say hello"
 `session compact <id> [--instructions <text>]` summarises the old part of a long session with the session's own
 provider and model (no tools, at most 8192 tokens) and appends one `context.compacted` event; the log is never
 rewritten, and `session replay` still shows everything. The newest turns (about 20000 estimated tokens) stay verbatim.
-It takes the session's exec lease under its own unique owner, so a session that holds a `cli` or `run:` exec lease
-(running, or crashed and not yet resumed with `session run`) cannot be compacted: run `session run` first to recover
-it. The lease row of a compaction that crashed is cleared by the next `session run` or `session compact`. So a
-`session run` or a second compaction started during a compaction takes its lease, and the one in flight fails fenced
-and writes nothing. It is refused unless the session is `active` or `paused`; it recovers a crashed turn whose lease
+It takes the session's exec lease under its own unique owner, so a session that holds an exec lease (a live run, or a
+crashed one) cannot be compacted. A crashed `run:` row of this machine is taken over by the next `session run`; a
+crashed `cli`, `delegate:` or `compact:` row is a legacy row that `session run` refuses, and needs
+`flowstate session unlock <id> --force`. The lease row of a compaction that crashed is cleared by the next
+`session compact`, not by `session run`: `session run` takes its own lease before it recovers anything and refuses a
+`compact:` row, which records no machine and so cannot be judged (exit 1, code `internal`, naming the holder and
+`flowstate session unlock <id>`); clear it with `session compact` or `flowstate session unlock <id> --force`. A
+second compaction started during a compaction still takes its lease, and the one in flight fails fenced and writes
+nothing; a `session run` started then is refused.
+It is refused unless the session is `active` or `paused`; it recovers a crashed turn whose lease
 is gone first; a paused session stays paused. It never releases a lease it did not take. It has no loop, so no budget
 pool applies: every flag that does not apply (`--budget`, `--max-tokens`, `--max-turns`, `--allow`, `--workdir`,
 `--provider`, `--model` and the like) is refused with exit 2 naming it. `--instructions` is one line of at most 1000
@@ -285,9 +290,10 @@ flowstate session run "$id" --budget 200 --agents user --allow delegate --workdi
   "<id>"} or start a new one`), a finished one lost its result, which is not delivered, and the model starts a new one
   only if it still needs the work. The text says no child had started only when none had. Paths and profile names are
   never repeated to the model. The leases that unfinished children's killed runners left are cleared, so they can be
-  resumed. Each child's start is recorded as a `delegation.started` event in the parent's log. Recovery assumes no
-  other process is running the session. A call answered late (a log an earlier build left with the call unanswered)
-  gets its result after later events, which a provider that wants the result next to the call may reject.
+  resumed. Each child's start is recorded as a `delegation.started` event in the parent's log. Under `session run`,
+  serve and `delegate resume` a judged lease (ADR-011) keeps other runs out. A call answered late (a log an earlier
+  build left with the call unanswered) gets its result after later events, which a provider that wants the result
+  next to the call may reject.
 - `tasks` runs several children in one call: an array of `{agent, task, cwd?}`, at most 8, exclusive with `agent`,
   `task` and `cwd`. At most 4 run at once; the rest start as slots free (calls in one turn run one after another, so the
   cap of 4 applies per call). Every entry is validated before any child starts: a ninth task, an unknown agent, a blank

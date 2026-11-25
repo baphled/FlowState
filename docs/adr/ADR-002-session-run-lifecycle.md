@@ -112,13 +112,15 @@ Without an explicit, event-recorded lifecycle:
 
 ## Decision
 
-**The session run lifecycle is governed by five ordered phases, each emitting its lifecycle event before any turn work
-  begins. Entry conditions are checked in order; exit codes map from turn outcome per the contract.**
+**The session run lifecycle is governed by six ordered steps: the five phases below, with the run lease (ADR-011)
+  taken between phases 1 and 2. Each emits its lifecycle event before any turn work begins. Entry conditions are
+  checked in order; exit codes map from turn outcome per the contract.**
 
 ### Phase order
 
 ```text
 loadRunnableSession → reject terminal
+                   → acquire run lease, read status again    [ADR-011]
                    → detect crash → recover (if crashed)     [ADR-006]
                    → resume pause  (if paused)               [this ADR]
                    → turn loop (single-turn or exec loop)

@@ -48,8 +48,8 @@ func (e *CompactionFailure) Error() string {
 
 // Error names the session and the holder and what to do.
 func (e *CompactLeaseHeld) Error() string {
-	return fmt.Sprintf("session %s is in use: lease held by %s; if that run crashed, run `session run` to recover it, "+
-		"else wait for it to finish", e.SessionID, e.Holder)
+	return fmt.Sprintf("session %s is in use: lease held by %s; if that run crashed, `session run` takes over a run: holder "+
+		"and `flowstate session unlock %s --force` clears any other, else wait for it to finish", e.SessionID, e.Holder, e.SessionID)
 }
 
 // Is makes the refusal match ErrExecLoopFenced.

@@ -639,7 +639,8 @@ var _ = Describe("CompactSession", func() {
 		must(st.AcquireLease(ctx, "exec:"+sessID, "cli"))
 		_, err := run()
 		Expect(err).To(MatchError("session " + sessID + " is in use: lease held by cli; if that run crashed, " +
-			"run `session run` to recover it, else wait for it to finish"))
+			"`session run` takes over a run: holder and `flowstate session unlock " + sessID + " --force` clears any other, " +
+			"else wait for it to finish"))
 	})
 
 	Context("a failed compaction", func() {
