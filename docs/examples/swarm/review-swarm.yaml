@@ -1,0 +1,23 @@
+# A two-packet review swarm. Run it from a copy of this directory (see README.md):
+#   flowstate swarm run review-swarm.yaml --execute --agents project --workdir . \
+#     --db ../flowstate.db --provider z.ai --model glm-5.3
+# The database stays outside the workdir, which the reviewer can write.
+name: review-swarm
+scope: example.review
+coordinator: coordinator
+packets:
+  - id: read
+    scope: example.review.read
+    role: reader
+    task: "Read README.md and write a three-line summary of what the project does."
+    source_sha256: 4f95c5442045828a47c409ef37572ccb809942d96bd4b7c67745090dccfdaaa5
+  - id: review
+    scope: example.review.review
+    role: reviewer
+    task: "Read README.md and write REVIEW.md: a short review of its clarity, with at least one suggested improvement."
+    source_sha256: 022a5a735ed3446b3077b7beb71d1f24e2ec6b939dc520f0f46c0c2ecfffd188
+    prerequisites: [read]
+gates:
+  - name: review-written
+    description: REVIEW.md exists in the working directory and is not empty
+    command: test -s REVIEW.md

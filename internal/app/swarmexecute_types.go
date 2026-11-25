@@ -104,6 +104,11 @@ type ExecuteSwarmResult struct {
 	Status string
 	// Reason says why a failed or cancelled run stopped; empty otherwise.
 	Reason string
+	// Cause is the error that stopped a failed or cancelled coordinator (a
+	// provider error, ErrBudgetExceeded, ErrMaxTurns, ErrSessionCancelled, a
+	// deadline), so a caller can classify it with errors.Is; nil when the
+	// coordinator completed or the run was stopped after it (the gates).
+	Cause error
 	// CoordinatorID is the coordinator's session id.
 	CoordinatorID string
 	// Children lists the coordinator's delegated children in start order.

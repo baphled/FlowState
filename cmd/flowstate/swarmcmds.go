@@ -14,7 +14,15 @@ func routeSwarm(ctx context.Context, args []string, stdout, stderr *os.File) int
 		writeError(stderr, fmt.Errorf("%w: missing swarm subcommand", errUsageCmd))
 		return exitUsage
 	}
-	fl, rest, err := parseFlags(args[2:])
+	argv, execute := args[2:], false
+	if args[1] == "run" {
+		var err error
+		if argv, execute, err = withoutExecute(argv); err != nil {
+			writeError(stderr, err)
+			return exitUsage
+		}
+	}
+	fl, rest, err := parseFlags(argv)
 	if err != nil {
 		writeError(stderr, fmt.Errorf("%w: %v", errUsageCmd, err))
 		return exitUsage
@@ -23,6 +31,12 @@ func routeSwarm(ctx context.Context, args []string, stdout, stderr *os.File) int
 	case "validate":
 		return swarmValidate(fl, rest, stdout, stderr)
 	case "run":
+		if execute {
+			return swarmRunExecute(ctx, fl, rest, stdout, stderr)
+		}
+		if code, done := refuseExecuteOnlyFlags(fl, stderr); done {
+			return code
+		}
 		return swarmRun(ctx, fl, rest, stdout, stderr)
 	default:
 		writeError(stderr, fmt.Errorf("%w: unknown swarm subcommand %q", errUsageCmd, args[1]))

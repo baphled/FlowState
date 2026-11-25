@@ -360,6 +360,11 @@ func usage(w *os.File) {
 	_, _ = fmt.Fprint(w, `usage: flowstate [--version] session <subcommand> [flags] [id]
 serve [--addr <host:port>] [--db path] [--config <path>]
 
+swarm run      <manifest> --execute [--agents user|project|both] [--provider <p> --model <m>] [--budget <n>]
+               [--max-turns <n>] [--max-tokens <n>] [--workdir <path>] [--db path]
+               (a coordinator agent named by the manifest delegates the packets to role profiles; the engine
+               runs the gates; exit 0 accepted, 8 not accepted or gate failed, 3/5/1 a failed coordinator,
+               130 cancelled; without --execute: swarm run <manifest> --parent <id> --budget <n>)
 session new    --provider <p> --model <m> --task <text|@file> [--parent <id>] [--reserve <n>] [--db path]
 session budget <id> [--db path]
 session doctor <id> [--db path]

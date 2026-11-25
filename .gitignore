@@ -67,3 +67,6 @@ __pycache__/
 .opencode/
 .sisyphus/
 .flowstate/
+
+# The shipped worked example keeps its profiles.
+!docs/examples/swarm/.flowstate/
