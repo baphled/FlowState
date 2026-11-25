@@ -138,7 +138,29 @@ func (s *Server) doctorHandler(id string) http.HandlerFunc {
 func diagnosisWire(d Diagnosis) diagnosisBody {
 	return diagnosisBody{SessionID: d.SessionID, Status: d.Status, Crashed: d.Crashed,
 		RunActivity: d.RunActivity, PendingMessages: d.PendingMessages, Reserved: d.Reserved,
-		BudgetPool: d.Pool, Available: d.Available, FinishReason: d.FinishReason, Truncated: d.Truncated, Usage: usageWire(d.Usage)}
+		BudgetPool: d.Pool, Available: d.Available, FinishReason: d.FinishReason, Truncated: d.Truncated,
+		Usage: usageWire(d.Usage), Compactions: compactionsWire(d.Compactions),
+		ContextWindow: windowWire(d.ContextWindow), Warnings: d.Warnings}
+}
+
+// compactionsWire renders the compactions object; the summary totals are null
+// until a compaction reported usage.
+func compactionsWire(c DiagnosisCompactions) compactionsBody {
+	out := compactionsBody{Count: c.Count, Invalid: c.Invalid, LastTokensAfter: c.LastTokensAfter,
+		SummariesReported: c.SummariesReported}
+	if c.SummariesReported > 0 {
+		out.SummaryInputTokens, out.SummaryOutputTokens = &c.SummaryInputTokens, &c.SummaryOutputTokens
+	}
+	return out
+}
+
+// windowWire renders the context_window object; an unknown window is null,
+// never 0.
+func windowWire(w DiagnosisWindow) windowBody {
+	if w.Tokens == 0 {
+		return windowBody{Source: w.Source}
+	}
+	return windowBody{Tokens: &w.Tokens, Source: w.Source}
 }
 
 // usageWire renders the usage object; totals are null while no turn reported.

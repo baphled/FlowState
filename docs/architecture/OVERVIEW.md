@@ -37,7 +37,8 @@ settling the session's budget reservation fails, the answer is still 500 but wit
 from "nothing happened"; the CLI prints the cancelled state before the error, whose code stays `internal` and
 whose exit stays 1),
 and `GET /sessions/{id}/doctor` reusing the CLI `session-doctor` output shape (which includes the provider token
-usage the loop recorded on each `assistant.message`, `null` when no turn reported it),
+usage the loop recorded on each `assistant.message`, `null` when no turn reported it, plus `compactions`,
+`context_window` and `warnings`, resolved from the config `flowstate serve` loaded),
 wired through narrow `server.Ports`; no store
 type crosses into transport and `cmd` only builds the closures and listener.
 S3 adds the budget and steering resources: `GET /sessions/{id}/budget`
@@ -243,13 +244,13 @@ the summary between fixed `--- summary ---` and `--- end of summary ---` lines, 
 summary holding the closing line is refused), then the events from `first_kept_seq` on. `first_kept_seq` is
 at least 1, as the first `turn.start` is at seq 0, and never below the previous compaction's. A malformed
 event is a corrupt log: the exec-loop `session run` exits 7 (`replay_mismatch`); the plain text turn never
-replays the log and is unaffected. `session doctor` reports a `compactions` object (count, `invalid`, last
-`tokens_after`, summary token totals, separate from turn usage); a nonzero `invalid` means `session run`
-will refuse the session with `replay_mismatch`, though the doctor still exits 0. `session compact` (`CompactSession`)
-appends the event: it picks the cut (`ChooseCut`: a `turn.start` or an `assistant.message`, never inside a call
-and its result, never inside a pending `delegate` call, strictly after the previous cut), asks the session's own
-provider for the summary with no tools, validates it, fences the exec lease and appends once.
-It takes that lease under a unique owner, so a `cli` or `run:` exec lease row (a live or a crashed
+replays the log and is unaffected. `session doctor` and `GET /sessions/{id}/doctor` report a `compactions`
+object (count, `invalid`, last `tokens_after`, summary token totals, separate from turn usage); a nonzero
+`invalid` means `session run` will refuse the session with `replay_mismatch`, though the doctor still exits 0.
+`session compact` (`CompactSession`) appends the event: it picks the cut (`ChooseCut`: a `turn.start` or an
+`assistant.message`, never inside a call and its result, never inside a pending `delegate` call, strictly after the
+previous cut), asks the session's own provider for the summary with no tools, validates it, fences the exec lease and
+appends once. It takes that lease under a unique owner, so a `cli` or `run:` exec lease row (a live or a crashed
 `session run`) refuses it. The row of a crashed compaction is cleared by the next `session run` or `session compact`;
 this is safe for the log because the append fences the lease first, so a compaction whose row was cleared fails fenced
 and writes nothing, and a `session run` or second compaction started during a compaction takes its lease. A failed

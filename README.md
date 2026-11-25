@@ -475,6 +475,8 @@ read a profile's `context_window`, because a root session has no profile and the
 child. It warns for a model outside the table, for example the subscription aliases `haiku`, `sonnet` and `opus`, z.ai
 `glm-4.5-flash` and every free or local model (a local model's window is whatever you loaded it with); set
 `compaction.context_window` to silence it.
+`GET /sessions/{id}/doctor` reports the same `compactions`, `context_window` and `warnings` for the same log,
+resolved from the server's loaded config (like the command, it ignores a profile's `context_window`).
 
 Explicit flags override the file. `--allow` and `--allow-file` replace `tool_allowlist`; `--workdir` only says where the
 tools operate. A file holding anything that looks like a secret is rejected.
@@ -506,7 +508,7 @@ and decoded strictly. Errors use the same `{code, message}` body as the command 
 | `GET /sessions/{id}/events/stream?after=N` | Follow the log as server-sent events |
 | `POST /sessions/{id}/run` | Run one synchronous turn |
 | `POST /sessions/{id}/cancel`, `.../close` | End a session |
-| `GET /sessions/{id}/doctor` | Diagnosis |
+| `GET /sessions/{id}/doctor` | Diagnosis (as `session doctor`) |
 | `GET`/`POST /sessions/{id}/budget`, `POST .../message` | Shared budget and steering |
 | `POST /swarm/validate`, `POST /swarm/run`, `POST /receipt/validate` | Manifests and receipts |
 

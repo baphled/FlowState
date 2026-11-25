@@ -143,7 +143,7 @@ func servePorts(st *app.Store, fl *flags) server.Ports {
 	}
 	return server.Ports{ListSessions: list, InspectSession: inspect,
 		CloseSession: closePort, CancelSession: cancelPort, DiagnoseSession: func(ctx context.Context, id string) (server.Diagnosis, error) {
-			return serveDiagnose(ctx, st, id)
+			return serveDiagnose(ctx, st, id, fl.config.Compaction)
 		}, BudgetOverview: budgetPort, SetBudgetPool: setBudgetPort,
 		SendSteeringMessage: messagePort,
 		EventsAfter: func(ctx context.Context, id string, afterSeq int64) ([]server.Event, error) {
@@ -183,9 +183,11 @@ func serveCancel(ctx context.Context, st *app.Store, id string) (server.Session,
 	return serveSession(*sess), nil
 }
 
-// serveDiagnose wires GET /sessions/{id}/doctor onto app.DiagnoseSession.
-func serveDiagnose(ctx context.Context, st *app.Store, id string) (server.Diagnosis, error) {
-	d, err := app.DiagnoseSession(ctx, st, id)
+// serveDiagnose wires GET /sessions/{id}/doctor onto app.DiagnoseSessionWith with
+// the loaded compaction settings, as `session doctor` does, so both report the same
+// compactions, context window and warnings.
+func serveDiagnose(ctx context.Context, st *app.Store, id string, cfg app.CompactionConfig) (server.Diagnosis, error) {
+	d, err := app.DiagnoseSessionWith(ctx, st, id, cfg)
 	if err != nil {
 		return server.Diagnosis{}, err
 	}
@@ -196,7 +198,12 @@ func serveDiagnose(ctx context.Context, st *app.Store, id string) (server.Diagno
 			InputTokens: d.Usage.Totals.InputTokens, OutputTokens: d.Usage.Totals.OutputTokens,
 			CacheReadTokens: d.Usage.Totals.CacheReadTokens, CacheWriteTokens: d.Usage.Totals.CacheWriteTokens,
 			TurnsReported: d.Usage.Totals.UsageTurns, TurnsTotal: d.Usage.TurnsTotal,
-			LastContextTokens: d.Usage.LastContextTokens}}, nil
+			LastContextTokens: d.Usage.LastContextTokens},
+		Compactions: server.DiagnosisCompactions{Count: d.Compactions.Count, Invalid: d.Compactions.Invalid,
+			LastTokensAfter: d.Compactions.LastTokensAfter, SummariesReported: d.Compactions.SummariesReported,
+			SummaryInputTokens: d.Compactions.SummaryInputTokens, SummaryOutputTokens: d.Compactions.SummaryOutputTokens},
+		ContextWindow: server.DiagnosisWindow{Tokens: d.ContextWindow.Tokens, Source: d.ContextWindow.Source},
+		Warnings:      d.Warnings}, nil
 }
 
 // serveBudget wires GET /sessions/{id}/budget onto

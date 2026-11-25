@@ -201,7 +201,8 @@ func sampleServer() (*Server, *fakePorts) {
 	f.closed = closed
 	pool, available := int64(120000), int64(90000)
 	f.diagnosis = Diagnosis{SessionID: closed.ID, Status: "active", Crashed: true, RunActivity: true,
-		PendingMessages: 2, Reserved: 10000, Pool: &pool, Available: &available}
+		PendingMessages: 2, Reserved: 10000, Pool: &pool, Available: &available,
+		ContextWindow: DiagnosisWindow{Source: "unknown"}}
 	f.budget = Budget{SessionID: closed.ID, Reserved: 10000}
 	anchoredPool, anchoredAvailable := int64(120000), int64(110000)
 	f.anchored = Budget{SessionID: closed.ID, Reserved: 10000,
@@ -333,6 +334,84 @@ var _ = Describe("Serve S1 transport", func() {
 	})
 
 	Describe("session doctor", func() {
+		// doctorField returns the named field of the doctor body for the fake diagnosis.
+		doctorField := func(key string) any {
+			s, _ := sampleServer()
+			var body map[string]any
+			must(json.Unmarshal(doRequest(s, http.MethodGet,
+				"/sessions/01a1f000-0000-4000-8000-000000000001/doctor", "").Body.Bytes(), &body))
+			return body[key]
+		}
+
+		It("renders the compactions of the log as the CLI does", func() {
+			s, f := sampleServer()
+			lastAfter := int64(300)
+			f.diagnosis.Compactions = DiagnosisCompactions{Count: 2, Invalid: 1, LastTokensAfter: &lastAfter,
+				SummariesReported: 1, SummaryInputTokens: 100, SummaryOutputTokens: 10}
+			var body map[string]any
+			must(json.Unmarshal(doRequest(s, http.MethodGet,
+				"/sessions/01a1f000-0000-4000-8000-000000000001/doctor", "").Body.Bytes(), &body))
+			Expect(body["compactions"]).To(Equal(map[string]any{"count": float64(2), "invalid": float64(1),
+				"last_tokens_after": float64(300), "summaries_reported": float64(1),
+				"summary_input_tokens": float64(100), "summary_output_tokens": float64(10)}))
+		})
+
+		It("renders null last tokens and summary totals when no compaction reported usage", func() {
+			Expect(doctorField("compactions")).To(Equal(map[string]any{"count": float64(0), "invalid": float64(0),
+				"last_tokens_after": nil, "summaries_reported": float64(0),
+				"summary_input_tokens": nil, "summary_output_tokens": nil}))
+		})
+
+		It("renders an unknown window as null tokens, never 0", func() {
+			Expect(doctorField("context_window")).To(Equal(map[string]any{"tokens": nil, "source": "unknown"}))
+		})
+
+		It("renders a known window with its source", func() {
+			s, f := sampleServer()
+			f.diagnosis.ContextWindow = DiagnosisWindow{Tokens: 50000, Source: "config"}
+			var body map[string]any
+			must(json.Unmarshal(doRequest(s, http.MethodGet,
+				"/sessions/01a1f000-0000-4000-8000-000000000001/doctor", "").Body.Bytes(), &body))
+			Expect(body["context_window"]).To(Equal(map[string]any{"tokens": float64(50000), "source": "config"}))
+		})
+
+		It("omits the warnings when there are none", func() {
+			Expect(doctorField("warnings")).To(BeNil())
+		})
+
+		It("carries the warnings of the diagnosis", func() {
+			s, f := sampleServer()
+			f.diagnosis.Warnings = []string{"no context window is known"}
+			var body map[string]any
+			must(json.Unmarshal(doRequest(s, http.MethodGet,
+				"/sessions/01a1f000-0000-4000-8000-000000000001/doctor", "").Body.Bytes(), &body))
+			Expect(body["warnings"]).To(ConsistOf("no context window is known"))
+		})
+
+		It("requires compactions and context_window in the session-doctor schema", func() {
+			raw, err := os.ReadFile("../../schemas/cli.json")
+			must(err)
+			var combined struct {
+				Doctor struct {
+					Required []string `json:"required"`
+				} `json:"session-doctor"`
+			}
+			must(json.Unmarshal(raw, &combined))
+			Expect(combined.Doctor.Required).To(ContainElements("compactions", "context_window"))
+		})
+
+		It("keeps the warnings optional in the session-doctor schema", func() {
+			raw, err := os.ReadFile("../../schemas/cli.json")
+			must(err)
+			var combined struct {
+				Doctor struct {
+					Required []string `json:"required"`
+				} `json:"session-doctor"`
+			}
+			must(json.Unmarshal(raw, &combined))
+			Expect(combined.Doctor.Required).NotTo(ContainElement("warnings"))
+		})
+
 		It("returns the diagnosis shape validated against schemas/cli.json session-doctor", func() {
 			s, _ := sampleServer()
 			Expect(schemaError("session-doctor", doRequest(s, http.MethodGet,

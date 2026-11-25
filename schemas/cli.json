@@ -485,7 +485,9 @@
       "reserved",
       "budget_pool",
       "available",
-      "usage"
+      "usage",
+      "compactions",
+      "context_window"
     ],
     "properties": {
       "session_id": {
@@ -560,7 +562,7 @@
         }
       },
       "compactions": {
-        "description": "Present in the CLI output; the HTTP doctor route does not carry it yet.",
+        "description": "Compaction counts and the summaries' own token usage; the CLI and the HTTP doctor both emit it.",
         "type": "object",
         "additionalProperties": false,
         "required": [
