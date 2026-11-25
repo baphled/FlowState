@@ -1421,6 +1421,76 @@ func toolThenAnswerServer(toolTurns int32, requests *atomic.Int32) *httptest.Ser
 	return srv
 }
 
+// readThenAnswerServer asks for fs.read of path on its first request and answers
+// "done" afterwards.
+func readThenAnswerServer(path string) *httptest.Server {
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		chunk := `{"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}`
+		if requests.Add(1) == 1 {
+			args, err := json.Marshal(map[string]string{"path": path})
+			if err != nil {
+				panic(err)
+			}
+			call, err := json.Marshal(string(args))
+			if err != nil {
+				panic(err)
+			}
+			chunk = `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":` +
+				`{"name":"fs.read","arguments":` + string(call) + `}}]},"finish_reason":"tool_calls"}]}`
+		}
+		_, _ = w.Write([]byte("data: " + chunk + "\n\ndata: [DONE]\n\n"))
+	}))
+	DeferCleanup(srv.Close)
+	return srv
+}
+
+// toolResultPayload returns the payload of the first projected tool.result.
+func toolResultPayload(out string) string {
+	for _, l := range lines(out) {
+		var e struct {
+			Type    string          `json:"type"`
+			Payload json.RawMessage `json:"payload"`
+		}
+		if err := json.Unmarshal([]byte(l), &e); err != nil {
+			panic(err)
+		}
+		if e.Type == "tool.result" {
+			return string(e.Payload)
+		}
+	}
+	return ""
+}
+
+var _ = Describe("Session run with a relative --workdir", func() {
+	var payload string
+
+	BeforeEach(func() {
+		work := GinkgoT().TempDir()
+		if err := os.WriteFile(filepath.Join(work, "big.txt"), []byte("relative-content"), 0o600); err != nil {
+			panic(err)
+		}
+		previous, err := os.Getwd()
+		if err != nil {
+			panic(err)
+		}
+		if err := os.Chdir(work); err != nil {
+			panic(err)
+		}
+		DeferCleanup(func() {
+			if err := os.Chdir(previous); err != nil {
+				panic(err)
+			}
+		})
+		withFakeZai(readThenAnswerServer("big.txt"))
+		payload = toolResultPayload(runCLILoop(newLoopSession(), "--allow", "fs.read", "--workdir", ".").stdout)
+	})
+
+	It("records a successful fs.read", func() { Expect(payload).To(ContainSubstring(`"ok":true`)) })
+	It("returns the file content in the tool.result", func() { Expect(payload).To(ContainSubstring("relative-content")) })
+})
+
 var _ = Describe("Session run --max-turns", func() {
 	var requests atomic.Int32
 
