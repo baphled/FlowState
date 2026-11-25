@@ -38,6 +38,8 @@ type flags struct {
 	allowFile string
 	workdir   string
 	agents    string // --agents scope: user, project or both; empty offers no delegation
+	// session unlock
+	force bool // --force: delete the lease row instead of reporting it
 	// session compact
 	instructions string // --instructions: a focus line for the summary
 	// session run
@@ -67,3 +69,15 @@ type usageSentinel struct{}
 // sigintCancelledKey marks a context cancelled by SIGINT, SIGTERM or SIGHUP; its
 // presence routes session cancel to the exit-130 contract path.
 type sigintCancelledKey struct{}
+
+// unlockResult is the JSON object `session unlock` prints (schema session-unlock).
+type unlockResult struct {
+	Session        string            `json:"session"`
+	Item           string            `json:"item"`
+	Outcome        string            `json:"outcome"`
+	Holder         *app.UnlockHolder `json:"holder"`
+	MachineMatches bool              `json:"machine_matches"`
+	LegacyRow      bool              `json:"legacy_row"`
+	EventAppended  bool              `json:"event_appended"`
+	Message        string            `json:"message"`
+}
