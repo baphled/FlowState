@@ -5,6 +5,8 @@ import "context"
 // GateRunner executes the gates of a manifest against a supplied
 // command executor and reports the overall decision.
 type GateRunner struct {
+	// dir is the directory the gate commands run in; empty is the process cwd.
+	dir string
 	// execCommand runs one gate command and returns its execution error.
 	execCommand GateExecutor
 }

@@ -21,6 +21,8 @@ type SwarmRun struct {
 // SwarmRunChild ties one child session to the run and the packet it
 // executes, so a run that ended early still names the sessions it left.
 type SwarmRunChild struct {
+	// PacketID is the packet the child executes; empty for a child the
+	// engine could not attribute to any packet.
 	PacketID  string
 	SessionID string
 }
