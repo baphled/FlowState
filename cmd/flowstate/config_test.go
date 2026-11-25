@@ -120,3 +120,64 @@ var _ = DescribeTable("effectiveAllowlist (explicit allowlist flags replace conf
 		flags{workdir: "/w", allow: []string{"fs.read"}, config: cliConfig{ToolAllowlist: []string{"echo"}}},
 		[]string{"fs.read"}),
 )
+
+func compactionFixture(body string) (cliConfig, error) {
+	return parseConfig([]byte(`{"default_provider":"z.ai","compaction":` + body + `}`))
+}
+
+var _ = Describe("Config compaction object", func() {
+	It("applies the defaults when compaction is absent", func() {
+		cfg, err := parseConfig([]byte(`{"default_provider":"z.ai"}`))
+		if err != nil {
+			panic(err)
+		}
+		Expect(cfg.Compaction.Resolved()).To(Equal(app.CompactionSettings{Enabled: true, Reserve: 16384, KeepRecent: 20000}))
+	})
+
+	It("accepts the four ADR names", func() {
+		cfg, err := compactionFixture(`{"enabled":false,"reserve":1000,"keep_recent":2000,"context_window":32768}`)
+		if err != nil {
+			panic(err)
+		}
+		Expect(cfg.Compaction.Resolved()).To(Equal(app.CompactionSettings{Reserve: 1000, KeepRecent: 2000, ContextWindow: 32768}))
+	})
+
+	It("keeps the defaults for the keys it omits", func() {
+		cfg, err := compactionFixture(`{"reserve":1000}`)
+		if err != nil {
+			panic(err)
+		}
+		Expect(cfg.Compaction.Resolved().KeepRecent).To(Equal(20000))
+	})
+
+	It("rejects a token-named key with the secret-key message", func() {
+		_, err := compactionFixture(`{"reserve_tokens":1000}`)
+		Expect(err).To(MatchError(ContainSubstring(`config key "reserve_tokens" looks like a secret`)))
+	})
+
+	It("rejects an unknown key", func() {
+		_, err := compactionFixture(`{"window":1000}`)
+		Expect(err).To(MatchError(ContainSubstring("unknown field")))
+	})
+
+	DescribeTable("rejects as config_invalid",
+		func(body string) {
+			_, err := compactionFixture(body)
+			Expect(errors.Is(err, app.ErrConfigInvalid)).To(BeTrue(), "got %v", err)
+		},
+		Entry("a zero reserve", `{"reserve":0}`),
+		Entry("a negative reserve", `{"reserve":-5}`),
+		Entry("a string reserve", `{"reserve":"big"}`),
+		Entry("a bool reserve", `{"reserve":true}`),
+		Entry("a fractional reserve", `{"reserve":1.5}`),
+		Entry("a zero keep_recent", `{"keep_recent":0}`),
+		Entry("a string keep_recent", `{"keep_recent":"1"}`),
+		Entry("a zero window", `{"context_window":0}`),
+		Entry("an absurd window", `{"context_window":1000000000}`),
+		Entry("a string window", `{"context_window":"abc"}`),
+		Entry("a bool window", `{"context_window":false}`),
+		Entry("a string enabled", `{"enabled":"yes"}`),
+		Entry("a numeric enabled", `{"enabled":1}`),
+		Entry("a non-object compaction", `[]`),
+	)
+})

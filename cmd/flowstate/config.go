@@ -112,12 +112,15 @@ func rejectSecretKeys(v any) error {
 }
 
 // validate applies the config value rules: a non-negative default
-// budget and a non-empty, duplicate-free tool allowlist. Names that
+// budget, valid compaction values and a non-empty, duplicate-free tool allowlist. Names that
 // match no builtin stay valid here and fail at the tool definitions
 // gate when the surface activates.
 func (c cliConfig) validate() error {
 	if c.DefaultBudget < 0 {
 		return fmt.Errorf("%w: default_budget must not be negative", app.ErrConfigInvalid)
+	}
+	if cerr := c.Compaction.Validate(); cerr != nil {
+		return cerr
 	}
 	seen := make(map[string]bool, len(c.ToolAllowlist))
 	for _, name := range c.ToolAllowlist {

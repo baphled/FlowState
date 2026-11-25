@@ -22,6 +22,14 @@ import (
 // Crashed is additionally gated on an active row status: only a
 // session the engine could still resume is reported as crashed.
 func DiagnoseSession(ctx context.Context, st *Store, sessionID string) (SessionDiagnosis, error) {
+	return DiagnoseSessionWith(ctx, st, sessionID, CompactionConfig{})
+}
+
+// DiagnoseSessionWith is DiagnoseSession that also resolves the session's
+// context window with cfg (ADR-010, D3): a root session has no profile, and the
+// swarm coordinator's profile is not known here, so the window comes from
+// cfg.ContextWindow, else the registry table. An unknown window adds a warning.
+func DiagnoseSessionWith(ctx context.Context, st *Store, sessionID string, cfg CompactionConfig) (SessionDiagnosis, error) {
 	sess, err := st.GetSession(ctx, sessionID)
 	if err != nil {
 		return SessionDiagnosis{}, err
@@ -42,7 +50,10 @@ func DiagnoseSession(ctx context.Context, st *Store, sessionID string) (SessionD
 	}
 	finish := lastFinishReason(events)
 	liveCrash := crashed && sess.Status == "active"
+	tokens, source := ResolveContextWindow(sess.Provider, sess.ModelID, 0, cfg)
 	return SessionDiagnosis{
+		ContextWindow:   ContextWindow{Tokens: tokens, Source: source},
+		Warnings:        windowWarnings(source),
 		SessionID:       sess.ID,
 		Status:          sess.Status,
 		Crashed:         liveCrash,
@@ -94,4 +105,14 @@ func lastFinishReason(events []RecordedEvent) string {
 		}
 	}
 	return ""
+}
+
+// windowWarnings returns the doctor warnings for a window source: only an
+// unknown window warns, and the text names the fix.
+func windowWarnings(source string) []string {
+	if source != WindowSourceUnknown {
+		return nil
+	}
+	return []string{"no context window is known for this model; set compaction.context_window in the config " +
+		"(automatic compaction will need it)"}
 }

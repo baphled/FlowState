@@ -161,7 +161,7 @@ func dispatchSession(ctx context.Context, sub string, fl *flags, id string, stdo
 	case "budget":
 		return cmdBudget(ctx, st, id, stdout)
 	case "doctor":
-		return cmdDoctor(ctx, st, id, stdout, stderr)
+		return cmdDoctor(ctx, st, id, fl, stdout, stderr)
 	case "message":
 		return cmdMessage(ctx, st, id, fl, stdout, stderr)
 	default:

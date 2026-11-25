@@ -31,7 +31,7 @@ var nameRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`)
 var decimalRE = regexp.MustCompile(`^(0|[1-9]\d*)$`)
 
 var knownField = map[string]bool{"name": true, "description": true, "tools": true, "model": true, "max_turns": true,
-	"delegates": true}
+	"delegates": true, "context_window": true}
 
 // ParseScope reads a --agents value; the empty string is ScopeUser.
 func ParseScope(s string) (Scope, error) {
@@ -235,7 +235,27 @@ func build(fields map[string]*yaml.Node, known []string) (Profile, error) {
 	if model != "" {
 		p.Model = model
 	}
-	return withMaxTurns(p, fields["max_turns"])
+	if p, err = withMaxTurns(p, fields["max_turns"]); err != nil {
+		return Profile{}, err
+	}
+	return withContextWindow(p, fields["context_window"])
+}
+
+// withContextWindow applies the optional context_window, which must be a plain
+// decimal integer of 1..MaxContextWindow tokens; absent or null leaves 0.
+func withContextWindow(p Profile, n *yaml.Node) (Profile, error) {
+	if n == nil || n.Tag == "!!null" {
+		return p, nil
+	}
+	if n.Kind != yaml.ScalarNode || n.Tag != "!!int" || !decimalRE.MatchString(n.Value) {
+		return Profile{}, fmt.Errorf("%w: context_window must be a plain decimal integer", ErrInvalidProfile)
+	}
+	window, err := strconv.Atoi(n.Value)
+	if err != nil || window < 1 || window > MaxContextWindow {
+		return Profile{}, fmt.Errorf("%w: context_window %s is outside 1..%d", ErrInvalidProfile, n.Value, MaxContextWindow)
+	}
+	p.ContextWindow = window
+	return p, nil
 }
 
 // withMaxTurns applies max_turns, which must be a plain decimal integer.
