@@ -448,12 +448,11 @@ a failed summary call, a pool that cannot cover it, or a `tokens_after` still ab
 retried in that run (so a `no_cut` on the first over-the-line turn turns compaction off for the rest of the run), and
 the run continues; a `no_cut` gives its pool unit back. A window not larger than the reserve (or `--max-tokens`) never
 compacts: raise the window or lower the reserve or `max_tokens`. In `swarm run --execute` the coordinator and its
-children compact with the built-in defaults (by the model table, or a child profile's `context_window`); the
-`compaction` settings, including `enabled: false`, do not apply to them yet, and each compaction draws from the swarm
-pool. Not yet: there is no retry after a provider
-context-overflow error, so a model that overflows still fails as a provider error. `session compact` summarises by
-hand. A window comes from the profile's `context_window` for a delegated child, else from
-`compaction.context_window`, else from a
+children, nested ones included, compact by the same `compaction` settings, including `enabled: false`; the coordinator's
+window is its profile's `context_window` when set, and each compaction draws from the swarm pool. Not yet: there is no
+retry after a provider context-overflow error, so a model that overflows still fails as a provider error.
+`session compact` summarises by hand. A window comes from the profile's `context_window` for a delegated child, else
+from `compaction.context_window`, else from a
 built-in table of `anthropic` and `z.ai` models matched by exact, case-sensitive id (it follows Pi's registry); there
 is no default, and an unknown window never compacts automatically. `session doctor` resolves the window from
 `compaction.context_window` and the table only: it does not read a profile's `context_window`, because a root session

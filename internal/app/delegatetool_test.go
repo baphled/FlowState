@@ -525,3 +525,42 @@ var _ = Describe("The delegate tool's resume", func() {
 		It("records the receipt as resumed", func() { Expect(f.receiptPayload()).To(HaveKeyWithValue("resumed", true)) })
 	})
 })
+
+var _ = Describe("Compaction in a child resumed through the delegate tool", func() {
+	var (
+		f   *toolFixture
+		seq *seqStreamer
+		id  string
+	)
+	// resume seeds a crashed child of two turns whose profile holds the window, scripts its first resumed
+	// turn to be over its default line (see bigReadTurn), and resumes it by the tool.
+	resume := func(settings CompactionConfig, window int) {
+		f = newToolFixture()
+		for i := range f.tool.cfg.Profiles {
+			if f.tool.cfg.Profiles[i].Name == f.profile.Name {
+				f.tool.cfg.Profiles[i].MaxTurns, f.tool.cfg.Profiles[i].ContextWindow = 6, window
+			}
+		}
+		f.profile.MaxTurns = 6
+		f.tool.cfg.Compaction = settings
+		id = f.seedChild(f.parent, 2).ID
+		seq = &seqStreamer{calls: map[string]int{}, seqs: map[string][][]provider.StreamEvent{
+			delegateBodyPrompt:  {bigReadTurn("r1"), finishText("resumed")},
+			compactSystemPrompt: {summaryTurn("s")},
+		}}
+		f.tool.cfg.Streamer = seq
+		must(f.invoke(`{"resume":"` + id + `"}`))
+	}
+
+	Context("with compaction.enabled false", func() {
+		BeforeEach(func() { off := false; resume(CompactionConfig{Enabled: &off}, 100000) })
+		It("never calls the summariser for the resumed child", func() { Expect(seq.summaries()).To(BeZero()) })
+	})
+
+	Context("with the default settings and a profile window", func() {
+		BeforeEach(func() { resume(CompactionConfig{}, 100000) })
+		It("compacts the resumed child by its profile's window", func() {
+			Expect(f.events(id, TypeContextCompacted)).To(HaveLen(1))
+		})
+	})
+})

@@ -155,6 +155,7 @@ func executeConfig(fl *flags, manifestPath string, stderr *os.File) (app.Execute
 	return app.ExecuteSwarmConfig{
 		Profiles: profiles, Streamer: s, Provider: provider, ModelID: model, Harness: app.DefaultHarness,
 		ConfigSHA: sha, Workdir: workdir, MaxTurns: fl.maxTurns, MaxTokens: fl.maxTokens, Budget: fl.budget,
+		Compaction: fl.config.Compaction,
 	}, exitOK, false
 }
 

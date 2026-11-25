@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -467,3 +468,134 @@ var _ = Describe("The window of a delegated child whose profile has none", func(
 		Expect(f.events(out.ChildID, TypeContextCompacted)).To(HaveLen(1))
 	})
 })
+
+// failingSummary is a summary call that ends with a provider error.
+func failingSummary() []provider.StreamEvent {
+	return []provider.StreamEvent{{Kind: provider.StreamEventError, Err: errors.New("provider down")}}
+}
+
+var _ = Describe("The trigger's bounds and failure modes", func() {
+	var (
+		cfg      ExecLoopConfig
+		streamer *execLoopStreamer
+		res      *ExecLoopResult
+	)
+	run := func() {
+		var err error
+		if res, err = RunExecLoop(context.Background(), cfg); err != nil {
+			panic(err)
+		}
+	}
+
+	Context("when the window equals the reserve", func() {
+		BeforeEach(func() {
+			// The log holds turns to cut and the context is over 0, so a line of 0 would compact at once.
+			cfg = seededTwoTurns()
+			cfg.Compaction.ContextWindow = intPtr(100)
+			streamer = &execLoopStreamer{turns: [][]provider.StreamEvent{summaryTurn("s")}}
+			cfg.Streamer = streamer
+			history := []provider.Message{}
+			meter := &compactRun{hasBase: true, base: 950}
+			if berr := meter.before(context.Background(), &cfg, leaseToken(cfg), nil, &history); berr != nil {
+				panic(berr)
+			}
+		})
+		It("has a line of 0 and never calls the summariser", func() { Expect(summaryCalls(streamer.reqs)).To(BeZero()) })
+		It("reports no usable line", func() {
+			_, ok := compactLimit(&cfg)
+			Expect(ok).To(BeFalse())
+		})
+	})
+
+	Context("when the summary call fails with a provider error", func() {
+		BeforeEach(func() {
+			cfg, streamer = autoConfig(usedTurn("c1", 1, 100), usedTurn("c2", 1, 950), failingSummary(),
+				usedTurn("c3", 1, 960), usedTurn("c4", 1, 970), doneTurn())
+			run()
+		})
+		It("makes one summary call in the run", func() { Expect(summaryCalls(streamer.reqs)).To(Equal(1)) })
+		It("appends no compaction", func() { Expect(countOf(cfg, TypeContextCompacted)).To(BeZero()) })
+		It("continues the run to its end", func() { Expect(res.FinalContent).To(Equal("done")) })
+	})
+
+	Context("when the run compacts several times", func() {
+		BeforeEach(func() {
+			cfg, streamer = autoConfig(usedTurn("c1", 1, 100), usedTurn("c2", 1, 950), summaryTurn("s1"),
+				usedTurn("c3", 1, 950), summaryTurn("s2"), usedTurn("c4", 1, 950), summaryTurn("s3"), doneTurn())
+			cfg.Pool, cfg.TurnBudget = NewBudgetPool(20), 1
+			run()
+		})
+		It("draws one unit for each of the five turns and the three compactions", func() {
+			Expect(cfg.Pool.Remaining()).To(Equal(int64(20 - 5 - 3)))
+		})
+		It("appends one event for each compaction", func() { Expect(countOf(cfg, TypeContextCompacted)).To(Equal(3)) })
+	})
+
+	Context("when every turn crosses a line that a cut can still reach", func() {
+		BeforeEach(func() {
+			cfg, streamer = autoConfig(usedTurn("c1", 1, 100), usedTurn("c2", 1, 950), summaryTurn("s1"),
+				usedTurn("c3", 1, 950), summaryTurn("s2"), usedTurn("c4", 1, 950), summaryTurn("s3"), doneTurn())
+			cfg.MaxTurns = 5
+			run()
+		})
+		It("compacts once before each request after the second turn: three times in five turns", func() {
+			Expect(countOf(cfg, TypeContextCompacted)).To(Equal(3))
+		})
+		It("never makes more summary calls than turns", func() {
+			Expect(summaryCalls(streamer.reqs)).To(BeNumerically("<=", res.Turns))
+		})
+	})
+
+	Context("when a request follows an automatic compaction", func() {
+		BeforeEach(func() {
+			cfg, streamer = autoConfig(usedTurn("c1", 1, 100), usedTurn("c2", 1, 950), summaryTurn("s"), doneTurn())
+			run()
+		})
+		It("passes ChatRequest.Validate", func() { Expect(streamer.reqs[3].Validate()).To(Succeed()) })
+	})
+})
+
+var _ = Describe("The automatic compaction of a nested delegated child", func() {
+	var (
+		f    *nestFixture
+		lead string
+		spec string
+	)
+	BeforeEach(func() {
+		f = newNestFixture(0)
+		read := func(id string, ctxTokens int64) []provider.StreamEvent {
+			call := provider.ToolCall{ID: id, Name: "fs.read", Arguments: json.RawMessage(`{"path":"missing.txt"}`)}
+			return usedCall(call, ctxTokens)
+		}
+		// The lead has no window and reports 950 tokens: it would cross the line were a window to leak.
+		f.say("root", delegates(`{"agent":"lead","task":"plan it"}`), finishText("root done"))
+		// The children play by request count, as a compaction rewrites the history they are sent.
+		f.tool.cfg.Streamer = &seqStreamer{calls: map[string]int{}, seqs: map[string][][]provider.StreamEvent{
+			"lead-body":         {usedCall(delegateCall(`{"agent":"specialist","task":"read it"}`), 950), finishText("lead summary")},
+			"specialist-body":   {read("r1", 100), read("r2", 950), summaryTurn("s"), finishText("report")},
+			compactSystemPrompt: {summaryTurn("s")},
+		}}
+		f.turnsOf("specialist", 4)
+		f.setWindow("specialist", 1000)
+		f.tool.cfg.Compaction = CompactionConfig{Reserve: intPtr(100), KeepRecent: intPtr(1)}
+		must(f.runRoot(context.Background()))
+		lead = f.childOf(f.parent.ID)
+		spec = f.childOf(lead)
+	})
+
+	It("compacts the grandchild by its profile's window", func() {
+		Expect(f.events(spec, TypeContextCompacted)).To(HaveLen(1))
+	})
+	It("leaves the child, which has no window, uncompacted", func() {
+		Expect(f.events(lead, TypeContextCompacted)).To(BeEmpty())
+	})
+})
+
+// setWindow gives the named profile a context_window.
+func (f *nestFixture) setWindow(name string, window int) {
+	for i := range f.tool.cfg.Profiles {
+		if f.tool.cfg.Profiles[i].Name == name {
+			f.tool.cfg.Profiles[i].ContextWindow = window
+		}
+	}
+}

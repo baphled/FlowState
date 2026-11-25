@@ -209,14 +209,14 @@ func runSwarmCoordinator(ctx context.Context, st *Store, sess *store.Session, co
 	loop := ExecLoopConfig{
 		Store: st, Session: sess, Streamer: cfg.Streamer, Registry: registry, Allowlist: coord.Tools,
 		LeaseItem: "exec:" + sess.ID, LeaseAgent: execLeaseAgent, MaxTurns: maxTurns, MaxTokens: cfg.MaxTokens,
-		SystemPrompt: coord.Body,
+		SystemPrompt: coord.Body, Compaction: cfg.Compaction, ProfileWindow: coord.ContextWindow,
 	}
 	if err := bindRunBudget(ctx, st, sess, cfg.Budget, &loop); err != nil {
 		return "", "", nil, err
 	}
 	err = registry.Register(NewDelegateTool(DelegateToolConfig{
 		Store: st, Parent: sess, Streamer: cfg.Streamer, Pool: loop.Pool, Workdir: cfg.Workdir, Profiles: cfg.Profiles,
-		DelegatorProfile: coord.Name, AllowedProfiles: swarmAllowlist(cfg.Manifest, coord),
+		DelegatorProfile: coord.Name, AllowedProfiles: swarmAllowlist(cfg.Manifest, coord), Compaction: cfg.Compaction,
 	}))
 	if err != nil {
 		return "", "", nil, err

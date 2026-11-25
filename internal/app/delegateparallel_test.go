@@ -611,3 +611,32 @@ var _ = Describe("The delegate tool with tasks", func() {
 		})
 	})
 })
+
+var _ = Describe("Compaction in a parallel delegate call", func() {
+	var seq *seqStreamer
+	BeforeEach(func() {
+		f := newDelegateFixture()
+		off := false
+		profiles := []agent.Profile{f.profile, f.profile}
+		profiles[1].Name, profiles[1].Path, profiles[1].SHA256 = "auditor", "/profiles/auditor.md", "decaf"
+		scripts := map[string][][]provider.StreamEvent{}
+		for i := range profiles {
+			profiles[i].MaxTurns, profiles[i].ContextWindow = 4, 100000
+			profiles[i].Body = profiles[i].Name + "-body"
+			scripts[profiles[i].Body] = [][]provider.StreamEvent{bigReadTurn("r1"), bigReadTurn("r2"), summaryTurn("s"), finishText("done")}
+		}
+		seq = &seqStreamer{calls: map[string]int{}, seqs: scripts}
+		seq.seqs[compactSystemPrompt] = [][]provider.StreamEvent{summaryTurn("s")}
+		parallel := NewDelegateTool(DelegateToolConfig{
+			Store: f.st, Parent: f.parent, Streamer: seq, Pool: f.pool, Workdir: f.workdir, Profiles: profiles,
+			// Each child is over its default line (83616) with a cut to make, but compaction is off.
+			Compaction: CompactionConfig{Enabled: &off},
+		})
+		args := `{"tasks":[{"agent":"reviewer","task":"look"},{"agent":"auditor","task":"audit"}]}`
+		must(parallel.Invoke(context.Background(), json.RawMessage(args)))
+	})
+
+	It("never calls the summariser for either child when compaction.enabled is false", func() {
+		Expect(seq.summaries()).To(BeZero())
+	})
+})
