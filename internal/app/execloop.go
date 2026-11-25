@@ -193,7 +193,8 @@ func runExecTurn(ctx context.Context, cfg ExecLoopConfig, definitions []provider
 	}
 	defer func() { _ = w.Close() }()
 	var turn execTurn
-	req := &provider.ChatRequest{Tools: definitions, Messages: withSystemPrompt(cfg.SystemPrompt, history), Model: cfg.Session.ModelID, MaxTokens: cfg.MaxTokens}
+	req := &provider.ChatRequest{Tools: definitions, Messages: withSystemPrompt(cfg.SystemPrompt, history), Model: cfg.Session.ModelID,
+		MaxTokens: ResolveMaxOutput(cfg.Session.Provider, cfg.Session.ModelID, cfg.MaxTokens)}
 	for ev := range cfg.Streamer.Stream(ctx, req) {
 		switch {
 		case ev.Err != nil && recoverable && errors.Is(ev.Err, provider.ErrContextOverflow):

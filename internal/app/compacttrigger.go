@@ -15,7 +15,8 @@ import (
 const compactUnit int64 = 1
 
 // compactLimit is the line the automatic trigger compares the context with (ADR-010 "When"):
-// window - reserve, where the reserve is raised to the run's MaxTokens when that is larger. It
+// window - max(reserve, output), where output is the output cap (outputReserve: the explicit MaxTokens, or a table
+// default limited to a quarter of the window; an unknown model's line uses the reserve alone). It
 // reports false when automatic compaction is off, the window is unknown (no default window) or
 // the line is not positive: a window not larger than the reserve (or MaxTokens) cannot be
 // compacted into, so it never compacts rather than compacting every turn.
@@ -28,8 +29,20 @@ func compactLimit(cfg *ExecLoopConfig) (limit int, ok bool) {
 	if window <= 0 {
 		return 0, false
 	}
-	limit = window - max(settings.Reserve, int(cfg.MaxTokens))
+	limit = window - max(settings.Reserve, int(outputReserve(cfg, window)))
 	return limit, limit > 0
+}
+
+// outputReserve is the output the line leaves room for: the explicit MaxTokens, else the capped table
+// maximum of a known model limited to a quarter of the window, so a defaulted cap never empties a
+// small window's line, else 0: an unknown model's line is the reserve alone, as before the default
+// cap existed (its 8192 default is below the default reserve).
+func outputReserve(cfg *ExecLoopConfig, window int) int64 {
+	if cfg.MaxTokens > 0 {
+		return cfg.MaxTokens
+	}
+	capped, _ := tableMaxOutput(cfg.Session.Provider, cfg.Session.ModelID)
+	return min(capped, int64(window/4))
 }
 
 // estimateOverhead is the bytes/4 estimate of what each request carries besides the history: the

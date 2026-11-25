@@ -11,6 +11,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/store"
 )
 
 func intPtr(n int) *int { return &n }
@@ -76,7 +77,7 @@ var _ = Describe("The automatic compaction trigger", func() {
 	)
 	run := func() { res, err = RunExecLoop(context.Background(), cfg) }
 
-	Context("when the reported context crosses window - reserve", func() {
+	Context("when the reported context crosses the compaction line", func() {
 		BeforeEach(func() {
 			cfg, streamer = autoConfig(usedTurn("c1", 1, 100), usedTurn("c2", 1, 950), summaryTurn("the summary"), doneTurn())
 			cfg.MaxTurns = 3
@@ -486,6 +487,90 @@ var _ = Describe("The trigger's bounds and failure modes", func() {
 		It("reports no usable line", func() {
 			_, ok := compactLimit(&cfg)
 			Expect(ok).To(BeFalse())
+		})
+	})
+
+	Context("when a known model leaves max_tokens unset", func() {
+		BeforeEach(func() {
+			cfg = seededTwoTurns()
+			cfg.Session.Provider, cfg.Session.ModelID = "z.ai", "glm-5.3"
+			cfg.Compaction.ContextWindow = intPtr(200000)
+		})
+		It("places the line a default output cap below the window", func() {
+			limit, _ := compactLimit(&cfg)
+			Expect(limit).To(Equal(200000 - 32768))
+		})
+	})
+
+	Context("when a known model leaves max_tokens unset in a small window", func() {
+		BeforeEach(func() {
+			cfg = seededTwoTurns()
+			cfg.Session.Provider, cfg.Session.ModelID = "z.ai", "glm-5.3"
+			cfg.Compaction.ContextWindow, cfg.Compaction.Reserve = intPtr(4000), intPtr(1)
+		})
+		It("limits the defaulted output to a quarter of the window", func() {
+			limit, _ := compactLimit(&cfg)
+			Expect(limit).To(Equal(3000))
+		})
+	})
+
+	DescribeTable("places the defaulted line at the window minus the larger of reserve and output",
+		func(window, want int) {
+			cfg = seededTwoTurns()
+			cfg.Session.Provider, cfg.Session.ModelID = "z.ai", "glm-5.3"
+			cfg.Compaction.ContextWindow, cfg.Compaction.Reserve = intPtr(window), nil
+			limit, _ := compactLimit(&cfg)
+			Expect(limit).To(Equal(want))
+		},
+		Entry("32000 keeps the reserve", 32000, 15616),
+		Entry("128000 leaves room for the defaulted output", 128000, 96000),
+	)
+
+	Context("when a delegate child is configured under a parent with an explicit cap", func() {
+		It("sends no cap of its own, so the child's model default applies", func() {
+			req := &DelegateRequest{}
+			run := &delegateRun{child: &store.Session{}, grant: 1}
+			cfg, err := delegateLoopConfig(context.Background(), req, run, nil)
+			if err != nil {
+				panic(err)
+			}
+			Expect(cfg.MaxTokens).To(BeZero())
+		})
+	})
+
+	Context("when a known model sets an explicit max_tokens", func() {
+		BeforeEach(func() {
+			cfg = seededTwoTurns()
+			cfg.Session.Provider, cfg.Session.ModelID, cfg.MaxTokens = "z.ai", "glm-5.3", 60000
+			cfg.Compaction.ContextWindow = intPtr(200000)
+		})
+		It("places the line the explicit value below the window, unlimited", func() {
+			limit, _ := compactLimit(&cfg)
+			Expect(limit).To(Equal(140000))
+		})
+	})
+
+	Context("when a known model sets a negative max_tokens", func() {
+		BeforeEach(func() {
+			cfg = seededTwoTurns()
+			cfg.Session.Provider, cfg.Session.ModelID, cfg.MaxTokens = "z.ai", "glm-5.3", -5
+			cfg.Compaction.ContextWindow = intPtr(200000)
+		})
+		It("treats it as unset", func() {
+			limit, _ := compactLimit(&cfg)
+			Expect(limit).To(Equal(200000 - 32768))
+		})
+	})
+
+	Context("when an unknown model leaves max_tokens unset with a small reserve", func() {
+		BeforeEach(func() {
+			cfg = seededTwoTurns()
+			cfg.Session.Provider, cfg.Session.ModelID = "scripted", "scripted-model"
+			cfg.Compaction.ContextWindow, cfg.Compaction.Reserve = intPtr(20000), intPtr(100)
+		})
+		It("uses the reserve alone", func() {
+			limit, _ := compactLimit(&cfg)
+			Expect(limit).To(Equal(19900))
 		})
 	})
 

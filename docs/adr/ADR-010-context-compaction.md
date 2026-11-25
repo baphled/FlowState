@@ -83,18 +83,19 @@ The engine never rewrites or deletes events.** FlowState adds only what its own 
 ### When
 
 - **Measure.** The trigger compares the context of the last provider-reported turn (`LastContextTokens`, the sum from
-  #449) plus an estimate of what was appended since (tool results) against `window - reserve`. The estimate is bytes
-  divided by four; it only has to be early enough, because the provider-reported figure corrects it each turn. The
-  baseline has three cases. After a compaction the last `assistant.message` usage still describes the context that was
-  replaced, so the baseline is the last event's `tokens_after` until a turn after it reports usage; the trigger cannot
-  re-fire on stale figures. When no turn has reported usage (`LastContextReported` is false, as on the subscription
-  route) or the session was resumed, the baseline is the estimate of the whole rebuilt history, because the logged
-  figure measured the live history and the rebuild can be smaller or larger. A compaction whose `tokens_after` is
-  still above `window - reserve` fails. Any failed automatic compaction (`context_too_large`, `no_cut`, an empty or
+  #449) plus an estimate of what was appended since (tool results) against `window - max(reserve, output)` (the
+  compaction line; see the D7 amendment). The estimate is bytes divided by four; it only has to be early enough, because
+  the provider-reported figure corrects it each turn. The baseline has three cases. After a compaction the last
+  `assistant.message` usage still describes the context that was replaced, so the baseline is the last event's
+  `tokens_after` until a turn after it reports usage; the trigger cannot re-fire on stale figures. When no turn has
+  reported usage (`LastContextReported` is false, as on the subscription route) or the session was resumed, the baseline
+  is the estimate of the whole rebuilt history, because the logged figure measured the live history and the rebuild can
+  be smaller or larger. A compaction whose `tokens_after` is still above the compaction line (see the D7 amendment)
+  fails. Any failed automatic compaction (`context_too_large`, `no_cut`, an empty or
   `length`-finished summary, a failed summary call) writes nothing, is not retried within the run, and the run
   continues: it fails only when the provider itself then fails, so a small window cannot fail a request that still fits.
-  The estimate can undercount; the cost of that is bounded, since a compaction that leaves `tokens_after` above the
-  line fails, and the number of compactions is bounded by `max_turns` and the budget.
+  The estimate can undercount; the cost of that is bounded, since a compaction that leaves `tokens_after` above the line
+  fails, and the number of compactions is bounded by `max_turns` and the budget.
 - **Where in the loop.** Before each provider request, which covers "after tool results are appended" and the start of
   a run, after replay (a resumed session may already be over the line).
 - **Window.** The provider port's `Models()` carries no window, so a window comes from one of three sources, in this
@@ -108,8 +109,9 @@ The engine never rewrites or deletes events.** FlowState adds only what its own 
   compaction (manual still works) and `session doctor` prints a warning. There is no default window: a wrong guess
   either compacts constantly or never. The table's values are filled in by the packet that adds it, each with a source
   link.
-- **Reserve.** 16384 tokens, as in Pi's documentation, raised to the run's `MaxTokens` when that is larger: the
-  reserve exists so the next response fits. It is a config value (`compaction.reserve`, in tokens), not a flag. The
+- **Reserve.** 16384 tokens, as in Pi's documentation, raised to the output cap (a table-defaulted output limited to a
+  quarter of the window; an unknown model's line uses the reserve alone; see the 2026-11-25 amendment note under D7):
+  the reserve exists so the next response fits. It is a config value (`compaction.reserve`, in tokens), not a flag. The
   config loader rejects any key matching `key`, `token`, `secret` or `password` (ADR-005), so no key here may contain
   "token"; a `compaction` object in the config schema is part of packet (a).
 - **Keep recent.** 20000 estimated tokens, as in Pi's documentation (`compaction.keep_recent`, in tokens).
@@ -120,11 +122,11 @@ The engine never rewrites or deletes events.** FlowState adds only what its own 
   It has no loop and no per-invocation budget pool, so it draws nothing from one: D12's unit applies to the
   automatic trigger of packet (d). It leaves a paused session paused. The exec loop honours the compaction on its
   next run; the plain text-turn path never replays the log, so a compaction does not affect it.
-- **Overflow.** A provider context-overflow error, or a `length` finish with no tool calls on a request that was
-  already over `window - reserve`, compacts and retries the request once. A second failure is an ordinary provider
-  failure. The provider adapters must classify overflow (`ErrContextOverflow`); today none does, and the loop's
-  `provider.error` is terminal, so the overflow case writes a non-terminal `provider.error` (reason `context_overflow`)
-  and no `failed` status.
+- **Overflow.** A provider context-overflow error, or a `length` finish with no tool calls on a request that was already
+  over the compaction line (`window - max(reserve, output)`, see the D7 amendment), compacts and retries the request
+  once. A second failure is an ordinary provider failure. The provider adapters must classify overflow
+  (`ErrContextOverflow`); today none does, and the loop's `provider.error` is terminal, so the overflow case writes a
+  non-terminal `provider.error` (reason `context_overflow`) and no `failed` status.
 
 ### What
 
@@ -235,12 +237,12 @@ Rules:
 | # | Decision |
 |---|---|
 | D1 | Compaction is an appended `context.compacted` event; replay rebuilds from the last one. No event is changed or removed. |
-| D2 | Trigger: provider-reported `LastContextTokens` plus an estimate of what was appended since, above `window - reserve`, checked before each provider request. |
+| D2 | Trigger: provider-reported `LastContextTokens` plus an estimate of what was appended since, above `window - max(reserve, output)` (output: see the D7 amendment), checked before each provider request. |
 | D3 | The window: the profile's `context_window` for a session under a profile (delegated child, swarm coordinator), else `compaction.context_window`, else the registry table. Unknown means no automatic compaction and a doctor warning. There is no default window. |
 | D4 | The first rebuilt message holds the heading, the original task verbatim when it falls before the cut, then the fenced summary; a user message at the head of the tail is merged into it, after the fence. |
 | D5 | The session's own provider and model write the summary; there is no `compaction_model`. A different model is a later option. |
 | D6 | The summary has Pi's structure; the previous summary is iterative context; one summary per compaction (no split-span merge); capped at 8192 tokens, and a truncated or empty summary fails the compaction. |
-| D7 | Reserve 16384 (raised to `MaxTokens` when larger), keep-recent 20000, enabled by default. Config keys `compaction.reserve`, `compaction.keep_recent`, `compaction.enabled` and `compaction.context_window`, none containing "token" (ADR-005's secret filter). |
+| D7 | Reserve 16384 (raised to the output cap: a table-defaulted output limited to a quarter of the window, an unknown model's line uses the reserve alone; amended 2026-11-25, #483, below), keep-recent 20000, enabled by default. Config keys `compaction.reserve`, `compaction.keep_recent`, `compaction.enabled` and `compaction.context_window`, none containing "token" (ADR-005's secret filter). |
 | D8 | Cut only at a `turn.start` or the `assistant.message` of a turn; a turn keeps its text, calls and results together. |
 | D9 | `session compact <id> [--instructions text]` takes the exec lease; it is refused while the lease is held. |
 | D10 | A context-overflow error, or a `length` finish with no tool calls over the line, compacts and retries once. Adapters gain an overflow classification; the retry writes a non-terminal `provider.error`. |
@@ -248,6 +250,13 @@ Rules:
 | D12 | A compaction is not a turn: it does not count against `max_turns`; its usage is recorded on the event and reported separately. The summarising call draws one unit from the session's budget pool, like a turn, so a swarm's budget bounds its compaction cost; it is refused with the usual budget error when the pool cannot cover it. |
 | D13 | The summary is untrusted model output in a user-role message; per-result truncation on its input; no redaction is added. |
 | D14 | Delegation: each session compacts alone; the parent sees only a child's final text; replay of a resumed child honours its own compaction. |
+
+**Amendment note (2026-11-25, #483), D2 and D7.** The line is `window - max(reserve, output)`. `output` is the
+explicit `--max-tokens` when positive, not limited. Without it, a model in the registry table sends its table
+maximum capped at 32768, and `output` is that value limited to a quarter of the window, so a defaulted cap never
+empties a small window's line. A model with no table entry sends 8192 but its line uses the reserve alone, as before.
+A delegate or swarm child sends its own model's default, not the parent's explicit cap (passing it down is a
+follow-up).
 
 ## Consequences
 

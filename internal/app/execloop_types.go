@@ -39,7 +39,7 @@ type ExecLoopConfig struct {
 	MaxTurns   int64
 	TurnBudget int64
 	// MaxTokens caps each provider turn's response tokens; <= 0 uses
-	// the provider default.
+	// the model-table default (ResolveMaxOutput).
 	MaxTokens int64
 	// SystemPrompt, when non-empty, is sent as a message of role system first
 	// in every provider request of the loop. It is not persisted as an event
@@ -134,7 +134,7 @@ type SessionExecLoopRequest struct {
 	ProjectRoot string
 	// Budget is the total loop budget pool; <= 0 means unlimited turns.
 	Budget int64
-	// MaxTokens caps each provider response; <= 0 means provider default.
+	// MaxTokens caps each provider response; <= 0 uses the model-table default (ResolveMaxOutput).
 	MaxTokens int64
 	// MaxTurns bounds the loop; <= 0 uses execDefaultMaxTurns (25).
 	MaxTurns int64
@@ -176,3 +176,11 @@ type SessionUsage struct {
 	// usage; it is meaningful only when Totals.UsageTurns > 0.
 	LastContextTokens int64
 }
+
+const (
+	// DefaultOutputCap bounds the default max_tokens of a model whose table
+	// maximum is larger (ResolveMaxOutput).
+	DefaultOutputCap = 32768
+	// DefaultMaxOutput is the max_tokens of a model the output table lacks.
+	DefaultMaxOutput int64 = 8192
+)

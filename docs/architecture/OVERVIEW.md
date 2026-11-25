@@ -237,39 +237,38 @@ go run github.com/onsi/ginkgo/v2/ginkgo --procs=2 --randomize-all --randomize-su
 
 ## Context compaction event
 
-`context.compacted` (ADR-010) is an engine event that replaces the conversation before its
-`first_kept_seq` with a summary; the log is never rewritten. Its payload is `summary`,
-`first_kept_seq`, `tokens_before`, `tokens_after`, `reason` (`auto`, `manual` or `overflow`), `model`
-and the summarising call's optional `usage`. A resumed run rebuilds its history from the last
-such event: one user message holding the original task (when it falls before the cut) and then
-the summary between fixed `--- summary ---` and `--- end of summary ---` lines, as untrusted text (a
-summary holding the closing line is refused), then the events from `first_kept_seq` on. `first_kept_seq` is
-at least 1, as the first `turn.start` is at seq 0, and never below the previous compaction's. A malformed
-event is a corrupt log: the exec-loop `session run` exits 7 (`replay_mismatch`); the plain text turn never
-replays the log and is unaffected. `session doctor` and `GET /sessions/{id}/doctor` report a `compactions`
-object (count, `invalid`, last `tokens_after`, summary token totals, separate from turn usage); a nonzero
-`invalid` means `session run` will refuse the session with `replay_mismatch`, though the doctor still exits 0.
-`session compact` (`CompactSession`) appends the event: it picks the cut (`ChooseCut`: a `turn.start` or an
-`assistant.message`, never inside a call and its result, never inside a pending `delegate` call, strictly after the
-previous cut), asks the session's own provider for the summary with no tools, validates it, fences the exec lease and
-appends once. It takes that lease through the judged acquire (ADR-011) under a unique owner, `compact:<uuid>`, so a
-live holder refuses it and nothing is written. A crashed `run:` or `compact:` row of this machine is taken over by the
-next `session run`, `session compact` or `tool run`; `session run` and `session compact` then recover the crash, `tool
-run` does not. A legacy row (a `cli`, `delegate:` or `compact:` row written by an older binary) records no machine and
-cannot be judged: every acquirer refuses it until `flowstate session unlock <id> --force`; a leftover `compact:` row is
-no longer cleared silently, and `RecoverCrashedSession` no longer touches the session's own lease row or clears
-`compact:` rows (it still clears the unfinished delegate children's `delegate:` rows, known limit L1 (ADR-011), which
-can fence a live resumed child). The append fences the lease through the handle, so a compaction whose row was taken
-from it fails fenced and writes nothing. `tool run` holds the same lease around its appends. A failed compaction writes
-no compaction event (crash recovery may add its interruption marker first). The tool loop also appends it, with reason
-`auto`: before each provider request it compares the context (the last reported turn context plus an estimate of the
-tool results since, or the estimate of the whole rebuilt history) with `window - reserve`, draws one pool unit,
-summarises, appends and continues from the rebuilt history; a failed automatic compaction writes nothing, is not retried
-in the run and the run continues. In `swarm run --execute` the coordinator and its children compact by the config's
-`compaction` settings (including `enabled: false`), the coordinator by its profile's `context_window`. A provider
-context-overflow error (or a `length` finish with no calls over the line) compacts with reason `overflow` and retries
-the request once, after a non-terminal `provider.error` (`terminal` false, `reason` `context_overflow`) that leaves the
-session `active`; every other `provider.error` is terminal.
+`context.compacted` (ADR-010) is an engine event that replaces the conversation before its `first_kept_seq` with a
+summary; the log is never rewritten. Its payload is `summary`, `first_kept_seq`, `tokens_before`, `tokens_after`,
+`reason` (`auto`, `manual` or `overflow`), `model` and the summarising call's optional `usage`. A resumed run rebuilds
+its history from the last such event: one user message holding the original task (when it falls before the cut) and
+then the summary between fixed `--- summary ---` and `--- end of summary ---` lines, as untrusted text (a summary
+holding the closing line is refused), then the events from `first_kept_seq` on. `first_kept_seq` is at least 1, as the
+first `turn.start` is at seq 0, and never below the previous compaction's. A malformed event is a corrupt log: the
+exec-loop `session run` exits 7 (`replay_mismatch`); the plain text turn never replays the log and is unaffected.
+`session doctor` and `GET /sessions/{id}/doctor` report a `compactions` object (count, `invalid`, last `tokens_after`,
+summary token totals, separate from turn usage); a nonzero `invalid` means `session run` will refuse the session with
+`replay_mismatch`, though the doctor still exits 0. `session compact` (`CompactSession`) appends the event: it picks
+the cut (`ChooseCut`: a `turn.start` or an `assistant.message`, never inside a call and its result, never inside a
+pending `delegate` call, strictly after the previous cut), asks the session's own provider for the summary with no
+tools, validates it, fences the exec lease and appends once. It takes that lease through the judged acquire (ADR-011)
+under a unique owner, `compact:<uuid>`, so a live holder refuses it and nothing is written. A crashed `run:` or
+`compact:` row of this machine is taken over by the next `session run`, `session compact` or `tool run`; `session run`
+and `session compact` then recover the crash, `tool run` does not. A legacy row (a `cli`, `delegate:` or `compact:`
+row written by an older binary) records no machine and cannot be judged: every acquirer refuses it until `flowstate
+session unlock <id> --force`; a leftover `compact:` row is no longer cleared silently, and `RecoverCrashedSession` no
+longer touches the session's own lease row or clears `compact:` rows (it still clears the unfinished delegate
+children's `delegate:` rows, known limit L1 (ADR-011), which can fence a live resumed child). The append fences the
+lease through the handle, so a compaction whose row was taken from it fails fenced and writes nothing. `tool run`
+holds the same lease around its appends. A failed compaction writes no compaction event (crash recovery may add its
+interruption marker first). The tool loop also appends it, with reason `auto`: before each provider request it
+compares the context (the last reported turn context plus an estimate of the tool results since, or the estimate of
+the whole rebuilt history) with `window - max(reserve, output)` (ADR-010 D7 amendment), draws one pool unit,
+summarises, appends and continues from the rebuilt history; a failed automatic compaction writes nothing, is not
+retried in the run and the run continues. In `swarm run --execute` the coordinator and its children compact by the
+config's `compaction` settings (including `enabled: false`), the coordinator by its profile's `context_window`. A
+provider context-overflow error (or a `length` finish with no calls over the line) compacts with reason `overflow` and
+retries the request once, after a non-terminal `provider.error` (`terminal` false, `reason` `context_overflow`) that
+leaves the session `active`; every other `provider.error` is terminal.
 
 ## Verified conversation history
 

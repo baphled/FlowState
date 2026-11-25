@@ -44,7 +44,7 @@ type ExecuteSwarmConfig struct {
 	// MaxTurns bounds the coordinator's turns; zero uses the coordinator
 	// profile's max_turns.
 	MaxTurns int64
-	// MaxTokens caps each provider response; zero means the provider default.
+	// MaxTokens caps each provider response; <= 0 uses the model-table default (ResolveMaxOutput).
 	MaxTokens int64
 	// Budget is the turn pool of the coordinator, from which every child's
 	// grant is reserved; zero means unlimited.
