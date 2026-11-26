@@ -412,6 +412,77 @@ var _ = Describe("Serve S1 transport", func() {
 			Expect(combined.Doctor.Required).NotTo(ContainElement("warnings"))
 		})
 
+		// hooksDiagnosis is a diagnosis whose log held hook events: an unmatched invocation, a
+		// denial, a failure and a refusal, with no hooks.loaded (a child's log).
+		hooksDiagnosis := func() Diagnosis {
+			_, f := sampleServer()
+			d := f.diagnosis
+			d.Hooks = &DiagnosisHooks{Unmatched: []DiagnosisHookInvocation{{Point: "tool.before", ID: "guard", Seq: 7}},
+				Denials: []DiagnosisHookDenial{{Point: "user.prompt", ID: "guard", Count: 1, Reason: "blocked"}}, Failed: 2,
+				Outcome: &DiagnosisHookOutcome{Code: "hook_refused", ID: "guard", Reason: "blocked"}}
+			return d
+		}
+
+		doctorBodyOf := func(d Diagnosis) map[string]any {
+			s, f := sampleServer()
+			f.diagnosis = d
+			var body map[string]any
+			must(json.Unmarshal(doRequest(s, http.MethodGet,
+				"/sessions/01a1f000-0000-4000-8000-000000000001/doctor", "").Body.Bytes(), &body))
+			return body
+		}
+
+		It("renders the hooks of the diagnosis as the CLI does", func() {
+			Expect(doctorBodyOf(hooksDiagnosis())["hooks"]).To(Equal(map[string]any{"loaded": nil,
+				"unmatched": []any{map[string]any{"point": "tool.before", "id": "guard", "seq": float64(7)}},
+				"denials":   []any{map[string]any{"point": "user.prompt", "id": "guard", "count": float64(1), "reason": "blocked"}},
+				"failed":    float64(2),
+				"outcome":   map[string]any{"code": "hook_refused", "id": "guard", "reason": "blocked"}}))
+		})
+
+		It("renders the last hooks.loaded with ids by source, skipped and inert", func() {
+			s, f := sampleServer()
+			f.diagnosis.Hooks = &DiagnosisHooks{Unmatched: []DiagnosisHookInvocation{}, Denials: []DiagnosisHookDenial{},
+				Loaded: &DiagnosisHookLoaded{Scope: "both", SetSHA256: "abc123", IDs: map[string][]string{"user": {"guard"}},
+					Skipped: []DiagnosisHookSkipped{{ID: "prof", Reason: "scope"}}, Inert: []string{"late"}}}
+			var body map[string]any
+			must(json.Unmarshal(doRequest(s, http.MethodGet,
+				"/sessions/01a1f000-0000-4000-8000-000000000001/doctor", "").Body.Bytes(), &body))
+			Expect(body["hooks"].(map[string]any)["loaded"]).To(Equal(map[string]any{"scope": "both", "set_sha256": "abc123",
+				"ids": map[string]any{"user": []any{"guard"}}, "skipped": []any{map[string]any{"id": "prof", "reason": "scope"}},
+				"inert": []any{"late"}}))
+		})
+
+		It("omits the outcome when no hook stopped or refused the run", func() {
+			d := hooksDiagnosis()
+			d.Hooks.Outcome = nil
+			Expect(doctorBodyOf(d)["hooks"].(map[string]any)).NotTo(HaveKey("outcome"))
+		})
+
+		It("omits the hooks object when the log held no hook event", func() {
+			Expect(doctorBodyOf(Diagnosis{SessionID: "01a1f000-0000-4000-8000-000000000001", Status: "active"})).NotTo(
+				HaveKey("hooks"))
+		})
+
+		It("validates a diagnosis with hooks against schemas/cli.json session-doctor", func() {
+			s, f := sampleServer()
+			f.diagnosis = hooksDiagnosis()
+			Expect(schemaError("session-doctor", doRequest(s, http.MethodGet,
+				"/sessions/01a1f000-0000-4000-8000-000000000001/doctor", "").Body.String())).To(Succeed())
+		})
+
+		It("keeps hooks optional in the session-doctor schema", func() {
+			raw, err := os.ReadFile("../../schemas/cli.json")
+			must(err)
+			var combined struct {
+				Doctor struct {
+					Required []string `json:"required"`
+				} `json:"session-doctor"`
+			}
+			must(json.Unmarshal(raw, &combined))
+			Expect(combined.Doctor.Required).NotTo(ContainElement("hooks"))
+		})
+
 		It("returns the diagnosis shape validated against schemas/cli.json session-doctor", func() {
 			s, _ := sampleServer()
 			Expect(schemaError("session-doctor", doRequest(s, http.MethodGet,

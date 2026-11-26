@@ -510,4 +510,45 @@ var _ = Describe("HTTP doctor parity with session doctor", Label("e2e"), func() 
 		status, _ := httpDoctor(malformedCompactionSession())
 		Expect(status).To(Equal(http.StatusOK))
 	})
+
+	// hookDoctorLog is a log with a hooks.loaded, a matched pair and an unmatched invocation.
+	hookDoctorLog := func() string {
+		return hookDoctorSession(hookLog(app.TypeHooksLoaded, map[string]any{"scope": "both", "set_sha256": "abc123",
+			"ids": []string{"guard", "lint"}, "hooks": []map[string]any{{"id": "guard", "source": "user"}, {"id": "lint", "source": "project"}},
+			"skipped": []map[string]any{{"id": "prof", "reason": "scope"}}, "inert": []string{"late"}}),
+			hookLog(app.TypeHookInvoked, map[string]any{"point": "tool.before", "id": "guard"}),
+			hookLog(app.TypeHookResult, hookResult("tool.before", "guard", "deny")),
+			hookLog(app.TypeHookInvoked, map[string]any{"point": "turn.after", "id": "late"}))
+	}
+
+	It("reports the same hooks object as the CLI for the same log", func() {
+		id := hookDoctorLog()
+		_, cli := doctorRecord(id)
+		Expect(httpDoctorRecord(id)["hooks"]).To(Equal(cli["hooks"]))
+	})
+
+	It("reports the same whole diagnosis as the CLI for a log with hook events", func() {
+		id := hookDoctorLog()
+		_, cli := doctorRecord(id)
+		Expect(httpDoctorRecord(id)).To(Equal(cli))
+	})
+
+	It("omits hooks over HTTP for a log without hook events", func() {
+		Expect(httpDoctorRecord(crashedDoctorSession())).NotTo(HaveKey("hooks"))
+	})
+
+	It("validates the hooks HTTP output against the session-doctor schema", func() {
+		_, body := httpDoctor(hookDoctorLog())
+		Expect(validateAgainst("session-doctor", body)).To(Succeed())
+	})
+
+	It("carries an unmatched invocation through the store-backed doctor port", func() {
+		id := hookDoctorSession(hookLog(app.TypeHookInvoked, map[string]any{"point": "tool.before", "id": "guard"}))
+		st, oerr := app.OpenStore(dbFor())
+		must(oerr)
+		DeferCleanup(func() { must(st.Close()) })
+		d, err := servePorts(st, &flags{}).DiagnoseSession(context.Background(), id)
+		must(err)
+		Expect(d.Hooks.Unmatched).To(Equal([]server.DiagnosisHookInvocation{{Point: "tool.before", ID: "guard", Seq: 1}}))
+	})
 })

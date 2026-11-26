@@ -447,6 +447,156 @@ func windowDoctor(providerName, model, body string) (result, map[string]any) {
 	return r, rec
 }
 
+var _ = Describe("Session doctor hooks", func() {
+	It("omits hooks for a log without hook events", func() {
+		_, rec := doctorRecord(crashedDoctorSession())
+		Expect(rec).NotTo(HaveKey("hooks"))
+	})
+
+	It("lists an invocation no result followed, with its point, id and seq", func() {
+		id := hookDoctorSession(hookLog(app.TypeHookInvoked, map[string]any{"point": "tool.before", "id": "guard", "kind": "command"}))
+		Expect(hooksOf(id)["unmatched"]).To(Equal([]any{
+			map[string]any{"point": "tool.before", "id": "guard", "seq": float64(1)}}))
+	})
+
+	It("summarises the last hooks.loaded: scope, digest, ids by source, skipped and inert", func() {
+		loaded := map[string]any{"scope": "both", "set_sha256": "abc123", "ids": []string{"guard", "lint"},
+			"hooks":   []map[string]any{{"id": "guard", "source": "user"}, {"id": "lint", "source": "project"}},
+			"skipped": []map[string]any{{"id": "prof", "reason": "scope"}}, "inert": []string{"late"}}
+		Expect(hooksOf(hookDoctorSession(hookLog(app.TypeHooksLoaded, loaded)))["loaded"]).To(Equal(map[string]any{
+			"scope": "both", "set_sha256": "abc123", "ids": map[string]any{"user": []any{"guard"}, "project": []any{"lint"}},
+			"skipped": []any{map[string]any{"id": "prof", "reason": "scope"}}, "inert": []any{"late"}}))
+	})
+
+	It("renders loaded as null for a log that records no hooks.loaded, as for a child", func() {
+		id := hookDoctorSession(hookLog(app.TypeHookResult, hookResult("tool.before", "guard", "allow")))
+		Expect(hooksOf(id)["loaded"]).To(BeNil())
+	})
+
+	It("counts the failed hook results", func() {
+		id := hookDoctorSession(hookLog(app.TypeHookResult, hookResult("tool.before", "guard", "failed")),
+			hookLog(app.TypeHookResult, hookResult("tool.after", "guard", "allow")),
+			hookLog(app.TypeHookResult, hookResult("tool.after", "guard", "failed")))
+		Expect(hooksOf(id)["failed"]).To(Equal(float64(2)))
+	})
+
+	It("lists each denying hook with its count and last reason", func() {
+		denied := hookResult("tool.before", "guard", "deny")
+		denied["reason"] = "nope"
+		id := hookDoctorSession(hookLog(app.TypeHookResult, denied), hookLog(app.TypeHookResult, denied))
+		Expect(hooksOf(id)["denials"]).To(Equal([]any{
+			map[string]any{"point": "tool.before", "id": "guard", "count": float64(2), "reason": "nope"}}))
+	})
+
+	It("omits an empty denial reason", func() {
+		id := hookDoctorSession(hookLog(app.TypeHookResult, hookResult("tool.before", "guard", "deny")))
+		Expect(hooksOf(id)["denials"]).To(Equal([]any{map[string]any{"point": "tool.before", "id": "guard", "count": float64(1)}}))
+	})
+
+	It("reports a refusal outcome with the hook id and reason", func() {
+		refused := hookResult("user.prompt", "guard", "deny")
+		refused["reason"] = "blocked"
+		Expect(hooksOf(hookDoctorSession(hookLog(app.TypeHookResult, refused)))["outcome"]).To(Equal(
+			map[string]any{"code": "hook_refused", "id": "guard", "reason": "blocked"}))
+	})
+
+	It("reports a fail-closed user.prompt failure as hook_refused with the failure code", func() {
+		failed := hookResult("user.prompt", "guard", "failed")
+		failed["failure"], failed["on_failure"] = "exit_status", app.HookOnFailureDeny
+		Expect(hooksOf(hookDoctorSession(hookLog(app.TypeHookResult, failed)))["outcome"]).To(Equal(
+			map[string]any{"code": "hook_refused", "id": "guard", "reason": "exit_status"}))
+	})
+
+	It("omits the outcome when no hook stopped or refused the run", func() {
+		Expect(hooksOf(hookDoctorSession(hookLog(app.TypeHookResult, hookResult("tool.before", "guard", "allow"))))).NotTo(
+			HaveKey("outcome"))
+	})
+
+	It("prints a hook reason stripped of escape sequences, not raw", func() {
+		denied := hookResult("user.prompt", "guard", "deny")
+		denied["reason"] = "\x1b[31mred\x1b[0m \u202ever" + "sion"
+		Expect(hooksOf(hookDoctorSession(hookLog(app.TypeHookResult, denied)))["outcome"]).To(Equal(
+			map[string]any{"code": "hook_refused", "id": "guard", "reason": "[31mred[0m version"}))
+	})
+
+	It("validates a diagnosis with hooks against the session-doctor schema", func() {
+		r, _ := doctorRecord(hookDoctorSession(hookLog(app.TypeHookInvoked, map[string]any{"point": "tool.before", "id": "guard"}),
+			hookLog(app.TypeHookResult, hookResult("turn.after", "guard", "failed"))))
+		Expect(validateAgainst("session-doctor", firstLine(r.stdout))).To(Succeed())
+	})
+
+	DescribeTable("rejects a hooks object the session-doctor schema does not allow",
+		func(hooks string) {
+			line := `{"session_id":"01a1f000-0000-4000-8000-000000000000","status":"paused","crashed":false,` +
+				`"run_activity":true,"pending_messages":0,"reserved":0,"budget_pool":null,"available":null,` +
+				`"usage":{"input_tokens":null,"output_tokens":null,"cache_read_tokens":null,"cache_write_tokens":null,` +
+				`"turns_reported":0,"turns_total":0,"last_context_tokens":null},` +
+				`"compactions":{"count":0,"invalid":0,"last_tokens_after":null,"summaries_reported":0,` +
+				`"summary_input_tokens":null,"summary_output_tokens":null},` +
+				`"context_window":{"tokens":1000,"source":"table"},"hooks":` + hooks + `}`
+			Expect(validateAgainst("session-doctor", line)).To(HaveOccurred())
+		},
+		Entry("a failed count that is not a number", `{"loaded":null,"unmatched":[],"denials":[],"failed":"1"}`),
+		Entry("an unknown key", `{"loaded":null,"unmatched":[],"denials":[],"failed":0,"stops":0}`),
+		Entry("a missing failed count", `{"loaded":null,"unmatched":[],"denials":[]}`),
+		Entry("a denial without its count", `{"loaded":null,"unmatched":[],"failed":0,"denials":[{"point":"tool.before","id":"g"}]}`),
+	)
+})
+
+// hookLog is one engine event of a hookDoctorSession log.
+func hookLog(typ string, payload map[string]any) hookDoctorEvent {
+	return hookDoctorEvent{typ: typ, payload: payload}
+}
+
+// hookResult is a hook.result payload for hook id at point with the given decision.
+func hookResult(point, id, decision string) map[string]any {
+	return map[string]any{"point": point, "id": id, "decision": decision, "duration_ms": 1, "exit_code": 0,
+		"stdout": "", "stderr": ""}
+}
+
+// hookDoctorEvent is one event of a hookDoctorSession log.
+type hookDoctorEvent struct {
+	typ     string
+	payload map[string]any
+}
+
+// hookDoctorSession creates a session whose log holds the given engine events, so a doctor
+// spec starts from a known hook log; it panics on setup errors.
+func hookDoctorSession(events ...hookDoctorEvent) string {
+	created := runCLINew("--provider", "z.ai", "--model", "glm-5.3", "--task", "hook probe")
+	if created.exit != 0 {
+		panic("session new failed: " + created.stderr)
+	}
+	id := decodeNew(created.stdout).ID
+	st, oerr := app.OpenStore(dbFor())
+	if oerr != nil {
+		panic(oerr)
+	}
+	w, werr := st.NewEventWriter(context.Background(), id)
+	if werr != nil {
+		panic(werr)
+	}
+	for _, ev := range events {
+		if _, aerr := w.Append(context.Background(), "engine", ev.typ, ev.payload); aerr != nil {
+			panic(aerr)
+		}
+	}
+	if cerr := w.Close(); cerr != nil {
+		panic(cerr)
+	}
+	if serr := st.Close(); serr != nil {
+		panic(serr)
+	}
+	return id
+}
+
+// hooksOf runs the doctor for id and returns its hooks object.
+func hooksOf(id string) map[string]any {
+	_, rec := doctorRecord(id)
+	hooks, _ := rec["hooks"].(map[string]any)
+	return hooks
+}
+
 var _ = Describe("Session doctor context window", func() {
 	It("warns for a model with no window, naming the fix", func() {
 		_, rec := windowDoctor("ollama", "llama3", "")

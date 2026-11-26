@@ -607,6 +607,83 @@
           "summary_input_tokens": { "type": ["integer", "null"], "minimum": 0 },
           "summary_output_tokens": { "type": ["integer", "null"], "minimum": 0 }
         }
+      },
+      "hooks": {
+        "description": "Lifecycle hook summary (ADR-012), read from the log; omitted when the log holds no hook event. The CLI and the HTTP doctor both emit it; ids and reasons are untrusted text, stripped and bounded.",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["loaded", "unmatched", "denials", "failed"],
+        "properties": {
+          "loaded": {
+            "description": "The last hooks.loaded of the log: the set the latest root run applied; null when none was recorded (a child or a swarm run writes none).",
+            "type": ["object", "null"],
+            "additionalProperties": false,
+            "required": ["scope", "set_sha256", "ids", "skipped", "inert"],
+            "properties": {
+              "scope": { "type": "string" },
+              "set_sha256": { "type": "string" },
+              "ids": {
+                "description": "Hook ids grouped by source (user, project, a profile).",
+                "type": "object",
+                "additionalProperties": { "type": "array", "items": { "type": "string" } }
+              },
+              "skipped": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["id", "reason"],
+                  "properties": {
+                    "id": { "type": "string" },
+                    "reason": { "type": "string" }
+                  }
+                }
+              },
+              "inert": { "type": "array", "items": { "type": "string" } }
+            }
+          },
+          "unmatched": {
+            "description": "hook.invoked events no hook.result followed (a crash or a cancellation mid-hook), in log order.",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["point", "id", "seq"],
+              "properties": {
+                "point": { "type": "string" },
+                "id": { "type": "string" },
+                "seq": { "type": "integer", "minimum": 0 }
+              }
+            }
+          },
+          "denials": {
+            "description": "Per hook that returned deny: its point, the count and the last reason (omitted when empty).",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["point", "id", "count"],
+              "properties": {
+                "point": { "type": "string" },
+                "id": { "type": "string" },
+                "count": { "type": "integer", "minimum": 1 },
+                "reason": { "type": "string" }
+              }
+            }
+          },
+          "failed": { "type": "integer", "minimum": 0 },
+          "outcome": {
+            "description": "The last stop (turn.after) or refusal (user.prompt) a hook recorded; omitted when neither is in the log.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["code", "id"],
+            "properties": {
+              "code": { "type": "string", "enum": ["hook_stop", "hook_refused"] },
+              "id": { "type": "string" },
+              "reason": { "type": "string" }
+            }
+          }
+        }
       }
     }
   }

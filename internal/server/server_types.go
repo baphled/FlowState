@@ -96,8 +96,61 @@ type Diagnosis struct {
 	Usage           DiagnosisUsage
 	Compactions     DiagnosisCompactions
 	ContextWindow   DiagnosisWindow
+	// Hooks summarises the log's hook events (ADR-012); nil when the log holds none, and then the wire
+	// body omits the hooks object.
+	Hooks *DiagnosisHooks
 	// Warnings are the diagnosis notes; the wire field is omitted when empty.
 	Warnings []string
+}
+
+// DiagnosisHooks is the doctor's lifecycle hook summary (ADR-012), mirroring the hooks object of the
+// session-doctor wire shape. Loaded is nil when the log records no hooks.loaded (a child, a swarm run)
+// and renders as JSON null; Outcome is nil when no hook stopped or refused the run and is then omitted.
+// Ids and reasons arrive stripped of control characters and bounded from the owning layer.
+type DiagnosisHooks struct {
+	Loaded    *DiagnosisHookLoaded
+	Unmatched []DiagnosisHookInvocation
+	Denials   []DiagnosisHookDenial
+	Failed    int64
+	Outcome   *DiagnosisHookOutcome
+}
+
+// DiagnosisHookLoaded is the last hooks.loaded of the log.
+type DiagnosisHookLoaded struct {
+	Scope     string
+	SetSHA256 string
+	// IDs groups the hook ids by source (user, project, a profile).
+	IDs     map[string][]string
+	Skipped []DiagnosisHookSkipped
+	Inert   []string
+}
+
+// DiagnosisHookSkipped is one skipped hooks.loaded entry: a hook id and why.
+type DiagnosisHookSkipped struct {
+	ID     string
+	Reason string
+}
+
+// DiagnosisHookInvocation is one hook.invoked the log holds without a result.
+type DiagnosisHookInvocation struct {
+	Point string
+	ID    string
+	Seq   int64
+}
+
+// DiagnosisHookDenial is one hook's denials: the count and the last reason (empty renders as omitted).
+type DiagnosisHookDenial struct {
+	Point  string
+	ID     string
+	Count  int64
+	Reason string
+}
+
+// DiagnosisHookOutcome is the last stop or refusal a hook recorded: Code is hook_stop or hook_refused.
+type DiagnosisHookOutcome struct {
+	Code   string
+	ID     string
+	Reason string
 }
 
 // DiagnosisCompactions is what the event log records about context
@@ -374,7 +427,56 @@ type diagnosisBody struct {
 	Usage           usageBody       `json:"usage"`
 	Compactions     compactionsBody `json:"compactions"`
 	ContextWindow   windowBody      `json:"context_window"`
+	Hooks           *hooksBody      `json:"hooks,omitempty"`
 	Warnings        []string        `json:"warnings,omitempty"`
+}
+
+// hooksBody is the hooks object of the session-doctor item (ADR-012), as the CLI renders it: loaded
+// is null when the log records no hooks.loaded; the lists are never null; outcome and an empty denial
+// reason are omitted.
+type hooksBody struct {
+	Loaded    *hookLoadedBody      `json:"loaded"`
+	Unmatched []hookInvocationBody `json:"unmatched"`
+	Denials   []hookDenialBody     `json:"denials"`
+	Failed    int64                `json:"failed"`
+	Outcome   *hookOutcomeBody     `json:"outcome,omitempty"`
+}
+
+// hookLoadedBody is the hooks.loaded summary of the hooks object.
+type hookLoadedBody struct {
+	Scope     string              `json:"scope"`
+	SetSHA256 string              `json:"set_sha256"`
+	IDs       map[string][]string `json:"ids"`
+	Skipped   []hookSkippedBody   `json:"skipped"`
+	Inert     []string            `json:"inert"`
+}
+
+// hookSkippedBody is one skipped hooks.loaded entry.
+type hookSkippedBody struct {
+	ID     string `json:"id"`
+	Reason string `json:"reason"`
+}
+
+// hookInvocationBody is one unmatched hook.invoked.
+type hookInvocationBody struct {
+	Point string `json:"point"`
+	ID    string `json:"id"`
+	Seq   int64  `json:"seq"`
+}
+
+// hookDenialBody is one denying hook; an empty reason is omitted.
+type hookDenialBody struct {
+	Point  string `json:"point"`
+	ID     string `json:"id"`
+	Count  int64  `json:"count"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// hookOutcomeBody is the last stop or refusal a hook recorded; an empty reason is omitted.
+type hookOutcomeBody struct {
+	Code   string `json:"code"`
+	ID     string `json:"id"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // compactionsBody is the compactions object of the session-doctor item; the

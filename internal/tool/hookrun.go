@@ -70,8 +70,8 @@ func (r HookRunner) start(ctx context.Context, c HookCommand, path string, env [
 	settle()
 	res := HookResult{
 		ExitCode: -1,
-		Stdout:   sanitizeHookText(out.data.String(), true),
-		Stderr:   sanitizeHookText(errOut.data.String(), true),
+		Stdout:   SanitizeHookText(out.data.String(), true),
+		Stderr:   SanitizeHookText(errOut.data.String(), true),
 	}
 	if cmd.ProcessState != nil {
 		res.ExitCode = cmd.ProcessState.ExitCode()
@@ -102,7 +102,7 @@ func classifyHook(res HookResult, err error, ended hookEnded, c HookCommand, std
 		return failWith(res, HookFailureOutputIncomplete, "")
 	case errors.As(err, &exit) && res.ExitCode == HookDenyExit:
 		res.Verdict = HookDeny
-		res.Reason = boundHookText(sanitizeHookText(stderr, false), HookReasonCap)
+		res.Reason = boundHookText(SanitizeHookText(stderr, false), HookReasonCap)
 		return res
 	case errors.As(err, &exit):
 		return failWith(res, HookFailureExit, "")
@@ -130,7 +130,7 @@ func readHookStdout(res HookResult, c HookCommand, stdout []byte) HookResult {
 		return failWith(res, code, "")
 	}
 	res.Output = HookOutput{Decision: doc.Decision, Args: doc.Args, Stop: doc.Stop != nil && *doc.Stop}
-	res.Output.Reason = boundHookText(sanitizeHookText(doc.Reason, false), HookReasonCap)
+	res.Output.Reason = boundHookText(SanitizeHookText(doc.Reason, false), HookReasonCap)
 	if doc.Decision == "deny" {
 		res.Verdict = HookDeny
 		res.Reason = res.Output.Reason
@@ -163,7 +163,7 @@ func hookFailed(code, detail string) HookResult {
 // failWith marks res as a failure with a code and a sanitised, bounded detail.
 func failWith(res HookResult, code, detail string) HookResult {
 	res.Verdict, res.Failure = HookFailure, code
-	res.Detail = boundHookText(sanitizeHookText(detail, false), HookReasonCap)
+	res.Detail = boundHookText(SanitizeHookText(detail, false), HookReasonCap)
 	return res
 }
 
@@ -242,10 +242,11 @@ func (b *hookCapture) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// sanitizeHookText strips control, format and line-separator characters (the class swarm.Brief refuses) and
+// SanitizeHookText strips control, format and line-separator characters (the class swarm.Brief refuses) and
 // invalid UTF-8, so a hook cannot paint a terminal or smuggle a line break. keepLayout keeps newline and tab,
-// which captured output needs to stay readable.
-func sanitizeHookText(s string, keepLayout bool) string {
+// which captured output needs to stay readable. The session doctor strips the text it reads from a log with
+// the same function (keepLayout false), so the writer and the reader cannot drift.
+func SanitizeHookText(s string, keepLayout bool) string {
 	return strings.Map(func(r rune) rune {
 		switch {
 		case keepLayout && (r == '\n' || r == '\t'):

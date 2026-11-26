@@ -190,7 +190,7 @@ func serveCancel(ctx context.Context, st *app.Store, id string) (server.Session,
 
 // serveDiagnose wires GET /sessions/{id}/doctor onto app.DiagnoseSessionWith with
 // the loaded compaction settings, as `session doctor` does, so both report the same
-// compactions, context window and warnings.
+// compactions, context window, warnings and hooks.
 func serveDiagnose(ctx context.Context, st *app.Store, id string, cfg app.CompactionConfig) (server.Diagnosis, error) {
 	d, err := app.DiagnoseSessionWith(ctx, st, id, cfg)
 	if err != nil {
@@ -208,7 +208,37 @@ func serveDiagnose(ctx context.Context, st *app.Store, id string, cfg app.Compac
 			LastTokensAfter: d.Compactions.LastTokensAfter, SummariesReported: d.Compactions.SummariesReported,
 			SummaryInputTokens: d.Compactions.SummaryInputTokens, SummaryOutputTokens: d.Compactions.SummaryOutputTokens},
 		ContextWindow: server.DiagnosisWindow{Tokens: d.ContextWindow.Tokens, Source: d.ContextWindow.Source},
+		Hooks:         serveDiagnosisHooks(d.Hooks),
 		Warnings:      d.Warnings}, nil
+}
+
+// serveDiagnosisHooks translates the doctor's hook summary into the server DTO; nil stays nil so a
+// log without hook events omits the hooks object over HTTP, as the CLI does.
+func serveDiagnosisHooks(h *app.HookStats) *server.DiagnosisHooks {
+	if h == nil {
+		return nil
+	}
+	out := &server.DiagnosisHooks{Unmatched: []server.DiagnosisHookInvocation{}, Denials: []server.DiagnosisHookDenial{},
+		Failed: h.Failed}
+	if h.Loaded != nil {
+		loaded := &server.DiagnosisHookLoaded{Scope: h.Loaded.Scope, SetSHA256: h.Loaded.SetSHA256, IDs: h.Loaded.IDs,
+			Skipped: []server.DiagnosisHookSkipped{}, Inert: []string{}}
+		for _, s := range h.Loaded.Skipped {
+			loaded.Skipped = append(loaded.Skipped, server.DiagnosisHookSkipped{ID: s.ID, Reason: s.Reason})
+		}
+		loaded.Inert = append(loaded.Inert, h.Loaded.Inert...)
+		out.Loaded = loaded
+	}
+	for _, u := range h.Unmatched {
+		out.Unmatched = append(out.Unmatched, server.DiagnosisHookInvocation{Point: u.Point, ID: u.ID, Seq: u.Seq})
+	}
+	for _, dn := range h.Denials {
+		out.Denials = append(out.Denials, server.DiagnosisHookDenial{Point: dn.Point, ID: dn.ID, Count: dn.Count, Reason: dn.Reason})
+	}
+	if h.Outcome != nil {
+		out.Outcome = &server.DiagnosisHookOutcome{Code: h.Outcome.Code, ID: h.Outcome.ID, Reason: h.Outcome.Reason}
+	}
+	return out
 }
 
 // serveBudget wires GET /sessions/{id}/budget onto

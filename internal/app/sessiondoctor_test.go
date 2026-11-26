@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/store"
+	"github.com/baphled/flowstate/internal/tool"
 )
 
 // mustCreateCrashChild composes a delegated child session under
@@ -604,3 +606,301 @@ func replayOrPanic(ctx context.Context, st *store.Store, id string) []store.Reco
 	}
 	return events
 }
+
+// hookLogEvent is one event of a hookDoctorSession log.
+type hookLogEvent struct {
+	typ     string
+	payload any
+}
+
+// hookEvent is one hookLogEvent.
+func hookEvent(typ string, payload map[string]any) hookLogEvent {
+	return hookLogEvent{typ: typ, payload: payload}
+}
+
+// hookDoctorSession creates a session whose log holds the given events (actor engine), so a doctor
+// spec starts from a known hook log; it panics on setup errors. The second result diagnoses the session
+// and returns its hook summary, panicking when the doctor reports none.
+func hookDoctorSession(ctx context.Context, st *store.Store, events ...hookLogEvent) (*store.Session, func() HookStats) {
+	sess := mustCreateCrashSession(ctx, st)
+	w, err := st.NewEventWriter(ctx, sess.ID)
+	if err != nil {
+		panic(err)
+	}
+	for _, ev := range events {
+		if _, aerr := w.Append(ctx, "engine", ev.typ, ev.payload); aerr != nil {
+			panic(aerr)
+		}
+	}
+	if cerr := w.Close(); cerr != nil {
+		panic(cerr)
+	}
+	diagnose := func() HookStats {
+		d, derr := DiagnoseSession(ctx, st, sess.ID)
+		if derr != nil {
+			panic(derr)
+		}
+		if d.Hooks == nil {
+			panic("the doctor reported no hooks for a log with hook events")
+		}
+		return *d.Hooks
+	}
+	return sess, diagnose
+}
+
+// loadedPayload is a hooks.loaded payload with one user hook and one project hook.
+func loadedPayload(skipped []map[string]any, inert []string) map[string]any {
+	return map[string]any{"scope": "both", "set_sha256": "abc123", "ids": []string{"guard", "lint"},
+		"hooks":   []map[string]any{{"id": "guard", "source": "user"}, {"id": "lint", "source": "project"}},
+		"skipped": skipped, "inert": inert}
+}
+
+// resultPayload is a hook.result payload for hook id at point with the given decision.
+func resultPayload(point, id, decision string) map[string]any {
+	return map[string]any{"point": point, "id": id, "decision": decision, "duration_ms": 1, "exit_code": 0,
+		"stdout": "", "stderr": ""}
+}
+
+var _ = Describe("session doctor hooks", func() {
+	var (
+		ctx context.Context
+		st  *store.Store
+	)
+	BeforeEach(func() {
+		ctx = context.Background()
+		st = mustOpenCrashStore()
+		DeferCleanup(func() { _ = st.Close() })
+	})
+
+	Describe("a log without hook events", func() {
+		It("reports no hooks object", func() {
+			sess := mustCreateCrashSession(ctx, st)
+			mustAppendEvent(ctx, st, sess.ID, "engine", "provider.request", map[string]any{})
+			d, err := DiagnoseSession(ctx, st, sess.ID)
+			if err != nil {
+				panic(err)
+			}
+			Expect(d.Hooks).To(BeNil())
+		})
+
+		It("still reports the rest of the diagnosis", func() {
+			sess := mustCreateCrashSession(ctx, st)
+			mustAppendEvent(ctx, st, sess.ID, "engine", "provider.request", map[string]any{})
+			d, err := DiagnoseSession(ctx, st, sess.ID)
+			if err != nil {
+				panic(err)
+			}
+			Expect(d.RunActivity).To(BeTrue())
+		})
+	})
+
+	Describe("the last hooks.loaded", func() {
+		It("reports the scope, the set digest and the ids by source", func() {
+			_, diagnose := hookDoctorSession(ctx, st, hookEvent(TypeHooksLoaded, loadedPayload(nil, nil)))
+			Expect(diagnose().Loaded).To(Equal(&HookLoaded{Scope: "both", SetSHA256: "abc123",
+				IDs: map[string][]string{"user": {"guard"}, "project": {"lint"}}, Skipped: []HookSkipped{}, Inert: []string{}}))
+		})
+
+		It("reports the latest set when a resumed run loaded another", func() {
+			second := loadedPayload(nil, nil)
+			second["set_sha256"] = "def456"
+			_, diagnose := hookDoctorSession(ctx, st, hookEvent(TypeHooksLoaded, loadedPayload(nil, nil)),
+				hookEvent(TypeHooksLoaded, second))
+			Expect(diagnose().Loaded.SetSHA256).To(Equal("def456"))
+		})
+
+		It("lists the skipped ids with their reasons", func() {
+			_, diagnose := hookDoctorSession(ctx, st, hookEvent(TypeHooksLoaded,
+				loadedPayload([]map[string]any{{"id": "prof", "reason": "scope"}}, nil)))
+			Expect(diagnose().Loaded.Skipped).To(Equal([]HookSkipped{{ID: "prof", Reason: "scope"}}))
+		})
+
+		It("lists the inert ids", func() {
+			_, diagnose := hookDoctorSession(ctx, st, hookEvent(TypeHooksLoaded, loadedPayload(nil, []string{"late"})))
+			Expect(diagnose().Loaded.Inert).To(Equal([]string{"late"}))
+		})
+
+		It("keeps loaded nil when the log records none, as for a child", func() {
+			_, diagnose := hookDoctorSession(ctx, st, hookEvent(TypeHookResult, resultPayload("tool.before", "guard", "allow")))
+			Expect(diagnose().Loaded).To(BeNil())
+		})
+	})
+
+	Describe("unmatched invocations", func() {
+		It("lists an invocation no result followed, with its point, id and seq", func() {
+			_, diagnose := hookDoctorSession(ctx, st, hookEvent(TypeHookInvoked,
+				map[string]any{"point": "tool.before", "id": "guard", "kind": "command"}))
+			Expect(diagnose().Unmatched).To(Equal([]HookInvocation{{Point: "tool.before", ID: "guard", Seq: 1}}))
+		})
+
+		It("does not list an invocation a result followed", func() {
+			_, diagnose := hookDoctorSession(ctx, st, hookEvent(TypeHookInvoked, map[string]any{"point": "tool.before", "id": "guard"}),
+				hookEvent(TypeHookResult, resultPayload("tool.before", "guard", "allow")))
+			Expect(diagnose().Unmatched).To(BeEmpty())
+		})
+
+		It("does not pair a result with another hook's invocation", func() {
+			_, diagnose := hookDoctorSession(ctx, st, hookEvent(TypeHookInvoked, map[string]any{"point": "tool.before", "id": "guard"}),
+				hookEvent(TypeHookResult, resultPayload("tool.before", "other", "allow")))
+			Expect(diagnose().Unmatched).To(HaveLen(1))
+		})
+
+		It("lists a superseded invocation and the open ones in log order", func() {
+			_, diagnose := hookDoctorSession(ctx, st,
+				hookEvent(TypeHookInvoked, map[string]any{"point": "tool.before", "id": "guard"}),
+				hookEvent(TypeHookInvoked, map[string]any{"point": "tool.before", "id": "guard"}),
+				hookEvent(TypeHookResult, resultPayload("tool.before", "guard", "allow")),
+				hookEvent(TypeHookInvoked, map[string]any{"point": "turn.after", "id": "late"}),
+				hookEvent(TypeHookInvoked, map[string]any{"point": "tool.after", "id": "other"}))
+			Expect(diagnose().Unmatched).To(Equal([]HookInvocation{{Point: "tool.before", ID: "guard", Seq: 1},
+				{Point: "turn.after", ID: "late", Seq: 4}, {Point: "tool.after", ID: "other", Seq: 5}}))
+		})
+
+		It("lists superseded invocations in log order whatever the order they were superseded in", func() {
+			_, diagnose := hookDoctorSession(ctx, st,
+				hookEvent(TypeHookInvoked, map[string]any{"point": "tool.before", "id": "a"}),
+				hookEvent(TypeHookInvoked, map[string]any{"point": "tool.before", "id": "b"}),
+				hookEvent(TypeHookInvoked, map[string]any{"point": "tool.before", "id": "b"}), // supersedes b
+				hookEvent(TypeHookInvoked, map[string]any{"point": "tool.before", "id": "a"}), // supersedes a
+				hookEvent(TypeHookResult, resultPayload("tool.before", "a", "allow")),
+				hookEvent(TypeHookResult, resultPayload("tool.before", "b", "allow")))
+			Expect(diagnose().Unmatched).To(Equal([]HookInvocation{{Point: "tool.before", ID: "a", Seq: 1},
+				{Point: "tool.before", ID: "b", Seq: 2}}))
+		})
+	})
+
+	Describe("denials and failures", func() {
+		It("counts a hook's denials and keeps its last reason", func() {
+			first, second := resultPayload("tool.before", "guard", "deny"), resultPayload("tool.before", "guard", "deny")
+			first["reason"], second["reason"] = "nope", "still nope"
+			_, diagnose := hookDoctorSession(ctx, st, hookEvent(TypeHookResult, first), hookEvent(TypeHookResult, second))
+			Expect(diagnose().Denials).To(Equal([]HookDenial{{Point: "tool.before", ID: "guard", Count: 2, Reason: "still nope"}}))
+		})
+
+		It("lists each denying hook once, in first-seen order", func() {
+			_, diagnose := hookDoctorSession(ctx, st, hookEvent(TypeHookResult, resultPayload("tool.before", "a", "deny")),
+				hookEvent(TypeHookResult, resultPayload("tool.before", "b", "deny")),
+				hookEvent(TypeHookResult, resultPayload("tool.before", "a", "deny")))
+			Expect(diagnose().Denials).To(HaveLen(2))
+		})
+
+		It("counts the failed hook results", func() {
+			_, diagnose := hookDoctorSession(ctx, st, hookEvent(TypeHookResult, resultPayload("tool.before", "guard", "failed")),
+				hookEvent(TypeHookResult, resultPayload("tool.after", "guard", "failed")),
+				hookEvent(TypeHookResult, resultPayload("tool.after", "guard", "allow")))
+			Expect(diagnose().Failed).To(Equal(int64(2)))
+		})
+
+		It("does not list a failed result as a denial", func() {
+			_, diagnose := hookDoctorSession(ctx, st, hookEvent(TypeHookResult, resultPayload("tool.before", "guard", "failed")))
+			Expect(diagnose().Denials).To(BeEmpty())
+		})
+
+		It("lists a hook's denials at two points separately", func() {
+			_, diagnose := hookDoctorSession(ctx, st, hookEvent(TypeHookResult, resultPayload("tool.before", "evil", "deny")),
+				hookEvent(TypeHookResult, resultPayload("user.prompt", "evil", "deny")))
+			Expect(diagnose().Denials).To(Equal([]HookDenial{{Point: "tool.before", ID: "evil", Count: 1},
+				{Point: "user.prompt", ID: "evil", Count: 1}}))
+		})
+	})
+
+	Describe("the outcome", func() {
+		It("reports a stop as hook_stop naming the hook", func() {
+			stop := resultPayload("turn.after", "late", "allow")
+			stop["stop"] = true
+			_, diagnose := hookDoctorSession(ctx, st, hookEvent(TypeHookResult, stop))
+			Expect(diagnose().Outcome).To(Equal(&HookOutcome{Code: CodeHookStop, ID: "late"}))
+		})
+
+		It("reports a user.prompt deny as hook_refused with the id and the reason", func() {
+			refused := resultPayload("user.prompt", "guard", "deny")
+			refused["reason"] = "blocked"
+			_, diagnose := hookDoctorSession(ctx, st, hookEvent(TypeHookResult, refused))
+			Expect(diagnose().Outcome).To(Equal(&HookOutcome{Code: CodeHookRefused, ID: "guard", Reason: "blocked"}))
+		})
+
+		It("reports a fail-closed user.prompt failure as hook_refused", func() {
+			failed := resultPayload("user.prompt", "guard", "failed")
+			failed["failure"], failed["on_failure"] = "exit_status", HookOnFailureDeny
+			_, diagnose := hookDoctorSession(ctx, st, hookEvent(TypeHookResult, failed))
+			Expect(diagnose()).To(Equal(HookStats{Unmatched: []HookInvocation{}, Denials: []HookDenial{}, Failed: 1,
+				Outcome: &HookOutcome{Code: CodeHookRefused, ID: "guard", Reason: "exit_status"}}))
+		})
+
+		DescribeTable("does not treat a failure as a refusal unless it is fail-closed at user.prompt",
+			func(point, policy string) {
+				failed := resultPayload(point, "guard", "failed")
+				failed["failure"], failed["on_failure"] = "exit_status", policy
+				_, diagnose := hookDoctorSession(ctx, st, hookEvent(TypeHookResult, failed))
+				Expect(diagnose().Outcome).To(BeNil())
+			},
+			Entry("advisory at user.prompt", "user.prompt", HookOnFailureAllow),
+			Entry("fail-closed at tool.before", "tool.before", HookOnFailureDeny))
+
+		It("does not treat a tool.before deny as a refusal", func() {
+			_, diagnose := hookDoctorSession(ctx, st, hookEvent(TypeHookResult, resultPayload("tool.before", "guard", "deny")))
+			Expect(diagnose().Outcome).To(BeNil())
+		})
+
+		It("reports the latest outcome", func() {
+			stop := resultPayload("turn.after", "late", "allow")
+			stop["stop"] = true
+			_, diagnose := hookDoctorSession(ctx, st, hookEvent(TypeHookResult, stop),
+				hookEvent(TypeHookResult, resultPayload("user.prompt", "guard", "deny")))
+			Expect(diagnose().Outcome.Code).To(Equal(CodeHookRefused))
+		})
+
+		It("reports none without a stop or a refusal", func() {
+			_, diagnose := hookDoctorSession(ctx, st, hookEvent(TypeHookResult, resultPayload("tool.before", "guard", "allow")))
+			Expect(diagnose().Outcome).To(BeNil())
+		})
+	})
+
+	Describe("untrusted text", func() {
+		It("strips control and format characters from a reason", func() {
+			denied := resultPayload("user.prompt", "guard", "deny")
+			denied["reason"] = "\x1b[31mred\x1b[0m \u202ever" + "sion"
+			_, diagnose := hookDoctorSession(ctx, st, hookEvent(TypeHookResult, denied))
+			Expect(diagnose().Denials[0].Reason).To(Equal("[31mred[0m version"))
+		})
+
+		It("strips line breaks and tabs from a reason", func() {
+			denied := resultPayload("tool.before", "guard", "deny")
+			denied["reason"] = "a\nb\tc"
+			_, diagnose := hookDoctorSession(ctx, st, hookEvent(TypeHookResult, denied))
+			Expect(diagnose().Denials[0].Reason).To(Equal("abc"))
+		})
+
+		It("bounds a reason to the hook reason cap at a character boundary", func() {
+			denied := resultPayload("tool.before", "guard", "deny")
+			denied["reason"] = strings.Repeat("€", tool.HookReasonCap) // 3 bytes each: the cut lands inside one
+			_, diagnose := hookDoctorSession(ctx, st, hookEvent(TypeHookResult, denied))
+			Expect(diagnose().Denials[0].Reason).To(HaveLen(tool.HookReasonCap - 1))
+		})
+
+		It("bounds a hook id", func() {
+			_, diagnose := hookDoctorSession(ctx, st, hookEvent(TypeHookInvoked,
+				map[string]any{"point": "tool.before", "id": strings.Repeat("a", 200)}))
+			Expect(diagnose().Unmatched[0].ID).To(HaveLen(64))
+		})
+
+		It("does not fail on a hook payload that is not an object", func() {
+			sess := mustCreateCrashSession(ctx, st)
+			w, err := st.NewEventWriter(ctx, sess.ID)
+			if err != nil {
+				panic(err)
+			}
+			if _, aerr := w.Append(ctx, "engine", TypeHookResult, "not-an-object"); aerr != nil {
+				panic(aerr)
+			}
+			if cerr := w.Close(); cerr != nil {
+				panic(cerr)
+			}
+			d, derr := DiagnoseSession(ctx, st, sess.ID)
+			if derr != nil {
+				panic(derr)
+			}
+			Expect(d.Hooks).To(Equal(&HookStats{Unmatched: []HookInvocation{}, Denials: []HookDenial{}}))
+		})
+	})
+})
