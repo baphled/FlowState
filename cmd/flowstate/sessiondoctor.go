@@ -42,6 +42,9 @@ func cmdDoctor(ctx context.Context, st *app.Store, id string, fl *flags, stdout,
 	out["usage"] = doctorUsage(d.Usage)
 	out["compactions"] = doctorCompactions(d.Compactions)
 	out["context_window"] = doctorWindow(d.ContextWindow)
+	if d.Hooks != nil {
+		out["hooks"] = doctorHooks(*d.Hooks)
+	}
 	if len(d.Warnings) > 0 {
 		out["warnings"] = d.Warnings
 	}
@@ -100,4 +103,51 @@ func doctorWindow(w app.ContextWindow) map[string]any {
 		return map[string]any{"tokens": nil, "source": w.Source}
 	}
 	return map[string]any{"tokens": w.Tokens, "source": w.Source}
+}
+
+// doctorHooks is the hooks object of the doctor output (ADR-012): the last hooks.loaded summary (null
+// when the log records none, as for a child), the invocations no result followed, the denials with their
+// last reason (omitted when empty), the failure count and the last stop or refusal (omitted when none).
+// The owning layer already stripped and bounded the hook ids and reasons, so terminalSafeJSON only escapes
+// what remains again; it is emitted only for a log with a hook event.
+func doctorHooks(h app.HookStats) map[string]any {
+	out := map[string]any{"loaded": nil, "unmatched": []any{}, "denials": []any{}, "failed": h.Failed}
+	if h.Loaded != nil {
+		out["loaded"] = doctorHooksLoaded(h.Loaded)
+	}
+	for _, u := range h.Unmatched {
+		out["unmatched"] = append(out["unmatched"].([]any), map[string]any{"point": u.Point, "id": u.ID, "seq": u.Seq})
+	}
+	for _, d := range h.Denials {
+		entry := map[string]any{"point": d.Point, "id": d.ID, "count": d.Count}
+		if d.Reason != "" {
+			entry["reason"] = d.Reason
+		}
+		out["denials"] = append(out["denials"].([]any), entry)
+	}
+	if h.Outcome != nil {
+		outcome := map[string]any{"code": h.Outcome.Code, "id": h.Outcome.ID}
+		if h.Outcome.Reason != "" {
+			outcome["reason"] = h.Outcome.Reason
+		}
+		out["outcome"] = outcome
+	}
+	return out
+}
+
+// doctorHooksLoaded is the hooks.loaded summary: scope, set digest, ids by source, skipped and inert.
+func doctorHooksLoaded(l *app.HookLoaded) map[string]any {
+	ids := make(map[string]any, len(l.IDs))
+	for source, list := range l.IDs {
+		ids[source] = list
+	}
+	skipped := make([]any, 0, len(l.Skipped))
+	for _, s := range l.Skipped {
+		skipped = append(skipped, map[string]any{"id": s.ID, "reason": s.Reason})
+	}
+	inert := make([]any, 0, len(l.Inert))
+	for _, id := range l.Inert {
+		inert = append(inert, id)
+	}
+	return map[string]any{"scope": l.Scope, "set_sha256": l.SetSHA256, "ids": ids, "skipped": skipped, "inert": inert}
 }

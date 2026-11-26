@@ -133,14 +133,48 @@ func (s *Server) doctorHandler(id string) http.HandlerFunc {
 	}
 }
 
-// diagnosisWire translates the diagnosis DTO into its wire object; a
-// nil pool renders budget_pool/available as JSON null.
+// diagnosisWire translates the diagnosis DTO into its wire object; a nil
+// pool renders budget_pool/available as JSON null, and no hooks renders no
+// hooks object.
 func diagnosisWire(d Diagnosis) diagnosisBody {
-	return diagnosisBody{SessionID: d.SessionID, Status: d.Status, Crashed: d.Crashed,
+	body := diagnosisBody{SessionID: d.SessionID, Status: d.Status, Crashed: d.Crashed,
 		RunActivity: d.RunActivity, PendingMessages: d.PendingMessages, Reserved: d.Reserved,
 		BudgetPool: d.Pool, Available: d.Available, FinishReason: d.FinishReason, Truncated: d.Truncated,
 		Usage: usageWire(d.Usage), Compactions: compactionsWire(d.Compactions),
 		ContextWindow: windowWire(d.ContextWindow), Warnings: d.Warnings}
+	if d.Hooks != nil {
+		body.Hooks = hooksWire(d.Hooks)
+	}
+	return body
+}
+
+// hooksWire renders the hooks object of the session-doctor item; loaded stays null
+// without a hooks.loaded, the lists are never null and the outcome is omitted
+// when no hook stopped or refused the run.
+func hooksWire(h *DiagnosisHooks) *hooksBody {
+	out := &hooksBody{Unmatched: []hookInvocationBody{}, Denials: []hookDenialBody{}, Failed: h.Failed}
+	if h.Loaded != nil {
+		loaded := &hookLoadedBody{Scope: h.Loaded.Scope, SetSHA256: h.Loaded.SetSHA256,
+			IDs: h.Loaded.IDs, Skipped: []hookSkippedBody{}, Inert: []string{}}
+		if loaded.IDs == nil {
+			loaded.IDs = map[string][]string{}
+		}
+		for _, s := range h.Loaded.Skipped {
+			loaded.Skipped = append(loaded.Skipped, hookSkippedBody(s))
+		}
+		loaded.Inert = append(loaded.Inert, h.Loaded.Inert...)
+		out.Loaded = loaded
+	}
+	for _, u := range h.Unmatched {
+		out.Unmatched = append(out.Unmatched, hookInvocationBody(u))
+	}
+	for _, dn := range h.Denials {
+		out.Denials = append(out.Denials, hookDenialBody(dn))
+	}
+	if h.Outcome != nil {
+		out.Outcome = &hookOutcomeBody{Code: h.Outcome.Code, ID: h.Outcome.ID, Reason: h.Outcome.Reason}
+	}
+	return out
 }
 
 // compactionsWire renders the compactions object; the summary totals are null

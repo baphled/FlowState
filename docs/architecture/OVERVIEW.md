@@ -39,7 +39,9 @@ from "nothing happened"; the CLI prints the cancelled state before the error, wh
 whose exit stays 1),
 and `GET /sessions/{id}/doctor` reusing the CLI `session-doctor` output shape (which includes the provider token
 usage the loop recorded on each `assistant.message`, `null` when no turn reported it, plus `compactions`,
-`context_window` and `warnings`, resolved from the config `flowstate serve` loaded),
+`context_window` and `warnings`, resolved from the config `flowstate serve` loaded, and `hooks` for a log that
+holds a hook event: the last `hooks.loaded`, unmatched `hook.invoked` events, denials with their reasons,
+failures and the last `hook_stop` or `hook_refused`, with ids and reasons stripped and bounded),
 wired through narrow `server.Ports`; no store
 type crosses into transport and `cmd` only builds the closures and listener.
 S3 adds the budget and steering resources: `GET /sessions/{id}/budget`

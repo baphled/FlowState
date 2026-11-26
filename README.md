@@ -32,8 +32,9 @@ govern how it is changed. There is no TUI yet: the command line and the HTTP API
   against `turns_total`, and the context size of the last reporting turn; the totals are `null` when no turn
   reported usage, as for the subscription route and for older logs; the totals are a lower bound on spend, a child's
   usage is not in its parent's, and the context figure can be stale), the `context_window` (tokens and source,
-  `null` and `unknown` when none is known), `warnings` and `compactions` (the valid and the invalid count of
-  `context.compacted` events); `session replay` re-verifies the log.
+  `null` and `unknown` when none is known), `warnings`, `compactions` (the valid and the invalid count of
+  `context.compacted` events) and, for a log that holds a hook event, `hooks` (see [Hook scope](#hook-scope));
+  `session replay` re-verifies the log.
 - **HTTP API.** `flowstate serve` exposes the same operations, with server-sent events for a live log.
 
 **Not built yet:** the receipts-only `swarm run` does not execute provider turns for its children (it creates,
@@ -54,7 +55,7 @@ flowstate session new --provider z.ai --model glm-4.5-flash --task "Say hello in
 flowstate session run <id>     # prints the session's events as JSON lines
 flowstate session events <id>  # the log again; add --follow to tail it
 flowstate session replay <id>  # re-verifies the log's hash chain
-flowstate session doctor <id>  # crash state, messages, budget, finish reason, truncation, usage
+flowstate session doctor <id>  # crash state, messages, budget, finish reason, truncation, usage, compactions, hooks
 ```
 
 By default everything is stored in `./flowstate.db`; pass `--db <path>` to any subcommand to use another file.
@@ -402,6 +403,19 @@ limit is checked. A command hook on it may print `{"stop":true}`: a root run end
 coordinator ends the swarm failed with reason `hook_stop`. A stop on the final turn can never end `completed`: the
 resume re-requests that turn, so a hook that always stops costs one provider call per retry (ADR-012 gap 9). The
 text-only turn has no turn loop, so `turn.after` is inert there and `hooks.loaded` lists it under `inert`.
+
+`session doctor` and `GET /sessions/{id}/doctor` report a `hooks` object for a log that holds a hook event, and
+none for a log without one (that output is unchanged). `loaded` is the last `hooks.loaded`: the `scope`, the
+`set_sha256` of the set, the ids by source, `skipped` and `inert` (`null` for a child, which records no
+`hooks.loaded`). `unmatched` lists the `hook.invoked` events no `hook.result` followed, in log order with the event
+`seq`: a crash or a cancellation between the two. The hook may have had side effects, and a resume does not re-run
+it (ADR-012 D12). `denials` lists each hook that said deny with its point, its count and the last reason,
+`failed` counts the hook runs that failed (a fail-closed failure that denied a call is counted there), and
+`outcome` is the last `hook_stop` or `hook_refused` with the hook id and reason (omitted when the log holds
+neither). A `user.prompt` hook that failed under `on_failure: deny` refuses the run as a deny does, so its
+`hook_refused` outcome carries the failure code as the reason. Hook ids and reasons are untrusted text from
+the log: the doctor strips control, format and line-separator characters from them and bounds them (a reason
+to 1 KiB) before the CLI or the HTTP body prints them, so a hand-written or older log cannot paint the terminal.
 
 ### Running a swarm
 
