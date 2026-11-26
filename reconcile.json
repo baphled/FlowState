@@ -4,5 +4,34 @@
   "integration_branch": "next",
   "release_branch": "main",
   "resolve_modes": {"hook": ["ls-remote", "api"], "ci": ["ls-remote", "api"], "runner": ["api"], "merge_script": ["api"]},
-  "ttl_seconds": 900, "retry": 1, "protected_globs": []
+  "ttl_seconds": 900,
+  "retry": 1,
+  "plan_approval_public_key": "",
+  "activation_ref": "",
+  "system_one_model": "",
+  "release_sensitive_paths": [
+    ".github/workflows/release.yml",
+    "go.mod",
+    "go.sum",
+    "scripts/admission_service.py",
+    "scripts/requirements-admission.txt"
+  ],
+  "protected_globs": [
+    ".github/**",
+    ".githooks/**",
+    "rules/**",
+    "Makefile",
+    "go.mod",
+    ".env.ci",
+    "reconcile.json",
+    "scripts/base_checkers.py",
+    "scripts/reconcile_*.py",
+    "scripts/admission_*.py",
+    "scripts/review_*.py",
+    "scripts/status_issuer.py",
+    "scripts/requirements-admission.txt",
+    "scripts/tests/test_reconcile_*.py",
+    "scripts/tests/test_admission_*.py",
+    "scripts/tests/test_base_checkers.py"
+  ]
 }
