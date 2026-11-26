@@ -12,3 +12,15 @@ class MetadataContract(unittest.TestCase):
         with self.assertRaises(AdmissionError):
             validate_record({"record_type": "flowstate-project-metadata-v1", "metadata_ref": REF,
                              "base_sha": "2"*40}, REF, "1"*40)
+
+
+class ShapeValidatorUnchanged(unittest.TestCase):
+    def test_the_shape_validator_still_accepts_a_stale_but_well_formed_record(self):
+        live = {"/FlowState/Dev/00-AGENT-READ-FIRST.md", "/FlowState/Dev/AGENTS.md",
+                "/FlowState/Dev/governance/OWNER-DECISIONS-AND-OPEN-QUESTIONS.md", "/FlowState/Metadata/ACTIVE.json"}
+        stale = {"record_type": "flowstate-project-metadata-v1", "metadata_ref": REF, "base_sha": "1" * 40,
+                 "docs_pack_manifest_sha256": "c" * 64,
+                 "attribution": {key: "unverified" for key in ("agent", "provider", "model", "harness", "source")},
+                 "local_candidate": {"paths": {"demo": {"sha256": "e" * 64, "bytes": 4}}},
+                 "dropbox_reads": [{"path": path, "sha256": "0" * 64, "file_id": "id"} for path in live]}
+        self.assertEqual(validate_record(stale, REF, "1" * 40), {"demo": {"sha256": "e" * 64, "bytes": 4}})

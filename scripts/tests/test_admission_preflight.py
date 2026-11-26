@@ -1,4 +1,8 @@
 """Preflight rejects real admission failure classes without publishing a status."""
+import contextlib
+import hashlib
+import io
+import json
 import os
 import re
 import select
@@ -14,10 +18,11 @@ from unittest.mock import patch
 # them with a bare python3. The admission fixtures need `cryptography`; where it is
 # missing (a developer machine, never CI) the classes that use them are skipped.
 try:
+    from scripts import admission_preflight
     from scripts.admission_metadata import AdmissionError
     from scripts.admission_preflight import main, ready_preflight
     from scripts.tests.test_admission_io import (
-        HEAD, PARENT, REVIEW_PRIVATE, EXECUTION_PRIVATE, FakeDropbox, FakeGitHub, public, pr,
+        HEAD, PARENT, REF, REVIEW_PRIVATE, EXECUTION_PRIVATE, FakeDropbox, FakeGitHub, public, pr, record,
     )
     ADMISSION_FIXTURES = True
 except ModuleNotFoundError as error:
@@ -77,6 +82,124 @@ class Readiness(unittest.TestCase):
         records.record = unsigned
         with self.assertRaisesRegex(AdmissionError, 'signature'):
             self.ready(records=records)
+
+
+GOVERNANCE = ['FlowState/Dev/00-AGENT-READ-FIRST.md', 'FlowState/Dev/AGENTS.md',
+              'FlowState/Dev/governance/OWNER-DECISIONS-AND-OPEN-QUESTIONS.md']
+PACK = 'c' * 64
+
+
+def active(**extra):
+    return json.dumps(dict({'docs_pack_manifest_sha256': PACK}, **extra)).encode()
+
+
+class SyncTree:
+    """A temporary owner-private Dropbox tree, its private configuration and a live record."""
+    def __init__(self, directory):
+        self.root = Path(directory) / 'dropbox'
+        self.config = Path(directory) / 'admission.json'
+        for name in GOVERNANCE:
+            self.write(name, name.encode())
+        self.write('FlowState/Metadata/ACTIVE.json', active())
+        self.root.chmod(0o700)
+        self.configure({'dropbox_local_path': str(self.root)})
+
+    def write(self, name, data):
+        (self.root / name).parent.mkdir(parents=True, exist_ok=True)
+        (self.root / name).write_bytes(data)
+
+    def configure(self, value):
+        self.config.write_text(json.dumps(value))
+        self.config.chmod(0o600)
+
+    def live_record(self, **changes):
+        reads = [{'path': '/' + name, 'file_id': 'id', 'sha256': hashlib.sha256(name.encode()).hexdigest()}
+                 for name in GOVERNANCE]
+        reads.append({'path': '/FlowState/Metadata/ACTIVE.json', 'file_id': 'id', 'sha256': 'f' * 64})
+        return record(docs_pack_manifest_sha256=PACK, dropbox_reads=reads, **changes)
+
+
+@needs_admission
+class LiveEvidence(unittest.TestCase):
+    """The commits phase compares read evidence with live bytes from the configured root."""
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.dir = Path(temp.name)
+        self.tree = SyncTree(self.dir)
+        repo = self.dir / 'repo'
+        repo.mkdir()
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(repo)
+        for args in (['init', '-q'], ['config', 'user.name', 'Synthetic'], ['config', 'user.email', 'f@e.invalid'],
+                     ['config', 'commit.gpgsign', 'false'], ['commit', '--allow-empty', '-qm', 'chore: base']):
+            self.git(*args)
+        self.base = self.git('rev-parse', 'HEAD')
+        Path('demo').write_bytes(b'demo')
+        self.git('add', 'demo')
+        self.git('commit', '-qm', 'chore: candidate\n\nProject-Metadata: ' + REF)
+        self.head = self.git('rev-parse', 'HEAD')
+
+    def git(self, *args):
+        return subprocess.check_output(['git', *args], stderr=subprocess.PIPE).decode().strip()
+
+    def run_preflight(self, evidence, config=None):
+        evidence['base_sha'] = self.base
+        evidence['local_candidate'] = {'paths': {'demo': {'sha256': hashlib.sha256(b'demo').hexdigest(), 'bytes': 4}}}
+        cache = self.dir / 'records.json'
+        cache.write_text(json.dumps({REF: evidence}))
+        out, err = io.StringIO(), io.StringIO()
+        args = ['--base', self.base, '--head', self.head, '--records', str(cache),
+                '--config', str(config or self.tree.config)]
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            return main(args), out.getvalue(), err.getvalue()
+
+    def test_a_valid_record_still_passes_end_to_end(self):
+        code, out, _ = self.run_preflight(self.tree.live_record())
+        self.assertEqual((code, 'Commit evidence preflight passed' in out), (0, True))
+
+    def test_a_stale_governance_hash_is_refused_naming_the_path_and_the_remedy(self):
+        stale = self.tree.live_record()
+        stale['dropbox_reads'][2]['sha256'] = 'b' * 64
+        code, _, err = self.run_preflight(stale)
+        self.assertEqual(code, 1)
+        self.assertIn(GOVERNANCE[2], err)
+        self.assertIn('rebuild the external record', err)
+
+    def test_a_pack_digest_that_differs_from_active_is_refused(self):
+        self.tree.write('FlowState/Metadata/ACTIVE.json', active(docs_pack_manifest_sha256='d' * 64))
+        code, _, err = self.run_preflight(self.tree.live_record())
+        self.assertEqual((code, 'docs_pack_manifest_sha256' in err), (1, True))
+
+    def test_a_changed_active_json_is_still_accepted(self):
+        self.tree.write('FlowState/Metadata/ACTIVE.json', active(moving='pointer'))
+        self.assertEqual(self.run_preflight(self.tree.live_record())[0], 0)
+
+    def test_without_a_root_the_check_fails_closed_naming_the_setting(self):
+        self.tree.configure({'repository': 'baphled/FlowState'})
+        missing = self.dir / 'absent.json'
+        for config in (self.tree.config, missing):
+            with self.subTest(config=config.name):
+                code, _, err = self.run_preflight(self.tree.live_record(), config)
+                self.assertEqual((code, 'dropbox_local_path' in err), (1, True))
+
+    def test_a_group_readable_configuration_is_refused(self):
+        self.tree.config.chmod(0o644)
+        self.assertEqual(self.run_preflight(self.tree.live_record())[0], 1)
+
+    def test_a_rebuilt_record_at_the_same_path_passes_under_the_existing_review(self):
+        stale = self.tree.live_record()
+        stale['dropbox_reads'][0]['sha256'] = 'b' * 64
+        with self.assertRaisesRegex(AdmissionError, 'rebuild the external record'):
+            admission_preflight.verify_live(stale, str(self.tree.root))
+        rebuilt = self.tree.live_record()
+        self.assertIsNone(admission_preflight.verify_live(rebuilt, str(self.tree.root)))
+        for stored in (stale, rebuilt):
+            records = FakeDropbox()
+            original = records.record
+            records.record = lambda reference, stored=stored: stored if reference == REF else original(reference)
+            admission_preflight.ready_preflight(225, PARENT, HEAD, FakeGitHub(), records,
+                                                public(REVIEW_PRIVATE), public(EXECUTION_PRIVATE), lambda: 150)
 
 
 @needs_admission
