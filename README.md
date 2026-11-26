@@ -152,6 +152,8 @@ on stderr. Flags that do not apply (`--budget`, `--model` and the like) are refu
 | `store info` | Database facts; the file is not modified (WAL sidecars may appear): schema, journal mode, foreign keys |
 | `agents list` | List agent profiles as a JSON array: `--agents user\|project\|both` (default `user`), `--workdir` |
 | `agents validate <file...>` | Validate profile files: one `{path, ok, error?}` per file; exit 4 if any is invalid |
+| `skills list [dir...]` | List skills (ADR-013) from the user directory, or from each `dir`, as JSON with counts; no hashes |
+| `skills validate [dir...]` | Print every skill diagnostic and the counts; exit 4 if any skill failed to load |
 | `serve` | Start the HTTP API: `--addr`, `--db`, `--config`, `--hooks` |
 
 `replay <id>` writes its raw JSONL transcript to files and pipes, because each event's `payload_sha256` hashes the
@@ -629,6 +631,8 @@ storage, providers and tools, so the rest of the code does not depend on a parti
 | `internal/store` | SQLite persistence through an ORM: sessions, ordered events, budgets, leases, swarm runs |
 | `internal/provider` | The provider port and the `z.ai` and `anthropic` adapters |
 | `internal/tool` | The tool port, the built-in tools and the permission and loop policy |
+| `internal/agent` | Agent profile files: strict parsing and filesystem loading |
+| `internal/skill` | Skill directories: strict parsing and loading on `os.OpenRoot`, with diagnostics |
 | `internal/swarm` | Manifests, packet admission, gates, receipts |
 | `internal/metadata` | Writes acceptance receipts into the external metadata root |
 | `internal/oauth` | Token handling for provider authentication |

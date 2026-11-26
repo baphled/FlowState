@@ -33,6 +33,8 @@ func routeTopLevel(ctx context.Context, args []string, stdout, stderr *os.File) 
 		return routeStore(args, stdout, stderr)
 	case "agents":
 		return routeAgents(args[1:], stdout, stderr), true
+	case "skills":
+		return routeSkills(args[1:], stdout, stderr), true
 	}
 	return 0, false
 }
@@ -398,6 +400,8 @@ session tool   <id> --tool <name> [--tool-arg <json>] [--allow <name>]... [--all
 store info [--db path]
 agents list [--agents user|project|both] [--workdir path]
 agents validate <file...>
+skills list [dir...]       (no dir: the user skills directory; always JSON, --json is ignored)
+skills validate [dir...]   (every diagnostic and the counts; exit 4 when a skill failed)
 
 common flags: --db <path> (default ./flowstate.db), --config <path> (default ./flowstate.json), --json
 `)
