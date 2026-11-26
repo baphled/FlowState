@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -130,7 +131,7 @@ var _ = Describe("Serve events and stream wiring", func() {
 			panic("first frame is not turn.start: " + frames[0])
 		}
 		Expect([]string{res.Header.Get("Content-Type"), fmt.Sprint(len(frames)), frames[len(frames)-1]}).To(Equal(
-			[]string{"text/event-stream", "6",
+			[]string{"text/event-stream", "7",
 				`data: {"session_id":"` + id + `","status":"completed"}`}))
 	})
 
@@ -582,5 +583,44 @@ var _ = Describe("Serve run takes the judged run lease", func() {
 			Expect(found).To(BeFalse())
 		})
 		It("has released the lock for the next holder", func() { Expect(canAcquireAt(db, id)).To(BeTrue()) })
+	})
+})
+
+var _ = Describe("Serve run refused by a user.prompt hook (ADR-012 packet 4a)", func() {
+	if runtime.GOOS == "windows" {
+		return // the hook is an sh script
+	}
+	It("answers 422 with the code hook_refused", func() {
+		withUserHooks(userHook{"gate", "user.prompt", "exit 2"})
+		base, id, stop := bootSeededSession()
+		defer func() { mustExit(stop()) }()
+		withFakeZai(fakeZaiServer(`{"choices":[{"delta":{"content":"hi"}}]}`))
+		res := serveReq(http.MethodPost, base+"/sessions/"+id+"/run", "")
+		var body struct {
+			Code string `json:"code"`
+		}
+		serveJSON(res, &body)
+		Expect([]string{res.Status, body.Code}).To(Equal([]string{"422 Unprocessable Entity", "hook_refused"}))
+	})
+	It("writes no user.message for the refused run", func() {
+		withUserHooks(userHook{"gate", "user.prompt", "exit 2"})
+		base, id, stop := bootSeededSession()
+		defer func() { mustExit(stop()) }()
+		withFakeZai(fakeZaiServer(`{"choices":[{"delta":{"content":"hi"}}]}`))
+		_ = serveReq(http.MethodPost, base+"/sessions/"+id+"/run", "")
+		res := serveReq(http.MethodGet, base+"/sessions/"+id+"/events?after=-1", "")
+		data, err := io.ReadAll(res.Body)
+		must(err)
+		Expect(string(data)).NotTo(ContainSubstring("user.message"))
+	})
+	It("answers 200 and writes the run-level hook records when the hooks allow", func() {
+		withUserHooks(userHook{"p", "user.prompt", "exit 0"}, userHook{"e", "session.end", "exit 0"})
+		base, id, stop := bootSeededSession()
+		defer func() { mustExit(stop()) }()
+		withFakeZai(fakeZaiServer(`{"choices":[{"delta":{"content":"hi"}}]}`))
+		run := serveReq(http.MethodPost, base+"/sessions/"+id+"/run", "")
+		data, err := io.ReadAll(run.Body)
+		must(err)
+		Expect(strings.Count(string(data), `"type":"hook.result"`)).To(Equal(2))
 	})
 })

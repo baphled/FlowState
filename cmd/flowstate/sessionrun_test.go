@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 
@@ -303,7 +304,7 @@ var _ = Describe("Session run", func() {
 			observedCompleted = strings.Contains(string(last.Payload), `"status":"completed"`)
 		})
 		It("returns the expected exit status", func() { Expect(observedExit).To(Equal(0)) })
-		It("returns one matching session", func() { Expect(observedResultCount).To(Equal(6)) })
+		It("returns one matching session", func() { Expect(observedResultCount).To(Equal(7)) })
 		It("emits the expected final event type", func() { Expect(observedLastType).To(Equal("turn.end")) })
 		It("attributes the final event to the engine", func() { Expect(observedLastActor).To(Equal("engine")) })
 		It("records completed status in the final payload", func() { Expect(observedCompleted).To(BeTrue()) })
@@ -331,7 +332,7 @@ var _ = Describe("Session run", func() {
 			}
 
 			evts := runCLIEvents(rec.ID)
-			wantOrder := "turn.start,user.message,assistant.delta,assistant.delta,assistant.message,turn.end"
+			wantOrder := "turn.start,hooks.loaded,user.message,assistant.delta,assistant.delta,assistant.message,turn.end"
 			gotTypes := []string{}
 			for _, l := range nonEmpty(strings.Split(evts.stdout, "\n")) {
 				var e struct {
@@ -1897,4 +1898,153 @@ var _ = Describe("Session run takes the judged run lease", func() {
 			It("has released the lock for the next holder", func() { Expect(canAcquire(id)).To(BeTrue()) })
 		})
 	}
+})
+
+// A run reads the user's hook file by default (--hooks user), so no spec may see the real one: every spec
+// starts with an empty user config directory, and those that need hooks install them with withUserHooks.
+var _ = BeforeEach(func() {
+	config := GinkgoT().TempDir()
+	for _, env := range []string{"XDG_CONFIG_HOME", "HOME", "APPDATA"} {
+		GinkgoT().Setenv(env, config)
+	}
+})
+
+// userHook is one command hook of the user's hook file: its id, its point and the body of its sh script.
+type userHook struct{ id, point, body string }
+
+// withUserHooks installs the hooks as the user's hook file and points the user config directory at them.
+func withUserHooks(hooks ...userHook) {
+	config := GinkgoT().TempDir()
+	for _, env := range []string{"XDG_CONFIG_HOME", "HOME", "APPDATA"} {
+		GinkgoT().Setenv(env, config)
+	}
+	base, err := os.UserConfigDir()
+	if err != nil {
+		panic(err)
+	}
+	dir := filepath.Join(base, "flowstate")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		panic(err)
+	}
+	specs := []string{}
+	for _, h := range hooks {
+		if err := os.WriteFile(filepath.Join(dir, h.id+".sh"), []byte("#!/bin/sh\n"+h.body+"\n"), 0o700); err != nil {
+			panic(err)
+		}
+		specs = append(specs, `{"id":"`+h.id+`","point":"`+h.point+`","kind":"command","argv":["./`+h.id+`.sh"]}`)
+	}
+	doc := `{"version":1,"hooks":[` + strings.Join(specs, ",") + `]}`
+	if err := os.WriteFile(filepath.Join(dir, "hooks.json"), []byte(doc), 0o600); err != nil {
+		panic(err)
+	}
+}
+
+// eventSequence is the log of a session as one line: the event types in order, a hook.invoked shown as the
+// point it fired at, and the streamed deltas left out.
+func eventSequence(out string) string {
+	seq := []string{}
+	for _, l := range lines(out) {
+		var e struct {
+			Type    string `json:"type"`
+			Payload struct {
+				Point string `json:"point"`
+			} `json:"payload"`
+		}
+		if err := json.Unmarshal([]byte(l), &e); err != nil {
+			panic(err)
+		}
+		switch e.Type {
+		case "assistant.delta":
+		case "hook.invoked":
+			seq = append(seq, e.Payload.Point)
+		default:
+			seq = append(seq, e.Type)
+		}
+	}
+	return strings.Join(seq, ",")
+}
+
+var _ = Describe("Session run-level hooks (ADR-012 packet 4a)", func() {
+	if runtime.GOOS == "windows" {
+		return // the hooks are sh scripts
+	}
+	allowAll := func() []userHook {
+		return []userHook{{"p", "user.prompt", "exit 0"}, {"s", "session.start", "exit 0"}, {"e", "session.end", "exit 0"}}
+	}
+	var id string
+	BeforeEach(func() {
+		withFakeZai(fakeZaiServer(`{"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}`))
+		id = newLoopSession()
+	})
+
+	Describe("a text-only run", func() {
+		It("fires hooks.loaded, user.prompt, session.start and session.end in the ADR's order", func() {
+			withUserHooks(allowAll()...)
+			Expect(eventSequence(runCLIRun(id).stdout)).To(Equal("turn.start,hooks.loaded,user.prompt,hook.result," +
+				"session.start,hook.result,user.message,assistant.message,turn.end,session.end,hook.result"))
+		})
+		It("lists a tool.before hook as inert", func() {
+			withUserHooks(userHook{"g", "tool.before", "exit 0"})
+			Expect(runCLIRun(id).stdout).To(ContainSubstring(`"inert":["g"]`))
+		})
+		It("fires no hook under --hooks none", func() {
+			withUserHooks(userHook{"gate", "user.prompt", "exit 2"})
+			Expect(runArgv([]string{"session", "run", "--db", dbFor(), "--hooks", "none", id}).exit).To(Equal(0))
+		})
+		Describe("refused by a user.prompt hook", func() {
+			var run result
+			BeforeEach(func() {
+				withUserHooks(append([]userHook{{"gate", "user.prompt", "exit 2"}}, allowAll()[1:]...)...)
+				run = runCLIRun(id)
+			})
+			It("exits 2", func() { Expect(run.exit).To(Equal(2)) })
+			It("reports the code hook_refused", func() { Expect(stderrCode(run.stderr)).To(Equal("hook_refused")) })
+			It("writes only the hook records, no message and no provider output", func() {
+				Expect(eventSequence(runCLIEvents(id).stdout)).To(Equal("turn.start,hooks.loaded,user.prompt" +
+					",hook.result"))
+			})
+			It("leaves the session active", func() { Expect(sessionStatusViaList(id)).To(Equal("active")) })
+		})
+	})
+
+	Describe("a paused session refused by a user.prompt hook", func() {
+		var run result
+		BeforeEach(func() {
+			withFakeZai(fakeZaiServer(
+				`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"echo","arguments":"{}"}}]}}]}`,
+				`{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+			))
+			if paused := runCLILoop(id, "--allow", "echo", "--budget", "1"); paused.exit != 5 {
+				panic("the setup run did not pause: " + paused.stderr)
+			}
+			withUserHooks(userHook{"gate", "user.prompt", "exit 2"})
+			run = runCLILoop(id, "--allow", "echo")
+		})
+		It("exits 2", func() { Expect(run.exit).To(Equal(2)) })
+		It("stays paused", func() { Expect(sessionStatusViaList(id)).To(Equal("paused")) })
+		It("writes no session.resumed", func() {
+			Expect(eventSequence(runCLIEvents(id).stdout)).NotTo(ContainSubstring("session.resumed"))
+		})
+	})
+
+	Describe("a loop run", func() {
+		It("fires the run-level points around the loop", func() {
+			withUserHooks(allowAll()...)
+			seq := eventSequence(runCLILoop(id, "--allow", "echo").stdout)
+			Expect(seq).To(MatchRegexp(`^turn\.start,hooks\.loaded,user\.prompt,hook\.result,session\.start,.*,session\.end,hook\.result$`))
+		})
+		It("writes hooks.loaded once", func() {
+			withUserHooks(allowAll()...)
+			Expect(strings.Count(eventSequence(runCLILoop(id, "--allow", "echo").stdout), "hooks.loaded")).To(Equal(1))
+		})
+		It("exits 2 when a user.prompt hook refuses", func() {
+			withUserHooks(userHook{"gate", "user.prompt", "exit 2"})
+			Expect(runCLILoop(id, "--allow", "echo").exit).To(Equal(2))
+		})
+		It("writes no user.message when a user.prompt hook refuses", func() {
+			withUserHooks(userHook{"gate", "user.prompt", "exit 2"})
+			_ = runCLILoop(id, "--allow", "echo")
+			Expect(eventSequence(runCLIEvents(id).stdout)).NotTo(ContainSubstring("user.message"))
+		})
+	})
 })

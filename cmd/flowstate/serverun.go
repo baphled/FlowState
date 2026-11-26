@@ -63,6 +63,10 @@ func serveRun(ctx context.Context, st *app.Store, fl *flags, id string, opts ser
 	if rerr := app.RecoverCrashedSession(ctx, st, id); rerr != nil {
 		return nil, recoveryFailure(rerr)
 	}
+	hk, herr := app.BeginRootRunHooks(ctx, st, sess, rootHooksRequest(&runFl, lease))
+	if herr != nil {
+		return nil, herr
+	}
 	if sess.Status == "paused" {
 		if rerr := app.ResumePausedSession(ctx, st, sess); rerr != nil {
 			return nil, rerr
@@ -76,7 +80,7 @@ func serveRun(ctx context.Context, st *app.Store, fl *flags, id string, opts ser
 		return nil, berr
 	}
 	runFl.budget = budget
-	return serveRunTurn(ctx, st, sess, lease, &runFl)
+	return serveRunTurn(ctx, st, sess, lease, hk, &runFl)
 }
 
 // serveRunTurn mirrors runSessionTurn for the transport: provider
@@ -84,7 +88,7 @@ func serveRun(ctx context.Context, st *app.Store, fl *flags, id string, opts ser
 // projection; a client disconnect surfaces as session_cancelled (the
 // request context plays the signal's role; the engine records
 // client_disconnected or shutdown).
-func serveRunTurn(ctx context.Context, st *app.Store, sess *app.Session, lease app.ExecLease, runFl *flags) ([]server.Event, error) {
+func serveRunTurn(ctx context.Context, st *app.Store, sess *app.Session, lease app.ExecLease, hk *app.RootRunHooks, runFl *flags) ([]server.Event, error) {
 	p, perr := providerResolver(sess.Provider)
 	if perr != nil {
 		return nil, providerFailure(perr)
@@ -93,7 +97,7 @@ func serveRunTurn(ctx context.Context, st *app.Store, sess *app.Session, lease a
 	if !ok {
 		return nil, providerFailure(fmt.Errorf("provider %s does not support streaming turns", sess.Provider))
 	}
-	res, terr := runTurnOrLoop(ctx, st, sess, s, runFl, lease)
+	res, terr := hk.Around(ctx, func() (*app.TurnResult, error) { return runTurnOrLoop(ctx, st, sess, s, runFl, lease, hk) })
 	if terr == nil && res != nil && res.BudgetExceeded {
 		return nil, fmt.Errorf("%w: budget of %d exceeded after %d tokens; session paused",
 			app.ErrBudgetExceeded, runFl.budget, res.ConsumedBudget)

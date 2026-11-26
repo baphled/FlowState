@@ -211,6 +211,13 @@ func cmdRun(ctx context.Context, st *app.Store, id string, fl *flags, stdout, st
 		writeError(stderr, cerr)
 		return exitCodeFor(cerr)
 	}
+	// Run-level hooks (ADR-012): hooks.loaded and user.prompt after recovery and before any resume write, so a
+	// refusal leaves a paused session paused.
+	hk, herr := app.BeginRootRunHooks(ctx, st, sess, rootHooksRequest(fl, lease))
+	if herr != nil {
+		writeError(stderr, herr)
+		return exitCodeFor(herr)
+	}
 	if code, done := resumePausedRun(ctx, st, sess, stderr); done {
 		return code
 	}
@@ -230,7 +237,7 @@ func cmdRun(ctx context.Context, st *app.Store, id string, fl *flags, stdout, st
 		return exitCodeFor(berr)
 	}
 	fl.budget = budget
-	return runSessionTurn(ctx, st, sess, lease, fl, stdout, stderr)
+	return runSessionTurn(ctx, st, sess, lease, hk, fl, stdout, stderr)
 }
 
 // applyRunDefaults resolves config-supplied run defaults for flags
@@ -294,7 +301,7 @@ func loadRunnableSession(ctx context.Context, st *app.Store, id string) (*app.Se
 // caller-held run lease (the loop fences it, the caller releases it), fires
 // the receipt hook for live self-tests, projects the persisted events
 // and maps the outcome onto its exit code.
-func runSessionTurn(ctx context.Context, st *app.Store, sess *app.Session, lease app.ExecLease, fl *flags, stdout, stderr *os.File) int {
+func runSessionTurn(ctx context.Context, st *app.Store, sess *app.Session, lease app.ExecLease, hk *app.RootRunHooks, fl *flags, stdout, stderr *os.File) int {
 	id := sess.ID
 	p, perr := providerResolver(sess.Provider)
 	if perr != nil {
@@ -309,7 +316,7 @@ func runSessionTurn(ctx context.Context, st *app.Store, sess *app.Session, lease
 		writeError(stderr, providerFailure(fmt.Errorf("provider %s does not support streaming turns", sess.Provider)))
 		return exitProviderError
 	}
-	res, terr := runTurnOrLoop(ctx, st, sess, s, fl, lease)
+	res, terr := hk.Around(ctx, func() (*app.TurnResult, error) { return runTurnOrLoop(ctx, st, sess, s, fl, lease, hk) })
 	// Receipt hook: live self-test runs emit their attempt record as
 	// a post-turn side-effect of the same run path.
 	if selfTestRun {
@@ -415,7 +422,7 @@ func noteTruncation(res *app.TurnResult, stderr *os.File) {
 // single-turn path, which runs under the same held lease. The loop
 // refuses an empty effective allowlist with a usage error instead of
 // running with no tools.
-func runTurnOrLoop(ctx context.Context, st *app.Store, sess *app.Session, s app.Streamer, fl *flags, lease app.ExecLease) (*app.TurnResult, error) {
+func runTurnOrLoop(ctx context.Context, st *app.Store, sess *app.Session, s app.Streamer, fl *flags, lease app.ExecLease, hk *app.RootRunHooks) (*app.TurnResult, error) {
 	allow := effectiveAllowlist(fl)
 	if !hasToolSurface(fl) {
 		return app.TurnWithOptions(ctx, st, sess, s, app.TurnOptions{
@@ -430,6 +437,7 @@ func runTurnOrLoop(ctx context.Context, st *app.Store, sess *app.Session, s app.
 		Workdir:          fl.workdir,
 		Agents:           fl.agents,
 		HooksScope:       hooksScope(fl),
+		Hooks:            hk.Set(),
 		Budget:           fl.budget,
 		MaxTokens:        fl.maxTokens,
 		MaxTurns:         fl.maxTurns,
@@ -438,6 +446,12 @@ func runTurnOrLoop(ctx context.Context, st *app.Store, sess *app.Session, s app.
 		Lease:            lease,
 	})
 	return toTurnResult(sess, loopRes), err
+}
+
+// rootHooksRequest is how the run-level hooks of a root run resolve: the invocation's --hooks scope, with the
+// text-only path flagged when the invocation has no tool surface.
+func rootHooksRequest(fl *flags, lease app.ExecLease) app.RootRunHooksRequest {
+	return app.RootRunHooksRequest{Scope: hooksScope(fl), Workdir: fl.workdir, Lease: lease, TextOnly: !hasToolSurface(fl)}
 }
 
 // allowlistFlagged reports whether the invocation supplied an explicit
