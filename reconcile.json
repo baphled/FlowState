@@ -1,0 +1,8 @@
+{
+  "repo": "baphled/FlowState",
+  "remote": {"name": "origin", "url": "git@github.com:baphled/FlowState.git"},
+  "integration_branch": "next",
+  "release_branch": "main",
+  "resolve_modes": {"hook": ["ls-remote", "api"], "ci": ["ls-remote", "api"], "runner": ["api"], "merge_script": ["api"]},
+  "ttl_seconds": 900, "retry": 1, "protected_globs": []
+}
