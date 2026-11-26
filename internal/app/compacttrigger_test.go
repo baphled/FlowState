@@ -854,9 +854,26 @@ var _ = Describe("The reactive overflow net", func() {
 		})
 		It("counts one compaction", func() { Expect(countOf(cfg, TypeContextCompacted)).To(Equal(1)) })
 		It("keeps the truncated assistant.message", func() { Expect(countOf(cfg, TypeAssistantMessage)).To(Equal(4)) })
-		It("writes no provider.error", func() { Expect(countOf(cfg, "provider.error")).To(BeZero()) })
+		It("writes one non-terminal marker for the truncated turn", func() {
+			Expect(countOf(cfg, "provider.error")).To(Equal(1))
+		})
+		It("names the marker's reason output_truncated", func() {
+			Expect(payloadOfFirst(cfg, "provider.error", "reason")).To(Equal(ReasonOutputTruncated))
+		})
+		It("writes the marker as non-terminal", func() { Expect(terminalOfFirst(cfg, "provider.error")).To(Equal("false")) })
 		It("counts the truncated request as a turn", func() { Expect(res.Turns).To(Equal(int64(4))) })
 		It("makes the request again", func() { Expect(streamer.reqs).To(HaveLen(6)) })
+	})
+
+	Context("when the compaction retry after a length finish makes a tool call", func() {
+		BeforeEach(func() {
+			cfg, _ = autoConfig(usedTurn("c1", 1, 100), usedTurn("c2", 1, 950), provFinishOnly(),
+				lengthTurn("cut"), summaryTurn("the summary"), usedTurn("c3", 1, 100), doneTurn())
+			run()
+		})
+		It("drops the truncated message from a rebuild of the log", func() {
+			Expect(rebuiltTexts(cfg)).NotTo(ContainElement("cut"))
+		})
 	})
 
 	Context("when a length finish with no calls follows a baseline over the line and the compaction fails", func() {
@@ -865,7 +882,7 @@ var _ = Describe("The reactive overflow net", func() {
 				lengthTurn("cut"), provFinishOnly(), doneTurn())
 			run()
 		})
-		It("lets the truncated turn stand", func() { Expect(res.FinalContent).To(Equal("cut")) })
+		It("fails the run with output_truncated", func() { Expect(err).To(MatchError(ErrOutputTruncated)) })
 	})
 
 	Context("when a length finish carries tool calls over the line", func() {
@@ -883,10 +900,10 @@ var _ = Describe("The reactive overflow net", func() {
 
 	Context("when a length finish with no calls follows a baseline under the line", func() {
 		BeforeEach(func() {
-			cfg, streamer = autoConfig(usedTurn("c1", 1, 100), usedTurn("c2", 1, 100), lengthTurn("cut"), summaryTurn("s"), doneTurn())
+			cfg, streamer = autoConfig(usedTurn("c1", 1, 100), usedTurn("c2", 1, 100), lengthTurn("cut"), doneTurn())
 			run()
 		})
-		It("keeps the truncated answer", func() { Expect(res.FinalContent).To(Equal("cut")) })
+		It("answers from the escalation retry", func() { Expect(res.FinalContent).To(Equal("done")) })
 		It("never calls the summariser", func() { Expect(summaryCalls(streamer.reqs)).To(BeZero()) })
 	})
 })

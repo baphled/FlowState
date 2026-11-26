@@ -37,8 +37,8 @@ func ChooseCut(events []store.RecordedEvent, keepRecentTokens int) (int64, error
 	if n := len(valid); n > 0 {
 		spanStart = valid[n-1].FirstKeptSeq
 	}
-	answered := answeredResultIDs(events)
-	point, ok := keepPoint(events, answered, min(max(keepRecentTokens, 0), math.MaxInt/bytesPerToken)*bytesPerToken, int(spanStart))
+	facts := newReplayFacts(events)
+	point, ok := keepPoint(events, facts, min(max(keepRecentTokens, 0), math.MaxInt/bytesPerToken)*bytesPerToken, int(spanStart))
 	if !ok {
 		return 0, ErrNoCut
 	}
@@ -46,7 +46,7 @@ func ChooseCut(events []store.RecordedEvent, keepRecentTokens int) (int64, error
 		point = min(point, groupStart(events, i))
 	}
 	for i := point; i > int(spanStart) && i >= 1; i-- {
-		if cutEligible(events[i]) && (spanStart > 0 || summarisable(events[:i], answered)) {
+		if cutEligible(events[i]) && (spanStart > 0 || summarisable(events[:i], facts)) {
 			return events[i].Seq, nil
 		}
 	}
@@ -55,10 +55,10 @@ func ChooseCut(events []store.RecordedEvent, keepRecentTokens int) (int64, error
 
 // keepPoint is the index where the bytes replayed from the end of the log first reach keep,
 // looking no further back than from.
-func keepPoint(events []store.RecordedEvent, answered map[string]bool, keep, from int) (int, bool) {
+func keepPoint(events []store.RecordedEvent, facts replayFacts, keep, from int) (int, bool) {
 	kept := 0
 	for i := len(events) - 1; i >= from; i-- {
-		if kept += replayedBytes(events[i], answered); kept >= keep {
+		if kept += replayedBytes(events[i], facts); kept >= keep {
 			return i, true
 		}
 	}
@@ -80,11 +80,11 @@ func groupStart(events []store.RecordedEvent, i int) int {
 
 // summarisable reports whether span holds anything the rebuild replays other than the log's
 // first turn.start, the task the first message carries verbatim.
-func summarisable(span []store.RecordedEvent, answered map[string]bool) bool {
+func summarisable(span []store.RecordedEvent, facts replayFacts) bool {
 	for _, e := range span {
 		switch {
 		case e.Type == session.TypeTurnStart && e.Seq == 0:
-		case replayedType(e, answered):
+		case replayedType(e, facts):
 			return true
 		}
 	}
@@ -93,14 +93,18 @@ func summarisable(span []store.RecordedEvent, answered map[string]bool) bool {
 
 // replayedType reports whether the rebuild turns e into message content: user and assistant
 // text, the task, an answered call and any result with an id. A dangling or uncorrelated call
-// is skipped by the rebuild, so it is neither summarised nor counted.
-func replayedType(e store.RecordedEvent, answered map[string]bool) bool {
+// is skipped by the rebuild, so it is neither summarised nor counted; nor is a truncated assistant
+// message the rebuild drops (replayFacts.dropped). cutEligible still allows a cut at one: it is a
+// message group start, and the rebuild drops the message whichever side of the cut it falls on.
+func replayedType(e store.RecordedEvent, facts replayFacts) bool {
 	id := payloadFieldText(e.PayloadJSON, "tool_call_id")
 	switch e.Type {
-	case session.TypeTurnStart, TypeUserMessage, TypeAssistantMessage:
+	case session.TypeTurnStart, TypeUserMessage:
 		return true
+	case TypeAssistantMessage:
+		return !facts.dropped[e.Seq]
 	case tool.TypeToolCall:
-		return id != "" && answered[id]
+		return id != "" && facts.answered[id]
 	case tool.TypeToolResult:
 		return id != ""
 	}
@@ -111,8 +115,8 @@ func replayedType(e store.RecordedEvent, answered map[string]bool) bool {
 // name and arguments of a call, the result or error JSON of a result. It mirrors
 // rebuildHistory (a spec checks the two agree) and, unlike it, does not drop the echo of the
 // first task, so it can only overcount.
-func replayedBytes(e store.RecordedEvent, answered map[string]bool) int {
-	if !replayedType(e, answered) {
+func replayedBytes(e store.RecordedEvent, facts replayFacts) int {
+	if !replayedType(e, facts) {
 		return 0
 	}
 	switch e.Type {
@@ -132,4 +136,25 @@ func resultText(payloadJSON string) string {
 		return res
 	}
 	return payloadFieldRaw(payloadJSON, "error")
+}
+
+// newReplayFacts reads the log once for the facts replayedType needs. It mirrors the rule of
+// historyRebuild.dropTruncated: a non-terminal output_truncated marker drops the assistant message
+// that is the last message of its turn, with no answered call after it.
+func newReplayFacts(events []store.RecordedEvent) replayFacts {
+	f := replayFacts{answered: answeredResultIDs(events), dropped: map[int64]bool{}}
+	open := int64(-1) // seq of the assistant message that is still the last message, else -1
+	for _, e := range events {
+		switch {
+		case e.Type == TypeAssistantMessage:
+			open = e.Seq
+		case e.Type == session.TypeTurnStart || e.Type == TypeUserMessage:
+			open = -1
+		case e.Type == tool.TypeToolCall && f.answered[payloadFieldText(e.PayloadJSON, "tool_call_id")]:
+			open = -1
+		case retriedTruncation(e) && open >= 0:
+			f.dropped[open], open = true, -1
+		}
+	}
+	return f
 }

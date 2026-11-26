@@ -427,18 +427,19 @@ var _ = Describe("Execution loop provider failure", func() {
 var _ = Describe("Execution loop finish reason", func() {
 	var out execLoopOutcome
 
-	Context("when the final turn ends on a length finish", func() {
+	Context("when a length finish is retried and the retry ends on a stop finish", func() {
 		BeforeEach(func() {
 			cut := provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: provider.FinishLength}
-			out = runExec(context.Background(), execLoopFixture(&execLoopStreamer{turns: [][]provider.StreamEvent{{provText("cut"), cut}}}))
+			turns := [][]provider.StreamEvent{{provText("cut"), cut}, {provText("whole"), provFinish()}}
+			out = runExec(context.Background(), execLoopFixture(&execLoopStreamer{turns: turns}))
 		})
 
-		It("reports the reason on the loop result", func() {
-			Expect(out.Result.FinishReason).To(Equal(provider.FinishLength))
+		It("reports the retry's reason on the loop result", func() {
+			Expect(out.Result.FinishReason).To(Equal("stop"))
 		})
 
 		It("records no delta for the finish event", func() {
-			Expect(out.EventLog).To(Equal("turn.start,assistant.delta,assistant.message"))
+			Expect(out.EventLog).To(Equal("turn.start,assistant.delta,assistant.message,provider.error,assistant.delta,assistant.message"))
 		})
 	})
 

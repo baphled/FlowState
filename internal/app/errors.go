@@ -31,6 +31,9 @@ const (
 	CodeReceiptInvalid = "receipt_invalid"
 	// CodeMaxTurns marks a run that used all its turns while still asking for tools.
 	CodeMaxTurns = "max_turns"
+	// CodeOutputTruncated marks a run whose model finished `length` with no complete tool call,
+	// again after one retry with a doubled output cap (a limit failure, like max_turns).
+	CodeOutputTruncated = "output_truncated"
 	// CodeProvider marks provider failures.
 	CodeProvider = "provider_error"
 	// CodeSessionBusy marks a lease refused at acquire: the session is held by a live
@@ -56,6 +59,11 @@ var ErrBudgetExceeded = errors.New("budget_exceeded")
 // client disconnect or a shutdown (code session_cancelled, exit 130).
 var ErrSessionCancelled = errors.New("session_cancelled")
 
+// ErrOutputTruncated reports a turn the output cap cut off twice with no complete tool call (code
+// output_truncated, exit 5, HTTP 409): the loop retried once with an escalated cap, or the cap was
+// already at the model's ceiling. The run ends failed; the cut-off text stays in the result.
+var ErrOutputTruncated = errors.New("output_truncated")
+
 // ErrorCode maps any error onto the closed error-code set of the
 // CLI-and-API contract so the thin cmd adapter needs no direct
 // session or store knowledge.
@@ -69,6 +77,8 @@ func ErrorCode(err error) string {
 		return CodeBudgetExceeded
 	case errors.Is(err, ErrMaxTurns):
 		return CodeMaxTurns
+	case errors.Is(err, ErrOutputTruncated):
+		return CodeOutputTruncated
 	case errors.Is(err, ErrSessionCancelled):
 		return CodeSessionCancelled
 	case errors.Is(err, ErrSwarmNotAccepted):

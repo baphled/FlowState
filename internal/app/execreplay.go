@@ -20,6 +20,9 @@ import (
 // its turn (a log written before the loop recorded one) becomes its own
 // assistant message. An assistant message left with neither content nor calls
 // (a turn whose only calls dangled) is dropped: it would send nothing.
+// An assistant message a non-terminal output_truncated provider.error marker followed (the turn the
+// output cap cut off, which the loop retried) is dropped wherever it sits, so a later rebuild never
+// sends the truncated text back; replayFacts makes the compaction readers agree.
 // session.steered events are not replayed because the live loop never injects
 // them into its history. A history that would end on an assistant message
 // without calls (a crash after its text, or a dangling call skipped) drops every
@@ -70,11 +73,33 @@ func (r *historyRebuild) accept(e store.RecordedEvent) {
 	case TypeAssistantMessage:
 		r.turn, r.bare = len(r.messages), false
 		r.messages = append(r.messages, provider.Message{Role: "assistant", Content: payloadFieldText(e.PayloadJSON, "content")})
+	case TypeProviderError:
+		if retriedTruncation(e) {
+			r.dropTruncated()
+		}
 	case tool.TypeToolCall:
 		r.call(e)
 	case tool.TypeToolResult:
 		r.result(e)
 	}
+}
+
+// retriedTruncation reports the non-terminal provider.error marker the loop writes when it retries a
+// turn the output cap cut off: the assistant message that precedes it was not a good answer.
+func retriedTruncation(e store.RecordedEvent) bool {
+	p := payloadMap(e.PayloadJSON)
+	terminal, ok := p["terminal"].(bool)
+	return e.Type == TypeProviderError && p["reason"] == ReasonOutputTruncated && ok && !terminal
+}
+
+// dropTruncated removes the assistant message the retry marker just followed: the last message, with
+// no calls, of its turn. A marker with no such message (a log of another shape) drops nothing.
+func (r *historyRebuild) dropTruncated() {
+	last := len(r.messages) - 1
+	if r.turn < 0 || r.turn != last || r.bare || len(r.messages[last].ToolCalls) > 0 {
+		return
+	}
+	r.messages, r.turn = r.messages[:last], -1
 }
 
 func (r *historyRebuild) call(e store.RecordedEvent) {

@@ -331,9 +331,13 @@ func spanEntries(span, log []store.RecordedEvent) []string {
 			}
 		}
 	}
+	dropped := newReplayFacts(log).dropped
 	var out []string
 	for _, e := range span {
 		id := payloadFieldText(e.PayloadJSON, "tool_call_id")
+		if dropped[e.Seq] {
+			continue // a truncated answer the loop retried: the rebuild drops it
+		}
 		switch e.Type {
 		case session.TypeTurnStart:
 			out = append(out, "[User]: "+clip(payloadFieldText(e.PayloadJSON, "task"), CompactTextClip)+"\n")

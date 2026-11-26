@@ -188,14 +188,16 @@ func failExecOverflow(ctx context.Context, cfg *ExecLoopConfig, cause error) err
 
 // request runs one provider request and the reactive net around it (ADR-010 "When" > Overflow):
 // a context-overflow error, or a length finish with no tool calls on a request whose baseline was
-// already over the line, compacts (reason overflow) and retries the request once.
+// already over the line, compacts (reason overflow) and retries the request once. A length finish
+// with no calls on a request that was not over the line escalates the output cap and retries once
+// (escalate). A turn has ONE recovery: a retry cut off again fails the run with ErrOutputTruncated.
 //
 // The net needs a known window, as the automatic trigger does: with none, or with compaction off,
 // the failure is an ordinary provider failure and the summariser is never called. The overflow
 // compaction makes its own attempt: it ignores the run's failed-automatic-compaction flag, and
 // each request has at most one retry, which is itself never retried. A failed compaction after
-// an error ends the run as the provider failure; after a length finish the truncated turn stands
-// (the existing behaviour), because that turn was a success.
+// an error ends the run as the provider failure; after a length finish it fails the run with
+// ErrOutputTruncated, because the cut-off turn is not a good answer.
 func (c *compactRun) request(ctx context.Context, cfg *ExecLoopConfig, definitions []provider.ToolDefinition,
 	history *[]provider.Message, res *ExecLoopResult) (execTurn, error) {
 	limit, enabled := compactLimit(cfg)
@@ -208,18 +210,26 @@ func (c *compactRun) request(ctx context.Context, cfg *ExecLoopConfig, definitio
 	switch {
 	case errors.As(err, &overflow):
 		return c.retry(ctx, cfg, definitions, history, res, retryAfter{cause: overflow.cause}, limit, overhead)
-	case err == nil && over && len(turn.Calls) == 0 && turn.FinishReason == provider.FinishLength:
-		return c.retry(ctx, cfg, definitions, history, res, retryAfter{truncated: turn}, limit, overhead)
+	case err == nil && over && lengthNoCalls(turn):
+		return c.retry(ctx, cfg, definitions, history, res, retryAfter{}, limit, overhead)
+	case err == nil && lengthNoCalls(turn):
+		return c.escalate(ctx, cfg, definitions, *history, res)
 	}
 	return turn, err
 }
 
 // retry compacts for the overflow and runs the request a second time, which reserves a second pool
 // unit and counts as a second turn in memory (ADR-010 packet (d)). The history is rebuilt from the
-// log. After a length finish the truncated assistant message stays in the log, but the retry request does not
-// end on an assistant message, so rebuildHistory omits it from the retry request.
+// log. After a length finish the truncated assistant message stays in the log, and a non-terminal
+// output_truncated marker written before the compaction makes every rebuild drop it, including the
+// one that follows the compaction and any later one once the retry has appended its own messages.
 func (c *compactRun) retry(ctx context.Context, cfg *ExecLoopConfig, definitions []provider.ToolDefinition,
 	history *[]provider.Message, res *ExecLoopResult, after retryAfter, limit, overhead int) (execTurn, error) {
+	if after.cause == nil { // a length finish: mark the truncated message so a rebuild drops it
+		if err := markOutputTruncated(ctx, cfg, 0); err != nil {
+			return execTurn{}, err
+		}
+	}
 	if err := c.compactForRetry(ctx, cfg, history, limit, overhead); err != nil {
 		return c.retryFailed(ctx, cfg, after, err)
 	}
@@ -229,7 +239,7 @@ func (c *compactRun) retry(ctx context.Context, cfg *ExecLoopConfig, definitions
 	turn, err := runExecTurn(ctx, *cfg, definitions, *history, false)
 	res.recordTurn(turn)
 	c.afterTurn(turn.Usage)
-	return turn, err
+	return c.settleRetry(ctx, cfg, turn, err)
 }
 
 // compactForRetry makes the overflow compaction: its pool unit, the summary, the rebuilt history.
@@ -248,7 +258,7 @@ func (c *compactRun) compactForRetry(ctx context.Context, cfg *ExecLoopConfig,
 
 // retryFailed ends a run whose overflow compaction failed: cancellation and a fenced lease end it as
 // themselves, a failure after an error is the provider failure, and a failure after a length
-// finish leaves that turn as the result.
+// finish is ErrOutputTruncated.
 func (c *compactRun) retryFailed(ctx context.Context, cfg *ExecLoopConfig, after retryAfter, err error) (execTurn, error) {
 	switch {
 	case ctx.Err() != nil:
@@ -256,7 +266,7 @@ func (c *compactRun) retryFailed(ctx context.Context, cfg *ExecLoopConfig, after
 	case errors.Is(err, ErrExecLoopFenced):
 		return execTurn{}, err
 	case after.cause == nil:
-		return after.truncated, nil
+		return execTurn{}, failExecOutputTruncated(ctx, cfg, "the context compaction for the retry failed")
 	}
 	return execTurn{}, failExecOverflow(ctx, cfg, after.cause)
 }

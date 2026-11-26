@@ -86,9 +86,9 @@ var _ = Describe("ChooseCut", func() {
 
 	It("estimates what the rebuild replays", func() {
 		events := cutLog(cutTurn("c1"), cutOne(logEvent(TypeUserMessage, map[string]any{"content": "more"})), cutTurn("c2"))
-		answered, total := answeredResultIDs(events), 0
+		facts, total := newReplayFacts(events), 0
 		for _, e := range events {
-			total += replayedBytes(e, answered)
+			total += replayedBytes(e, facts)
 		}
 		want := 0
 		for _, m := range rebuildHistory(events) {
@@ -100,8 +100,33 @@ var _ = Describe("ChooseCut", func() {
 		Expect(total).To(Equal(want))
 	})
 
+	It("counts no bytes for a truncated message the loop retried, as the rebuild", func() {
+		marker := logEvent(TypeProviderError, map[string]any{"reason": ReasonOutputTruncated, "terminal": false})
+		events := cutLog(cutTurn("c1"), cutOne(logEvent(TypeAssistantMessage, map[string]any{"content": "TRUNCATED"})),
+			cutOne(marker), cutTurn("c2"))
+		facts, total := newReplayFacts(events), 0
+		for _, e := range events {
+			total += replayedBytes(e, facts)
+		}
+		want := 0
+		for _, m := range rebuildHistory(events) {
+			want += len(m.Content)
+			for _, c := range m.ToolCalls {
+				want += len(c.Name) + len(c.Arguments)
+			}
+		}
+		Expect(total).To(Equal(want))
+	})
+
+	It("leaves the truncated message out of the summariser's transcript", func() {
+		marker := logEvent(TypeProviderError, map[string]any{"reason": ReasonOutputTruncated, "terminal": false})
+		events := cutLog(cutTurn("c1"), cutOne(logEvent(TypeAssistantMessage, map[string]any{"content": "TRUNCATED"})),
+			cutOne(marker), cutTurn("c2"))
+		Expect(strings.Join(spanEntries(events, events), "")).NotTo(ContainSubstring("TRUNCATED"))
+	})
+
 	It("counts no bytes for a dangling call", func() {
-		Expect(replayedBytes(callEvent("c1"), map[string]bool{})).To(Equal(0))
+		Expect(replayedBytes(callEvent("c1"), replayFacts{})).To(Equal(0))
 	})
 
 	It("clips nothing it does not name", func() {
