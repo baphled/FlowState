@@ -71,6 +71,14 @@ func assistantTexts(messages []provider.Message) []string {
 }
 
 var _ = Describe("rebuildHistory", func() {
+	It("sends a hook denial as a call and the shared error text, hook events adding nothing", func() {
+		Expect(rebuildHistory([]store.RecordedEvent{
+			taskEvent("task"), saidEvent("try it"), logEvent("hook.invoked", map[string]any{"id": "gate-1"}),
+			logEvent("hook.result", map[string]any{"id": "gate-1", "decision": "deny"}), callEvent("c1"), denialResultEvent("c1", "gate-1"),
+			saidEvent("done"),
+		})).To(Equal([]provider.Message{userMsg("task"), assistantMsg("try it", "c1"),
+			{Role: "tool", ToolCallID: "c1", Content: "error: denied by hook gate-1"}}))
+	})
 	It("rebuilds a two-turn log to the shape the live loop sends", func() {
 		Expect(rebuildHistory([]store.RecordedEvent{
 			taskEvent("task"), saidEvent("I will read it"), callEvent("c1"), resultEvent("c1"), saidEvent("done"),

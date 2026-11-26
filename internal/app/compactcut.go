@@ -130,8 +130,12 @@ func replayedBytes(e store.RecordedEvent, facts replayFacts) int {
 	return len(resultText(e.PayloadJSON))
 }
 
-// resultText is the content of the tool message the rebuild makes of a result payload.
+// resultText is the content of the tool message the rebuild makes of a result payload: the shared
+// hookDenialText for a hook denial, else the result, or the error JSON when the result is null.
 func resultText(payloadJSON string) string {
+	if text, denied := hookDenialText(payloadJSON); denied {
+		return text
+	}
 	if res := payloadFieldRaw(payloadJSON, "result"); res != "null" {
 		return res
 	}

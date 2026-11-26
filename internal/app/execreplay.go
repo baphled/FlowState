@@ -35,7 +35,8 @@ import (
 // its result where the live history holds the call and a tool message
 // "error: tool: tool not on session allowlist: ..."; and a failed call's tool
 // message holds the recorded error JSON, not the live "error: tool: tool
-// invocation failed: ..." text.
+// invocation failed: ..." text. A hook denial is not one of the differences: its tool message is
+// hookDenialText, the form the live loop sends.
 func rebuildHistory(events []store.RecordedEvent) []provider.Message {
 	r := &historyRebuild{messages: []provider.Message{}, turn: -1, answered: answeredResultIDs(events)}
 	for _, e := range events {
@@ -127,9 +128,5 @@ func (r *historyRebuild) result(e store.RecordedEvent) {
 	if r.bare {
 		r.turn, r.bare = -1, false // a log without assistant.message: one message per call, as before
 	}
-	res := payloadFieldRaw(e.PayloadJSON, "result")
-	if res == "null" {
-		res = payloadFieldRaw(e.PayloadJSON, "error")
-	}
-	r.messages = append(r.messages, provider.Message{Role: "tool", ToolCallID: id, Content: res})
+	r.messages = append(r.messages, provider.Message{Role: "tool", ToolCallID: id, Content: resultText(e.PayloadJSON)})
 }

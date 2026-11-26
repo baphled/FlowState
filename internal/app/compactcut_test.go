@@ -125,6 +125,17 @@ var _ = Describe("ChooseCut", func() {
 		Expect(strings.Join(spanEntries(events, events), "")).NotTo(ContainSubstring("TRUNCATED"))
 	})
 
+	It("counts the bytes of a hook denial the rebuild sends", func() {
+		events := cutLog(cutOne(saidEvent("try")), cutOne(callEvent("c1")), cutOne(denialResultEvent("c1", "gate-1")))
+		facts := newReplayFacts(events)
+		Expect(replayedBytes(events[3], facts)).To(Equal(len(rebuildHistory(events)[2].Content)))
+	})
+
+	It("shows a hook denial in the summariser's transcript as the rebuilt message", func() {
+		events := cutLog(cutOne(saidEvent("try")), cutOne(callEvent("c1")), cutOne(denialResultEvent("c1", "gate-1")))
+		Expect(strings.Join(spanEntries(events, events), "")).To(ContainSubstring("[Tool result]: " + rebuildHistory(events)[2].Content + "\n"))
+	})
+
 	It("counts no bytes for a dangling call", func() {
 		Expect(replayedBytes(callEvent("c1"), replayFacts{})).To(Equal(0))
 	})
