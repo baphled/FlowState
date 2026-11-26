@@ -51,7 +51,7 @@ A session in the Go CLI transitions through exactly one status at a time:
 | `paused` | Budget exhausted, awaiting explicit resume | Budget stop during `session run` (exit 5) |
 | `cancelled` | a signal, run-route disconnect or shutdown, `session cancel` | Signal handler, run route, `session cancel` |
 | `completed` | Turn finished without error | Turn loop completion |
-| `failed` | Provider error with terminal=true, or the turn limit reached while still requesting tools (`max_turns`) | Provider stream failure; `ErrMaxTurns` |
+| `failed` | Provider error with terminal=true, the turn limit reached while still requesting tools (`max_turns`), or a loop turn cut off at the output cap twice (`output_truncated`) | Provider stream failure; `ErrMaxTurns`; `ErrOutputTruncated` |
 
 A run cancelled mid-turn appends `session.cancelled` with `{"status":"cancelled","reason":R}`, where R says what
 happened: `sigint`, `sigterm` or `sighup` for the command-line signal (carried as the root context's cancellation
@@ -89,8 +89,8 @@ PR #260 introduced the provider-driven execution loop (`app.RunSessionExecLoop`)
   The loop drives the provider stream, detects tool calls, executes them through the allowlist-gated tool registry
   (see [[ADR - Tool-Capability Allowlist Gate]] for the prototype-scale statement), and retries the provider with
   results appended until a terminal condition. Termination guards: max turns reached, budget exhausted, provider error
-  (terminal, except the one non-terminal `context_overflow` marker that ADR-010 writes before it compacts and retries,
-  which leaves the session `active`), context cancelled (SIGINT, SIGTERM or SIGHUP; on the serve run route, a client
+  (terminal, except the non-terminal `context_overflow` and `output_truncated` markers that ADR-010 writes before it
+  retries, which leave the session `active`), context cancelled (SIGINT, SIGTERM or SIGHUP; on the serve run route, a client
   disconnect or shutdown).
 
 The loop was originally designed without resume or crash-recovery awareness: a rerun after pause or crash silently
@@ -157,8 +157,10 @@ The turn loop (single-turn or exec loop with tool surface) runs with the resolve
   A provider finish event is never recorded as an `assistant.delta`. When the provider reported a finish reason, the
   completed `turn.end` payload carries it (`{"status":"completed","finish_reason":"length"}`); without one the
   payload stays `{"status":"completed"}`. Neutral values are `stop`, `length` (cut off at the max-token limit) and
-  `tool_calls`; others pass through. A `length` turn is still `completed`, but the record shows it was truncated,
-  and `session doctor` (and `GET /sessions/{id}/doctor`) surfaces it as `finish_reason` plus `truncated: true`. In
+  `tool_calls`; others pass through. A single-turn `length` answer is still `completed` (the tool loop retries and then
+  fails it, see ADR-010's 2026-11-25 amendment). When the provider reported a finish reason the record shows the
+  truncation, and `session doctor` (and `GET /sessions/{id}/doctor`) surfaces it as `finish_reason` plus
+  `truncated: true` (every provider the registry resolves reports finish reasons). In
   a tool-surface run the terminal `turn.end` carries the reason of the final provider turn, so a tool-surface run that
   answers on its last allowed turn records that turn's reason on a `completed` turn. A run that is still requesting
   tools after its last allowed turn ends `failed` instead (see Phase 5). A failure to persist
@@ -174,6 +176,7 @@ The turn outcome maps to the exit-code contract:
 | budget stop | 5 | no (paused) |
 | provider error | 3 | yes (failed) |
 | turn limit reached while still requesting tools (`max_turns`) | 5 | yes (failed) |
+| tool-loop turn cut off at the output cap twice (`output_truncated`, ADR-010 amendment 2026-11-25) | 5 | yes (failed) |
 | SIGINT, SIGTERM, SIGHUP (SIGHUP unless ignored at start) | 130 | yes (cancelled) |
 | unknown tool | 2 | no (pre-flight) |
 | config invalid | 4 | no (pre-flight) |
@@ -186,9 +189,11 @@ Exit 8 (`receipt_invalid`) is not a turn outcome and `session run` cannot return
 when a run is not accepted (a failed gate or a rejected packet) and by `receipt validate`.
 
 An unclassified error (for example a storage failure while recording the turn) is code `internal` and exits 1 — the
-same number as an unknown session; the stderr `code` tells them apart. Exit 1 is the CLI contract's number, not a
-new one. A `length` finish (answer truncated) does not change the exit: `session run` exits 0 and writes one
-warning line to stderr naming `session doctor <id>` and `--max-tokens`; stdout stays the event stream.
+same number as an unknown session; the stderr `code` tells them apart. Exit 1 is the CLI contract's number, not a new
+one. A `length` finish (answer truncated) on the single-turn path does not change the exit: `session run` exits 0 and,
+when the provider reports a finish reason, writes one warning line to stderr naming `session doctor <id>` and
+`--max-tokens`; stdout stays the event stream. A
+tool-loop turn cut off twice is `output_truncated`, exit 5, instead (ADR-010 amendment note).
 
 ### Invariants
 

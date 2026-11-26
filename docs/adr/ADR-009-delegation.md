@@ -157,7 +157,7 @@ You review. You do not edit. Begin your final message with VERDICT: pass or VERD
 | D10 | Released as v1.10.0 after the delegate packets (the packet list is in the project records, not in the repository). |
 | D11 | No run-level lease: each child is an ordinary session with the existing per-session protection. |
 | D12 | There is no "skipped" child: nothing is scheduled, so nothing is skipped. |
-| D13 | A child that reaches `max_turns` mid-tool-use ends `failed` with reason `max_turns` and returns its partial text marked partial. The loop used to fall out after the last turn's tool calls and complete the session with no `max_turns` marker; it now executes that turn's calls, records their results, and fails the run with `ErrMaxTurns` (code `max_turns`, exit 5, HTTP 409) through the provider-failure path: a terminal `provider.error` event with reason `max_turns` comes before the `failed` status. A turn that answers without tool calls still completes, even on the last allowed turn. The delegate tool reports the child as failed, partial; the parent continues (D7). This adds a cause to the `failed` row of ADR-002's status table. |
+| D13 | A child that reaches `max_turns` mid-tool-use ends `failed` with reason `max_turns` and returns its partial text marked partial. The loop used to fall out after the last turn's tool calls and complete the session with no `max_turns` marker; it now executes that turn's calls, records their results, and fails the run with `ErrMaxTurns` (code `max_turns`, exit 5, HTTP 409) through the provider-failure path: a terminal `provider.error` event with reason `max_turns` comes before the `failed` status. A turn that answers without tool calls and finishes normally still completes, even on the last allowed turn; one cut off at the output cap fails with `output_truncated` (ADR-010 amendment 2026-11-25). The delegate tool reports the child as failed, partial; the parent continues (D7). This adds a cause to the `failed` row of ADR-002's status table. |
 | D14 | Nested delegation (root, child, grandchild). **Who may delegate:** a child whose profile lists `delegate`, at depth 1; a profile listing `delegate` for a child at depth 2 is refused at spawn (and on resume) with `delegate is not available at depth 2: the nesting limit is 2` and no session is created; `CreateChildSession`'s depth check stays as the hard backstop. **Binding:** the child's registry gets its own `delegate` tool with the CHILD as parent: its session, streamer, pool, working directory (confinement is relative to the child's directory, which lies inside the root's), the root run's loaded profiles and, as `ParentEvents`, the child's per-call event writer, so a grandchild's `delegation.started` and `delegation.completed` land in the child's log and the child's in the root's. Its allowlist is its profile's tools exactly. **Which profiles:** the profile's own `delegates` list decides (the precedent is Claude Code's `Agent(type)` and OpenCode's `permission.task`, not a subset rule): the delegate tool bound to a child may spawn only those names, for a single `agent`, for every `tasks` entry (validated up front: one name outside the list refuses the whole call and no child is created) and for `resume` (the child's recorded profile name must be listed). It is fail-closed: a profile that lists `delegate` with no `delegates` may delegate to nothing, and the refusal says `profile X lists delegate but declares no delegates`; otherwise `profile X may not delegate to Y: it is not in X's delegates`. The tool's description lists only the allowed profiles. The root's own tool is unrestricted over the loaded scope (the user's explicit run), and a name that is not loaded is refused at load (`CheckDelegates`). Without this a read-only reviewer that lists `delegate` could reach a writer. **Budget:** a grandchild reserves from the child's pool, built from the child's grant, before it exists; the child's own turns draw from the same pool, so the grant bounds the subtree. Settlement returns the unspent part up the chain: a child is charged its own turns plus what its descendants spent, and the rest returns to the root's pool. **Cancellation:** the child runs under the root's context, so cancelling the root cancels the child's loop and its in-flight delegate call, which cancels the grandchild with the same reason, each level in the existing order (final event, status, settlement on a detached context). A grandchild's failure is data for the child (D7), a child's for the root. A panic through a delegating child closes the per-call event writer on the unwind before the child is settled, so each level ends `failed` (reason `panic`) with its reservation settled and its slot released. **Concurrency:** the per-call cap (4 running, 8 per call) multiplies across levels, so a root run also carries a cap of 8 descendant runs running at once (`DefaultDescendantLimit`), a semaphore created with the root's tool and passed down; a run past it waits for a slot, respecting its context, and never fails. A run holds one slot while it executes provider turns and tools and gives it up while its delegate call waits for its own children, then waits for one again: otherwise eight children each holding a slot and waiting for a grandchild would deadlock. **Resume:** `ResumeDelegatedChild` recovers the child as a crashed root (D8): a dangling delegate call of the child is answered with ITS grandchildren, their stale leases are cleared, and the child's own tool is bound again. Limits: a resumed child's pool is its `max_turns` minus the turns in its own log, so spend of grandchildren that finished before a crash is not deducted again after it; a resumed child runs in the parent's directory, not the narrower `cwd` it was started with. |
 
 **Provider usage (D5, D6).** The loop now records the provider's token usage on each turn's `assistant.message`
@@ -194,31 +194,31 @@ still validates and runs as before. `swarm.Brief` renders the coordinator's firs
 in dependency order, gates by name and description only (never the command), and fixed instructions. The operator's
 values sit in a fenced block marked as data, each Go-quoted, and validation bounds the manifest (at most 64 packets, a
 64 KiB brief) and refuses control, format and line-separator characters and ids outside
-`[A-Za-z0-9][A-Za-z0-9._-]{0,63}`.
-`app.ExecuteSwarm` implements this in the engine and `swarm run <manifest> --execute` calls it (through
-`app.ExecuteSwarmFile`, which loads the manifest and builds the hash-checking admission log and the gate runner in the
-workdir; the profile scope, provider and model resolve as for `session run` and `session new`). A worked example is in
-`docs/examples/swarm`. A result prints as one JSON object (`swarm-run-execute`), and the existing exit codes carry the
-status: accepted 0, `not_accepted` and `gate_failed` 8, a failed coordinator by its own cause (provider 3, budget or
-`max_turns` 5, otherwise 1), cancelled 130. `ExecuteSwarmResult.Cause` carries that cause as an error. It checks every
-precondition before it creates a session or run (the manifest, a loaded coordinator and role profiles, a role on every
-packet, `delegate` in the coordinator's tools, a database outside the workdir) and gives the coordinator a delegate
-tool restricted, through the allowlist above, to the manifest's roles; a coordinator profile that lists `delegates`
-narrows this to the intersection, and a packet role the intersection leaves out is refused up front. The engine maps a
-delegated child to its packet by the marker the brief tells the model to start each task with, `[packet <id>]` at the
-very start of the task (`swarm.PacketRef`, which refuses wrapped or Unicode-spaced forms), read from the child's own
-first task after the coordinator stops; the delegation receipts carry no packet argument, so `delegate*.go` is
-untouched. A marker that names no manifest packet, or a role other than the packet's, or whose task text after the
-marker does not contain the packet's task verbatim (whitespace runs collapsed), leaves the child unattributed (stored
-with an empty packet id) rather than failing the run, and a packet no completed child stands for is recorded not run;
-the first completed child is named as the one that admitted it. Only a coordinator that completed lets the engine run
-the gates and the admission; a failed, cancelled or max-turns coordinator stores a failed run and runs no gate, and
-the model's claim about the gates is never read. A swarm with no packet, no gate or a packet whose role is the
-coordinator is refused before anything is created. The gates must run in the tree the children worked in:
-`swarm.NewGateRunnerIn(dir)` runs them with `cmd.Dir = dir`, and `ExecuteSwarm` refuses a runner whose `Dir()` is not
-the workdir. A passed deadline is a failed run with reason `deadline`; a budget-exhausted coordinator stays paused.
-The store keeps only pass or fail, so `gate_failed` and a cancel during the gates both store fail with the packets
-admitted and no gate rows: a later `swarm status` needs the richer result (a follow-up).
+`[A-Za-z0-9][A-Za-z0-9._-]{0,63}`. `app.ExecuteSwarm` implements this in the engine and `swarm run <manifest>
+--execute` calls it (through `app.ExecuteSwarmFile`, which loads the manifest and builds the hash-checking admission
+log and the gate runner in the workdir; the profile scope, provider and model resolve as for `session run` and
+`session new`). A worked example is in `docs/examples/swarm`. A result prints as one JSON object
+(`swarm-run-execute`), and the existing exit codes carry the status: accepted 0, `not_accepted` and `gate_failed` 8, a
+failed coordinator by its own cause (provider 3, budget, `max_turns` or `output_truncated` 5, otherwise 1), cancelled
+130. `ExecuteSwarmResult.Cause` carries that cause as an error. It checks every precondition before it creates a
+session or run (the manifest, a loaded coordinator and role profiles, a role on every packet, `delegate` in the
+coordinator's tools, a database outside the workdir) and gives the coordinator a delegate tool restricted, through the
+allowlist above, to the manifest's roles; a coordinator profile that lists `delegates` narrows this to the
+intersection, and a packet role the intersection leaves out is refused up front. The engine maps a delegated child to
+its packet by the marker the brief tells the model to start each task with, `[packet <id>]` at the very start of the
+task (`swarm.PacketRef`, which refuses wrapped or Unicode-spaced forms), read from the child's own first task after
+the coordinator stops; the delegation receipts carry no packet argument, so `delegate*.go` is untouched. A marker that
+names no manifest packet, or a role other than the packet's, or whose task text after the marker does not contain the
+packet's task verbatim (whitespace runs collapsed), leaves the child unattributed (stored with an empty packet id)
+rather than failing the run, and a packet no completed child stands for is recorded not run; the first completed child
+is named as the one that admitted it. Only a coordinator that completed lets the engine run the gates and the
+admission; a failed, cancelled or max-turns coordinator stores a failed run and runs no gate, and the model's claim
+about the gates is never read. A swarm with no packet, no gate or a packet whose role is the coordinator is refused
+before anything is created. The gates must run in the tree the children worked in: `swarm.NewGateRunnerIn(dir)` runs
+them with `cmd.Dir = dir`, and `ExecuteSwarm` refuses a runner whose `Dir()` is not the workdir. A passed deadline is
+a failed run with reason `deadline`; a budget-exhausted coordinator stays paused. The store keeps only pass or fail,
+so `gate_failed` and a cancel during the gates both store fail with the packets admitted and no gate rows: a later
+`swarm status` needs the richer result (a follow-up).
 
 ### Engine changes this decision depends on
 

@@ -20,7 +20,7 @@ var ErrReservationUnsettled = errors.New("reservation_unsettled")
 var statusByCode = map[string]int{
 	"usage": http.StatusBadRequest, "session_not_found": http.StatusNotFound,
 	"session_terminal": http.StatusConflict, "session_busy": http.StatusConflict, "session_cancelled": http.StatusConflict,
-	"budget_exceeded": http.StatusConflict, "max_turns": http.StatusConflict, "receipt_invalid": http.StatusUnprocessableEntity,
+	"budget_exceeded": http.StatusConflict, "max_turns": http.StatusConflict, "output_truncated": http.StatusConflict, "receipt_invalid": http.StatusUnprocessableEntity,
 	"provider_error": http.StatusBadGateway, "internal": http.StatusInternalServerError,
 	"reservation_unsettled": http.StatusInternalServerError}
 

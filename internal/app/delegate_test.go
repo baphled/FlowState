@@ -818,6 +818,35 @@ var _ = Describe("RunDelegatedChild", func() {
 		})
 	})
 
+	Context("a child cut off by the output cap twice", func() {
+		var f *delegateFixture
+		var res DelegateResult
+		var rerr error
+		BeforeEach(func() {
+			f = newDelegateFixture(lengthTurn("I"), lengthTurn("I"))
+			res, rerr = RunDelegatedChild(ctx, f.request())
+		})
+
+		It("ends failed instead of completed", func() { Expect(res.Status).To(Equal(DelegateStatusFailed)) })
+		It("gives output_truncated as the reason", func() { Expect(res.Reason).To(Equal("output_truncated")) })
+		It("marks the child session failed", func() { Expect(f.status(res.ChildID)).To(Equal("failed")) })
+		It("is the child's failure, not an error for the caller", func() { Expect(rerr).To(Succeed()) })
+		It("records output_truncated in the receipt", func() {
+			Expect(f.receiptPayload()).To(HaveKeyWithValue("reason", "output_truncated"))
+		})
+	})
+
+	Context("a parent whose child is cut off by the output cap twice", func() {
+		It("tells the model the child failed with output_truncated", func() {
+			f := newToolFixture(callTurn(delegateCall(`{"agent":"writer","task":"look"}`)),
+				lengthTurn("I"), lengthTurn("I"), finishText("parent done"))
+			if _, perr := f.runParent(ctx); perr != nil {
+				panic(perr)
+			}
+			Expect(f.toolResultContent()).To(ContainSubstring("failed after 2 turns: output_truncated"))
+		})
+	})
+
 	Context("a parent whose child reaches max_turns", func() {
 		var f *toolFixture
 		var res *ExecLoopResult

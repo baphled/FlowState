@@ -1688,6 +1688,26 @@ var _ = Describe("The max_turns failure at the CLI", func() {
 	})
 })
 
+var _ = Describe("The output_truncated failure at the CLI", func() {
+	var runErr error
+
+	BeforeEach(func() {
+		runErr = fmt.Errorf("%w: the retry was cut off too", app.ErrOutputTruncated)
+	})
+
+	It("exits 5, the limit class", func() {
+		exit, _ := finishRunOutcome(runErr)
+		Expect(exit).To(Equal(5))
+	})
+	It("writes the output_truncated code as JSON on stderr", func() {
+		_, stderr := finishRunOutcome(runErr)
+		Expect(stderrCode(stderr)).To(Equal("output_truncated"))
+	})
+	It("maps the error onto exit 5 outside the run path too", func() {
+		Expect(exitCodeFor(runErr)).To(Equal(5))
+	})
+})
+
 var _ = Describe("a refused lease across a process boundary", Label("e2e"), func() {
 	var db, id string
 	var res result

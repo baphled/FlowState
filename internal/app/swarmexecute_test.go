@@ -377,6 +377,29 @@ var _ = Describe("ExecuteSwarm", func() {
 		Expect(execStop{res.Status, res.Reason, f.gateRan()}).To(Equal(execStop{SwarmExecFailed, CodeMaxTurns, false}))
 	})
 
+	It("fails the run with output_truncated when the coordinator is cut off twice", func() {
+		f.scripts.byRole["coord-body"] = [][]provider.StreamEvent{lengthTurn("I"), lengthTurn("I")}
+		res := f.execute(ctx)
+		Expect(execStop{res.Status, res.Reason, f.gateRan()}).To(Equal(execStop{SwarmExecFailed, CodeOutputTruncated, false}))
+	})
+
+	It("carries ErrOutputTruncated as the cause of a coordinator cut off twice", func() {
+		f.scripts.byRole["coord-body"] = [][]provider.StreamEvent{lengthTurn("I"), lengthTurn("I")}
+		Expect(errors.Is(f.execute(ctx).Cause, ErrOutputTruncated)).To(BeTrue())
+	})
+
+	It("names output_truncated in the reason of a packet whose child was cut off twice", func() {
+		f.scripts.byRole["writer-body"] = [][]provider.StreamEvent{lengthTurn("I"), lengthTurn("I")}
+		f.coordinate("done", [2]string{"writer", "[packet p1] write it"})
+		Expect(f.execute(ctx).Packets[0].Reason).To(ContainSubstring("output_truncated"))
+	})
+
+	It("does not admit a packet whose child was cut off twice", func() {
+		f.scripts.byRole["writer-body"] = [][]provider.StreamEvent{lengthTurn("I"), lengthTurn("I")}
+		f.coordinate("done", [2]string{"writer", "[packet p1] write it"})
+		Expect(f.execute(ctx).Packets[0].Admitted).To(BeFalse())
+	})
+
 	It("carries ErrMaxTurns as the cause of a coordinator stopped by max_turns", func() {
 		f.cfg.MaxTurns = 1
 		f.both("done")
