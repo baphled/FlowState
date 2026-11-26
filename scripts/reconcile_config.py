@@ -6,10 +6,18 @@ from dataclasses import dataclass
 CONTEXTS = ("hook", "ci", "runner", "merge_script")
 SOURCES = ("ls-remote", "api")
 REQUIRED = ("repo", "remote", "integration_branch", "release_branch", "resolve_modes")
-OPTIONAL = {"ttl_seconds": 900, "retry": 1, "protected_globs": ()}
+OPTIONAL = {"ttl_seconds": 900, "retry": 1, "protected_globs": (), "plan_approval_public_key": "",
+            "activation_ref": "", "system_one_model": "", "release_sensitive_paths": ()}
+FILE_KEYS = ("protected_globs", "plan_approval_public_key", "activation_ref", "system_one_model",
+             "release_sensitive_paths")
 REPO = re.compile(r"(?!\.{1,2}/)[A-Za-z0-9_.-]+/(?!\.{1,2}$)[A-Za-z0-9_.-]+")
 BRANCH = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./-]*")
 URL = re.compile(r"(?:[A-Za-z][A-Za-z0-9+.-]*://\S+|[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+:\S+|/\S+)")
+PUBLIC_KEY = re.compile(r"[0-9a-f]{64}")
+SEGMENT = r"[A-Za-z0-9](?:[A-Za-z0-9_-]|\.(?!\.))*"
+ACTIVATION_REF = re.compile(rf"dropbox:/FlowState/Metadata/attempts/{SEGMENT}/{SEGMENT}\.json")
+MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/@-]*")
+LITERAL_PATH = re.compile(r"\.?[A-Za-z0-9_][A-Za-z0-9_.+-]*(?:/\.?[A-Za-z0-9_][A-Za-z0-9_.+-]*)*")
 
 
 class ReconcileError(Exception):
@@ -27,6 +35,10 @@ class ReconcileConfig:
     ttl_seconds: int = 900
     retry: int = 1
     protected_globs: tuple = ()
+    plan_approval_public_key: str = ""
+    activation_ref: str = ""
+    system_one_model: str = ""
+    release_sensitive_paths: tuple = ()
 
 
 def _keys(name, value, required, allowed):
@@ -85,6 +97,21 @@ def _globs(value):
     return tuple(_text("protected_globs entry", item) for item in value)
 
 
+def _unset_or(name, value, pattern):
+    if not isinstance(value, str) or (value and not pattern.fullmatch(value)):
+        raise ReconcileError(f"{name} must be empty or match {pattern.pattern}")
+    return value
+
+
+def _literal_paths(value):
+    if not isinstance(value, list) or len(set(map(str, value))) != len(value):
+        raise ReconcileError("release_sensitive_paths must be a list without duplicates")
+    for item in value:
+        if not isinstance(item, str) or not LITERAL_PATH.fullmatch(item):
+            raise ReconcileError("release_sensitive_paths entries must be literal repository paths")
+    return tuple(value)
+
+
 def parse_config(data):
     """Validate a decoded document; unknown or missing keys are rejected."""
     _keys("config", data, REQUIRED, set(REQUIRED) | set(OPTIONAL))
@@ -101,6 +128,10 @@ def parse_config(data):
         ttl_seconds=_natural("ttl_seconds", data.get("ttl_seconds", OPTIONAL["ttl_seconds"]), 1),
         retry=_natural("retry", data.get("retry", OPTIONAL["retry"]), 0),
         protected_globs=_globs(data.get("protected_globs", [])),
+        plan_approval_public_key=_unset_or("plan_approval_public_key", data.get("plan_approval_public_key", ""), PUBLIC_KEY),
+        activation_ref=_unset_or("activation_ref", data.get("activation_ref", ""), ACTIVATION_REF),
+        system_one_model=_unset_or("system_one_model", data.get("system_one_model", ""), MODEL),
+        release_sensitive_paths=_literal_paths(data.get("release_sensitive_paths", [])),
     )
 
 
@@ -111,4 +142,5 @@ def load_config(path):
             data = json.load(handle)
     except (OSError, ValueError) as error:
         raise ReconcileError("cannot read reconcile config") from error
+    _keys("reconcile config", data, set(REQUIRED) | set(FILE_KEYS), set(REQUIRED) | set(OPTIONAL))
     return parse_config(data)
