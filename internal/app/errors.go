@@ -74,7 +74,7 @@ var ErrOutputTruncated = errors.New("output_truncated")
 var ErrHookRefused = errors.New("hook_refused")
 
 // ErrHookStop reports a run a turn.after hook stopped (code hook_stop, exit 5, HTTP 409). A root run
-// is paused, a child failed; nothing produces it until ADR-012 packet 4a2.
+// is paused with reason hook_stop, a child failed, a swarm coordinator's swarm failed (fireTurnAfter).
 var ErrHookStop = errors.New("hook_stop")
 
 // ErrorCode maps any error onto the closed error-code set of the

@@ -364,13 +364,7 @@ func finishDelegatedChild(ctx context.Context, req *DelegateRequest, run *delega
 		out.Status = DelegateStatusCompleted
 		errs = append(errs, completeExecLoopRun(dctx, req.Store, child.ID, res.FinishReason))
 	default:
-		out.Status, out.Reason = DelegateStatusFailed, runErr.Error()
-		if errors.Is(runErr, ErrMaxTurns) {
-			out.Reason = CodeMaxTurns
-		}
-		if errors.Is(runErr, ErrOutputTruncated) {
-			out.Reason = CodeOutputTruncated
-		}
+		out.Status, out.Reason = DelegateStatusFailed, delegateFailureReason(runErr)
 		errs = append(errs, failDelegatedChild(dctx, req.Store, child.ID, runErr))
 		if !delegateFailureIsChild(ctx, runErr) {
 			errs = append(errs, runErr)
@@ -384,14 +378,27 @@ func finishDelegatedChild(ctx context.Context, req *DelegateRequest, run *delega
 	return out, errors.Join(errs...)
 }
 
+// delegateFailureReason is the reason a failed child reports: the code of a limit or stop, else the error text.
+func delegateFailureReason(err error) string {
+	switch {
+	case errors.Is(err, ErrMaxTurns):
+		return CodeMaxTurns
+	case errors.Is(err, ErrOutputTruncated):
+		return CodeOutputTruncated
+	case errors.Is(err, ErrHookStop):
+		return CodeHookStop
+	}
+	return err.Error()
+}
+
 // delegateFailureIsChild reports whether a loop error is the child's own failure
-// (a provider failure, an exhausted budget, the turn limit or an expired deadline), which the
+// (a provider failure, an exhausted budget, the turn limit, a turn.after hook stop or an expired deadline), which the
 // model sees, rather than an infrastructure failure, which the caller sees. A
 // deadline can expire inside a store read before the provider is reached, so an
 // expired ctx counts even when the error does not wrap the deadline.
 func delegateFailureIsChild(ctx context.Context, err error) bool {
 	return errors.Is(err, ErrProvider) || errors.Is(err, ErrExecLoopBudget) || errors.Is(err, ErrMaxTurns) ||
-		errors.Is(err, ErrOutputTruncated) || errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded)
+		errors.Is(err, ErrOutputTruncated) || errors.Is(err, ErrHookStop) || errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded)
 }
 
 // chargeDelegation records the turns the child spent against its reservation.

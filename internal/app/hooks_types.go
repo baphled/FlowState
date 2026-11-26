@@ -194,8 +194,9 @@ type hookInput struct {
 }
 
 // hookStep is what one hook invocation decided: whether it denies the call and the arguments the next hook
-// sees (changed only by a transform hook).
+// sees (changed only by a transform hook). stop is a turn.after hook that asked the run to stop.
 type hookStep struct {
 	deny bool
+	stop bool
 	args json.RawMessage
 }

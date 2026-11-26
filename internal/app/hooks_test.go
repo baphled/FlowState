@@ -182,7 +182,7 @@ var _ = Describe("Hook loading and scope", func() {
 	})
 
 	It("refuses a point outside the production accepted set", func() {
-		putUser(cmdHook("a", "turn.after", ""))
+		putUser(cmdHook("a", "compaction.before", ""))
 		_, err := LoadHooks(HooksRequest{Scope: HookScopeUser, Accepted: AcceptedHooks()})
 		Expect(err).To(MatchError(ErrHookPointUnsupported))
 	})

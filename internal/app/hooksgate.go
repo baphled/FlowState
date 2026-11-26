@@ -54,10 +54,13 @@ func newHookGate(cfg ExecLoopConfig, call provider.ToolCall, events tool.EventSi
 	if len(before) == 0 && len(after) == 0 {
 		return nil
 	}
-	return &hookGate{hooks: before, after: after, events: events, input: hookInput{
-		session: cfg.Session.ID, runID: strconv.FormatInt(cfg.Lease.Token(), 10), agent: cfg.Agent, depth: cfg.Depth,
-		cwd: cfg.Workdir, callID: call.ID,
-	}}
+	return &hookGate{hooks: before, after: after, events: events, input: loopHookInput(cfg, call.ID)}
+}
+
+// loopHookInput is the context a loop-level hook reads in every stdin document; callID is empty at turn.after.
+func loopHookInput(cfg ExecLoopConfig, callID string) hookInput {
+	return hookInput{session: cfg.Session.ID, runID: strconv.FormatInt(cfg.Lease.Token(), 10), agent: cfg.Agent,
+		depth: cfg.Depth, cwd: cfg.Workdir, callID: callID}
 }
 
 // splitToolHooks picks the tool.before and tool.after hooks of a set. The tool.before hooks come back in the
@@ -118,7 +121,11 @@ func (g *hookGate) invoke(ctx context.Context, h Hook, stdin []byte, inputErr er
 	res, rewritten := checkRewrite(h, g.run(ctx, h, stdin, inputErr))
 	step := hookStep{args: args}
 	step.deny = res.Verdict == tool.HookDeny || res.Verdict == tool.HookFailure && h.OnFailure == HookOnFailureDeny
+	step.stop = res.Verdict == tool.HookAllow && res.Output.Stop
 	payload := hookResultPayload(h, res, g.input.callID)
+	if step.stop {
+		payload["stop"] = true
+	}
 	if rewritten != nil {
 		step.args = rewritten
 		addRewrite(payload, args, rewritten)
@@ -137,7 +144,7 @@ func (g *hookGate) run(ctx context.Context, h Hook, stdin []byte, inputErr error
 	}
 	argv := append([]string{h.Executable}, h.Argv[1:]...)
 	return g.runner.Run(ctx, tool.HookCommand{Argv: argv, Dir: g.input.cwd, EnvNames: h.Env, AllowArgs: h.Transform,
-		Timeout: time.Duration(h.TimeoutMS) * time.Millisecond}, stdin)
+		AllowStop: h.Point == HookTurnAfter, Timeout: time.Duration(h.TimeoutMS) * time.Millisecond}, stdin)
 }
 
 // document is the JSON a hook reads on stdin (ADR-012, Handler kinds). A tool.after document also carries the
