@@ -90,7 +90,8 @@ synchronous turn behind the `session run` preamble and answers the projected
 event log; `{"budget","max_tokens"}` mirrors the CLI flags, provider failures
 (errors wrapping `app.ErrProvider`, named once in the message) 502 `provider_error`, budget stops and a
 `max_turns` failure (the turn limit reached while still requesting tools, exit 5 on the CLI) and an
-`output_truncated` failure (a loop turn cut off at the output cap twice, exit 5) 409, any
+`output_truncated` failure (a loop turn cut off at the output cap twice, exit 5) 409, a `hook_stop` (a `turn.after`
+hook stopped the run, exit 5) 409, a `hook_refused` (a `user.prompt` hook refused the run, exit 2) 422, any
 other failure keeps its own class (a storage error while recording the turn is 500 `internal`, and `session
 run` exits 1), and the route's deadline extends 10 minutes; a client disconnect or shutdown mid-run cancels
 the session, as
@@ -98,7 +99,9 @@ a signal does for the CLI. The run body also takes `max_turns` (1 to 1000, absen
 same tool-loop turn limit as `session run --max-turns`; a negative or larger value is 400 `usage`, and a run that
 reaches the limit while still asking for tools is 409 `max_turns`. A run refused because the session's lease is held
 is 409 `session_busy` (the CLI exits 9). The body `code` tells the 409s apart: `session_terminal`, `session_cancelled`,
-`budget_exceeded`, `max_turns`, `output_truncated` and `session_busy`.
+`budget_exceeded`, `max_turns`, `output_truncated`, `hook_stop` and `session_busy`. The two hook codes are
+ADR-012 D7; they amend the external `specs/CLI-AND-API-CONTRACT.md` section 2 under the owner's delegation (as
+ADR-011 D11 did), and nothing produces them until ADR-012 packets 4a and 4a2.
 `POST /sessions` creates via the `session new` composition (a write, so it is
 detached from cancellation): body fields override serve config, secret-looking
 keys are 400 `usage` (client input, unlike the config's `config_invalid`).

@@ -14,8 +14,9 @@ import (
 )
 
 // Exit codes per specs/CLI-AND-API-CONTRACT.md §1–2 (stable; CI
-// depends on them). Exit 9 (session_busy) was added by ADR-011 D11; that external spec is
-// outside the repository and gains it when next edited.
+// depends on them). Exit 9 (session_busy) was added by ADR-011 D11; hook_refused (2) and hook_stop (5)
+// by the ADR-012 D7 amendment; that external spec is outside the repository and gains
+// them when next edited.
 const (
 	exitOK             = 0
 	exitUnknownSession = 1
@@ -141,11 +142,11 @@ func writeError(stderr io.Writer, err error) {
 
 func exitCodeFor(err error) int {
 	switch asCliError(err).Code {
-	case codeUsage:
+	case codeUsage, app.CodeHookRefused:
 		return exitUsage
 	case codeConfigInvalid:
 		return exitConfigInvalid
-	case app.CodeBudgetExceeded, app.CodeMaxTurns, app.CodeOutputTruncated:
+	case app.CodeBudgetExceeded, app.CodeMaxTurns, app.CodeOutputTruncated, app.CodeHookStop:
 		return exitBudget
 	case app.CodeSessionCancelled:
 		return exitSigint
