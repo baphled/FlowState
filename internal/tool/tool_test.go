@@ -338,3 +338,118 @@ var _ = Describe("Echo", func() {
 		Expect(err).To(HaveOccurred())
 	})
 })
+
+// scriptedGate is a CallGate that answers with a fixed id and error and counts its calls.
+type scriptedGate struct {
+	denyID string
+	err    error
+	calls  int
+}
+
+func (g *scriptedGate) Before(context.Context, string, json.RawMessage) (string, error) {
+	g.calls++
+	return g.denyID, g.err
+}
+
+// gatedEchoLoop is newEchoLoop with the gate set; it returns the store and session for reading the log.
+func gatedEchoLoop(allow []string, gate CallGate) (*Loop, *store.Store, string) {
+	l, st, sid := newEchoLoop(allow)
+	return l.WithGate(gate), st, sid
+}
+
+// loopEventTypes is the event types of the session log in order.
+func loopEventTypes(st *store.Store, sid string) []string {
+	events, err := st.Replay(context.Background(), sid)
+	if err != nil {
+		panic(err)
+	}
+	types := make([]string, 0, len(events))
+	for _, e := range events {
+		types = append(types, e.Type)
+	}
+	return types
+}
+
+var _ = Describe("Loop tool.before gate (ADR-012)", func() {
+	var args json.RawMessage
+
+	BeforeEach(func() { args = json.RawMessage(`{"msg":"hi"}`) })
+
+	It("returns a HookDeniedError naming the denying hook", func() {
+		l, _, _ := gatedEchoLoop([]string{Echo}, &scriptedGate{denyID: "guard"})
+		_, err := l.Invoke(context.Background(), Echo, args)
+		var denied *HookDeniedError
+		Expect(errors.As(err, &denied) && denied.HookID == "guard").To(BeTrue())
+	})
+
+	It("records the denied call and its hook_denied result, as a call with an answer", func() {
+		l, st, sid := gatedEchoLoop([]string{Echo}, &scriptedGate{denyID: "guard"})
+		_, _ = l.Invoke(context.Background(), Echo, args)
+		Expect(loopEventTypes(st, sid)).To(Equal([]string{TypeToolCall, TypeToolResult}))
+	})
+
+	It("records the model's own arguments in the denied tool.call", func() {
+		l, st, sid := gatedEchoLoop([]string{Echo}, &scriptedGate{denyID: "guard"})
+		_, _ = l.Invoke(context.Background(), Echo, args)
+		events, err := st.Replay(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(events[0].PayloadJSON).To(ContainSubstring(`"msg":"hi"`))
+	})
+
+	It("records the denial with the code hook_denied and the fixed message", func() {
+		l, st, sid := gatedEchoLoop([]string{Echo}, &scriptedGate{denyID: "guard"})
+		_, _ = l.Invoke(context.Background(), Echo, args)
+		events, err := st.Replay(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(events[1].PayloadJSON).To(ContainSubstring(`"code":"hook_denied","message":"denied by hook guard"`))
+	})
+
+	It("does not run the tool after a denial", func() {
+		l, _, _ := gatedEchoLoop([]string{Echo}, &scriptedGate{denyID: "guard"})
+		res, _ := l.Invoke(context.Background(), Echo, args)
+		Expect(res).To(BeNil())
+	})
+
+	It("runs the tool when the gate allows", func() {
+		l, _, _ := gatedEchoLoop([]string{Echo}, &scriptedGate{})
+		res, err := l.Invoke(context.Background(), Echo, args)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res).To(HaveKeyWithValue("msg", "hi"))
+	})
+
+	It("writes no tool.call when the gate fails with an infrastructure error", func() {
+		l, st, sid := gatedEchoLoop([]string{Echo}, &scriptedGate{err: ErrEventAppend})
+		_, _ = l.Invoke(context.Background(), Echo, args)
+		Expect(loopEventTypes(st, sid)).To(BeEmpty())
+	})
+
+	It("returns the gate's infrastructure error", func() {
+		l, _, _ := gatedEchoLoop([]string{Echo}, &scriptedGate{err: ErrEventAppend})
+		_, err := l.Invoke(context.Background(), Echo, args)
+		Expect(err).To(MatchError(ErrEventAppend))
+	})
+
+	It("never asks the gate about a tool outside the allowlist", func() {
+		gate := &scriptedGate{denyID: "guard"}
+		l, _, _ := gatedEchoLoop(nil, gate)
+		_, _ = l.Invoke(context.Background(), Echo, args)
+		Expect(gate.calls).To(BeZero())
+	})
+
+	It("records the allowlist refusal as tool_denied, not as a hook denial", func() {
+		l, st, sid := gatedEchoLoop(nil, &scriptedGate{denyID: "guard"})
+		_, _ = l.Invoke(context.Background(), Echo, args)
+		events, err := st.Replay(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(events[0].PayloadJSON).To(ContainSubstring("tool_denied"))
+	})
+
+	It("never asks the gate about an unregistered tool", func() {
+		gate := &scriptedGate{denyID: "guard"}
+		_, _, w := newStoreWithSession()
+		l, err := NewLoop(NewRegistry(), w, []string{"ghost"})
+		Expect(err).NotTo(HaveOccurred())
+		_, _ = l.WithGate(gate).Invoke(context.Background(), "ghost", args)
+		Expect(gate.calls).To(BeZero())
+	})
+})

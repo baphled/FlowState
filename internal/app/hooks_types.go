@@ -1,6 +1,10 @@
 package app
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/baphled/flowstate/internal/tool"
+)
 
 // HookPoint names one lifecycle point of ADR-012's closed, versioned list.
 type HookPoint string
@@ -165,4 +169,23 @@ type hookContext struct {
 	dir      string
 	origin   string
 	source   HookSource
+}
+
+// hookGate is the tool.before gate of one tool call (ADR-012 packet 3a). It implements tool.CallGate. Its
+// events go through the parent writer the loop holds, never the call's correlated sink.
+type hookGate struct {
+	hooks  []Hook
+	events tool.EventSink
+	runner tool.HookRunner
+	input  hookInput
+}
+
+// hookInput is the call context a gate puts in every hook's stdin document.
+type hookInput struct {
+	session string
+	runID   string
+	agent   string
+	depth   int
+	cwd     string
+	callID  string
 }

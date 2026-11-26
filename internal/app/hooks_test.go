@@ -160,9 +160,63 @@ var _ = Describe("Hook loading and scope", func() {
 		Expect(err).To(MatchError(ErrConfigInvalid))
 	})
 
-	It("refuses a point outside the production accepted set", func() {
+	It("loads tool.before under the production accepted set", func() {
 		putUser(cmdHook("a", "tool.before", ""))
+		got, err := LoadHooks(HooksRequest{Scope: HookScopeUser, Accepted: AcceptedHooks()})
+		mustHook(err)
+		Expect(ids(got)).To(Equal([]string{"a"}))
+	})
+
+	It("refuses transform: true under the production accepted set", func() {
+		putUser(cmdHook("a", "tool.before", `"transform":true,`))
 		_, err := LoadHooks(HooksRequest{Scope: HookScopeUser, Accepted: AcceptedHooks()})
 		Expect(err).To(MatchError(ErrHookPointUnsupported))
 	})
+
+	It("refuses a point outside the production accepted set", func() {
+		putUser(cmdHook("a", "tool.after", ""))
+		_, err := LoadHooks(HooksRequest{Scope: HookScopeUser, Accepted: AcceptedHooks()})
+		Expect(err).To(MatchError(ErrHookPointUnsupported))
+	})
+})
+
+var _ = Describe("LoadedHooks.Digest (ADR-012, composition pin)", func() {
+	base := func() LoadedHooks {
+		return LoadedHooks{Scope: HookScopeUser, Hooks: []Hook{
+			{ID: "a", Point: HookToolBefore, Kind: HookKindCommand, Argv: []string{"./a.sh", "x"}, Executable: "/h/a.sh",
+				TimeoutMS: 1000, OnFailure: HookOnFailureDeny},
+			{ID: "b", Point: HookToolBefore, Kind: HookKindCommand, Argv: []string{"./b.sh"}, Executable: "/h/b.sh",
+				TimeoutMS: 1000, OnFailure: HookOnFailureDeny},
+		}}
+	}
+
+	It("is a hex sha256", func() { Expect(base().Digest()).To(MatchRegexp(`^[0-9a-f]{64}$`)) })
+
+	It("is the same for the same set", func() { Expect(base().Digest()).To(Equal(base().Digest())) })
+
+	It("is defined for the empty set, nil or not", func() {
+		Expect(LoadedHooks{}.Digest()).To(Equal(LoadedHooks{Hooks: []Hook{}}.Digest()))
+	})
+
+	It("does not depend on where the hook was declared", func() {
+		moved := base()
+		moved.Hooks[0].Origin = "/elsewhere/hooks.json"
+		Expect(moved.Digest()).To(Equal(base().Digest()))
+	})
+
+	DescribeTable("changes with what decides what runs",
+		func(mutate func(*LoadedHooks)) {
+			changed := base()
+			mutate(&changed)
+			Expect(changed.Digest()).NotTo(Equal(base().Digest()))
+		},
+		Entry("an id", func(l *LoadedHooks) { l.Hooks[0].ID = "z" }),
+		Entry("a point", func(l *LoadedHooks) { l.Hooks[0].Point = HookToolAfter }),
+		Entry("an argument", func(l *LoadedHooks) { l.Hooks[0].Argv[1] = "y" }),
+		Entry("the resolved executable", func(l *LoadedHooks) { l.Hooks[0].Executable = "/other/a.sh" }),
+		Entry("a matcher", func(l *LoadedHooks) { l.Hooks[0].Match = []string{"fs.write"} }),
+		Entry("the failure policy", func(l *LoadedHooks) { l.Hooks[0].OnFailure = HookOnFailureAllow }),
+		Entry("the order", func(l *LoadedHooks) { l.Hooks[0], l.Hooks[1] = l.Hooks[1], l.Hooks[0] }),
+		Entry("a removed hook", func(l *LoadedHooks) { l.Hooks = l.Hooks[:1] }),
+	)
 })

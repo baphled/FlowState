@@ -310,12 +310,15 @@ func newDelegateOwner() (string, error) {
 func delegateLoopConfig(ctx context.Context, req *DelegateRequest, run *delegateRun,
 	registry *tool.Registry) (ExecLoopConfig, error) {
 	child, grant := run.child, run.grant
+	// The depth is informational for hooks: a chain that cannot be read leaves the floor, 1, since a child
+	// is never a root, and is not a reason to fail the child.
+	chain, _ := req.Store.DelegationChain(ctx, child.ID)
 	cfg := ExecLoopConfig{
 		Store: req.Store, Session: child, Streamer: req.Streamer, Registry: registry,
 		Allowlist: req.Profile.Tools,
 		MaxTurns:  grant, SystemPrompt: req.Profile.Body,
 		Compaction: req.Compaction, ProfileWindow: req.Profile.ContextWindow,
-		Hooks: emptyHookSet(req.Hooks),
+		Hooks: emptyHookSet(req.Hooks), Workdir: run.workdir, Agent: req.Profile.Name, Depth: max(len(chain), 1),
 	}
 	if run.lease != nil {
 		cfg.Lease = run.lease
