@@ -5,7 +5,7 @@ type: adr-index
 status: current
 adr_group: Go CLI
 created: 2026-11-18
-modified: 2026-11-25T14:00
+modified: 2026-11-26T09:00
 deciders:
   - Engineering Team
 consulted:
@@ -46,6 +46,7 @@ The Go CLI's architecture decision records, in the vault template. The prototype
 | 009 | [[ADR - Delegation to Child Agents]] | delegation is a model-called `delegate` tool with markdown agent profiles, isolated child sessions and final-message results; no engine scheduler |
 | 010 | [[ADR - Context Management and Compaction]] | compaction is an appended `context.compacted` event (summary, first kept seq); replay rebuilds from the last one; trigger on provider-reported context over window minus max(reserve, output); log never rewritten |
 | 011 | [[ADR - Session Lease Ownership and Liveness]] | every log writer holds a per-run-owner exec lease; a lease is taken over only when a kernel-released lock file shows its same-host holder dead; unjudgeable rows are refused until `session unlock --force`; recovery runs only after ownership |
+| 012 | [[ADR - Lifecycle Hooks and System One Decisions]] | a closed, versioned list of engine hook points; argv command hooks and local System One decision hooks; allow, deny, rewrite arguments, add fenced context; every invocation recorded and replayed as data, never re-run; project hooks only on `--hooks project\|both`; fail-closed by default for gates |
 | 013 | [[ADR - Skills and Their Enforcement]] | Agent Skills directories loaded through a confined `skill.load` tool, offered per profile in a bounded request-time block; `requires_skills` is checked by the engine against a `skill.loaded` log event; skill files are never executed |
 
 ## Reading order
@@ -56,6 +57,6 @@ New contributors: 001 → 002 → 005 covers the layering, runtime, and configur
 ## Vault relationship
 
 The vault corpus (78 ADRs — 37 accepted, 22 proposed, 19 superseded) documents the prototype architecture. This
-  index's twelve ADRs are the greenfield Go CLI's own decisions, written in the same template and cross-linked to their
+  index's thirteen ADRs are the greenfield Go CLI's own decisions, written in the same template and cross-linked to their
   vault ancestors. Where a vault ADR is superseded (TUI-era patterns), it has no Go CLI descendant; where it is
   accepted and carried forward, the Go CLI ADR cites it under Cross-links.
