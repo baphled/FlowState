@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/store"
+	"github.com/baphled/flowstate/internal/tool"
 )
 
 // toolRunFixture is a file database (under TMPDIR, via GinkgoT().TempDir) with one session, the store a
@@ -204,5 +206,36 @@ var _ = Describe("RunSessionTool lease (ADR-011)", func() {
 		It("is refused as terminal", func() { Expect(err).To(MatchError(session.ErrTerminal)) })
 		It("writes nothing", func() { Expect(f.events()).To(Equal(before)) })
 		It("has released the lease", func() { Expect(f.canTake()).To(BeTrue()) })
+	})
+})
+
+var _ = Describe("The protected hook trees of a tool run (ADR-012 D20)", func() {
+	var (
+		f    *toolRunFixture
+		work string
+	)
+	// write runs fs.write of "x" at path in the workdir; a refused call is the error RunSessionTool
+	// returns, recorded as the tool.result the spec reads.
+	write := func(path string) {
+		_ = f.run(ToolRequest{SessionID: f.id, Tool: tool.FSWriteName, ToolArg: fmt.Sprintf(`{"path":%q,"content":"x"}`, path),
+			Allow: []string{tool.FSWriteName}, Workdir: work})
+	}
+
+	BeforeEach(func() {
+		f = newToolRunFixture()
+		work = GinkgoT().TempDir()
+	})
+
+	Context("a write of the project hook file", func() {
+		BeforeEach(func() { write(".flowstate/hooks.json") })
+		It("is refused with fs_path_protected", func() { Expect(protectedResults(f.st, f.id)).To(HaveLen(1)) })
+		It("writes no hook file", func() {
+			Expect(filepath.Join(work, ".flowstate", "hooks.json")).NotTo(BeAnExistingFile())
+		})
+	})
+
+	It("refuses a write of the user hook file from a workdir above it with fs_path_protected", func() {
+		write(userHooksUnder(work))
+		Expect(protectedResults(f.st, f.id)).To(HaveLen(1))
 	})
 })

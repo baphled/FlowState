@@ -152,9 +152,11 @@ func planDelegation(ctx context.Context, req *DelegateRequest) (*delegatePlan, e
 	return &delegatePlan{registry: registry, modelID: modelID, workdir: workdir}, nil
 }
 
-// childRegistry builds the child's registry in its confined working directory
-// and checks that the profile's tools exist in it, apart from `delegate`, which
-// the run binds to the child once it exists. It returns the resolved directory.
+// childRegistry builds the child's registry in its confined working directory, with the root run's protected
+// hook directories (ADR-012 D20), and checks that the profile's tools exist in it, apart from `delegate`, which
+// the run binds to the child once it exists. The protection travels as the options handed to the builder, so a
+// custom NewRegistry receives it too and must pass it on to the file tools it registers. It returns the
+// resolved directory.
 func childRegistry(req *DelegateRequest) (*tool.Registry, string, error) {
 	workdir, err := confineChildWorkdir(req.ParentWorkdir, req.Workdir)
 	if err != nil {
@@ -164,7 +166,7 @@ func childRegistry(req *DelegateRequest) (*tool.Registry, string, error) {
 	if build == nil {
 		build = NewSessionToolRegistry
 	}
-	registry, err := build(workdir)
+	registry, err := build(workdir, tool.WithProtectedDirs(req.ProtectedDirs...))
 	if err != nil {
 		return nil, "", fmt.Errorf("app: delegate: child registry: %w", err)
 	}

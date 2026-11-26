@@ -383,6 +383,19 @@ project hook file is found under the project root (the directory the command was
 `--workdir`. The flag is parsed and carried to the run today; hooks themselves are not loaded or run yet, so it has
 no effect on a run.
 
+**The protected hook tree.** `fs.write` and `fs.edit` refuse a write into the hook directories with the tool error
+`fs_path_protected`, whatever `--hooks` says and in every run that builds the file tools: `session run`, `serve`,
+`session tool`, a delegated child, a nested or resumed child, and a swarm coordinator and its packet children. Three
+rules apply ([ADR-012](docs/adr/ADR-012-lifecycle-hooks.md) D20): any path with a `.flowstate` component
+(case-folded, at any depth); a target whose resolved path lies under the project hook directory
+(`<project root>/.flowstate`, the directory the command was started in, never `--workdir`) or the user hook
+directory (`flowstate/` in the OS user config directory, `~/.config/flowstate` on Linux), by identity rather than by
+name, so a symlink or hard link to a hook file is refused too and a directory that does not exist yet is not created;
+and a final component that is a symlink, whatever it points at. `fs.read` stays allowed. Known over-refusals: a
+symlinked file is never writable through the file tools (`CLAUDE.md -> AGENTS.md` is the common layout), and this
+repository's own `docs/examples/swarm/.flowstate/` is refused by the name rule: edit those files as a human or with
+`exec.run`. The protection does not reach `exec.run`, `make`, `git checkout` or a human editing the file.
+
 `turn.after` fires after every provider turn of an exec loop, the last no-call turn included, and before the turn
 limit is checked. A command hook on it may print `{"stop":true}`: a root run ends paused, resumable, with the
 `session.paused` reason `hook_stop` (exit 5, HTTP 409); a delegated child ends failed with reason `hook_stop`; a swarm

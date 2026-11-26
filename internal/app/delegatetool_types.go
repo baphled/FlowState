@@ -41,6 +41,9 @@ type DelegateToolConfig struct {
 	// Hooks is the loaded root hook set (ADR-012 D22) every child, nested child and resumed child
 	// of this tool inherits; nil is the empty set.
 	Hooks HookSet
+	// ProtectedDirs is the root run's protected hook directories (ADR-012 D20, ProtectedHookDirs) every child,
+	// nested child and resumed child of this tool inherits, so its file tools refuse them as the root's do.
+	ProtectedDirs []string
 	// limiter is the cap shared down the tree and slot the descendant slot of the
 	// run this tool is bound to; both are nil for the root's own tool.
 	limiter *descendantLimiter

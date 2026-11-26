@@ -3,13 +3,18 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/store"
 	"github.com/baphled/flowstate/internal/tool"
 )
 
@@ -185,4 +190,111 @@ var _ = Describe("Session tool catalog", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(string(content)).To(Equal("scoped"))
 	}, Entry("default", false), Entry("explicit", true))
+})
+
+// protectedResults is the tool.result events of the session whose error code is fs_path_protected.
+func protectedResults(st *store.Store, id string) []store.RecordedEvent {
+	var out []store.RecordedEvent
+	for _, e := range must(st.Replay(context.Background(), id)) {
+		if e.Type == tool.TypeToolResult && strings.Contains(e.PayloadJSON, `"`+tool.ErrCodePathProtected+`"`) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// setUserConfigDir points os.UserConfigDir at dir through the variable it reads on this OS (the stdlib's own switch):
+// %AppData% on Windows, $HOME on Darwin and $XDG_CONFIG_HOME elsewhere. XDG_CONFIG_HOME alone fakes nothing on
+// Windows, where the user hook file is then read from the real %AppData%.
+func setUserConfigDir(t GinkgoTInterface, dir string) {
+	switch runtime.GOOS {
+	case "windows":
+		t.Setenv("APPDATA", dir)
+	case "darwin", "ios":
+		t.Setenv("HOME", dir)
+	default:
+		t.Setenv("XDG_CONFIG_HOME", dir)
+	}
+}
+
+// userHooksUnder points the OS user config directory at <workdir>/cfg (setUserConfigDir) and returns the user hook
+// file's path relative to workdir: the file the default --hooks scope loads next, which a spec can have the model
+// write from that workdir.
+func userHooksUnder(workdir string) string {
+	cfg := filepath.Join(workdir, "cfg")
+	setUserConfigDir(GinkgoT(), cfg)
+	return must(filepath.Rel(workdir, must(UserHooksPath())))
+}
+
+// writeCallTo is an fs.write call of "x" at path.
+func writeCallTo(id, path string) provider.ToolCall {
+	args := must(json.Marshal(map[string]string{"path": path, "content": "x"}))
+	return provider.ToolCall{ID: id, Name: tool.FSWriteName, Arguments: args}
+}
+
+var _ = Describe("The protected hook trees of a session registry (ADR-012 D20)", func() {
+	var (
+		home string
+		user string
+		root string
+	)
+	// call is one filesystem tool invocation through a registry built over home with dirs protected.
+	call := func(dirs []string, name, args string) error {
+		registry := must(NewSessionToolRegistry(home, tool.WithProtectedDirs(dirs...)))
+		implementation, err := registry.Get(name)
+		if err != nil {
+			panic(err)
+		}
+		_, err = implementation.Invoke(context.Background(), json.RawMessage(args))
+		return err
+	}
+	const editArgs = `,"old_text":"o","new_text":"n"`
+
+	BeforeEach(func() {
+		home = GinkgoT().TempDir()
+		user = userHooksUnder(home)
+		root = GinkgoT().TempDir()
+	})
+
+	It("are the directories the hook loader reads its two hook files from", func() {
+		var origins []string
+		for _, f := range []struct{ dir, id string }{{filepath.Join(home, filepath.Dir(user)), "user-guard"}, {filepath.Join(root, ".flowstate"), "project-guard"}} {
+			putHookMode(f.dir, "guard.sh", "#!/bin/sh\nexit 0\n", 0o700)
+			putHookFile(f.dir, "hooks.json", hookFileWith(`{"id":"`+f.id+`","point":"tool.before","kind":"command","argv":["./guard.sh"]}`))
+		}
+		loaded, err := LoadHooks(HooksRequest{Scope: HookScopeBoth, ProjectRoot: root, Accepted: AcceptedHooks()})
+		check(err)
+		for _, h := range loaded.Hooks {
+			origins = append(origins, filepath.Dir(h.Origin))
+		}
+		Expect(ProtectedHookDirs(root)).To(ConsistOf(origins))
+	})
+
+	DescribeTable("refuses a write into the user hook directory, which has no dot-name",
+		func(name, extra string) {
+			Expect(call(ProtectedHookDirs(root), name, fmt.Sprintf(`{"path":%q%s}`, user, extra))).To(MatchError(tool.ErrPathProtected))
+		},
+		Entry("fs.write", tool.FSWriteName, ""),
+		Entry("fs.edit", tool.FSEditName, editArgs))
+
+	DescribeTable("refuses a write under a .flowstate component",
+		func(name, extra string) {
+			Expect(call(ProtectedHookDirs(root), name, `{"path":"repo/.flowstate/hooks.json"`+extra+`}`)).To(MatchError(tool.ErrPathProtected))
+		},
+		Entry("fs.write", tool.FSWriteName, ""),
+		Entry("fs.edit", tool.FSEditName, editArgs))
+
+	It("creates no user hook directory for a refused write", func() {
+		_ = call(ProtectedHookDirs(root), tool.FSWriteName, fmt.Sprintf(`{"path":%q,"content":"x"}`, user))
+		Expect(filepath.Join(home, filepath.Dir(user))).NotTo(BeADirectory())
+	})
+
+	It("still writes an ordinary path", func() {
+		Expect(call(ProtectedHookDirs(root), tool.FSWriteName, `{"path":"note.txt","content":"x"}`)).To(Succeed())
+	})
+
+	It("still reads a hook file", func() {
+		putHookFile(filepath.Join(home, ".flowstate"), "hooks.json", hookFileWith())
+		Expect(call(ProtectedHookDirs(root), tool.FSReadName, `{"path":".flowstate/hooks.json"}`)).To(Succeed())
+	})
 })

@@ -124,7 +124,9 @@ func newSessionToolLoop(w tool.EventSink, dbPath string, req ToolRequest, allowl
 	if workdir == "" {
 		workdir = filepath.Join(SessionWorkdirRoot(dbPath), req.SessionID)
 	}
-	registry, err := NewSessionToolRegistry(workdir)
+	// `session tool` has no --hooks and no project root of its own: the hook file it could author is the one
+	// the loader reads under the process's current directory, protected like the user's (ADR-012 D20).
+	registry, err := NewSessionToolRegistry(workdir, tool.WithProtectedDirs(ProtectedHookDirs("")...))
 	if err != nil {
 		return nil, err
 	}

@@ -2,13 +2,15 @@ package tool
 
 // Manual symlink resolution for the links found in a protected directory (ADR-012 D20). filepath.EvalSymlinks
 // fails on a link whose target does not exist yet, yet a write can create that target, so the link is followed hop
-// by hop here and the result is a comparison key only.
+// by hop here and the result is a comparison key only. On Windows the key of the existing prefix is its one
+// EvalSymlinks spelling (canonical), since the OS answers to a directory under 8.3 short names as well.
 
 import (
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 // maxLinkHops bounds the hops of one resolution, as the kernel does (ELOOP at 40).
@@ -34,7 +36,8 @@ func resolvePath(abs string) string {
 	return out
 }
 
-// resolveFrom walks comps from the resolved directory dir, following links hop by hop (see resolveLink).
+// resolveFrom walks comps from the resolved directory dir, following links hop by hop (see resolveLink). The
+// existing prefix it ends on is returned in its canonical spelling.
 func resolveFrom(dir string, comps []string) (string, linkState) {
 	hops := 0
 	for i := 0; i < len(comps); i++ {
@@ -49,7 +52,7 @@ func resolveFrom(dir string, comps []string) (string, linkState) {
 		next := filepath.Join(dir, c)
 		fi, err := os.Lstat(next)
 		if errors.Is(err, fs.ErrNotExist) {
-			return appendMissing(dir, c, comps[i+1:])
+			return appendMissing(canonical(dir), c, comps[i+1:])
 		}
 		if err != nil {
 			return dir, linkUnknown
@@ -72,7 +75,24 @@ func resolveFrom(dir string, comps []string) (string, linkState) {
 		comps = append(splitTarget(t), comps[i+1:]...)
 		i = -1
 	}
-	return dir, linkResolved
+	return canonical(dir), linkResolved
+}
+
+// canonical is the comparison key of an existing directory. On Windows it is the directory's one spelling from
+// filepath.EvalSymlinks: the long name in its on-disk case for every component and the drive letter in upper case.
+// The OS hands the same directory out under 8.3 short names too, which the environment often carries (%AppData%,
+// TEMP on CI: RUNNER~1), while a child's workdir arrives spelled long (confineChildWorkdir resolves it with
+// EvalSymlinks); the walk above keeps the caller's spelling, and no case folding bridges runneradmin and RUNNER~1,
+// so without this an absent user hook directory protects nothing. A directory EvalSymlinks cannot resolve keeps its
+// walked spelling. Elsewhere the walked path is the key as is: every symlink has been followed and within folds case.
+func canonical(dir string) string {
+	if runtime.GOOS != "windows" {
+		return dir
+	}
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		return resolved
+	}
+	return dir
 }
 
 // appendMissing joins the missing component and the rest onto the resolved dir; a ".." in the rest cannot be
