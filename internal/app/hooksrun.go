@@ -94,11 +94,11 @@ func (h *RootRunHooks) fire(ctx context.Context, point HookPoint, extra map[stri
 	g := &hookGate{hooks: hooks, events: w, input: h.input}
 	stdin, ierr := g.pointDocument(point, extra)
 	for _, hk := range hooks {
-		deny, err := g.invoke(ctx, hk, stdin, ierr)
+		step, err := g.invoke(ctx, hk, stdin, ierr, nil)
 		if err != nil {
 			return "", err
 		}
-		if deny && point == HookUserPrompt {
+		if step.deny && point == HookUserPrompt {
 			return hk.ID, nil
 		}
 	}

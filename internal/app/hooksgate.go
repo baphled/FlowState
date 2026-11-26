@@ -48,41 +48,63 @@ func hookSetHooks(set HookSet) []Hook {
 	return nil
 }
 
-// newHookGate builds the tool.before gate of one call, or nil when the run has no tool.before hook.
+// newHookGate builds the hook seam of one call, or nil when the run has no tool.before or tool.after hook.
 func newHookGate(cfg ExecLoopConfig, call provider.ToolCall, events tool.EventSink) tool.CallGate {
-	var hooks []Hook
-	for _, h := range hookSetHooks(cfg.Hooks) {
-		if h.Point == HookToolBefore {
-			hooks = append(hooks, h)
-		}
-	}
-	if len(hooks) == 0 {
+	before, after := splitToolHooks(hookSetHooks(cfg.Hooks))
+	if len(before) == 0 && len(after) == 0 {
 		return nil
 	}
-	return &hookGate{hooks: hooks, events: events, input: hookInput{
+	return &hookGate{hooks: before, after: after, events: events, input: hookInput{
 		session: cfg.Session.ID, runID: strconv.FormatInt(cfg.Lease.Token(), 10), agent: cfg.Agent, depth: cfg.Depth,
 		cwd: cfg.Workdir, callID: call.ID,
 	}}
 }
 
-// Before runs the tool.before hooks that match the tool, sequentially in file order. The first deny ends the
-// chain and its hook id is returned; a failure is decided by the hook's on_failure.
-func (g *hookGate) Before(ctx context.Context, name string, args json.RawMessage) (string, error) {
-	stdin, ierr := g.document(name, args)
+// splitToolHooks picks the tool.before and tool.after hooks of a set. The tool.before hooks come back in the
+// two phases of ADR-012 (Ordering): every transform hook first, then every other hook, each in file order,
+// so a gate can never run before a transform that would change what it approved.
+func splitToolHooks(all []Hook) (before, after []Hook) {
+	var gates []Hook
+	for _, h := range all {
+		switch {
+		case h.Point == HookToolAfter:
+			after = append(after, h)
+		case h.Point != HookToolBefore:
+		case h.Transform:
+			before = append(before, h)
+		default:
+			gates = append(gates, h)
+		}
+	}
+	return append(before, gates...), after
+}
+
+// Before runs the tool.before hooks that match the tool: the transform phase, then the gate phase, which sees
+// the final arguments. The first deny ends the chain and its hook id is returned; a failure is decided by the
+// hook's on_failure. The returned arguments are the ones the tool runs with.
+func (g *hookGate) Before(ctx context.Context, name string, args json.RawMessage) (tool.GateResult, error) {
+	cur := args
 	for _, h := range g.hooks {
 		if !hookMatches(h, name) {
 			continue
 		}
-		deny, err := g.invoke(ctx, h, stdin, ierr)
-		if err != nil || deny {
-			return h.ID, err
+		stdin, ierr := g.document(HookToolBefore, name, cur, nil)
+		step, err := g.invoke(ctx, h, stdin, ierr, cur)
+		if err != nil {
+			return tool.GateResult{}, err
 		}
+		if step.deny {
+			return tool.GateResult{DeniedBy: h.ID, Args: args}, nil
+		}
+		cur = step.args
 	}
-	return "", nil
+	return tool.GateResult{Args: cur}, nil
 }
 
-// invoke records hook.invoked, runs one hook and records hook.result.
-func (g *hookGate) invoke(ctx context.Context, h Hook, stdin []byte, inputErr error) (bool, error) {
+// invoke records hook.invoked, runs one hook and records hook.result. args are the arguments the hook was
+// shown; a transform hook's valid rewrite is the step's args and is recorded in hook.result. The step's deny
+// is read by the tool.before chain only: a tool.after hook observes and After ignores it.
+func (g *hookGate) invoke(ctx context.Context, h Hook, stdin []byte, inputErr error, args json.RawMessage) (hookStep, error) {
 	sum := sha256.Sum256(stdin)
 	invoked := map[string]any{
 		"point": string(h.Point), "id": h.ID, "kind": string(h.Kind), "input_sha256": hex.EncodeToString(sum[:]),
@@ -91,15 +113,21 @@ func (g *hookGate) invoke(ctx context.Context, h Hook, stdin []byte, inputErr er
 		invoked["tool_call_id"] = g.input.callID
 	}
 	if err := g.append(ctx, TypeHookInvoked, invoked); err != nil {
-		return false, err
+		return hookStep{}, err
 	}
-	res := g.run(ctx, h, stdin, inputErr)
-	deny := res.Verdict == tool.HookDeny || res.Verdict == tool.HookFailure && h.OnFailure == HookOnFailureDeny
-	return deny, g.append(ctx, TypeHookResult, hookResultPayload(h, res, g.input.callID))
+	res, rewritten := checkRewrite(h, g.run(ctx, h, stdin, inputErr))
+	step := hookStep{args: args}
+	step.deny = res.Verdict == tool.HookDeny || res.Verdict == tool.HookFailure && h.OnFailure == HookOnFailureDeny
+	payload := hookResultPayload(h, res, g.input.callID)
+	if rewritten != nil {
+		step.args = rewritten
+		addRewrite(payload, args, rewritten)
+	}
+	return step, g.append(ctx, TypeHookResult, payload)
 }
 
 // run starts the hook, or reports why it cannot: an unreadable stdin document, a handler kind this build does
-// not run.
+// not run. Only a transform hook may return args.
 func (g *hookGate) run(ctx context.Context, h Hook, stdin []byte, inputErr error) tool.HookResult {
 	switch {
 	case inputErr != nil:
@@ -108,19 +136,23 @@ func (g *hookGate) run(ctx context.Context, h Hook, stdin []byte, inputErr error
 		return tool.HookResult{Verdict: tool.HookFailure, Failure: "kind_unsupported", ExitCode: -1}
 	}
 	argv := append([]string{h.Executable}, h.Argv[1:]...)
-	return g.runner.Run(ctx, tool.HookCommand{Argv: argv, Dir: g.input.cwd, EnvNames: h.Env,
+	return g.runner.Run(ctx, tool.HookCommand{Argv: argv, Dir: g.input.cwd, EnvNames: h.Env, AllowArgs: h.Transform,
 		Timeout: time.Duration(h.TimeoutMS) * time.Millisecond}, stdin)
 }
 
-// document is the JSON a hook reads on stdin (ADR-012, Handler kinds).
-func (g *hookGate) document(name string, args json.RawMessage) ([]byte, error) {
+// document is the JSON a hook reads on stdin (ADR-012, Handler kinds). A tool.after document also carries the
+// call's outcome under tool.result.
+func (g *hookGate) document(point HookPoint, name string, args json.RawMessage, outcome map[string]any) ([]byte, error) {
 	if len(args) == 0 {
 		args = json.RawMessage("null")
 	}
+	callTool := map[string]any{"name": name, "call_id": g.input.callID, "args": args}
+	if outcome != nil {
+		callTool["result"] = outcome
+	}
 	return json.Marshal(map[string]any{
-		"version": 1, "point": string(HookToolBefore), "session_id": g.input.session, "run_id": g.input.runID,
-		"agent": g.input.agent, "depth": g.input.depth, "cwd": g.input.cwd,
-		"tool": map[string]any{"name": name, "call_id": g.input.callID, "args": args},
+		"version": 1, "point": string(point), "session_id": g.input.session, "run_id": g.input.runID,
+		"agent": g.input.agent, "depth": g.input.depth, "cwd": g.input.cwd, "tool": callTool,
 	})
 }
 

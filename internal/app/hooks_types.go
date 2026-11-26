@@ -171,10 +171,13 @@ type hookContext struct {
 	source   HookSource
 }
 
-// hookGate is the tool.before gate of one tool call (ADR-012 packet 3a). It implements tool.CallGate. Its
-// events go through the parent writer the loop holds, never the call's correlated sink.
+// hookGate is the hook seam of one tool call (ADR-012 packets 3a and 3b). It implements tool.CallGate. Its
+// events go through the parent writer the loop holds, never the call's correlated sink. hooks are the
+// tool.before hooks with every transform hook first, in file order within each phase; after are the
+// tool.after hooks in file order.
 type hookGate struct {
 	hooks  []Hook
+	after  []Hook
 	events tool.EventSink
 	runner tool.HookRunner
 	input  hookInput
@@ -188,4 +191,11 @@ type hookInput struct {
 	depth   int
 	cwd     string
 	callID  string
+}
+
+// hookStep is what one hook invocation decided: whether it denies the call and the arguments the next hook
+// sees (changed only by a transform hook).
+type hookStep struct {
+	deny bool
+	args json.RawMessage
 }

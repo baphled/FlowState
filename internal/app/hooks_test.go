@@ -167,16 +167,30 @@ var _ = Describe("Hook loading and scope", func() {
 		Expect(ids(got)).To(Equal([]string{"a"}))
 	})
 
-	It("refuses transform: true under the production accepted set", func() {
+	It("loads transform: true under the production accepted set", func() {
 		putUser(cmdHook("a", "tool.before", `"transform":true,`))
+		got, err := LoadHooks(HooksRequest{Scope: HookScopeUser, Accepted: AcceptedHooks()})
+		mustHook(err)
+		Expect(got.Hooks[0].Transform).To(BeTrue())
+	})
+
+	It("loads tool.after under the production accepted set", func() {
+		putUser(cmdHook("a", "tool.after", ""))
+		got, err := LoadHooks(HooksRequest{Scope: HookScopeUser, Accepted: AcceptedHooks()})
+		mustHook(err)
+		Expect(ids(got)).To(Equal([]string{"a"}))
+	})
+
+	It("refuses a point outside the production accepted set", func() {
+		putUser(cmdHook("a", "turn.after", ""))
 		_, err := LoadHooks(HooksRequest{Scope: HookScopeUser, Accepted: AcceptedHooks()})
 		Expect(err).To(MatchError(ErrHookPointUnsupported))
 	})
 
-	It("refuses a point outside the production accepted set", func() {
-		putUser(cmdHook("a", "tool.after", ""))
+	It("refuses on_failure deny on tool.after under the production accepted set", func() {
+		putUser(cmdHook("a", "tool.after", `"on_failure":"deny",`))
 		_, err := LoadHooks(HooksRequest{Scope: HookScopeUser, Accepted: AcceptedHooks()})
-		Expect(err).To(MatchError(ErrHookPointUnsupported))
+		Expect(err).To(MatchError(ContainSubstring("nothing to deny")))
 	})
 })
 

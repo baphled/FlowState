@@ -15,12 +15,13 @@ import (
 // fireable yet or transform before it lands.
 var ErrHookPointUnsupported = errors.New("hook_point_unsupported")
 
-// AcceptedHooks is the set of points this build fires: tool.before as a gate (runCall builds its hookGate)
-// and, on a root session run or serve (BeginRootRunHooks), user.prompt, session.start and session.end. A
-// file that names any other point, or sets "transform": true, fails to load until the packet that fires it
-// adds it here. A child or a swarm coordinator fires none of the three run-level points (ADR-012 gap 8).
+// AcceptedHooks is the set of points this build fires: tool.before as a gate, tool.after as an observer and
+// the transform phase (ADR-012 packet 3b; runCall builds its hookGate) and, on a root session run or serve
+// (BeginRootRunHooks), user.prompt, session.start and session.end. A file that names any other point fails
+// to load until the packet that fires it adds it here. A child or a swarm coordinator fires none of the
+// three run-level points (ADR-012 gap 8).
 func AcceptedHooks() HookAccepted {
-	return HookAccepted{Points: []HookPoint{HookToolBefore, HookUserPrompt, HookSessionStart, HookSessionEnd}}
+	return HookAccepted{Points: []HookPoint{HookToolBefore, HookToolAfter, HookUserPrompt, HookSessionStart, HookSessionEnd}, Transform: true}
 }
 
 // ErrHookScopeInvalid is returned by LoadHooks for a scope outside user,
