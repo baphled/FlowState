@@ -216,22 +216,21 @@ var _ = Describe("Loop completion finish reason", func() {
 		Entry("no finish event", "", `{"status":"completed"}`),
 	)
 
-	Context("when RunSessionExecLoop ends on a length finish", func() {
+	Context("when RunSessionExecLoop is cut off by a length finish twice", func() {
+		var err error
 		BeforeEach(func() {
 			cut := provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: provider.FinishLength}
-			streamer := &execLoopStreamer{turns: [][]provider.StreamEvent{{provText("cut"), cut}}}
+			streamer := &execLoopStreamer{turns: [][]provider.StreamEvent{{provText("cut"), cut}, {provText("cut"), cut}}}
 			dbPath := filepath.Join(GinkgoT().TempDir(), "finish.db")
-			if _, err := RunSessionExecLoop(context.Background(), st, dbPath, sess, streamer, SessionExecLoopRequest{MaxTurns: 2, Lease: heldSessionLease(st, sess)}); err != nil {
-				panic(err)
-			}
+			_, err = RunSessionExecLoop(context.Background(), st, dbPath, sess, streamer, SessionExecLoopRequest{MaxTurns: 2, Lease: heldSessionLease(st, sess)})
 		})
 
-		It("carries the reason onto turn.end", func() {
-			Expect(lastPayload(st, sess.ID)).To(MatchJSON(`{"status":"completed","finish_reason":"length"}`))
+		It("fails with output_truncated", func() {
+			Expect(err).To(MatchError(ErrOutputTruncated))
 		})
 
-		It("keeps the session completed", func() {
-			Expect(statusOf(st, sess.ID)).To(Equal("completed"))
+		It("marks the session failed", func() {
+			Expect(statusOf(st, sess.ID)).To(Equal("failed"))
 		})
 	})
 })

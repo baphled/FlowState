@@ -73,11 +73,10 @@ type execOverflow struct {
 	cause error
 }
 
-// retryAfter says what the overflow retry follows: a provider error (cause) or a length finish
-// (truncated, the turn whose answer was cut off).
+// retryAfter says what the overflow retry follows: a provider error (cause) or, with no cause, a
+// length finish.
 type retryAfter struct {
-	cause     error
-	truncated execTurn
+	cause error
 }
 
 // ExecLoopResult reports one completed bounded run.
@@ -184,3 +183,11 @@ const (
 	// DefaultMaxOutput is the max_tokens of a model the output table lacks.
 	DefaultMaxOutput int64 = 8192
 )
+
+// replayFacts is what the compaction readers need of a whole log to agree with rebuildHistory about
+// which events it replays: the ids that have a persisted tool.result, and the seq of each assistant
+// message the rebuild drops because a non-terminal output_truncated marker followed it.
+type replayFacts struct {
+	answered map[string]bool
+	dropped  map[int64]bool
+}

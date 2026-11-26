@@ -1144,7 +1144,6 @@ var _ = Describe("Session run truncation notice", func() {
 			Expect(run("length", loopFlags...).stderr).To(ContainSubstring(noticeText))
 		},
 		Entry("single-turn path"),
-		Entry("loop path", "--allow", "echo"),
 	)
 
 	DescribeTable("points at session doctor for the session",
@@ -1153,7 +1152,6 @@ var _ = Describe("Session run truncation notice", func() {
 			Expect(r.stderr).To(ContainSubstring("session doctor " + id))
 		},
 		Entry("single-turn path"),
-		Entry("loop path", "--allow", "echo"),
 	)
 
 	DescribeTable("points at --max-tokens",
@@ -1161,7 +1159,6 @@ var _ = Describe("Session run truncation notice", func() {
 			Expect(run("length", loopFlags...).stderr).To(ContainSubstring("--max-tokens"))
 		},
 		Entry("single-turn path"),
-		Entry("loop path", "--allow", "echo"),
 	)
 
 	DescribeTable("keeps exit 0 for a truncated answer",
@@ -1169,7 +1166,6 @@ var _ = Describe("Session run truncation notice", func() {
 			Expect(run("length", loopFlags...).exit).To(Equal(0))
 		},
 		Entry("single-turn path"),
-		Entry("loop path", "--allow", "echo"),
 	)
 
 	DescribeTable("keeps the event stream ending in turn.end for a truncated answer",
@@ -1178,8 +1174,11 @@ var _ = Describe("Session run truncation notice", func() {
 			Expect(types[len(types)-1]).To(Equal("turn.end"))
 		},
 		Entry("single-turn path"),
-		Entry("loop path", "--allow", "echo"),
 	)
+
+	It("fails the loop path with exit 5 when the answer is cut off twice", func() {
+		Expect(run("length", "--allow", "echo").exit).To(Equal(5))
+	})
 
 	DescribeTable("stays silent for a stop finish",
 		func(loopFlags ...string) {
