@@ -341,14 +341,28 @@ var _ = Describe("Echo", func() {
 
 // scriptedGate is a CallGate that answers with a fixed id and error and counts its calls.
 type scriptedGate struct {
-	denyID string
-	err    error
-	calls  int
+	denyID   string
+	err      error
+	calls    int
+	rewrite  json.RawMessage
+	afterErr error
+	observed []observation
 }
 
-func (g *scriptedGate) Before(context.Context, string, json.RawMessage) (string, error) {
+func (g *scriptedGate) Before(context.Context, string, json.RawMessage) (GateResult, error) {
 	g.calls++
-	return g.denyID, g.err
+	return GateResult{DeniedBy: g.denyID, Args: g.rewrite}, g.err
+}
+
+func (g *scriptedGate) After(_ context.Context, _ string, args json.RawMessage, outcome CallOutcome) error {
+	g.observed = append(g.observed, observation{args: args, outcome: outcome})
+	return g.afterErr
+}
+
+// observation is one After call a scriptedGate saw.
+type observation struct {
+	args    json.RawMessage
+	outcome CallOutcome
 }
 
 // gatedEchoLoop is newEchoLoop with the gate set; it returns the store and session for reading the log.
@@ -451,5 +465,82 @@ var _ = Describe("Loop tool.before gate (ADR-012)", func() {
 		Expect(err).NotTo(HaveOccurred())
 		_, _ = l.WithGate(gate).Invoke(context.Background(), "ghost", args)
 		Expect(gate.calls).To(BeZero())
+	})
+})
+
+var _ = Describe("Loop transform and tool.after seam (ADR-012 packet 3b)", func() {
+	var args json.RawMessage
+
+	BeforeEach(func() { args = json.RawMessage(`{"msg":"hi"}`) })
+
+	It("runs the tool with the gate's final arguments", func() {
+		l, _, _ := gatedEchoLoop([]string{Echo}, &scriptedGate{rewrite: json.RawMessage(`{"msg":"changed"}`)})
+		res, err := l.Invoke(context.Background(), Echo, args)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res).To(HaveKeyWithValue("msg", "changed"))
+	})
+
+	It("records the model's own arguments in tool.call, not the rewrite", func() {
+		l, st, sid := gatedEchoLoop([]string{Echo}, &scriptedGate{rewrite: json.RawMessage(`{"msg":"changed"}`)})
+		_, _ = l.Invoke(context.Background(), Echo, args)
+		events, err := st.Replay(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(events[0].PayloadJSON).To(ContainSubstring(`"msg":"hi"`))
+	})
+
+	It("records the result of the rewritten call", func() {
+		l, st, sid := gatedEchoLoop([]string{Echo}, &scriptedGate{rewrite: json.RawMessage(`{"msg":"changed"}`)})
+		_, _ = l.Invoke(context.Background(), Echo, args)
+		events, err := st.Replay(context.Background(), sid)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(events[1].PayloadJSON).To(ContainSubstring(`"msg":"changed"`))
+	})
+
+	It("shows tool.after the arguments the tool ran with", func() {
+		gate := &scriptedGate{rewrite: json.RawMessage(`{"msg":"changed"}`)}
+		l, _, _ := gatedEchoLoop([]string{Echo}, gate)
+		_, _ = l.Invoke(context.Background(), Echo, args)
+		Expect(string(gate.observed[0].args)).To(Equal(`{"msg":"changed"}`))
+	})
+
+	It("shows tool.after a successful outcome with the tool's result", func() {
+		gate := &scriptedGate{}
+		l, _, _ := gatedEchoLoop([]string{Echo}, gate)
+		_, _ = l.Invoke(context.Background(), Echo, args)
+		Expect(gate.observed[0].outcome).To(Equal(CallOutcome{OK: true, Result: map[string]any{"msg": "hi"}}))
+	})
+
+	It("shows tool.after a failed call with the recorded error code", func() {
+		gate := &scriptedGate{rewrite: json.RawMessage(`{bad`)}
+		l, _, _ := gatedEchoLoop([]string{Echo}, gate)
+		_, _ = l.Invoke(context.Background(), Echo, args)
+		Expect(gate.observed[0].outcome.Code).To(Equal("tool_error"))
+	})
+
+	It("writes tool.result before tool.after observes", func() {
+		gate := &scriptedGate{}
+		l, st, sid := gatedEchoLoop([]string{Echo}, gate)
+		_, _ = l.Invoke(context.Background(), Echo, args)
+		Expect(len(gate.observed) == 1 && len(loopEventTypes(st, sid)) == 2).To(BeTrue())
+	})
+
+	It("ends the call with the append error when tool.after cannot be recorded", func() {
+		l, _, _ := gatedEchoLoop([]string{Echo}, &scriptedGate{afterErr: ErrEventAppend})
+		_, err := l.Invoke(context.Background(), Echo, args)
+		Expect(err).To(MatchError(ErrEventAppend))
+	})
+
+	It("does not observe a denied call", func() {
+		gate := &scriptedGate{denyID: "guard"}
+		l, _, _ := gatedEchoLoop([]string{Echo}, gate)
+		_, _ = l.Invoke(context.Background(), Echo, args)
+		Expect(gate.observed).To(BeEmpty())
+	})
+
+	It("does not observe a call the allowlist refused", func() {
+		gate := &scriptedGate{}
+		l, _, _ := gatedEchoLoop(nil, gate)
+		_, _ = l.Invoke(context.Background(), Echo, args)
+		Expect(gate.observed).To(BeEmpty())
 	})
 })

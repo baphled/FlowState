@@ -99,11 +99,9 @@ var _ = Describe("Hook document validation", func() {
 			Expect(err).To(MatchError(ErrHookPointUnsupported))
 		},
 		Entry("refuses a point outside the set", HookAccepted{Points: []HookPoint{HookToolBefore}}, "tool.after", ""),
-		Entry("refuses tool.after when the set is the production one", AcceptedHooks(), "tool.after", ""),
 		Entry("refuses turn.after when the set is the production one", AcceptedHooks(), "turn.after", ""),
 		Entry("refuses compaction.before when the set is the production one", AcceptedHooks(), "compaction.before", ""),
 		Entry("refuses compaction.after when the set is the production one", AcceptedHooks(), "compaction.after", ""),
-		Entry("refuses transform: true when the set is the production one", AcceptedHooks(), "tool.before", `"transform":true,`),
 		Entry("refuses transform: true before it is accepted", HookAccepted{Points: []HookPoint{HookToolBefore}}, "tool.before", `"transform":true,`),
 	)
 

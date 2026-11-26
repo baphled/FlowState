@@ -48,6 +48,9 @@ func (l *Loop) Allowed(name string) bool {
 // tool.call event before execution and a tool.result event after
 // (success or failure), both under actor `tool:<name>`.
 //
+// The tool runs with the arguments the gate's transform phase left, while tool.call keeps the model's own,
+// and a tool.after observer sees the recorded outcome of an executed call.
+//
 // Outcomes:
 //   - unknown tool (not in registry): ErrUnknownTool, no events
 //   - not allowlisted: ErrDenied plus a tool.result error event with
@@ -75,7 +78,7 @@ func (l *Loop) Invoke(ctx context.Context, name string, args json.RawMessage) (a
 	if !l.Allowed(name) {
 		return nil, l.recordDeny(ctx, actor, name)
 	}
-	denied, err := l.gateCall(ctx, actor, name, args)
+	denied, execArgs, err := l.gateCall(ctx, actor, name, args)
 	if err != nil {
 		return nil, err
 	}
@@ -85,22 +88,9 @@ func (l *Loop) Invoke(ctx context.Context, name string, args json.RawMessage) (a
 	if err := l.recordCall(ctx, actor, name, args); err != nil {
 		return nil, err
 	}
-	result, invokeErr := t.Invoke(ctx, args)
+	result, invokeErr := t.Invoke(ctx, execArgs)
 	if invokeErr != nil {
-		// Typed tool errors keep their own error.code (fs_* etc.);
-		// unmapped errors fall back to the generic tool_error code.
-		code := errorCodeFor(invokeErr)
-		if _, aerr := l.writer.Append(ctx, actor, TypeToolResult, map[string]any{
-			"tool": name,
-			"ok":   false,
-			"error": map[string]any{
-				"code":    code,
-				"message": invokeErr.Error(),
-			},
-		}); aerr != nil {
-			return nil, errors.Join(fmt.Errorf("%w: tool.result: %w", ErrEventAppend, aerr), invokeErr)
-		}
-		return nil, fmt.Errorf("%w: %s: %w", ErrToolExecuted, name, invokeErr)
+		return nil, l.failCall(ctx, actor, name, execArgs, invokeErr)
 	}
 	if _, aerr := l.writer.Append(ctx, actor, TypeToolResult, map[string]any{
 		"tool":   name,
@@ -109,10 +99,42 @@ func (l *Loop) Invoke(ctx context.Context, name string, args json.RawMessage) (a
 	}); aerr != nil {
 		return nil, fmt.Errorf("%w: tool.result: %w", ErrEventAppend, aerr)
 	}
+	if err := l.observe(ctx, name, execArgs, CallOutcome{OK: true, Result: result}); err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 
-// WithGate sets the tool.before gate of the loop and returns the loop; a nil gate means no hooks.
+// failCall records the error result of an executed call, lets the tool.after hooks observe it, and returns
+// the error the model is told. Typed tool errors keep their own error.code (fs_* etc.); unmapped errors fall
+// back to the generic tool_error code.
+func (l *Loop) failCall(ctx context.Context, actor, name string, args json.RawMessage, invokeErr error) error {
+	code := errorCodeFor(invokeErr)
+	if _, aerr := l.writer.Append(ctx, actor, TypeToolResult, map[string]any{
+		"tool": name,
+		"ok":   false,
+		"error": map[string]any{
+			"code":    code,
+			"message": invokeErr.Error(),
+		},
+	}); aerr != nil {
+		return errors.Join(fmt.Errorf("%w: tool.result: %w", ErrEventAppend, aerr), invokeErr)
+	}
+	if err := l.observe(ctx, name, args, CallOutcome{Code: code, Message: invokeErr.Error()}); err != nil {
+		return errors.Join(err, invokeErr)
+	}
+	return fmt.Errorf("%w: %s: %w", ErrToolExecuted, name, invokeErr)
+}
+
+// observe hands the recorded outcome to the tool.after hooks. They cannot alter it.
+func (l *Loop) observe(ctx context.Context, name string, args json.RawMessage, outcome CallOutcome) error {
+	if l.gate == nil {
+		return nil
+	}
+	return l.gate.After(ctx, name, args, outcome)
+}
+
+// WithGate sets the hook gate (tool.before and tool.after) of the loop and returns the loop; a nil gate means no hooks.
 func (l *Loop) WithGate(gate CallGate) *Loop {
 	l.gate = gate
 	return l
@@ -129,27 +151,34 @@ func (l *Loop) recordCall(ctx context.Context, actor, name string, args json.Raw
 	return nil
 }
 
-// gateCall runs the tool.before gate. A denial is recorded as the model's tool.call and a hook_denied
-// tool.result, so it replays as a call with an answer (ADR-012 D10), and is returned as *HookDeniedError.
-func (l *Loop) gateCall(ctx context.Context, actor, name string, args json.RawMessage) (*HookDeniedError, error) {
+// gateCall runs the tool.before hooks. A denial is recorded as the model's tool.call and a hook_denied
+// tool.result, so it replays as a call with an answer (ADR-012 D10), and is returned as *HookDeniedError. An
+// allowed call returns the arguments to run: the transforms' final arguments, never recorded in tool.call.
+func (l *Loop) gateCall(ctx context.Context, actor, name string, args json.RawMessage) (*HookDeniedError, json.RawMessage, error) {
 	if l.gate == nil {
-		return nil, nil
+		return nil, args, nil
 	}
-	id, err := l.gate.Before(ctx, name, args)
-	if err != nil || id == "" {
-		return nil, err
+	res, err := l.gate.Before(ctx, name, args)
+	if err != nil {
+		return nil, nil, err
 	}
-	denial := &HookDeniedError{HookID: id}
+	if res.DeniedBy == "" {
+		if len(res.Args) == 0 {
+			return nil, args, nil
+		}
+		return nil, res.Args, nil
+	}
+	denial := &HookDeniedError{HookID: res.DeniedBy}
 	if err := l.recordCall(ctx, actor, name, args); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if _, err := l.writer.Append(ctx, actor, TypeToolResult, map[string]any{
 		"tool": name, "ok": false,
 		"error": map[string]any{"code": HookDeniedCode, "message": denial.Error()},
 	}); err != nil {
-		return nil, fmt.Errorf("%w: tool.result: %w", ErrEventAppend, err)
+		return nil, nil, fmt.Errorf("%w: tool.result: %w", ErrEventAppend, err)
 	}
-	return denial, nil
+	return denial, nil, nil
 }
 
 // ErrToolExecuted wraps errors returned by an allowlisted tool's own

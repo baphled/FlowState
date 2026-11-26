@@ -517,7 +517,7 @@ var _ = Describe("Hook loading in RunSessionExecLoop and ExecuteSwarmFile (ADR-0
 	Describe("a hook file naming a point this build cannot fire", func() {
 		var err error
 		BeforeEach(func() {
-			putHookFile(filepath.Join(root, ".flowstate"), "hooks.json", hookFileWith(cmdHook("late", "tool.after", "")))
+			putHookFile(filepath.Join(root, ".flowstate"), "hooks.json", hookFileWith(cmdHook("late", "turn.after", "")))
 			gateScript(filepath.Join(root, ".flowstate"), "x.sh", "exit 0")
 			err = runSession(HookScopeProject)
 		})

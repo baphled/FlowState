@@ -23,13 +23,36 @@ type Loop struct {
 	gate      CallGate
 }
 
-// CallGate is the tool.before hook point of ADR-012: the loop asks it after the registry and
-// allowlist checks and before it writes tool.call. It is implemented by the app package, which owns the
-// hook set, so the tool domain imports nothing of it.
+// CallGate is the hook seam of ADR-012: the loop asks Before after the registry and allowlist checks and
+// before it writes tool.call, and After once the tool has returned and its result is recorded. It is
+// implemented by the app package, which owns the hook set, so the tool domain imports nothing of it.
 type CallGate interface {
-	// Before returns the id of the hook that denied the call, or "" when the call may run. An error is an
-	// infrastructure failure (an event append), wrapped with ErrEventAppend, that must end the run.
-	Before(ctx context.Context, name string, args json.RawMessage) (denied string, err error)
+	// Before runs the tool.before hooks. A result with DeniedBy set denies the call; otherwise Args are the
+	// final arguments the tool runs with, after every transform hook. An error is an infrastructure failure
+	// (an event append), wrapped with ErrEventAppend, that must end the run.
+	Before(ctx context.Context, name string, args json.RawMessage) (GateResult, error)
+	// After runs the tool.after hooks with the arguments the tool ran with and its outcome. It observes: it
+	// cannot change the outcome. An error is an infrastructure failure that must end the run.
+	After(ctx context.Context, name string, args json.RawMessage, outcome CallOutcome) error
+}
+
+// GateResult is the outcome of the tool.before hooks of one call.
+type GateResult struct {
+	// DeniedBy is the id of the hook that denied the call, or "" when the call may run.
+	DeniedBy string
+	// Args are the final arguments after the transform phase; empty means the model's own arguments.
+	Args json.RawMessage
+}
+
+// CallOutcome is what a tool returned, as a tool.after hook sees it.
+type CallOutcome struct {
+	// OK is true when the tool returned a result.
+	OK bool
+	// Result is the tool's result when OK.
+	Result any
+	// Code and Message are the recorded error of a failed call.
+	Code    string
+	Message string
 }
 
 // HookDeniedError is returned by Loop.Invoke for a call a tool.before hook denied. The loop has already
