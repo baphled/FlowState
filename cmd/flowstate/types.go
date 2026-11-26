@@ -37,7 +37,9 @@ type flags struct {
 	allow     []string
 	allowFile string
 	workdir   string
-	agents    string // --agents scope: user, project or both; empty offers no delegation
+	agents    string        // --agents scope: user, project or both; empty offers no delegation
+	hooks     app.HookScope // --hooks scope as parsed; empty means not given, see hooksScope
+	hooksSet  bool          // --hooks was supplied explicitly
 	// session unlock
 	force bool // --force: delete the lease row instead of reporting it
 	// session compact

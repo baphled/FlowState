@@ -11,10 +11,14 @@ import (
 	"github.com/baphled/flowstate/internal/app"
 )
 
+// swarmExecutor is the CLI's seam for an executed swarm; specs swap it to observe
+// the config, production runs app.ExecuteSwarmFile.
+var swarmExecutor = app.ExecuteSwarmFile
+
 // valueFlags are the flags that take the next argument as their value.
 var valueFlags = []string{"--db", "--status", "--provider", "--model", "--task", "--parent", "--config", "--manifest",
 	"--from", "--body", "--tool", "--allow", "--allow-file", "--workdir", "--agents", "--budget", "--max-tokens",
-	"--reserve", "--max-turns"}
+	"--reserve", "--max-turns", "--hooks"}
 
 // withoutExecute drops every --execute from args and reports whether one was
 // given; the flag takes no value. An --execute straight after a flag that takes
@@ -43,7 +47,7 @@ func refuseExecuteOnlyFlags(fl *flags, stderr *os.File) (int, bool) {
 		given bool
 	}{
 		{"--agents", fl.agents != ""}, {"--provider", fl.provider != ""}, {"--model", fl.model != ""},
-		{"--workdir", fl.workdir != ""}, {"--max-turns", fl.maxTurns != 0}, {"--max-tokens", fl.maxTokens != 0},
+		{"--hooks", fl.hooksSet}, {"--workdir", fl.workdir != ""}, {"--max-turns", fl.maxTurns != 0}, {"--max-tokens", fl.maxTokens != 0},
 	} {
 		if f.given {
 			writeError(stderr, fmt.Errorf("%w: %s only applies to `swarm run --execute`: add --execute", app.ErrUsage, f.name))
@@ -89,7 +93,7 @@ func swarmRunExecute(ctx context.Context, fl *flags, rest []string, stdout, stde
 		return exitConfigInvalid
 	}
 	defer st.Close()
-	res, err := app.ExecuteSwarmFile(ctx, st, manifestPath, cfg)
+	res, err := swarmExecutor(ctx, st, manifestPath, cfg)
 	if err != nil {
 		writeError(stderr, err)
 		return exitCodeFor(err)
@@ -155,7 +159,7 @@ func executeConfig(fl *flags, manifestPath string, stderr *os.File) (app.Execute
 	return app.ExecuteSwarmConfig{
 		Profiles: profiles, Streamer: s, Provider: provider, ModelID: model, Harness: app.DefaultHarness,
 		ConfigSHA: sha, Workdir: workdir, MaxTurns: fl.maxTurns, MaxTokens: fl.maxTokens, Budget: fl.budget,
-		Compaction: fl.config.Compaction,
+		Compaction: fl.config.Compaction, HooksScope: hooksScope(fl),
 	}, exitOK, false
 }
 

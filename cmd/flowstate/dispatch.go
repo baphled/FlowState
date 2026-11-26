@@ -45,6 +45,10 @@ func dispatchContexted(ctx context.Context, args []string, stdout, stderr *os.Fi
 	if isMetaCommand(args[0], stdout) {
 		return exitOK
 	}
+	if givesHooksFlag(args) && !acceptsHooks(args) {
+		refuseHooks(commandName(args), stderr)
+		return exitUsage
+	}
 	if code, routed := routeReplay(ctx, args, stdout, stderr); routed {
 		return code
 	}
@@ -209,7 +213,8 @@ func parseFlags(args []string) (*flags, []string, error) {
 			if serr := fl.setString(a, take); serr != nil {
 				return nil, nil, serr
 			}
-		case strings.HasPrefix(a, "--tool"), a == "--allow", a == "--allow-file", a == "--workdir", strings.HasPrefix(a, "--agents"):
+		case strings.HasPrefix(a, "--tool"), a == "--allow", a == "--allow-file", a == "--workdir", strings.HasPrefix(a, "--agents"),
+			a == "--hooks", strings.HasPrefix(a, "--hooks="):
 			if serr := fl.setToolFlag(a, take); serr != nil {
 				return nil, nil, serr
 			}
@@ -287,6 +292,8 @@ func (f *flags) setToolFlag(name string, take func() (string, error)) error {
 			return fmt.Errorf("flag --agents requires user, project or both")
 		}
 		f.agents = v
+	case strings.HasPrefix(name, "--hooks"):
+		return f.setHooks(v)
 	default:
 		f.workdir = v
 	}
@@ -356,10 +363,10 @@ func openStore(path string) (*app.Store, error) {
 // usage prints the CLI help text.
 func usage(w *os.File) {
 	_, _ = fmt.Fprint(w, `usage: flowstate [--version] session <subcommand> [flags] [id]
-serve [--addr <host:port>] [--db path] [--config <path>]
+serve [--addr <host:port>] [--db path] [--config <path>] [--hooks user|project|both|none]
 
 swarm run      <manifest> --execute [--agents user|project|both] [--provider <p> --model <m>] [--budget <n>]
-               [--max-turns <n>] [--max-tokens <n>] [--workdir <path>] [--db path]
+               [--hooks user|project|both|none] [--max-turns <n>] [--max-tokens <n>] [--workdir <path>] [--db path]
                (a coordinator agent named by the manifest delegates the packets to role profiles; the engine
                runs the gates; exit 0 accepted, 8 not accepted or gate failed, 3/5/1 a failed coordinator,
                130 cancelled; without --execute: swarm run <manifest> --parent <id> --budget <n>)
@@ -369,8 +376,10 @@ session doctor <id> [--db path]
 session message <id> --from <parent> --body <text|@file> [--db path]
 session list   [--status <s>] [--db path]
 session run    <id> [--budget <n>] [--max-tokens <n>] [--max-turns <n>] [--allow <name>]... [--allow-file <manifest>] [--workdir <path>]
-               [--agents user|project|both] [--db path]
-               (--allow/--allow-file replace the config tool_allowlist; --workdir only sets where tools
+               [--agents user|project|both] [--hooks user|project|both|none] [--db path]
+               (--hooks picks which lifecycle hook files apply, default user; none runs no hook;
+               the project hook file is found under the project root, never --workdir;
+               --allow/--allow-file replace the config tool_allowlist; --workdir only sets where tools
                run and needs an allowlist from --allow, --allow-file or tool_allowlist; --agents loads agent
                profiles for the delegate tool, which must also be allowlisted: --allow delegate;
                project profiles come from --workdir, else the current directory;
@@ -422,6 +431,75 @@ func refuseSessionArgs(fl *flags, sub string, rest []string, stderr *os.File) bo
 	if fl.force && sub != "unlock" {
 		writeError(stderr, fmt.Errorf("%w: --force applies only to `session unlock`", errUsageCmd))
 		return true
+	}
+	return false
+}
+
+// setHooks assigns --hooks. An empty value and any scope but user, project, both
+// or none is a usage error; the default is applied by hooksScope, not here.
+func (f *flags) setHooks(v string) error {
+	if v == "" {
+		return fmt.Errorf("flag --hooks requires user, project, both or none")
+	}
+	scope, perr := app.ParseHookScope(v)
+	if perr != nil {
+		return fmt.Errorf("%s", strings.TrimPrefix(perr.Error(), app.ErrUsage.Error()+": "))
+	}
+	f.hooks, f.hooksSet = scope, true
+	return nil
+}
+
+// hooksScope is the invocation's effective --hooks scope: the CLI default, user,
+// unless the flag was given. The default lives here, in the flag layer, so the
+// app-level requests carry an already-parsed scope and their zero value stays "not set".
+func hooksScope(fl *flags) app.HookScope {
+	if fl.hooks == "" {
+		return app.HookScopeUser
+	}
+	return fl.hooks
+}
+
+// acceptsHooks reports whether the command in args runs hooks and so takes
+// --hooks: serve, session run and swarm run. Everything else refuses it.
+func acceptsHooks(args []string) bool {
+	switch args[0] {
+	case "serve":
+		return true
+	case "session":
+		return len(args) > 1 && args[1] == "run"
+	case "swarm":
+		return len(args) > 1 && args[1] == "run"
+	}
+	return false
+}
+
+// commandName is the command words of args for a usage message: at most the
+// first two arguments that are not flags.
+func commandName(args []string) string {
+	words := []string{}
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") || len(words) == 2 {
+			break
+		}
+		words = append(words, a)
+	}
+	return strings.Join(words, " ")
+}
+
+// refuseHooks writes the usage error for --hooks on a command that cannot run
+// hooks and returns true.
+func refuseHooks(command string, stderr *os.File) bool {
+	writeError(stderr, fmt.Errorf("%w: --hooks does not apply to `%s`: it applies to `session run`, `serve` and "+
+		"`swarm run --execute`", errUsageCmd, command))
+	return true
+}
+
+// givesHooksFlag reports whether args carry --hooks, in either spelling.
+func givesHooksFlag(args []string) bool {
+	for _, a := range args {
+		if a == "--hooks" || strings.HasPrefix(a, "--hooks=") {
+			return true
+		}
 	}
 	return false
 }

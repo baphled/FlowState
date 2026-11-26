@@ -131,6 +131,12 @@ type SessionExecLoopRequest struct {
 	// empty means the process current directory. The CLI leaves it empty; it is
 	// a seam for in-process callers and specs, which must not change directory.
 	ProjectRoot string
+	// HooksScope is the already-parsed --hooks scope (ADR-012). The zero value
+	// means not set: hooks are not loaded yet, and an unset scope must never load
+	// the user hook file (fail closed); the CLI applies its default, user, itself.
+	// It is carried but not yet acted on: the loader wiring is the follow-up, which
+	// finds the project file under HooksProjectRoot(req), never under Workdir.
+	HooksScope HookScope
 	// Budget is the total loop budget pool; <= 0 means unlimited turns.
 	Budget int64
 	// MaxTokens caps each provider response; <= 0 uses the model-table default (ResolveMaxOutput).
