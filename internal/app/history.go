@@ -63,7 +63,8 @@ func (h *historyState) accept(event store.RecordedEvent) error {
 			return ErrInvalidHistory
 		}
 		h.streaming = true
-	case "turn.start", TypeTurnEnd, TypeProviderError, "session.cancelled", "session.paused", "session.resumed", "turn.checkpoint":
+	case "turn.start", TypeTurnEnd, TypeProviderError, "session.cancelled", "session.paused", "session.resumed", "turn.checkpoint",
+		"hooks.loaded", "hook.invoked", "hook.result":
 		// Metadata never clears pending calls or an unfinished assistant stream.
 	default:
 		return ErrInvalidHistory
@@ -125,12 +126,25 @@ func (h *historyState) toolEvent(event store.RecordedEvent) error {
 	if !validHistoryResult(payload, call.started) {
 		return ErrInvalidHistory
 	}
-	content, err := toolResultContent(json.RawMessage(event.PayloadJSON), h.limits.MaxResultBytes)
+	content, err := historyResultText(event.PayloadJSON, h.limits.MaxResultBytes)
 	if err != nil {
 		return err
 	}
 	delete(h.pending, id)
 	return h.add(provider.Message{Role: "tool", ToolCallID: id, Content: content})
+}
+
+// historyResultText is the tool message content of a result event: the shared hookDenialText for a
+// hook denial, so LoadSessionHistory agrees with the rebuild, else the bounded payload JSON. Both
+// are held to maxBytes.
+func historyResultText(payloadJSON string, maxBytes int) (string, error) {
+	if text, denied := hookDenialText(payloadJSON); denied {
+		if len(text) > maxBytes {
+			return "", ErrHistoryLimit // as toolResultContent, when even the bounded form does not fit
+		}
+		return text, nil
+	}
+	return toolResultContent(json.RawMessage(payloadJSON), maxBytes)
 }
 
 func (h *historyState) startTool(id string, payload historyToolPayload, call historyCall) error {

@@ -116,7 +116,9 @@ var _ = Describe("Bounded session history", func() {
 		Entry("finalised delta from a tool", []store.RecordedEvent{{Type: "assistant.delta", Actor: "tool:untrusted", PayloadJSON: `{"delta":"partial"}`}, historyRow("assistant.message", `{"content":"final"}`)}),
 		Entry("finalised delta from an empty provider", []store.RecordedEvent{{Type: "assistant.delta", Actor: "provider:", PayloadJSON: `{"delta":"partial"}`}, historyRow("assistant.message", `{"content":"final"}`)}),
 		Entry("unfinished stream", []store.RecordedEvent{historyRow("assistant.delta", `{"delta":"partial"}`)}),
-		Entry("unknown event", []store.RecordedEvent{historyRow("future.message", `{}`)}))
+		Entry("unknown event", []store.RecordedEvent{historyRow("future.message", `{}`)}),
+		Entry("hook context", []store.RecordedEvent{historyRow("hook.context", `{"content":"x"}`)}),
+		Entry("unknown hook type", []store.RecordedEvent{historyRow("hook.future", `{"content":"x"}`)}))
 
 	It("rejects session.unlocked with ErrInvalidHistory (ADR-011 pins today's behaviour)", func() {
 		_, err := replaySessionHistory([]store.RecordedEvent{historyRow(session.TypeSessionUnlocked, `{"forced":true}`)}, limits)
@@ -157,7 +159,51 @@ var _ = Describe("Bounded session history", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(messages).To(Equal([]provider.Message{{Role: "user", Content: "request"}, {Role: "assistant", Content: "answer"}}))
 	}, Entry("start", "turn.start"), Entry("end", "turn.end"), Entry("error", "provider.error"),
-		Entry("pause", "session.paused"), Entry("resume", "session.resumed"), Entry("cancel", "session.cancelled"), Entry("checkpoint", "turn.checkpoint"))
+		Entry("pause", "session.paused"), Entry("resume", "session.resumed"), Entry("cancel", "session.cancelled"), Entry("checkpoint", "turn.checkpoint"),
+		Entry("hooks loaded", "hooks.loaded"), Entry("hook invoked", "hook.invoked"), Entry("hook result", "hook.result"))
+	It("projects a hook denial as the shared error text, as the rebuild does", func() {
+		events := []store.RecordedEvent{
+			historyRow("user.message", `{"content":"request"}`),
+			historyRow("assistant.message", `{"content":"working","tool_calls":[{"id":"c","name":"echo","arguments":{}}]}`),
+			historyRow("tool.call", `{"tool":"echo","tool_call_id":"c","args":{}}`),
+			historyRow("tool.result", `{"tool":"echo","tool_call_id":"c","ok":false,"error":{"code":"hook_denied","message":"denied by hook gate-1"}}`),
+		}
+		messages, err := replaySessionHistory(events, limits)
+		if err != nil {
+			panic(err)
+		}
+		Expect(messages[2]).To(Equal(rebuildHistory(events)[2]))
+	})
+	It("projects a hook denial as the fixed form", func() {
+		messages, err := replaySessionHistory([]store.RecordedEvent{
+			historyRow("assistant.message", `{"content":"working","tool_calls":[{"id":"c","name":"echo","arguments":{}}]}`),
+			historyRow("tool.call", `{"tool":"echo","tool_call_id":"c","args":{}}`),
+			historyRow("tool.result", `{"tool":"echo","tool_call_id":"c","ok":false,"error":{"code":"hook_denied","message":"denied by hook gate-1"}}`),
+		}, limits)
+		if err != nil {
+			panic(err)
+		}
+		Expect(messages[1].Content).To(Equal("error: denied by hook gate-1"))
+	})
+	It("holds a hook denial to MaxResultBytes like any result", func() {
+		limits.MaxResultBytes = 10
+		_, err := replaySessionHistory([]store.RecordedEvent{
+			historyRow("assistant.message", `{"content":"working","tool_calls":[{"id":"c","name":"echo","arguments":{}}]}`),
+			historyRow("tool.call", `{"tool":"echo","tool_call_id":"c","args":{}}`),
+			historyRow("tool.result", `{"tool":"echo","tool_call_id":"c","ok":false,"error":{"code":"hook_denied","message":"denied by hook gate-1"}}`),
+		}, limits)
+		Expect(err).To(MatchError(ErrHistoryLimit))
+	})
+	It("passes a hook denial that fits MaxResultBytes exactly", func() {
+		limits.MaxResultBytes = len("error: denied by hook gate-1")
+		messages, err := replaySessionHistory([]store.RecordedEvent{
+			historyRow("assistant.message", `{"content":"working","tool_calls":[{"id":"c","name":"echo","arguments":{}}]}`),
+			historyRow("tool.call", `{"tool":"echo","tool_call_id":"c","args":{}}`),
+			historyRow("tool.result", `{"tool":"echo","tool_call_id":"c","ok":false,"error":{"code":"hook_denied","message":"denied by hook gate-1"}}`),
+		}, limits)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(messages[1].Content).To(Equal("error: denied by hook gate-1"))
+	})
 	DescribeTable("enforces positive hard limits", func(capacity HistoryLimits) {
 		_, err := replaySessionHistory(historyBatch(), capacity)
 		Expect(err).To(MatchError(ErrHistoryLimit))
