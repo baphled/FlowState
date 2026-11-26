@@ -134,7 +134,7 @@ on stderr. Flags that do not apply (`--budget`, `--model` and the like) are refu
 | Command | Purpose |
 | --- | --- |
 | `session new` | Create a session: `--provider`, `--model`, `--task <text\|@file>`, `--parent`, `--reserve` |
-| `session run <id>` | One turn or tool loop: `--budget`, `--max-tokens`, `--max-turns`, `--allow`, `--allow-file`, `--workdir`, `--agents` |
+| `session run <id>` | One turn or tool loop: `--budget`, `--max-tokens`, `--max-turns`, `--allow`, `--allow-file`, `--workdir`, `--agents`, `--hooks` |
 | `session compact <id>` | Compact a tool-loop session's context by hand: `--instructions <text>`; see [Compaction](#compaction) |
 | `session unlock <id>` | Report, or with `--force` delete, a lease row that cannot be judged; see [Unlocking a lease](#unlocking-a-lease) |
 | `session list [--status <s>]` | List sessions |
@@ -152,7 +152,7 @@ on stderr. Flags that do not apply (`--budget`, `--model` and the like) are refu
 | `store info` | Database facts; the file is not modified (WAL sidecars may appear): schema, journal mode, foreign keys |
 | `agents list` | List agent profiles as a JSON array: `--agents user\|project\|both` (default `user`), `--workdir` |
 | `agents validate <file...>` | Validate profile files: one `{path, ok, error?}` per file; exit 4 if any is invalid |
-| `serve` | Start the HTTP API |
+| `serve` | Start the HTTP API: `--addr`, `--db`, `--config`, `--hooks` |
 
 `replay <id>` writes its raw JSONL transcript to files and pipes, because each event's `payload_sha256` hashes the
 payload bytes, and escapes control and format characters (as `\uXXXX`) only when writing to a terminal. All other
@@ -372,6 +372,15 @@ flowstate session run "$id" --budget 200 --agents user --allow delegate --workdi
   refuses tools the run fails as it does today; nothing checks this in advance.
 - `--agents` is a command-line option only. The HTTP run does not accept it yet; that is a later change.
 
+### Hook scope
+
+`--hooks user|project|both|none` (default `user`) picks which lifecycle hook files apply to a run
+([ADR-012](docs/adr/ADR-012-lifecycle-hooks.md)). It is accepted by `session run`, `serve` and
+`swarm run --execute`; every other command refuses it with a usage error (exit 2), as does an unknown value. The
+project hook file is found under the project root (the directory the command was started in), never under
+`--workdir`. The flag is parsed and carried to the run today; hooks themselves are not loaded or run yet, so it has
+no effect on a run.
+
 ### Running a swarm
 
 `swarm run <manifest> --execute` runs a swarm for real. The manifest names a `coordinator:` profile and gives each
@@ -393,12 +402,13 @@ is refused (exit 2) if the database or its `-wal` or `-shm` file is inside the w
 included.
 
 - Flags: `--agents user|project|both` (default `user`) picks where the profiles load from, `--workdir` (default the
-  current directory) is where the coordinator's tools, the children and the gates all work, `--provider` and `--model`
-  come from the flags or the config defaults as for `session new`, `--budget` is the coordinator's turn pool (0 means
-  none), `--max-turns` bounds the coordinator's loop (1 to 1000) and `--max-tokens` caps each response. No `--parent`
-  is needed: the engine creates the coordinator session. Without `--execute` these flags are usage errors (exit 2): the
-  receipts-only `swarm run` refuses them rather than ignoring them, and is otherwise unchanged. `--workdir` must be an
-  existing directory (a symlink to one is fine).
+  current directory) is where the coordinator's tools, the children and the gates all work, `--provider` and
+  `--model` come from the flags or the config defaults as for `session new`, `--hooks` is the lifecycle-hook scope
+  ([Hook scope](#hook-scope)), `--budget` is the coordinator's turn pool (0 means none), `--max-turns` bounds the
+  coordinator's loop (1 to 1000) and `--max-tokens` caps each response. No `--parent` is needed: the engine creates
+  the coordinator session. Without `--execute` these flags are usage errors (exit 2): the receipts-only `swarm run`
+  refuses them rather than ignoring them, and is otherwise unchanged. `--workdir` must be an existing directory (a
+  symlink to one is fine).
 - Needs a provider that accepts tool calls (the z.ai coding route or the Anthropic API-key route). The manifest needs a
   coordinator, at least one packet with a role and at least one gate, and no packet may use the coordinator as its role.
   The coordinator may delegate only to the manifest's roles; if its profile lists `delegates`, only to the roles that

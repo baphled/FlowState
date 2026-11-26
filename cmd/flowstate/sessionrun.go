@@ -18,6 +18,10 @@ var selfTestRun bool
 // for an httptest-backed adapter, production uses the registry.
 var providerResolver app.ProviderResolver = app.ResolveProvider
 
+// execLoopRunner is the CLI's seam for the bounded execution loop; specs swap it
+// to observe the request, production runs app.RunSessionExecLoop.
+var execLoopRunner = app.RunSessionExecLoop
+
 // exitProviderError is the stable provider-failure exit code.
 const exitProviderError = 3
 
@@ -420,11 +424,12 @@ func runTurnOrLoop(ctx context.Context, st *app.Store, sess *app.Session, s app.
 			ModelID:   fl.model,
 		})
 	}
-	loopRes, err := app.RunSessionExecLoop(ctx, st, fl.db, sess, s, app.SessionExecLoopRequest{
+	loopRes, err := execLoopRunner(ctx, st, fl.db, sess, s, app.SessionExecLoopRequest{
 		Allow:            allow,
 		AllowFile:        fl.allowFile,
 		Workdir:          fl.workdir,
 		Agents:           fl.agents,
+		HooksScope:       hooksScope(fl),
 		Budget:           fl.budget,
 		MaxTokens:        fl.maxTokens,
 		MaxTurns:         fl.maxTurns,

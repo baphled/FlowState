@@ -35,6 +35,11 @@ func routeServe(ctx context.Context, args []string, stdout, stderr *os.File) int
 			fl.db, fl.dbSet = value, true
 		case "--config":
 			fl.configPath = value
+		case "--hooks":
+			if herr := fl.setHooks(value); herr != nil {
+				writeError(stderr, fmt.Errorf("%w: %v", errUsageCmd, herr))
+				return exitUsage
+			}
 		default:
 			writeError(stderr, fmt.Errorf("%w: unknown flag %q", errUsageCmd, name))
 			return exitUsage

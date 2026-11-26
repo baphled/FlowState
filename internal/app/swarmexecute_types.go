@@ -53,6 +53,14 @@ type ExecuteSwarmConfig struct {
 	// child, nested ones included, compact by it; the coordinator's window is its profile's
 	// context_window when set. The zero value applies the built-in defaults.
 	Compaction CompactionConfig
+	// HooksScope is the already-parsed --hooks scope (ADR-012). The zero value
+	// means not set: hooks are not loaded yet, and an unset scope must never load
+	// the user hook file (fail closed). It is carried but not yet acted on: the
+	// follow-up loads the coordinator's hooks from it in ExecuteSwarmFile.
+	HooksScope HookScope
+	// ProjectRoot is where the project hook file is found; empty is the process
+	// current directory. It is never Workdir, which is only where the tools run.
+	ProjectRoot string
 	// Admitter decides each packet once the coordinator and the gates are done.
 	Admitter swarm.RunAdmitter
 	// Gates runs the manifest's gates; the engine runs them, never the model.

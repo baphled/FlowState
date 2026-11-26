@@ -226,3 +226,11 @@ func sessionMaxTurns(req SessionExecLoopRequest) int64 {
 	}
 	return req.MaxTurns
 }
+
+// HooksProjectRoot is the directory the project hook file is found under for a
+// loop run: the request's ProjectRoot, where empty is the process current
+// directory. It is deliberately not projectRoot: that returns Workdir when given,
+// and ADR-012 resolves hooks against the project root, never the per-run workdir.
+func HooksProjectRoot(req SessionExecLoopRequest) string {
+	return req.ProjectRoot
+}
