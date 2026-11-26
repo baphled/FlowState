@@ -155,13 +155,14 @@ func recoveryFailure(err error) error {
 // bounded provider turn, explicitly
 // resuming a paused session first, projects the persisted events as
 // JSONL on stdout and ends with a terminal event envelope. Exit 0
-// completed (a truncated answer, finish reason length, is still 0 and
-// adds one stderr warning line); 1 unknown session or any other
+// completed (a single-turn truncated answer, finish reason length, is
+// still 0 and adds one stderr warning line when the provider reports a
+// finish reason; a tool-loop turn cut off twice is output_truncated, 5); 1 unknown session or any other
 // unclassified failure, which reports code `internal`; 2 usage; 3
 // provider error; 4 config_invalid (live gates closed in task mode,
 // or the database, crash recovery or the steering drain failed); 5
-// budget stop, or max_turns (the turn limit reached while still
-// requesting tools, which fails the run); 6 already terminal; 7
+// budget stop, max_turns (the turn limit reached while still
+// requesting tools, which fails the run) or output_truncated; 6 already terminal; 7
 // replay_mismatch (corrupt replay found during the turn); 9 session_busy
 // (the lease was refused at acquire); 130 cancelled
 // by SIGINT, SIGTERM or SIGHUP (reason sigint, sigterm or sighup). Exit
@@ -343,7 +344,7 @@ func providerFailure(err error) error {
 }
 
 // finishRun maps the turn outcome onto its exit code: SIGINT, SIGTERM
-// or SIGHUP cancellation exits 130, budget stops and max_turns 5, tool-surface
+// or SIGHUP cancellation exits 130, budget stops, max_turns and output_truncated 5, tool-surface
 // usage failures 2, and only errors that satisfy errors.Is(err,
 // app.ErrProvider) exit 3. Any other error (a storage failure while
 // recording the turn, a lease fence) keeps its own classification

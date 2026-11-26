@@ -89,7 +89,8 @@ global 30s `WriteTimeout`). `POST /sessions/{id}/run` runs one
 synchronous turn behind the `session run` preamble and answers the projected
 event log; `{"budget","max_tokens"}` mirrors the CLI flags, provider failures
 (errors wrapping `app.ErrProvider`, named once in the message) 502 `provider_error`, budget stops and a
-`max_turns` failure (the turn limit reached while still requesting tools, exit 5 on the CLI) 409, any
+`max_turns` failure (the turn limit reached while still requesting tools, exit 5 on the CLI) and an
+`output_truncated` failure (a loop turn cut off at the output cap twice, exit 5) 409, any
 other failure keeps its own class (a storage error while recording the turn is 500 `internal`, and `session
 run` exits 1), and the route's deadline extends 10 minutes; a client disconnect or shutdown mid-run cancels
 the session, as
@@ -97,7 +98,7 @@ a signal does for the CLI. The run body also takes `max_turns` (1 to 1000, absen
 same tool-loop turn limit as `session run --max-turns`; a negative or larger value is 400 `usage`, and a run that
 reaches the limit while still asking for tools is 409 `max_turns`. A run refused because the session's lease is held
 is 409 `session_busy` (the CLI exits 9). The body `code` tells the 409s apart: `session_terminal`, `session_cancelled`,
-`budget_exceeded`, `max_turns` and `session_busy`.
+`budget_exceeded`, `max_turns`, `output_truncated` and `session_busy`.
 `POST /sessions` creates via the `session new` composition (a write, so it is
 detached from cancellation): body fields override serve config, secret-looking
 keys are 400 `usage` (client input, unlike the config's `config_invalid`).
@@ -267,8 +268,12 @@ summarises, appends and continues from the rebuilt history; a failed automatic c
 retried in the run and the run continues. In `swarm run --execute` the coordinator and its children compact by the
 config's `compaction` settings (including `enabled: false`), the coordinator by its profile's `context_window`. A
 provider context-overflow error (or a `length` finish with no calls over the line) compacts with reason `overflow` and
-retries the request once, after a non-terminal `provider.error` (`terminal` false, `reason` `context_overflow`) that
-leaves the session `active`; every other `provider.error` is terminal.
+retries the request once, after a non-terminal `provider.error` (`terminal` false, `reason` `context_overflow` for an
+error, `output_truncated` for a `length` finish, written before compacting) that leaves the session `active`; every
+other `provider.error` is terminal. A `length` finish with no complete call on a request under the line retries once
+with the output cap doubled (up to the model's table maximum), after the same kind of marker with `reason`
+`output_truncated`; a second `length` finish (or a cap already at the maximum) fails the run, code `output_truncated`:
+a delegated child fails instead of completing. One recovery per turn.
 
 ## Verified conversation history
 

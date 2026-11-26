@@ -20,7 +20,7 @@ const (
 	// or in which the manifest has no gate to pass.
 	SwarmExecGateFailed = "gate_failed"
 	// SwarmExecFailed marks a run whose coordinator did not complete (a failure,
-	// max_turns, an exhausted budget or a passed deadline, reason deadline) or
+	// max_turns, output_truncated, an exhausted budget or a passed deadline, reason deadline) or
 	// whose gates were cut short by a deadline.
 	SwarmExecFailed = "failed"
 	// SwarmExecCancelled marks a run cancelled before its gates finished.
@@ -74,6 +74,9 @@ type ExecutedChild struct {
 	Status string
 	// Turns is the number of provider turns the child's log charges it.
 	Turns int64
+	// Reason is the reason of the child's terminal provider.error (for example max_turns or
+	// output_truncated); empty when the child's log has none.
+	Reason string
 }
 
 // ExecutedGate is the engine's own result of one manifest gate.
@@ -109,7 +112,7 @@ type ExecuteSwarmResult struct {
 	// Reason says why a failed or cancelled run stopped; empty otherwise.
 	Reason string
 	// Cause is the error that stopped a failed or cancelled coordinator (a
-	// provider error, ErrBudgetExceeded, ErrMaxTurns, ErrSessionCancelled, a
+	// provider error, ErrBudgetExceeded, ErrMaxTurns, ErrOutputTruncated, ErrSessionCancelled, a
 	// deadline), so a caller can classify it with errors.Is; nil when the
 	// coordinator completed or the run was stopped after it (the gates).
 	Cause error

@@ -124,9 +124,10 @@ The engine never rewrites or deletes events.** FlowState adds only what its own 
   next run; the plain text-turn path never replays the log, so a compaction does not affect it.
 - **Overflow.** A provider context-overflow error, or a `length` finish with no tool calls on a request that was already
   over the compaction line (`window - max(reserve, output)`, see the D7 amendment), compacts and retries the request
-  once. A second failure is an ordinary provider failure. The provider adapters must classify overflow
+  once. A second `length` finish is `output_truncated`. The provider adapters must classify overflow
   (`ErrContextOverflow`); today none does, and the loop's `provider.error` is terminal, so the overflow case writes a
-  non-terminal `provider.error` (reason `context_overflow`) and no `failed` status.
+  non-terminal `provider.error` and no `failed` status: reason `context_overflow` after an overflow error, and
+  `output_truncated` after a `length` finish (2026-11-25 amendment).
 
 ### What
 
@@ -245,18 +246,36 @@ Rules:
 | D7 | Reserve 16384 (raised to the output cap: a table-defaulted output limited to a quarter of the window, an unknown model's line uses the reserve alone; amended 2026-11-25, #483, below), keep-recent 20000, enabled by default. Config keys `compaction.reserve`, `compaction.keep_recent`, `compaction.enabled` and `compaction.context_window`, none containing "token" (ADR-005's secret filter). |
 | D8 | Cut only at a `turn.start` or the `assistant.message` of a turn; a turn keeps its text, calls and results together. |
 | D9 | `session compact <id> [--instructions text]` takes the exec lease; it is refused while the lease is held. |
-| D10 | A context-overflow error, or a `length` finish with no tool calls over the line, compacts and retries once. Adapters gain an overflow classification; the retry writes a non-terminal `provider.error`. |
+| D10 | A context-overflow error, or a `length` finish with no tool calls over the line, compacts and retries once. Adapters gain an overflow classification; the retry writes a non-terminal `provider.error`. Amended 2026-11-25: a `length` finish under the line escalates the cap once; one recovery per turn (below). |
 | D11 | One append is the whole transaction: nothing is written before the summary exists, and retry is a repeated call. |
 | D12 | A compaction is not a turn: it does not count against `max_turns`; its usage is recorded on the event and reported separately. The summarising call draws one unit from the session's budget pool, like a turn, so a swarm's budget bounds its compaction cost; it is refused with the usual budget error when the pool cannot cover it. |
 | D13 | The summary is untrusted model output in a user-role message; per-result truncation on its input; no redaction is added. |
 | D14 | Delegation: each session compacts alone; the parent sees only a child's final text; replay of a resumed child honours its own compaction. |
 
 **Amendment note (2026-11-25, #483), D2 and D7.** The line is `window - max(reserve, output)`. `output` is the
-explicit `--max-tokens` when positive, not limited. Without it, a model in the registry table sends its table
-maximum capped at 32768, and `output` is that value limited to a quarter of the window, so a defaulted cap never
-empties a small window's line. A model with no table entry sends 8192 but its line uses the reserve alone, as before.
-A delegate or swarm child sends its own model's default, not the parent's explicit cap (passing it down is a
-follow-up).
+explicit `--max-tokens` when positive, not limited. Without it, a model in the registry table sends its table maximum
+capped at 32768, and `output` is that value limited to a quarter of the window, so a defaulted cap never empties a
+small window's line. A model with no table entry sends 8192 but its line uses the reserve alone, as before. A delegate
+or swarm child sends its own model's default, not the parent's explicit cap (passing it down is a follow-up). A child
+whose pool has no spare unit for the retry stops as a budget failure instead (the doubled-cap retry only: when the
+compaction retry has no unit the run fails `output_truncated`).
+
+**Amendment note (2026-11-25, output truncation), D7 and D10.** The earlier rule that a `length` finish keeps the
+truncated answer (a failed compaction after it, or a `length` finish under the line, completed the run with the cut-off
+text) is superseded for the tool loop: a reasoning model once spent the whole output cap on a child that was then
+admitted as completed. The history above is not rewritten. A `length` finish with no complete tool call now has ONE
+recovery per turn, in this order: (1) if the request's baseline was over the compaction line, compact and retry
+(D10: context pressure is the likelier cause). That recovery first writes the non-terminal `output_truncated` marker,
+BEFORE it compacts, and every rebuild of the history drops the truncated assistant message; only a real overflow
+ERROR writes `context_overflow`. (2) otherwise retry once with the output cap doubled, limited
+to the model's table maximum (`MaxOutputCeiling`; an unknown model: 4 x 8192 = 32768). The escalation writes a
+non-terminal `provider.error` (`reason` `output_truncated`, `terminal` false), reserves a second pool unit and counts as
+a second turn, as the overflow retry does; the truncated `assistant.message` stays in the log but the retry history does
+not end on it. The recoveries do not stack: when the retry is cut off again, when the cap is already at the ceiling, or
+when the compaction for the retry fails, the run fails with `ErrOutputTruncated` (code `output_truncated`, exit 5,
+HTTP 409, a terminal `provider.error`, session `failed`), a limit failure like `max_turns`. A delegated child that
+fails this way is failed (its result carries `output_truncated`), and a coordinator stops the swarm run with that
+reason. A `length` finish with complete tool calls runs them as before; the single-turn path is unchanged.
 
 ## Consequences
 
@@ -289,7 +308,7 @@ Each lands with the specs that name its negative oracle: the spec that must fail
 | (a) | `context_window` on the profile and `compaction.*` in the config schema (a new object), the model table, the doctor warning. | about 300 lines | A model with no window still prints the warning when the table entry is removed; a profile with a non-positive window fails the load, and a plain root session reads `compaction.context_window`. |
 | (b) | The `context.compacted` event type, the compaction-aware rebuild in `replayInto` (`LoadSessionHistory` is left as it is), `doctor` lines, `session replay` and server pass-through. No trigger. | about 400 lines | A fixture log with an event whose `first_kept_seq` is mid-pair rebuilds without orphaned `tool.result`; removing the rebuild makes the history include pre-cut messages. |
 | (c) | The summariser, the cut chooser, the manual `session compact`, usage accounting. | about 600 lines, split if over | A cut on a tool result is rejected; a `length`-finished summary appends nothing; a failed summary call leaves the log byte-identical. |
-| (d) | The automatic trigger, the overflow classification in the adapters, the single retry, the `provider.error` doc comment (non-terminal use), and these rules: a failed automatic compaction is not retried within the run and the run continues until the provider fails; a `length` finish keeps its truncated `assistant.message` (it is already appended and counted) and the retry compacts then continues from it (the overflowing request already reserved a unit and counted as a turn in memory but wrote no `assistant.message`, and the retry reserves a second unit; the logged turn count is the lower one, accepted); the estimate includes the request-time system prompt and tool definitions, so `tokens_after` is comparable with a reported figure; the summary draws its unit before the turn's own reservation, so it can spend a pool's last unit and the next turn then ends `budget_exhausted` (accepted: the budget is a bound, not a promise). | about 500 lines | Two overflows in a row end the run as a provider failure, not a loop; a window-unknown session never calls the summariser. |
+| (d) (superseded 2026-11-25) | The automatic trigger, the overflow classification in the adapters, the single retry, the `provider.error` doc comment (non-terminal use), and these rules: a failed automatic compaction is not retried within the run and the run continues until the provider fails; a `length` finish keeps its truncated `assistant.message` (it is already appended and counted) and the retry compacts then continues from it (the overflowing request already reserved a unit and counted as a turn in memory but wrote no `assistant.message`, and the retry reserves a second unit; the logged turn count is the lower one, accepted); the estimate includes the request-time system prompt and tool definitions, so `tokens_after` is comparable with a reported figure; the summary draws its unit before the turn's own reservation, so it can spend a pool's last unit and the next turn then ends `budget_exhausted` (accepted: the budget is a bound, not a promise). | about 500 lines | Two overflows in a row end the run as a provider failure, not a loop; a window-unknown session never calls the summariser. |
 | (e) | Delegation and crash specs: a child compacts without touching the parent's log; a resumed child replays from its compaction; a crash before the append leaves the log unchanged; a crash after it resumes from the new line. | about 400 lines | A parent log with a compacting child contains no `context.compacted` of the child; a pre-append crash fixture still replays in full. |
 
 ## Alternatives rejected

@@ -238,6 +238,18 @@ loop (`--allow`, `--allow-file`, `--agents` or a config `tool_allowlist`) it is 
 for tools when it reaches the limit fails with `max_turns` (exit 5) and the session is `failed`, so raise the limit
 before the run. The HTTP run body takes the same limit as `max_turns`.
 
+### Output cap and truncated answers
+
+A tool loop does not accept a turn the output cap cut off. When a provider turn finishes `length` with no complete
+tool call, the engine retries it once with the cap doubled (never above the model's table maximum; an unknown model's
+ceiling is 32768), after a non-terminal `provider.error` with `reason` `output_truncated` and `terminal` false. The
+retry draws a second pool unit and counts as a second turn. If the retry is cut off too, or the cap is already at the
+ceiling, the run fails with `output_truncated` (exit 5, HTTP 409, a terminal `provider.error`, session `failed`); a
+delegated child or swarm coordinator that fails this way is failed, never completed. A `length` finish that carries
+complete tool calls runs them as before. A child whose pool has no spare unit for the retry stops as a budget failure
+instead. The single-turn path (no tool loop) has no loop to retry in: a `length` answer there is still exit 0, with
+one warning line when the provider reports a finish reason (every resolved z.ai route does).
+
 ### Delegating to a child agent
 
 `session run <id> --agents user|project|both` loads the profiles for that scope and gives the model one extra tool,
@@ -399,14 +411,15 @@ included.
   gates is ignored. A failed or cancelled coordinator runs no gate.
 - Output is one JSON object (`swarm-run-execute` in [schemas/cli.json](schemas/cli.json)): `run_id`, `status`
   (`accepted`, `not_accepted`, `gate_failed`, `failed` or `cancelled`), `reason` (why a run failed or was cancelled,
-  such as `max_turns`, `budget_exhausted` or `sigint`), `coordinator_session`, `children` (`id`, `profile`, `packet`,
-  `status`, `turns`), `gates` (`name`, `passed`, `interrupted`) and `packets` (the admission decision, with a `reason`
-  for a refusal and the admitting child as `evidence`).
-- Exit codes: 0 accepted; 8 `not_accepted` or `gate_failed` (as for the receipts-only run); a failed coordinator keeps
-  its own class (3 provider error, 5 budget or `max_turns`, 1 anything else, including a passed deadline); 130 cancelled
-  by SIGINT, SIGTERM or SIGHUP, with the children settled so no session stays active; 2 usage errors, which include a
-  manifest with no coordinator or a role with no profile, and 4 `config_invalid`, such as a profile in both
-  directories under `--agents both`. A refused run creates no session or run.
+  such as `max_turns`, `output_truncated`, `budget_exhausted` or `sigint`), `coordinator_session`, `children` (`id`,
+  `profile`, `packet`, `status`, `turns`), `gates` (`name`, `passed`, `interrupted`) and `packets` (the admission
+  decision, with a `reason` for a refusal and the admitting child as `evidence`).
+- Exit codes: 0 accepted; 8 `not_accepted` or `gate_failed` (as for the receipts-only run); a failed coordinator
+  keeps its own class (3 provider error, 5 budget, `max_turns` or `output_truncated`, 1 anything else, including a
+  passed deadline); 130 cancelled by SIGINT, SIGTERM or SIGHUP, with the children settled so no session stays
+  active; 2 usage errors, which include a manifest with no coordinator or a role with no profile, and 4
+  `config_invalid`, such as a profile in both directories under `--agents both`. A refused run creates no session or
+  run.
 - Gates run as plain argv (no shell) in the workdir. A gate that executes a file the swarm's write-capable roles can
   write (`./check.sh`) runs what they wrote, and a stale `REVIEW.md` from an earlier run satisfies `test -s REVIEW.md`:
   use a fresh workdir per run.
@@ -417,12 +430,12 @@ included.
 
 | Code | Meaning |
 | --- | --- |
-| 0 | Completed (a truncated answer is still 0, with one warning line on standard error) |
+| 0 | Completed (a single-turn `length` answer is still 0; one warning line when a finish reason is reported) |
 | 1 | Unknown session, or any other failure without its own class (code `internal`); a lease lost mid-run (fenced) is `internal`, exit 1 |
 | 2 | Usage error |
 | 3 | Provider error |
 | 4 | `config_invalid`: bad configuration, an unopenable database, or a failed crash recovery or steering drain |
-| 5 | Budget stop (the session is paused), or `max_turns` (the turn limit reached while still requesting tools; failed) |
+| 5 | Budget stop (the session is paused), `max_turns` (the turn limit reached while still requesting tools; failed), or `output_truncated` (a tool-loop turn cut off at the output cap twice; failed) |
 | 6 | The session is already terminal |
 | 7 | Replay found a corrupt log |
 | 8 | A swarm run, receipts-only or `--execute`, was not accepted (failed gate or rejected packet), or a receipt is invalid |
@@ -510,25 +523,28 @@ compaction off for the rest of the run), and the run continues; a `no_cut` gives
 larger than the reserve (or `--max-tokens`) never compacts: raise the window or lower the reserve or `max_tokens`.
 Without `--max-tokens` a run sends the model's maximum output from the registry table, capped at 32768 (an unknown
 model: 8192), and a known model's line is `window - max(reserve, that value)`, the value limited to a quarter of the
-window (an unknown model's line is the reserve alone). An explicit `--max-tokens` is not limited. A stream cut by
-the output cap drops the partial tool call instead of failing the run; today the loop completes that turn with the cut-off
-text and a warning. A delegate or swarm
-child sends its own model's default, not the parent's explicit cap (passing it down is a follow-up). With
-`compaction.enabled` false the larger default cap shrinks the input headroom, and the reactive overflow retry below is
-the only net. In `swarm run --execute` the coordinator and its children, nested ones included, compact by the same
-`compaction` settings, including `enabled: false`; the coordinator's window is its profile's `context_window` when
-set, and each compaction draws from the swarm pool. `session compact` summarises by hand.
+window (an unknown model's line is the reserve alone). An explicit `--max-tokens` is not limited. A stream cut by the
+output cap drops the partial tool call instead of failing the run, and the tool loop then retries or fails the turn as
+described under Output cap and truncated answers. A delegate or swarm child sends its own model's default, not the
+parent's explicit cap (passing it down is a follow-up). With `compaction.enabled` false the larger default cap shrinks
+the input headroom, and the reactive overflow retry below is the only net. In `swarm run --execute` the coordinator
+and its children, nested ones included, compact by the same `compaction` settings, including `enabled: false`; the
+coordinator's window is its profile's `context_window` when set, and each compaction draws from the swarm pool.
+`session compact` summarises by hand.
 
 **Overflow retry.** The tool loop also has a reactive net: when the provider says a request does not fit the window
 (`provider.ErrContextOverflow`), or answers with a `length` finish and no tool calls on a request whose context was
 already over the compaction line, the engine compacts (reason `overflow`) and retries that request once; it needs a
 known window and `compaction.enabled`, as the automatic trigger does. The first overflow writes a `provider.error`
-event with `reason` `context_overflow` and `terminal` false, which leaves the session `active`; the retry draws a
-second pool unit and counts as a second turn in the run result, but the log counts only the answered requests, so a
-retry costs one `max_turns` turn and an overflow can fail a run that had a turn left. A second overflow after the
-retry, an overflow compaction that fails, a pool too short for the compaction, or an unknown window ends the run as an
-ordinary provider failure (exit 3, a terminal `provider.error`, `failed`, not `budget_exhausted`). After a `length`
-finish whose compaction fails, the truncated answer stands. The adapters classify overflow only on a pinned signature,
+event with `terminal` false, which leaves the session `active`: `reason` `context_overflow` for an overflow error,
+`output_truncated` for a `length` finish (written before compacting; the rebuild drops the truncated message); the
+retry draws a second pool unit and counts as a second turn in the run result, but the log counts only the answered
+requests, so a retry costs one `max_turns` turn and an overflow can fail a run that had a turn left. A second overflow
+after the retry, an overflow compaction that fails, a pool too short for the compaction, or an unknown window ends the
+run as an ordinary provider failure (exit 3, a terminal `provider.error`, `failed`, not `budget_exhausted`). After a
+`length` finish whose compaction fails, the run fails with `output_truncated`. A turn has one recovery: after the
+compaction retry, a further `length` finish fails the run too; a `length` finish on a request under the line escalates
+the cap instead (see Output cap and truncated answers). The adapters classify overflow only on a pinned signature,
 never a substring: HTTP 413 on any HTTP route; the Anthropic Messages API (the API-key route and the z.ai
 Anthropic-compatible route) answering 400 `invalid_request_error` with a message starting `prompt is too long`; and
 z.ai answering 400 with the string code `1261`. The 400 signatures are recalled, unverified against the live APIs: a
@@ -542,9 +558,9 @@ automatically. `session doctor` resolves the window from `compaction.context_win
 read a profile's `context_window`, because a root session has no profile and the doctor does not know the profile of a
 child. It warns for a model outside the table, for example the subscription aliases `haiku`, `sonnet` and `opus`, z.ai
 `glm-4.5-flash` and every free or local model (a local model's window is whatever you loaded it with); set
-`compaction.context_window` to silence it.
-`GET /sessions/{id}/doctor` reports the same `compactions`, `context_window` and `warnings` for the same log,
-resolved from the server's loaded config (like the command, it ignores a profile's `context_window`).
+`compaction.context_window` to silence it. `GET /sessions/{id}/doctor` reports the same `compactions`,
+`context_window` and `warnings` for the same log, resolved from the server's loaded config (like the command, it
+ignores a profile's `context_window`).
 
 Explicit flags override the file. `--allow` and `--allow-file` replace `tool_allowlist`; `--workdir` only says where the
 tools operate. A file holding anything that looks like a secret is rejected.
@@ -567,7 +583,7 @@ op run --env-file zai.env -- flowstate session run <id>
 unless `FLOWSTATE_SERVE_TOKEN` is set, which then becomes a required bearer token. Request bodies are capped at 1 MiB
 and decoded strictly. Errors use the same `{code, message}` body as the command line, with the status for each code.
 A 409 has several causes; the body `code` tells them apart (`session_terminal`, `session_cancelled`, `budget_exceeded`,
-`max_turns`, `session_busy`).
+`max_turns`, `output_truncated`, `session_busy`).
 
 | Endpoint | Purpose |
 | --- | --- |

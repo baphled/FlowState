@@ -262,6 +262,8 @@ func classifyCoordinatorStop(ctx context.Context, err error) (status, reason str
 		return SwarmExecFailed, "budget_exhausted", nil
 	case errors.Is(err, ErrMaxTurns):
 		return SwarmExecFailed, CodeMaxTurns, nil
+	case errors.Is(err, ErrOutputTruncated):
+		return SwarmExecFailed, CodeOutputTruncated, nil
 	}
 	return SwarmExecFailed, clipRunes(err.Error(), swarmReasonMaxChars), nil
 }
@@ -326,6 +328,7 @@ func describeSwarmChild(ctx context.Context, st *Store, id, profile string, m sw
 	}
 	child := ExecutedChild{ID: id, Profile: profile, Status: cur.Status}
 	child.Turns, _ = countTurns(events)
+	child.Reason = terminalErrorReason(events)
 	for _, e := range events {
 		if e.Type != session.TypeTurnStart {
 			continue
@@ -334,6 +337,17 @@ func describeSwarmChild(ctx context.Context, st *Store, id, profile string, m sw
 		break
 	}
 	return child, nil
+}
+
+// terminalErrorReason is the reason of the last terminal provider.error of a log, or "".
+func terminalErrorReason(events []store.RecordedEvent) string {
+	reason := ""
+	for _, e := range events {
+		if e.Type == TypeProviderError && payloadFieldRaw(e.PayloadJSON, "terminal") == "true" {
+			reason = payloadFieldText(e.PayloadJSON, "reason")
+		}
+	}
+	return reason
 }
 
 // attributedPacket is the engine's one attribution rule, applied to a child's
@@ -449,6 +463,8 @@ func (a *packetAdmitter) decide(p swarm.Packet, body []byte) error {
 	case !ran:
 		return fmt.Errorf("not run: no delegated child carried the marker [packet %s] and the task text under role %s",
 			p.ID, p.Role)
+	case child.Status != "completed" && child.Reason != "":
+		return fmt.Errorf("child %s is %s, not completed (reason: %s)", child.ID, child.Status, child.Reason)
 	case child.Status != "completed":
 		return fmt.Errorf("child %s is %s, not completed", child.ID, child.Status)
 	}
