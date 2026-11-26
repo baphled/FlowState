@@ -51,6 +51,8 @@ type ExecLoopConfig struct {
 	// ProfileWindow is the context_window of the profile the session runs under (a
 	// delegated child, the swarm coordinator); 0 for a plain root session.
 	ProfileWindow int
+	// Hooks is the loaded root hook set (ADR-012 D22); nil is the empty set. Nothing fires it yet.
+	Hooks HookSet
 }
 
 // compactRun is the run-scoped state of the automatic trigger (ADR-010 "When"): the baseline
@@ -150,6 +152,9 @@ type SessionExecLoopRequest struct {
 	// "exec:"+Session.ID. The caller releases it after RunSessionExecLoop has returned, that is
 	// after the post-loop state writers.
 	Lease ExecLease
+	// Hooks is the root hook set of the run (ADR-012 D22), set on the root's loop and on the
+	// root's own delegate tool so every child inherits it; nil is the empty set.
+	Hooks HookSet
 }
 
 // UsageTotals sums the provider usage of the turns that reported it. A turn
@@ -196,4 +201,24 @@ const (
 type replayFacts struct {
 	answered map[string]bool
 	dropped  map[int64]bool
+}
+
+// HookSet is the loaded root hook set (ADR-012 D22) a run carries down to every run it starts: a
+// delegated child, a nested child, a resumed child and a swarm packet child. It is an opaque value
+// here: this package only plumbs it, and nothing fires a hook from it yet. The value is copied
+// from the parent's config into the child's and never taken from a profile, so a child can
+// neither drop nor replace it. The nil HookSet is the empty set, which is what production
+// carries until the packet that fires gates; it stays nil all the way down.
+//
+// Pass an untyped nil for the empty set, never a nil pointer: a nil *T stored in the interface is
+// a non-nil HookSet, so `== nil` is false and Digest runs on a nil receiver. A caller that holds
+// a possibly-nil pointer normalises it with emptyHookSet. Do not compare two HookSets with ==:
+// an implementation may hold a slice, which makes the comparison panic at run time; compare
+// Digest values instead.
+//
+// The loaded-set value of packet 1 (LoadedHooks{Scope, Hooks}, in hooks_types.go) satisfies it
+// once the packet that records `hooks.loaded` adds a `Digest() string` method to it.
+type HookSet interface {
+	// Digest is the hex SHA-256 of the effective set, the value `hooks.loaded` records.
+	Digest() string
 }

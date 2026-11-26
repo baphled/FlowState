@@ -45,6 +45,7 @@ func NewDelegateTool(cfg DelegateToolConfig) *DelegateTool {
 	cfg.Profiles = slices.SortedFunc(slices.Values(cfg.Profiles), func(a, b agent.Profile) int {
 		return strings.Compare(a.Name, b.Name)
 	})
+	cfg.Hooks = emptyHookSet(cfg.Hooks)
 	if cfg.limiter == nil {
 		cfg.limiter = newDescendantLimiter(cfg.DescendantLimit)
 	}

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider/anthropic"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/store"
+	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tool"
 )
 
@@ -970,5 +972,299 @@ var _ = Describe("the max_tokens of a provider request", func() {
 	})
 	It("takes the explicit value for a known model", func() {
 		Expect(requested("z.ai", "glm-5.3", 1000)).To(Equal(int64(1000)))
+	})
+})
+
+// spyHooks is a non-nil HookSet a spec passes as the root set; identity tells it from any other.
+type spyHooks struct{ name string }
+
+func (s *spyHooks) Digest() string { return s.name }
+
+// loopRecorder records the HookSet of every loop RunExecLoop runs, keyed by session id. It is the
+// observer a spec installs on observeExecLoop and is safe for the concurrent loops of a fan-out.
+type loopRecorder struct {
+	mu   sync.Mutex
+	sets map[string]HookSet
+}
+
+// recordLoops installs a recorder on the observeExecLoop seam for the spec and restores the seam
+// afterwards. Specs that use it never run in parallel with one another: it is a package variable.
+func recordLoops() *loopRecorder {
+	r := &loopRecorder{sets: map[string]HookSet{}}
+	prev := observeExecLoop
+	observeExecLoop = func(cfg ExecLoopConfig) {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		r.sets[cfg.Session.ID] = cfg.Hooks
+	}
+	DeferCleanup(func() { observeExecLoop = prev })
+	return r
+}
+
+func (r *loopRecorder) of(id string) HookSet {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.sets[id]
+}
+
+func (r *loopRecorder) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.sets)
+}
+
+// nonEmpty counts the recorded sets that are not the untyped nil. A typed-nil pointer counts: it is
+// a non-nil interface, which BeNil would wrongly accept.
+func (r *loopRecorder) nonEmpty() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, h := range r.sets {
+		if h != nil {
+			n++
+		}
+	}
+	return n
+}
+
+// all is every recorded set.
+func (r *loopRecorder) all() []HookSet {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := []HookSet{}
+	for _, h := range r.sets {
+		out = append(out, h)
+	}
+	return out
+}
+
+var _ = Describe("The root hook set, end to end (ADR-012 D22)", func() {
+	var (
+		ctx context.Context
+		spy *spyHooks
+		rec *loopRecorder
+	)
+	BeforeEach(func() {
+		ctx = context.Background()
+		spy = &spyHooks{name: "root"}
+		rec = recordLoops()
+	})
+
+	Describe("a root, a child and a grandchild", func() {
+		var root, lead, spec string
+		BeforeEach(func() {
+			f := newNestFixture(0)
+			f.tool.cfg.Hooks = spy
+			f.say("root", delegates(`{"agent":"lead","task":"plan it"}`), finishText("root done"))
+			f.say("lead", delegates(`{"agent":"specialist","task":"read it"}`), finishText("lead summary"))
+			f.say("specialist", finishText("specialist report"))
+			lease, _ := acquireTestLease(f.st, "exec:"+f.parent.ID, "cli")
+			_, err := RunExecLoop(ctx, ExecLoopConfig{
+				Store: f.st, Session: f.parent, Streamer: f.scripts, Registry: f.registry, Allowlist: []string{"delegate"},
+				Pool: f.pool, TurnBudget: 1, Lease: lease, MaxTurns: 4, Hooks: spy,
+			})
+			check(err)
+			root, lead = f.parent.ID, f.childOf(f.parent.ID)
+			spec = f.childOf(lead)
+		})
+		It("runs three loops", func() { Expect(rec.count()).To(Equal(3)) })
+		It("gives the root loop the set", func() { Expect(rec.of(root)).To(BeIdenticalTo(spy)) })
+		It("gives the child loop the set", func() { Expect(rec.of(lead)).To(BeIdenticalTo(spy)) })
+		It("gives the grandchild loop the set", func() { Expect(rec.of(spec)).To(BeIdenticalTo(spy)) })
+	})
+
+	Describe("the delegate tool's parallel tasks", func() {
+		BeforeEach(func() {
+			f := newParallelFixture(newParallelStreamer(), 3, nil)
+			f.tool.cfg.Hooks = spy
+			out := awaitOutcome(f.start(ctx, tasksJSON(3)))
+			check(out.err)
+		})
+		It("runs three child loops", func() { Expect(rec.count()).To(Equal(3)) })
+		It("gives every child loop the set", func() { Expect(rec.all()).To(HaveEach(BeIdenticalTo(HookSet(spy)))) })
+	})
+
+	Describe("a single delegate call", func() {
+		BeforeEach(func() {
+			f := newToolFixture(finishText("child done"))
+			f.tool.cfg.Hooks = spy
+			_, err := f.invoke(`{"agent":"reviewer","task":"look"}`)
+			check(err)
+		})
+		It("runs one child loop", func() { Expect(rec.count()).To(Equal(1)) })
+		It("gives the child loop the set", func() { Expect(rec.all()).To(HaveEach(BeIdenticalTo(HookSet(spy)))) })
+	})
+
+	Describe("a resume through the delegate tool", func() {
+		var child string
+		BeforeEach(func() {
+			f := newToolFixture(finishText("child done"))
+			f.tool.cfg.Hooks = spy
+			child = f.seedChild(f.parent, 2).ID
+			rec.mu.Lock()
+			rec.sets = map[string]HookSet{} // the seeding run is not under test
+			rec.mu.Unlock()
+			_, err := f.invoke(`{"resume":"` + child + `"}`)
+			check(err)
+		})
+		It("runs one loop", func() { Expect(rec.count()).To(Equal(1)) })
+		It("gives the resumed child's loop the set", func() { Expect(rec.of(child)).To(BeIdenticalTo(spy)) })
+	})
+
+	Describe("ExecuteSwarm with a coordinator and two packet children", func() {
+		BeforeEach(func() {
+			f := newSwarmExecFixture()
+			f.cfg.Hooks = spy
+			f.both("swarm done")
+			f.execute(ctx)
+		})
+		It("runs three loops", func() { Expect(rec.count()).To(Equal(3)) })
+		It("gives the coordinator and both packet children the set", func() {
+			Expect(rec.all()).To(HaveEach(BeIdenticalTo(HookSet(spy))))
+		})
+	})
+
+	Describe("ExecuteSwarmFile", func() {
+		BeforeEach(func() {
+			f := newSwarmExecFixture()
+			f.cfg.Hooks = spy
+			f.both("swarm done")
+			path := filepath.Join(GinkgoT().TempDir(), "swarm.yml")
+			manifest := fmt.Sprintf("name: demo\nscope: demo\ncoordinator: coord\npackets:\n"+
+				"  - {id: p1, scope: demo.a, task: write it, role: writer, source_sha256: %s}\n"+
+				"  - {id: p2, scope: demo.b, task: review it, role: reviewer, prerequisites: [p1], source_sha256: %s}\n"+
+				"gates:\n  - {name: go, description: builds, command: \"true\"}\n",
+				swarm.SHA256HexForTest([]byte("write it")), swarm.SHA256HexForTest([]byte("review it")))
+			check(os.WriteFile(path, []byte(manifest), 0o600))
+			_, err := ExecuteSwarmFile(ctx, f.st, path, f.cfg)
+			check(err)
+		})
+		It("runs three loops", func() { Expect(rec.count()).To(Equal(3)) })
+		It("passes cfg.Hooks to the coordinator and both packet children", func() {
+			Expect(rec.all()).To(HaveEach(BeIdenticalTo(HookSet(spy))))
+		})
+	})
+
+	Describe("a session run with the root request's set", func() {
+		var root string
+		BeforeEach(func() {
+			st, sess := execLoopSeed()
+			DeferCleanup(func() { _ = st.Close() })
+			config := GinkgoT().TempDir()
+			for _, env := range []string{"XDG_CONFIG_HOME", "HOME", "APPDATA"} {
+				GinkgoT().Setenv(env, config)
+			}
+			base, err := os.UserConfigDir()
+			check(err)
+			putAgent(filepath.Join(base, "flowstate", "agents"), "reviewer.md", agentText("reviewer"))
+			streamer := &execLoopStreamer{turns: [][]provider.StreamEvent{
+				callTurn(delegateCall(`{"agent":"reviewer","task":"look"}`)), finishText("child says hi"), finishText("parent done"),
+			}}
+			_, err = RunSessionExecLoop(ctx, st, filepath.Join(GinkgoT().TempDir(), "wire.db"), sess, streamer, SessionExecLoopRequest{
+				Allow: []string{"delegate"}, Agents: "user", Workdir: GinkgoT().TempDir(), MaxTurns: 4, Budget: 100,
+				Lease: heldSessionLease(st, sess), Hooks: spy,
+			})
+			check(err)
+			root = sess.ID
+		})
+		It("runs the root and its child", func() { Expect(rec.count()).To(Equal(2)) })
+		It("gives the root loop the set", func() { Expect(rec.of(root)).To(BeIdenticalTo(spy)) })
+		It("gives the root-run child the set", func() {
+			Expect(rec.all()).To(HaveEach(BeIdenticalTo(HookSet(spy))))
+		})
+	})
+})
+
+var _ = Describe("emptyHookSet", func() {
+	It("turns a typed-nil pointer into the empty set", func() {
+		var p *spyHooks
+		Expect(reflect.TypeOf(emptyHookSet(p))).To(BeNil())
+	})
+	It("keeps a real set", func() {
+		spy := &spyHooks{name: "root"}
+		Expect(emptyHookSet(spy)).To(BeIdenticalTo(spy))
+	})
+	It("keeps the empty set empty", func() { Expect(emptyHookSet(nil)).To(BeNil()) })
+})
+
+var _ = Describe("a typed-nil root hook set at every entry (ADR-012 D22)", func() {
+	var (
+		ctx  context.Context
+		nilp *spyHooks
+		rec  *loopRecorder
+	)
+	BeforeEach(func() {
+		ctx = context.Background()
+		nilp = nil
+		rec = recordLoops()
+	})
+
+	Describe("RunExecLoop called directly", func() {
+		BeforeEach(func() {
+			f := newToolFixture(finishText("root done"))
+			lease, release := acquireTestLease(f.st, "exec:"+f.parent.ID, "cli")
+			if lease == nil {
+				panic("acquireTestLease returned a nil lease")
+			}
+			DeferCleanup(release)
+			_, err := RunExecLoop(ctx, ExecLoopConfig{
+				Store: f.st, Session: f.parent, Streamer: f.streamer, Registry: f.registry, Allowlist: []string{"delegate"},
+				Pool: f.pool, TurnBudget: 1, Lease: lease, MaxTurns: 4, Hooks: nilp,
+			})
+			check(err)
+		})
+		It("runs one loop", func() { Expect(rec.count()).To(Equal(1)) })
+		It("shows the seam the empty set", func() { Expect(rec.nonEmpty()).To(BeZero()) })
+	})
+
+	Describe("a DelegateToolConfig", func() {
+		BeforeEach(func() {
+			f := newToolFixture(finishText("child done"))
+			cfg := f.tool.cfg
+			cfg.Hooks = nilp
+			_, err := NewDelegateTool(cfg).Invoke(ctx, json.RawMessage(`{"agent":"reviewer","task":"look"}`))
+			check(err)
+		})
+		It("runs one child loop", func() { Expect(rec.count()).To(Equal(1)) })
+		It("gives the child loop the empty set", func() { Expect(rec.nonEmpty()).To(BeZero()) })
+	})
+
+	Describe("an ExecuteSwarmConfig", func() {
+		BeforeEach(func() {
+			f := newSwarmExecFixture()
+			f.cfg.Hooks = nilp
+			f.both("swarm done")
+			f.execute(ctx)
+		})
+		It("runs three loops", func() { Expect(rec.count()).To(Equal(3)) })
+		It("gives the coordinator and both packet children the empty set", func() {
+			Expect(rec.nonEmpty()).To(BeZero())
+		})
+	})
+
+	Describe("a SessionExecLoopRequest", func() {
+		BeforeEach(func() {
+			st, sess := execLoopSeed()
+			DeferCleanup(func() { _ = st.Close() })
+			config := GinkgoT().TempDir()
+			for _, env := range []string{"XDG_CONFIG_HOME", "HOME", "APPDATA"} {
+				GinkgoT().Setenv(env, config)
+			}
+			base, err := os.UserConfigDir()
+			check(err)
+			putAgent(filepath.Join(base, "flowstate", "agents"), "reviewer.md", agentText("reviewer"))
+			streamer := &execLoopStreamer{turns: [][]provider.StreamEvent{
+				callTurn(delegateCall(`{"agent":"reviewer","task":"look"}`)), finishText("child says hi"), finishText("parent done"),
+			}}
+			_, err = RunSessionExecLoop(ctx, st, filepath.Join(GinkgoT().TempDir(), "wire.db"), sess, streamer, SessionExecLoopRequest{
+				Allow: []string{"delegate"}, Agents: "user", Workdir: GinkgoT().TempDir(), MaxTurns: 4, Budget: 100,
+				Lease: heldSessionLease(st, sess), Hooks: nilp,
+			})
+			check(err)
+		})
+		It("runs the root and its child", func() { Expect(rec.count()).To(Equal(2)) })
+		It("gives the root and the root-run child the empty set", func() {
+			Expect(rec.nonEmpty()).To(BeZero())
+		})
 	})
 })

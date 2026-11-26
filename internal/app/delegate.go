@@ -315,6 +315,7 @@ func delegateLoopConfig(ctx context.Context, req *DelegateRequest, run *delegate
 		Allowlist: req.Profile.Tools,
 		MaxTurns:  grant, SystemPrompt: req.Profile.Body,
 		Compaction: req.Compaction, ProfileWindow: req.Profile.ContextWindow,
+		Hooks: emptyHookSet(req.Hooks),
 	}
 	if run.lease != nil {
 		cfg.Lease = run.lease
