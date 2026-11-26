@@ -14,6 +14,7 @@ import (
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/store"
 	"github.com/baphled/flowstate/internal/swarm"
+	"github.com/baphled/flowstate/internal/tool"
 )
 
 // ExecuteSwarm runs one configured swarm with a coordinator agent: the
@@ -62,6 +63,7 @@ import (
 // settled and leaves the coordinator session active with no swarm run row,
 // as `session run` does.
 func ExecuteSwarm(ctx context.Context, st *Store, cfg ExecuteSwarmConfig) (ExecuteSwarmResult, error) {
+	cfg.Hooks = emptyHookSet(cfg.Hooks)
 	coord, err := checkExecuteSwarm(st, cfg)
 	if err != nil {
 		return ExecuteSwarmResult{}, err
@@ -103,6 +105,7 @@ func ExecuteSwarmFile(ctx context.Context, st *Store, manifestPath string, cfg E
 	if err != nil {
 		return ExecuteSwarmResult{}, fmt.Errorf("%w: %v", ErrUsage, err)
 	}
+	cfg.Hooks = emptyHookSet(cfg.Hooks)
 	cfg.Manifest, cfg.Admitter, cfg.Gates = m, swarm.NewAdmissionLog(), swarm.NewGateRunnerIn(cfg.Workdir)
 	return ExecuteSwarm(ctx, st, cfg)
 }
@@ -190,6 +193,29 @@ func manifestRoles(m swarm.Manifest) []string {
 	return roles
 }
 
+// coordinatorLoopConfig is the coordinator's loop: the profile's tools as the allowlist, its body as
+// the system prompt, and the run's root hook set (ADR-012 D22).
+func coordinatorLoopConfig(st *Store, sess *store.Session, coord agent.Profile, cfg ExecuteSwarmConfig,
+	registry *tool.Registry, maxTurns int64) ExecLoopConfig {
+	return ExecLoopConfig{
+		Store: st, Session: sess, Streamer: cfg.Streamer, Registry: registry, Allowlist: coord.Tools,
+		MaxTurns: maxTurns, MaxTokens: cfg.MaxTokens,
+		SystemPrompt: coord.Body, Compaction: cfg.Compaction, ProfileWindow: coord.ContextWindow,
+		Hooks: emptyHookSet(cfg.Hooks),
+	}
+}
+
+// coordinatorToolConfig is the coordinator's delegate tool; it hands the run's root hook set to
+// every packet child (ADR-012 D22).
+func coordinatorToolConfig(st *Store, sess *store.Session, coord agent.Profile, cfg ExecuteSwarmConfig,
+	pool *BudgetPool) DelegateToolConfig {
+	return DelegateToolConfig{
+		Store: st, Parent: sess, Streamer: cfg.Streamer, Pool: pool, Workdir: cfg.Workdir, Profiles: cfg.Profiles,
+		DelegatorProfile: coord.Name, AllowedProfiles: swarmAllowlist(cfg.Manifest, coord), Compaction: cfg.Compaction,
+		Hooks: emptyHookSet(cfg.Hooks),
+	}
+}
+
 // runSwarmCoordinator composes the coordinator's loop as RunSessionExecLoop does
 // (the profile's tools as the allowlist, its body as the system prompt) and runs
 // it. Its delegate tool is bound to the coordinator profile and restricted to the
@@ -206,18 +232,11 @@ func runSwarmCoordinator(ctx context.Context, st *Store, sess *store.Session, co
 	if maxTurns <= 0 {
 		maxTurns = int64(coord.MaxTurns)
 	}
-	loop := ExecLoopConfig{
-		Store: st, Session: sess, Streamer: cfg.Streamer, Registry: registry, Allowlist: coord.Tools,
-		MaxTurns: maxTurns, MaxTokens: cfg.MaxTokens,
-		SystemPrompt: coord.Body, Compaction: cfg.Compaction, ProfileWindow: coord.ContextWindow,
-	}
+	loop := coordinatorLoopConfig(st, sess, coord, cfg, registry, maxTurns)
 	if err := bindRunBudget(ctx, st, sess, cfg.Budget, &loop); err != nil {
 		return "", "", nil, err
 	}
-	err = registry.Register(NewDelegateTool(DelegateToolConfig{
-		Store: st, Parent: sess, Streamer: cfg.Streamer, Pool: loop.Pool, Workdir: cfg.Workdir, Profiles: cfg.Profiles,
-		DelegatorProfile: coord.Name, AllowedProfiles: swarmAllowlist(cfg.Manifest, coord), Compaction: cfg.Compaction,
-	}))
+	err = registry.Register(NewDelegateTool(coordinatorToolConfig(st, sess, coord, cfg, loop.Pool)))
 	if err != nil {
 		return "", "", nil, err
 	}

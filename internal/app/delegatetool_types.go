@@ -38,6 +38,9 @@ type DelegateToolConfig struct {
 	// Compaction is the config's compaction object; each child compacts by it and by its
 	// profile's context_window.
 	Compaction CompactionConfig
+	// Hooks is the loaded root hook set (ADR-012 D22) every child, nested child and resumed child
+	// of this tool inherits; nil is the empty set.
+	Hooks HookSet
 	// limiter is the cap shared down the tree and slot the descendant slot of the
 	// run this tool is bound to; both are nil for the root's own tool.
 	limiter *descendantLimiter

@@ -97,6 +97,9 @@ type DelegateRequest struct {
 	// Compaction is the config's compaction object the child's loop applies, with the
 	// profile's context_window.
 	Compaction CompactionConfig
+	// Hooks is the loaded root hook set (ADR-012 D22) the child's loop and its own delegate
+	// tool inherit; nil is the empty set. A profile cannot change it.
+	Hooks HookSet
 	// allow restricts which profiles the delegating profile may spawn or resume;
 	// nil allows every loaded profile (the root's own tool).
 	allow *profileAllowance

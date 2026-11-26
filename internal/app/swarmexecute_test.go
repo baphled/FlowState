@@ -787,3 +787,28 @@ var _ = Describe("The swarm coordinator's judged lease", func() {
 		Expect(err).To(MatchError(store.ErrSessionBusy))
 	})
 })
+
+var _ = Describe("the swarm coordinator's hook set (ADR-012 D22)", func() {
+	var cfg ExecuteSwarmConfig
+	BeforeEach(func() { cfg = ExecuteSwarmConfig{Hooks: stubHookSet("root")} })
+
+	It("carries the root set in the coordinator's loop config", func() {
+		loop := coordinatorLoopConfig(nil, &store.Session{}, agent.Profile{}, cfg, nil, 1)
+		Expect(loop.Hooks).To(Equal(HookSet(stubHookSet("root"))))
+	})
+
+	It("carries the root set in the coordinator's delegate tool, so a packet child inherits it", func() {
+		tc := coordinatorToolConfig(nil, &store.Session{}, agent.Profile{}, cfg, nil)
+		Expect(tc.Hooks).To(Equal(HookSet(stubHookSet("root"))))
+	})
+
+	It("keeps an empty set empty in the coordinator's loop config", func() {
+		loop := coordinatorLoopConfig(nil, &store.Session{}, agent.Profile{}, ExecuteSwarmConfig{}, nil, 1)
+		Expect(loop.Hooks).To(BeNil())
+	})
+
+	It("keeps an empty set empty in the coordinator's delegate tool", func() {
+		tc := coordinatorToolConfig(nil, &store.Session{}, agent.Profile{}, ExecuteSwarmConfig{}, nil)
+		Expect(tc.Hooks).To(BeNil())
+	})
+})

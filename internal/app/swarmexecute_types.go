@@ -61,6 +61,9 @@ type ExecuteSwarmConfig struct {
 	// ProjectRoot is where the project hook file is found; empty is the process
 	// current directory. It is never Workdir, which is only where the tools run.
 	ProjectRoot string
+	// Hooks is the loaded root hook set (ADR-012 D22) the coordinator's loop carries and every
+	// packet child inherits through its delegate tool; nil is the empty set.
+	Hooks HookSet
 	// Admitter decides each packet once the coordinator and the gates are done.
 	Admitter swarm.RunAdmitter
 	// Gates runs the manifest's gates; the engine runs them, never the model.

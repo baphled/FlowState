@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
@@ -28,11 +29,35 @@ var ErrMaxTurns = errors.New("max_turns")
 
 const execTurnBudgetFloor int64 = 1 // minimum sane reservation unit per turn
 
+// emptyHookSet turns a typed-nil pointer held in a HookSet back into the untyped nil, the empty
+// set; any other value is returned unchanged.
+func emptyHookSet(h HookSet) HookSet {
+	if h == nil {
+		return nil
+	}
+	if v := reflect.ValueOf(h); v.Kind() == reflect.Ptr && v.IsNil() {
+		return nil
+	}
+	return h
+}
+
+// observeExecLoop is a test seam: nil in production, and when non-nil RunExecLoop calls it once,
+// first, with the config it was given (its Hooks already normalised), so a spec can see what a loop in a delegation tree was
+// run with (its session and its Hooks). It observes only on entry, so it cannot see a set dropped
+// inside the turns: the packet that first fires a hook must add a spec at the firing site. It is read without synchronisation, so a spec sets it
+// before the run starts, restores it with DeferCleanup, and no specs that set it run in
+// parallel; the observer itself is called from every loop goroutine and must be race-safe.
+var observeExecLoop func(ExecLoopConfig)
+
 // RunExecLoop runs the bounded provider-driven loop to a budget/fence/provider stop under the lease
 // handle cfg.Lease, which the caller holds: the loop only fences it and never acquires or releases a
 // lease; the caller releases it once the post-loop state writers have returned. A config with no handle
 // is refused with ErrExecLoopConfig before anything is read, written or leased.
 func RunExecLoop(ctx context.Context, cfg ExecLoopConfig) (*ExecLoopResult, error) {
+	cfg.Hooks = emptyHookSet(cfg.Hooks)
+	if observe := observeExecLoop; observe != nil {
+		observe(cfg)
+	}
 	if err := validateExecLoopConfig(&cfg); err != nil {
 		return nil, err
 	}

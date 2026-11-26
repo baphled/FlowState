@@ -732,3 +732,67 @@ var _ = Describe("Nested delegation", func() {
 		It("releases every descendant slot", func() { Expect(f.tool.cfg.limiter.sem).To(BeEmpty()) })
 	})
 })
+
+var _ = Describe("hook set inheritance below the root (ADR-012 D22)", func() {
+	It("starts a tool's children from the tool's root hook set", func() {
+		t := NewDelegateTool(DelegateToolConfig{Hooks: stubHookSet("root")})
+		Expect(t.baseRequest().Hooks).To(Equal(HookSet(stubHookSet("root"))))
+	})
+
+	It("starts no hooks for a tool that has none", func() {
+		Expect(NewDelegateTool(DelegateToolConfig{}).baseRequest().Hooks).To(BeNil())
+	})
+
+	It("gives a nested child's delegate tool the root hook set", func() {
+		registry := tool.NewRegistry()
+		req := &DelegateRequest{Hooks: stubHookSet("root"), Profile: agent.Profile{Name: "child"}}
+		if err := bindNestedDelegate(context.Background(), req, &delegateRun{child: &store.Session{}}, registry); err != nil {
+			panic(err)
+		}
+		nested := must(registry.Get(agent.DelegateTool))
+		Expect(nested.(*DelegateTool).cfg.Hooks).To(Equal(HookSet(stubHookSet("root"))))
+	})
+})
+
+// stubHookSet is a HookSet whose digest is its own text, so a spec can tell two sets apart.
+type stubHookSet string
+
+func (s stubHookSet) Digest() string { return string(s) }
+
+var _ = Describe("delegateLoopConfig hook set (ADR-012 D22)", func() {
+	It("hands the request's root hook set to the child's loop", func() {
+		req := &DelegateRequest{Hooks: stubHookSet("root")}
+		cfg, err := delegateLoopConfig(context.Background(), req, &delegateRun{child: &store.Session{}, grant: 1}, nil)
+		if err != nil {
+			panic(err)
+		}
+		Expect(cfg.Hooks).To(Equal(HookSet(stubHookSet("root"))))
+	})
+
+	It("leaves the child's set empty when the root's is empty", func() {
+		cfg, err := delegateLoopConfig(context.Background(), &DelegateRequest{}, &delegateRun{child: &store.Session{}, grant: 1}, nil)
+		if err != nil {
+			panic(err)
+		}
+		Expect(cfg.Hooks).To(BeNil())
+	})
+})
+
+var _ = Describe("planResume hook set (ADR-012 D22)", func() {
+	It("gives a resumed child's loop the root hook set the request carried", func() {
+		f := newDelegateFixture(finishText("never"))
+		child := f.seedChild(f.parent, 2)
+		rr := f.resumeRequest(child.ID, "")
+		rr.Hooks = stubHookSet("root")
+		req := rr.DelegateRequest
+		run, registry, err := planResume(context.Background(), &req, rr)
+		if err != nil {
+			panic(err)
+		}
+		cfg, err := delegateLoopConfig(context.Background(), &req, run, registry)
+		if err != nil {
+			panic(err)
+		}
+		Expect(cfg.Hooks).To(Equal(HookSet(stubHookSet("root"))))
+	})
+})
