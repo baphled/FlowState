@@ -211,14 +211,14 @@ func coordinatorLoopConfig(st *Store, sess *store.Session, coord agent.Profile, 
 	}
 }
 
-// coordinatorToolConfig is the coordinator's delegate tool; it hands the run's root hook set to
-// every packet child (ADR-012 D22).
+// coordinatorToolConfig is the coordinator's delegate tool; it hands the run's root hook set and its
+// protected hook directories to every packet child (ADR-012 D20, D22).
 func coordinatorToolConfig(st *Store, sess *store.Session, coord agent.Profile, cfg ExecuteSwarmConfig,
-	pool *BudgetPool) DelegateToolConfig {
+	pool *BudgetPool, protected []string) DelegateToolConfig {
 	return DelegateToolConfig{
 		Store: st, Parent: sess, Streamer: cfg.Streamer, Pool: pool, Workdir: cfg.Workdir, Profiles: cfg.Profiles,
 		DelegatorProfile: coord.Name, AllowedProfiles: swarmAllowlist(cfg.Manifest, coord), Compaction: cfg.Compaction,
-		Hooks: emptyHookSet(cfg.Hooks),
+		Hooks: emptyHookSet(cfg.Hooks), ProtectedDirs: protected,
 	}
 }
 
@@ -230,7 +230,11 @@ func coordinatorToolConfig(st *Store, sess *store.Session, coord agent.Profile, 
 // loop (cause). The error is persistence only.
 func runSwarmCoordinator(ctx context.Context, st *Store, sess *store.Session, coord agent.Profile,
 	cfg ExecuteSwarmConfig) (status, reason string, cause, err error) {
-	registry, err := NewSessionToolRegistry(cfg.Workdir)
+	// The protected trees are computed once per run from the inputs the hook loader reads (the project root,
+	// never Workdir), and handed to the coordinator's registry and to its delegate tool, so every packet child's
+	// file tools refuse the same hook directories (ADR-012 D20).
+	protected := ProtectedHookDirs(cfg.ProjectRoot)
+	registry, err := NewSessionToolRegistry(cfg.Workdir, tool.WithProtectedDirs(protected...))
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -242,7 +246,7 @@ func runSwarmCoordinator(ctx context.Context, st *Store, sess *store.Session, co
 	if err := bindRunBudget(ctx, st, sess, cfg.Budget, &loop); err != nil {
 		return "", "", nil, err
 	}
-	err = registry.Register(NewDelegateTool(coordinatorToolConfig(st, sess, coord, cfg, loop.Pool)))
+	err = registry.Register(NewDelegateTool(coordinatorToolConfig(st, sess, coord, cfg, loop.Pool, protected)))
 	if err != nil {
 		return "", "", nil, err
 	}

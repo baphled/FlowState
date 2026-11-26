@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"reflect"
 
 	"github.com/baphled/flowstate/internal/agent"
@@ -10,14 +11,36 @@ import (
 	"github.com/baphled/flowstate/internal/tool"
 )
 
+// ProtectedHookDirs is the directories the file tools of a run refuse to write into (ADR-012 D20, the
+// protected trees), derived from the two functions the hook loader reads its files with, so a protected
+// directory is always the one the run's hooks load from: the directory of the user hook file (UserHooksPath)
+// and of the project hook file under projectRoot (ProjectHooksPath; an empty root is the process's current
+// directory, as for the loader). Callers pass HooksProjectRoot(req), never the per-run --workdir, which
+// ADR-012 D3 keeps apart. A user config directory the OS cannot locate protects nothing of the user's (the
+// loader then fails a user-scope run instead); the project directory is protected regardless. Both apply
+// under every --hooks scope, since a model must never author a hook file whatever the operator loads. Compute
+// it once per run and hand the same value to the root's registry (NewSessionToolRegistry) and to its delegate
+// tool (DelegateToolConfig.ProtectedDirs), as RunSessionExecLoop does.
+func ProtectedHookDirs(projectRoot string) []string {
+	dirs := []string{filepath.Dir(ProjectHooksPath(projectRoot))}
+	if user, err := UserHooksPath(); err == nil {
+		dirs = append(dirs, filepath.Dir(user))
+	}
+	return dirs
+}
+
 // NewSessionToolRegistry builds an independently owned builtin catalog rooted at
 // workdir. It registers echo and confined filesystem tools, plus exec.run only
-// when its existing environment opt-in is enabled. Registration grants no tool
-// permission and creates no files. Compose the registry before concurrent use;
-// callers must not mutate it while a loop or definition reader uses it.
-func NewSessionToolRegistry(workdir string) (*tool.Registry, error) {
+// when its existing environment opt-in is enabled. opts configure the filesystem
+// tools: a run passes tool.WithProtectedDirs(ProtectedHookDirs(...)...) so fs.write and
+// fs.edit refuse the hook directories (ADR-012 D20); a registry built without it
+// refuses nothing. Registration grants no tool permission and creates no files.
+// Compose the registry before concurrent use; callers must not mutate it while a
+// loop or definition reader uses it.
+func NewSessionToolRegistry(workdir string, opts ...tool.FSOption) (*tool.Registry, error) {
 	registry := tool.NewRegistry()
-	builtins := []tool.Tool{tool.NewEcho(), tool.NewFSRead(workdir), tool.NewFSWrite(workdir), tool.NewFSEdit(workdir)}
+	builtins := []tool.Tool{tool.NewEcho(), tool.NewFSRead(workdir, opts...), tool.NewFSWrite(workdir, opts...),
+		tool.NewFSEdit(workdir, opts...)}
 	if tool.ExecEnabled() {
 		builtins = append(builtins, tool.NewExecRun(workdir))
 	}

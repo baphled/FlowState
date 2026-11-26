@@ -84,9 +84,11 @@ type DelegateRequest struct {
 	// Workdir optionally narrows the child to the parent's directory or a
 	// subdirectory of it; empty means the parent's. Anything else is refused.
 	Workdir string
-	// NewRegistry builds the child's tool registry rooted at a directory; nil
-	// uses NewSessionToolRegistry. Tests inject fakes here.
-	NewRegistry func(workdir string) (*tool.Registry, error)
+	// NewRegistry builds the child's tool registry rooted at a directory, given the options its
+	// filesystem tools must carry (the root run's protected hook directories, ADR-012 D20); nil uses
+	// NewSessionToolRegistry. Tests inject fakes here: a builder that registers fs.write or fs.edit
+	// must pass opts on to them, or the child can write the hook files the root cannot.
+	NewRegistry func(workdir string, opts ...tool.FSOption) (*tool.Registry, error)
 	// ParentEvents receives the delegation receipt when the caller already holds
 	// the parent's event writer (the store allows one per session); nil opens a
 	// writer on the parent for the append.
@@ -100,6 +102,11 @@ type DelegateRequest struct {
 	// Hooks is the loaded root hook set (ADR-012 D22) the child's loop and its own delegate
 	// tool inherit; nil is the empty set. A profile cannot change it.
 	Hooks HookSet
+	// ProtectedDirs is the root run's protected hook directories (ADR-012 D20, ProtectedHookDirs) the child's
+	// fs.write and fs.edit refuse as the root's do, and its own children inherit. Nil is carried as an empty
+	// list: the `.flowstate` name rule still applies, and only the identity rules are off. A profile cannot
+	// change it.
+	ProtectedDirs []string
 	// allow restricts which profiles the delegating profile may spawn or resume;
 	// nil allows every loaded profile (the root's own tool).
 	allow *profileAllowance

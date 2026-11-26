@@ -108,7 +108,7 @@ func (t *DelegateTool) baseRequest() DelegateRequest {
 	return DelegateRequest{
 		Store: t.cfg.Store, Parent: t.cfg.Parent, Streamer: t.cfg.Streamer, Pool: t.cfg.Pool,
 		ParentWorkdir: t.cfg.Workdir, Profiles: t.cfg.Profiles, limiter: t.cfg.limiter, allow: t.allowance(),
-		Compaction: t.cfg.Compaction, Hooks: emptyHookSet(t.cfg.Hooks),
+		Compaction: t.cfg.Compaction, Hooks: emptyHookSet(t.cfg.Hooks), ProtectedDirs: t.cfg.ProtectedDirs,
 	}
 }
 
@@ -122,7 +122,8 @@ func (t *DelegateTool) baseRequest() DelegateRequest {
 // more privileged profile (ADR-009 D14). Receipts of a grandchild land in the
 // child's log through the per-call writer the child's loop passes down. A child
 // with a pool also anchors that pool in the store, where the grandchildren's
-// reservations are checked against it.
+// reservations are checked against it. The root's hook set and protected hook
+// directories (ADR-012 D20, D22) are handed on, so a grandchild refuses what the root refuses.
 func bindNestedDelegate(ctx context.Context, req *DelegateRequest, run *delegateRun, registry *tool.Registry) error {
 	if run.pool != nil {
 		if err := req.Store.SetBudgetPool(ctx, run.child.ID, run.grant+run.prior); err != nil {
@@ -132,6 +133,7 @@ func bindNestedDelegate(ctx context.Context, req *DelegateRequest, run *delegate
 	return registry.Register(NewDelegateTool(DelegateToolConfig{
 		Store: req.Store, Parent: run.child, Streamer: req.Streamer, Pool: run.pool, Workdir: run.workdir,
 		Profiles: req.Profiles, limiter: req.limiter, slot: run.slot, Compaction: req.Compaction, Hooks: req.Hooks,
+		ProtectedDirs:    req.ProtectedDirs,
 		DelegatorProfile: req.Profile.Name, AllowedProfiles: req.Profile.Delegates,
 	}))
 }

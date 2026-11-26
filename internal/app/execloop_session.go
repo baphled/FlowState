@@ -12,6 +12,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/store"
+	"github.com/baphled/flowstate/internal/tool"
 )
 
 // execDefaultMaxTurns bounds one CLI-driven loop run when no explicit
@@ -61,7 +62,11 @@ func RunSessionExecLoop(ctx context.Context, st *store.Store, dbPath string, ses
 	if err != nil {
 		return nil, err
 	}
-	registry, err := NewSessionToolRegistry(workdir)
+	// The protected trees are computed once per run from the inputs the hook loader reads (the project
+	// root, never Workdir), and handed to the root's registry and to its delegate tool, so every child's file
+	// tools refuse the same hook directories (ADR-012 D20).
+	protected := ProtectedHookDirs(HooksProjectRoot(req))
+	registry, err := NewSessionToolRegistry(workdir, tool.WithProtectedDirs(protected...))
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +86,7 @@ func RunSessionExecLoop(ctx context.Context, st *store.Store, dbPath string, ses
 	if err := bindRunBudget(ctx, st, sess, req.Budget, &cfg); err != nil {
 		return nil, err
 	}
-	if err := registerSessionDelegate(st, sess, streamer, &cfg, workdir, profiles, req); err != nil {
+	if err := registerSessionDelegate(st, sess, streamer, &cfg, workdir, profiles, req, protected); err != nil {
 		return nil, err
 	}
 	res, err := RunExecLoop(ctx, cfg)
@@ -94,16 +99,16 @@ func RunSessionExecLoop(ctx context.Context, st *store.Store, dbPath string, ses
 	return res, nil
 }
 
-// registerSessionDelegate gives a run that offers agents its delegate tool, which hands the run's hook set to
-// every child.
+// registerSessionDelegate gives a run that offers agents its delegate tool, which hands the run's hook set and
+// its protected hook directories to every child.
 func registerSessionDelegate(st *store.Store, sess *store.Session, streamer provider.Streamer, cfg *ExecLoopConfig,
-	workdir string, profiles []agent.Profile, req SessionExecLoopRequest) error {
+	workdir string, profiles []agent.Profile, req SessionExecLoopRequest, protected []string) error {
 	if req.Agents == "" {
 		return nil
 	}
 	return cfg.Registry.Register(NewDelegateTool(DelegateToolConfig{
 		Store: st, Parent: sess, Streamer: streamer, Pool: cfg.Pool, Workdir: workdir, Profiles: profiles,
-		Compaction: req.Compaction, Hooks: cfg.Hooks,
+		Compaction: req.Compaction, Hooks: cfg.Hooks, ProtectedDirs: protected,
 	}))
 }
 

@@ -16,6 +16,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/store"
 	"github.com/baphled/flowstate/internal/swarm"
+	"github.com/baphled/flowstate/internal/tool"
 )
 
 // execAdmitAll admits every packet; execRejectAll refuses every packet.
@@ -798,7 +799,7 @@ var _ = Describe("the swarm coordinator's hook set (ADR-012 D22)", func() {
 	})
 
 	It("carries the root set in the coordinator's delegate tool, so a packet child inherits it", func() {
-		tc := coordinatorToolConfig(nil, &store.Session{}, agent.Profile{}, cfg, nil)
+		tc := coordinatorToolConfig(nil, &store.Session{}, agent.Profile{}, cfg, nil, nil)
 		Expect(tc.Hooks).To(Equal(HookSet(stubHookSet("root"))))
 	})
 
@@ -808,7 +809,56 @@ var _ = Describe("the swarm coordinator's hook set (ADR-012 D22)", func() {
 	})
 
 	It("keeps an empty set empty in the coordinator's delegate tool", func() {
-		tc := coordinatorToolConfig(nil, &store.Session{}, agent.Profile{}, ExecuteSwarmConfig{}, nil)
+		tc := coordinatorToolConfig(nil, &store.Session{}, agent.Profile{}, ExecuteSwarmConfig{}, nil, nil)
 		Expect(tc.Hooks).To(BeNil())
+	})
+})
+
+var _ = Describe("The protected hook trees of a swarm (ADR-012 D20)", func() {
+	var (
+		f    *swarmExecFixture
+		user string
+	)
+	BeforeEach(func() {
+		f = newSwarmExecFixture()
+		user = userHooksUnder(f.cfg.Workdir)
+	})
+
+	Describe("the coordinator", func() {
+		var res ExecuteSwarmResult
+		BeforeEach(func() {
+			f.cfg.Profiles[0].Tools = []string{"delegate", tool.FSWriteName}
+			f.both("swarm done")
+			f.scripts.byRole["coord-body"] = append([][]provider.StreamEvent{callTurn(writeCallTo("w0", user))}, f.scripts.byRole["coord-body"]...)
+			res = f.execute(context.Background())
+		})
+		It("is refused the user hook file with fs_path_protected", func() {
+			Expect(protectedResults(f.st, res.CoordinatorID)).To(HaveLen(1))
+		})
+		It("creates no user hook directory", func() {
+			Expect(filepath.Join(f.cfg.Workdir, filepath.Dir(user))).NotTo(BeADirectory())
+		})
+	})
+
+	Describe("a packet child", func() {
+		var res ExecuteSwarmResult
+		BeforeEach(func() {
+			f.cfg.Profiles[1].Tools = []string{tool.FSWriteName}
+			f.both("swarm done")
+			f.scripts.byRole["writer-body"] = [][]provider.StreamEvent{callTurn(writeCallTo("w1", user)), finishText("writer done")}
+			res = f.execute(context.Background())
+		})
+		It("is refused the user hook file with fs_path_protected", func() {
+			var writer string
+			for _, c := range res.Children {
+				if c.Profile == "writer" {
+					writer = c.ID
+				}
+			}
+			Expect(protectedResults(f.st, writer)).To(HaveLen(1))
+		})
+		It("creates no user hook directory", func() {
+			Expect(filepath.Join(f.cfg.Workdir, filepath.Dir(user))).NotTo(BeADirectory())
+		})
 	})
 })

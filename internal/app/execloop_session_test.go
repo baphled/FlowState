@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -16,6 +17,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/store"
+	"github.com/baphled/flowstate/internal/tool"
 )
 
 // seedWithReservation seeds a parent pool with one delegated child
@@ -673,5 +675,102 @@ var _ = Describe("RunSessionExecLoop given a held lease", func() {
 			panic(err)
 		}
 		Expect(stillHeld()).To(Succeed())
+	})
+})
+
+var _ = Describe("The protected hook trees of a session run (ADR-012 D20)", func() {
+	var (
+		st      *store.Store
+		sess    *store.Session
+		dbPath  string
+		workdir string
+	)
+	// run drives the loop through one call of a scripted turn, then a final answer; a refused call
+	// is a tool error the model is told, so the run itself completes.
+	run := func(req SessionExecLoopRequest, call provider.ToolCall) error {
+		req.Workdir, req.MaxTurns, req.Lease = workdir, 6, heldSessionLease(st, sess)
+		streamer := &execLoopStreamer{turns: [][]provider.StreamEvent{callTurn(call), finishText("done")}}
+		_, err := RunSessionExecLoop(context.Background(), st, dbPath, sess, streamer, req)
+		return err
+	}
+
+	BeforeEach(func() {
+		st, sess = execLoopSeed()
+		DeferCleanup(func() { _ = st.Close() })
+		dbPath = filepath.Join(GinkgoT().TempDir(), "protect.db")
+		workdir = GinkgoT().TempDir()
+	})
+
+	Context("a model writing the project hook file", func() {
+		BeforeEach(func() {
+			check(run(SessionExecLoopRequest{Allow: []string{tool.FSWriteName}}, writeCallTo("w1", ".flowstate/hooks.json")))
+		})
+		It("is refused with fs_path_protected", func() { Expect(protectedResults(st, sess.ID)).To(HaveLen(1)) })
+		It("writes no hook file", func() {
+			Expect(filepath.Join(workdir, ".flowstate", "hooks.json")).NotTo(BeAnExistingFile())
+		})
+	})
+
+	Context("a model writing the user hook file from a workdir above it", func() {
+		var user string
+		BeforeEach(func() {
+			user = userHooksUnder(workdir)
+			check(run(SessionExecLoopRequest{Allow: []string{tool.FSWriteName}}, writeCallTo("w1", user)))
+		})
+		It("is refused with fs_path_protected", func() { Expect(protectedResults(st, sess.ID)).To(HaveLen(1)) })
+		It("creates no user hook directory", func() {
+			Expect(filepath.Join(workdir, filepath.Dir(user))).NotTo(BeADirectory())
+		})
+	})
+
+	if runtime.GOOS != "windows" {
+		Describe("with a project root below the workdir", func() {
+			var hookFile string
+			BeforeEach(func() {
+				root := filepath.Join(workdir, "repo")
+				hookFile = putHookFile(filepath.Join(root, ".flowstate"), "hooks.json", "orig")
+				// A relative link, which os.Root follows inside the workdir (an absolute target it refuses itself).
+				check(os.Symlink(filepath.Join("repo", ".flowstate"), filepath.Join(workdir, "lnk")))
+				// The name rule sees no .flowstate here: only the project root's directory, by identity, refuses it.
+				check(run(SessionExecLoopRequest{Allow: []string{tool.FSWriteName}, ProjectRoot: root}, writeCallTo("w1", "lnk/hooks.json")))
+			})
+			It("is refused with fs_path_protected", func() { Expect(protectedResults(st, sess.ID)).To(HaveLen(1)) })
+			It("leaves the project hook file as it was", func() {
+				data, err := os.ReadFile(hookFile)
+				check(err)
+				Expect(string(data)).To(Equal("orig"))
+			})
+		})
+	}
+
+	Describe("a delegated child", func() {
+		var child, user string
+		BeforeEach(func() {
+			user = userHooksUnder(workdir)
+			base := must(os.UserConfigDir())
+			putAgent(filepath.Join(base, "flowstate", "agents"), "writer.md",
+				"---\nname: writer\ndescription: writes\ntools: [fs.write]\n---\nYou write.\n")
+			streamer := &execLoopStreamer{turns: [][]provider.StreamEvent{
+				callTurn(delegateCall(`{"agent":"writer","task":"write it"}`)),
+				callTurn(writeCallTo("c1", user)), finishText("child done"), finishText("root done"),
+			}}
+			req := SessionExecLoopRequest{Allow: []string{"delegate"}, Agents: "user", MaxTurns: 6, Workdir: workdir,
+				Lease: heldSessionLease(st, sess)}
+			_, err := RunSessionExecLoop(context.Background(), st, dbPath, sess, streamer, req)
+			check(err)
+			all := must(st.ListSessions(context.Background(), ""))
+			if len(all) != 2 {
+				panic("expected exactly one child")
+			}
+			for _, s := range all {
+				if s.ID != sess.ID {
+					child = s.ID
+				}
+			}
+		})
+		It("is refused the user hook file with fs_path_protected", func() { Expect(protectedResults(st, child)).To(HaveLen(1)) })
+		It("writes no hook file", func() { // the profile above already made the directory
+			Expect(filepath.Join(workdir, user)).NotTo(BeAnExistingFile())
+		})
 	})
 })

@@ -416,9 +416,9 @@ var _ = Describe("RunDelegatedChild", func() {
 		request := func(workdir string) DelegateRequest {
 			req := f.request()
 			req.Workdir = workdir
-			req.NewRegistry = func(dir string) (*tool.Registry, error) {
+			req.NewRegistry = func(dir string, opts ...tool.FSOption) (*tool.Registry, error) {
 				seen = dir
-				return NewSessionToolRegistry(dir)
+				return NewSessionToolRegistry(dir, opts...)
 			}
 			return req
 		}
@@ -527,9 +527,9 @@ var _ = Describe("RunDelegatedChild", func() {
 			f = newDelegateFixture(finishText("never"))
 			cctx, cancel := context.WithCancelCause(ctx)
 			req := f.request()
-			req.NewRegistry = func(dir string) (*tool.Registry, error) {
+			req.NewRegistry = func(dir string, opts ...tool.FSOption) (*tool.Registry, error) {
 				cancel(&CancelCause{Reason: "client_disconnected"})
-				return NewSessionToolRegistry(dir)
+				return NewSessionToolRegistry(dir, opts...)
 			}
 			res, err = RunDelegatedChild(cctx, req)
 		})
@@ -1218,6 +1218,109 @@ var _ = Describe("A delegated child's judged lease", func() {
 			req.Pool = nil
 			out, _ := runAndSettleDelegated(ctx, &req, run, must(NewSessionToolRegistry("")))
 			Expect(out.Status).To(Equal(DelegateStatusFailed))
+		})
+	})
+})
+
+var _ = Describe("The protected hook trees below the root (ADR-012 D20)", func() {
+	var user string
+	// writeTurns is a child that writes the user hook file relative to its workdir, then answers.
+	writeTurns := func(id string) [][]provider.StreamEvent {
+		return [][]provider.StreamEvent{callTurn(writeCallTo(id, user)), finishText("done")}
+	}
+
+	Describe("a delegated child", func() {
+		var (
+			f     *delegateFixture
+			child string
+		)
+		BeforeEach(func() {
+			f = newDelegateFixture()
+			user = userHooksUnder(f.workdir)
+			f.profile.Tools = []string{tool.FSWriteName}
+			f.streamer.turns = writeTurns("c1")
+			req := f.request()
+			req.ProtectedDirs = ProtectedHookDirs("")
+			res, err := RunDelegatedChild(context.Background(), req)
+			check(err)
+			child = res.ChildID
+		})
+		It("is refused the user hook file with fs_path_protected", func() { Expect(protectedResults(f.st, child)).To(HaveLen(1)) })
+		It("creates no user hook directory", func() {
+			Expect(filepath.Join(f.workdir, filepath.Dir(user))).NotTo(BeADirectory())
+		})
+	})
+
+	Context("through a custom registry builder", func() {
+		var (
+			f     *delegateFixture
+			child string
+			opts  int // the options the builder was handed
+		)
+		BeforeEach(func() {
+			f = newDelegateFixture()
+			user = userHooksUnder(f.workdir)
+			f.profile.Tools = []string{tool.FSWriteName}
+			f.streamer.turns = writeTurns("c1")
+			req := f.request()
+			req.ProtectedDirs = ProtectedHookDirs("")
+			req.NewRegistry = func(dir string, got ...tool.FSOption) (*tool.Registry, error) {
+				opts = len(got)
+				return NewSessionToolRegistry(dir, got...)
+			}
+			res, err := RunDelegatedChild(context.Background(), req)
+			check(err)
+			child = res.ChildID
+		})
+		It("is handed the protection as the builder's options", func() { Expect(opts).To(Equal(1)) })
+		It("is refused the user hook file once the builder passes them on", func() {
+			Expect(protectedResults(f.st, child)).To(HaveLen(1))
+		})
+	})
+
+	Describe("a nested child", func() {
+		var (
+			f          *nestFixture
+			grandchild string
+		)
+		BeforeEach(func() {
+			f = newNestFixture(1)
+			user = userHooksUnder(f.workdir)
+			f.addProfile(nestProfile("writer", 2, tool.FSWriteName))
+			f.tool.cfg.Profiles[0].Delegates = []string{"writer"}
+			f.tool.cfg.ProtectedDirs = ProtectedHookDirs("")
+			f.say("root", delegates(`{"agent":"lead","task":"plan it"}`), finishText("root done"))
+			f.say("lead", delegates(`{"agent":"writer","task":"write it"}`), finishText("lead done"))
+			f.say("writer", writeTurns("w1")...)
+			_, err := f.runRoot(context.Background())
+			check(err)
+			grandchild = f.childOf(f.childOf(f.parent.ID))
+		})
+		It("is refused the user hook file with fs_path_protected", func() { Expect(protectedResults(f.st, grandchild)).To(HaveLen(1)) })
+		It("creates no user hook directory", func() {
+			Expect(filepath.Join(f.workdir, filepath.Dir(user))).NotTo(BeADirectory())
+		})
+	})
+
+	Describe("a resumed child", func() {
+		var (
+			f     *delegateFixture
+			child *store.Session
+		)
+		BeforeEach(func() {
+			f = newDelegateFixture()
+			user = userHooksUnder(f.workdir)
+			f.profile.Tools = []string{tool.FSWriteName}
+			child = f.seedChild(f.parent, 1)
+			f.streamer.turns = writeTurns("r1")
+			rr := f.resumeRequest(child.ID, "")
+			rr.ProtectedDirs = ProtectedHookDirs("")
+			_, err := ResumeDelegatedChild(context.Background(), rr)
+			check(err)
+		})
+		It("is refused the user hook file with fs_path_protected", func() { Expect(protectedResults(f.st, child.ID)).To(HaveLen(1)) })
+		It("creates no user hook directory", func() {
+			Expect(filepath.Join(f.workdir, filepath.Dir(user))).NotTo(BeADirectory())
 		})
 	})
 })
