@@ -415,8 +415,9 @@ included.
   `profile`, `packet`, `status`, `turns`), `gates` (`name`, `passed`, `interrupted`) and `packets` (the admission
   decision, with a `reason` for a refusal and the admitting child as `evidence`).
 - Exit codes: 0 accepted; 8 `not_accepted` or `gate_failed` (as for the receipts-only run); a failed coordinator
-  keeps its own class (3 provider error, 5 budget, `max_turns` or `output_truncated`, 1 anything else, including a
-  passed deadline); 130 cancelled by SIGINT, SIGTERM or SIGHUP, with the children settled so no session stays
+  keeps its own class (3 provider error, 5 budget, `max_turns`, `output_truncated` or `hook_stop` (a coordinator
+  stopped by a `turn.after` hook), 1 anything else, including a passed deadline); 130 cancelled by SIGINT, SIGTERM
+  or SIGHUP, with the children settled so no session stays
   active; 2 usage errors, which include a manifest with no coordinator or a role with no profile, and 4
   `config_invalid`, such as a profile in both directories under `--agents both`. A refused run creates no session or
   run.
@@ -432,10 +433,10 @@ included.
 | --- | --- |
 | 0 | Completed (a single-turn `length` answer is still 0; one warning line when a finish reason is reported) |
 | 1 | Unknown session, or any other failure without its own class (code `internal`); a lease lost mid-run (fenced) is `internal`, exit 1 |
-| 2 | Usage error |
+| 2 | Usage error, or `hook_refused` (a `user.prompt` hook refused the run before any provider request) |
 | 3 | Provider error |
 | 4 | `config_invalid`: bad configuration, an unopenable database, or a failed crash recovery or steering drain |
-| 5 | Budget stop (the session is paused), `max_turns` (the turn limit reached while still requesting tools; failed), or `output_truncated` (a tool-loop turn cut off at the output cap twice; failed) |
+| 5 | Budget stop (the session is paused), `max_turns` (the turn limit reached while still requesting tools; failed), `output_truncated` (a tool-loop turn cut off at the output cap twice; failed), or `hook_stop` (a `turn.after` hook stopped the run; root runs are paused) |
 | 6 | The session is already terminal |
 | 7 | Replay found a corrupt log |
 | 8 | A swarm run, receipts-only or `--execute`, was not accepted (failed gate or rejected packet), or a receipt is invalid |
@@ -583,7 +584,7 @@ op run --env-file zai.env -- flowstate session run <id>
 unless `FLOWSTATE_SERVE_TOKEN` is set, which then becomes a required bearer token. Request bodies are capped at 1 MiB
 and decoded strictly. Errors use the same `{code, message}` body as the command line, with the status for each code.
 A 409 has several causes; the body `code` tells them apart (`session_terminal`, `session_cancelled`, `budget_exceeded`,
-`max_turns`, `output_truncated`, `session_busy`).
+`max_turns`, `output_truncated`, `hook_stop`, `session_busy`).
 
 | Endpoint | Purpose |
 | --- | --- |

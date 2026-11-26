@@ -1731,3 +1731,28 @@ var _ = DescribeTable("exit codes of the lease errors",
 	Entry("a fence lost mid-run stays 1", app.ErrExecLoopFenced, 1),
 	Entry("an unclassified failure stays 1", errors.New("disk full"), 1),
 )
+
+var _ = Describe("The hook error codes at the CLI", func() {
+	It("exits 2 for hook_refused, the usage class", func() {
+		exit, _ := finishRunOutcome(fmt.Errorf("%w: hook h1", app.ErrHookRefused))
+		Expect(exit).To(Equal(2))
+	})
+	It("writes the hook_refused code as JSON on stderr", func() {
+		_, stderr := finishRunOutcome(fmt.Errorf("%w: hook h1", app.ErrHookRefused))
+		Expect(stderrCode(stderr)).To(Equal("hook_refused"))
+	})
+	It("exits 5 for hook_stop, the limit class", func() {
+		exit, _ := finishRunOutcome(fmt.Errorf("%w: hook h1", app.ErrHookStop))
+		Expect(exit).To(Equal(5))
+	})
+	It("writes the hook_stop code as JSON on stderr", func() {
+		_, stderr := finishRunOutcome(fmt.Errorf("%w: hook h1", app.ErrHookStop))
+		Expect(stderrCode(stderr)).To(Equal("hook_stop"))
+	})
+	It("maps hook_refused onto exit 2 outside the run path too", func() {
+		Expect(exitCodeFor(fmt.Errorf("%w: hook h1", app.ErrHookRefused))).To(Equal(2))
+	})
+	It("maps hook_stop onto exit 5 outside the run path too", func() {
+		Expect(exitCodeFor(fmt.Errorf("%w: hook h1", app.ErrHookStop))).To(Equal(5))
+	})
+})

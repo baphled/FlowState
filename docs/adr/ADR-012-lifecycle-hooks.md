@@ -929,6 +929,10 @@ Each packet is at most 10 paths; the exact list is in the packet's pull request.
 | 6 | The profile's **own** hooks in frontmatter (loop-level points only; the root set's inheritance is already plumbed by 3a1 and 3a1b), source-scope rule, `hooks_sha256` in the child's `session.delegated` payload (`delegatedPayload`) and its comparison in `loadResumableChild` on a child resume (D22; the payload-writing and reading sites are `sessioncmd.go` and `delegateresume.go`); a profile hook naming a run-level point fails the profile load (`hook_point_unsupported`) | about 400 | a child drops an inherited hook; a child writes `hooks.loaded` or fires `session.start`; a profile hook on a run-level point loads; a child inheriting a root `turn.after` stop hook ends other than `failed` with reason `hook_stop`; a profile's hook runs for its parent; a changed hook set of the child profile resumes a child; a child resume after a `--hooks` scope change (profile file unchanged) is accepted, or the child's `session.delegated` lacks `hooks_sha256`; a legacy `session.delegated` without it is compared; a project-source profile's hook runs without `--hooks project\|both`; `--hooks none` still runs a profile hook; a skipped profile hook is missing from `hooks.loaded` |
 | 7 | `docs/examples/hooks`, operator guide | about 300 (docs) | an example fails to load under the real loader |
 
+Packets 4a and 4a2 must not wrap a hook error with `ErrProvider` or `ErrSessionCancelled`: `finishRun` checks
+cancellation, budget, usage and provider before `exitCodeFor`, so a wrapped `ErrHookStop` would exit 3 or 130
+instead of 5. Their specs pin that.
+
 Prerequisites: the lease and delegation work of ADR-009 and ADR-011 is merged; packet 2b needs 2a; packet 3a needs
 packets 1, 2a and 2b, 3a2 (needs nothing) and the inheritance pair 3a1 and 3a1b (3a1 needs nothing, 3a1b needs 3a1);
 3b and 5 need 3a; 3c needs only the owner's contract amendment; 2c1 needs nothing, 2c2 needs 2c1 and 2c3 needs 2c2;

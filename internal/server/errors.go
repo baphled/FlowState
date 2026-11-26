@@ -13,14 +13,16 @@ import (
 // reservation_unsettled and names the cancelled status in a structured field.
 var ErrReservationUnsettled = errors.New("reservation_unsettled")
 
-// statusByCode maps the error-code set onto HTTP statuses (ADR-011 D11 added session_busy
-// to the set in specs/CLI-AND-API-CONTRACT.md §2, which is outside the repository); internal is
+// statusByCode maps the error-code set onto HTTP statuses (ADR-011 D11 added session_busy and
+// ADR-012 D7 hook_refused and hook_stop to the set in specs/CLI-AND-API-CONTRACT.md §2, which is
+// outside the repository); internal is
 // explicit so the writeError guard resolves without a silent
 // fallback arm.
 var statusByCode = map[string]int{
 	"usage": http.StatusBadRequest, "session_not_found": http.StatusNotFound,
 	"session_terminal": http.StatusConflict, "session_busy": http.StatusConflict, "session_cancelled": http.StatusConflict,
-	"budget_exceeded": http.StatusConflict, "max_turns": http.StatusConflict, "output_truncated": http.StatusConflict, "receipt_invalid": http.StatusUnprocessableEntity,
+	"budget_exceeded": http.StatusConflict, "max_turns": http.StatusConflict, "output_truncated": http.StatusConflict,
+	"hook_stop": http.StatusConflict, "hook_refused": http.StatusUnprocessableEntity, "receipt_invalid": http.StatusUnprocessableEntity,
 	"provider_error": http.StatusBadGateway, "internal": http.StatusInternalServerError,
 	"reservation_unsettled": http.StatusInternalServerError}
 

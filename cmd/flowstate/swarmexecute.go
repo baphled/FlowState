@@ -63,8 +63,8 @@ func refuseExecuteOnlyFlags(fl *flags, stderr *os.File) (int, bool) {
 //
 // Exit codes reuse the existing table: 0 accepted; 8 not accepted (a gate
 // failed or a packet was not admitted, as in the receipts-only run); a failed
-// coordinator keeps its own class (3 provider error, 5 budget, max_turns or output_truncated, 1
-// anything else, including a passed deadline); 130 cancelled by SIGINT, SIGTERM
+// coordinator keeps its own class (3 provider error, 5 budget, max_turns, output_truncated or hook_stop
+// (a turn.after hook stop, ADR-012 D7), 1 anything else, including a passed deadline); 130 cancelled by SIGINT, SIGTERM
 // or SIGHUP; 2 usage and 4 config_invalid before anything is created.
 func swarmRunExecute(ctx context.Context, fl *flags, rest []string, stdout, stderr *os.File) int {
 	manifestPath := fl.manifestPath

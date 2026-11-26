@@ -48,7 +48,7 @@ A session in the Go CLI transitions through exactly one status at a time:
 | Status | Meaning | Set by |
 |---|---|---|
 | `active` | Created or resumed, ready for a run | `session new`, `app.ResumePausedSession`, recovery path |
-| `paused` | Budget exhausted, awaiting explicit resume | Budget stop during `session run` (exit 5) |
+| `paused` | Budget exhausted, or a `turn.after` hook stopped the run (`hook_stop`, ADR-012), awaiting explicit resume | Budget stop during `session run` (exit 5); a hook stop (exit 5, code `hook_stop`, HTTP 409) |
 | `cancelled` | a signal, run-route disconnect or shutdown, `session cancel` | Signal handler, run route, `session cancel` |
 | `completed` | Turn finished without error | Turn loop completion |
 | `failed` | Provider error with terminal=true, the turn limit reached while still requesting tools (`max_turns`), or a loop turn cut off at the output cap twice (`output_truncated`) | Provider stream failure; `ErrMaxTurns`; `ErrOutputTruncated` |
@@ -174,6 +174,8 @@ The turn outcome maps to the exit-code contract:
 |---|---|---|
 | completed | 0 | yes |
 | budget stop | 5 | no (paused) |
+| hook stop (`hook_stop`, ADR-012) | 5 | no (paused for a root run; a child fails) |
+| `user.prompt` hook refusal (`hook_refused`, ADR-012) | 2 | no (pre-flight) |
 | provider error | 3 | yes (failed) |
 | turn limit reached while still requesting tools (`max_turns`) | 5 | yes (failed) |
 | tool-loop turn cut off at the output cap twice (`output_truncated`, ADR-010 amendment 2026-11-25) | 5 | yes (failed) |

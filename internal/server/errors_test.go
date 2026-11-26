@@ -131,3 +131,39 @@ var _ = Describe("a run cut off by the output cap over HTTP", func() {
 		Expect(rec.Body.String()).To(Equal(`{"code":"output_truncated","message":"output_truncated"}`))
 	})
 })
+
+var _ = Describe("a run ended by the hook_refused code over HTTP", func() {
+	const target = "/sessions/01a1f000-0000-4000-8000-000000000001/run"
+	var rec *httptest.ResponseRecorder
+
+	BeforeEach(func() {
+		p := (&fakePorts{}).ports()
+		p.RunSession = func(context.Context, string, RunOptions) ([]Event, error) { return nil, errors.New("hook_refused") }
+		p.ErrCode = func(error) string { return "hook_refused" }
+		rec = httptest.NewRecorder()
+		New(p).Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, target, strings.NewReader("")))
+	})
+
+	It("answers 422", func() { Expect(rec.Code).To(Equal(http.StatusUnprocessableEntity)) })
+	It("keeps the code hook_refused in the body", func() {
+		Expect(rec.Body.String()).To(Equal(`{"code":"hook_refused","message":"hook_refused"}`))
+	})
+})
+
+var _ = Describe("a run ended by the hook_stop code over HTTP", func() {
+	const target = "/sessions/01a1f000-0000-4000-8000-000000000001/run"
+	var rec *httptest.ResponseRecorder
+
+	BeforeEach(func() {
+		p := (&fakePorts{}).ports()
+		p.RunSession = func(context.Context, string, RunOptions) ([]Event, error) { return nil, errors.New("hook_stop") }
+		p.ErrCode = func(error) string { return "hook_stop" }
+		rec = httptest.NewRecorder()
+		New(p).Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, target, strings.NewReader("")))
+	})
+
+	It("answers 409", func() { Expect(rec.Code).To(Equal(http.StatusConflict)) })
+	It("keeps the code hook_stop in the body", func() {
+		Expect(rec.Body.String()).To(Equal(`{"code":"hook_stop","message":"hook_stop"}`))
+	})
+})
