@@ -16,7 +16,7 @@ lifecycle; transports and concrete storage remain outside that boundary.
 | `cmd/flowstate` | Parse input and render stable output/exits |
 | `internal/app` | Compose collaborators and application use cases, including the turn and tool loops |
 | `internal/session` | Lifecycle, identity and ordering policy |
-| `internal/server` | HTTP transport adapter — ratified ahead of implementation (ADR-007); owns the `net/http` surface cmd is banned from |
+| `internal/server` | HTTP transport adapter (ADR-007); owns the `net/http` surface cmd is banned from |
 | `internal/agent` | Agent profiles: pure, filesystem-only loading and validation (the application layer supplies the tool catalog); a `delegates` allowlist names the profiles a delegating profile may spawn |
 | `internal/skill` | Skills (ADR-013): pure, filesystem-only discovery and validation of skill directories; the application layer composes it |
 | `internal/provider`, `internal/tool` | Replaceable ports and domain-facing values |
