@@ -381,6 +381,13 @@ project hook file is found under the project root (the directory the command was
 `--workdir`. The flag is parsed and carried to the run today; hooks themselves are not loaded or run yet, so it has
 no effect on a run.
 
+`turn.after` fires after every provider turn of an exec loop, the last no-call turn included, and before the turn
+limit is checked. A command hook on it may print `{"stop":true}`: a root run ends paused, resumable, with the
+`session.paused` reason `hook_stop` (exit 5, HTTP 409); a delegated child ends failed with reason `hook_stop`; a swarm
+coordinator ends the swarm failed with reason `hook_stop`. A stop on the final turn can never end `completed`: the
+resume re-requests that turn, so a hook that always stops costs one provider call per retry (ADR-012 gap 9). The
+text-only turn has no turn loop, so `turn.after` is inert there and `hooks.loaded` lists it under `inert`.
+
 ### Running a swarm
 
 `swarm run <manifest> --execute` runs a swarm for real. The manifest names a `coordinator:` profile and gives each

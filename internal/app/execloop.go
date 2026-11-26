@@ -108,7 +108,7 @@ func runExecTurns(ctx context.Context, cfg *ExecLoopConfig) (*ExecLoopResult, er
 		}
 		history = append(history, provider.Message{Role: "assistant", Content: turn.Content, ToolCalls: turn.Calls})
 		if len(turn.Calls) == 0 {
-			return res, nil
+			return res, fireTurnAfter(ctx, cfg, res, 0)
 		}
 		results, rerr := executeCalls(ctx, *cfg, turn.Calls)
 		res.ToolCalls += int64(len(turn.Calls))
@@ -117,6 +117,10 @@ func runExecTurns(ctx context.Context, cfg *ExecLoopConfig) (*ExecLoopResult, er
 		}
 		history = append(history, results...)
 		meter.afterResults(results)
+		// turn.after sits before the turn-limit check: a stop on the last allowed turn wins (ADR-012 D19).
+		if herr := fireTurnAfter(ctx, cfg, res, len(turn.Calls)); herr != nil {
+			return res, herr
+		}
 		if res.Turns >= cfg.MaxTurns {
 			// The model still wants to continue and the limit is reached. A
 			// cancel during this turn's calls is a cancellation, not a

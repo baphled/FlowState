@@ -144,6 +144,11 @@ func finishExecLoopState(ctx context.Context, st *store.Store, sess *store.Sessi
 			return fmt.Errorf("%w: %w", err, perr)
 		}
 		return fmt.Errorf("%w: loop budget exhausted", ErrBudgetExceeded)
+	case errors.Is(err, ErrHookStop):
+		if perr := pauseExecLoopRunFor(ctx, st, sess.ID, "hook_stop"); perr != nil {
+			return fmt.Errorf("%w: %w", err, perr)
+		}
+		return err
 	case errors.Is(err, context.Canceled), ctx.Err() != nil:
 		if _, cerr := CancelSession(context.WithoutCancel(ctx), st, sess.ID); cerr != nil {
 			return fmt.Errorf("%w: %w", ErrSessionCancelled, cerr)
@@ -157,12 +162,17 @@ func finishExecLoopState(ctx context.Context, st *store.Store, sess *store.Sessi
 // pauseExecLoopRun pauses the session after a budget stop so a later
 // `session run` explicitly resumes (CLI-AND-API-CONTRACT §3).
 func pauseExecLoopRun(ctx context.Context, st *store.Store, sessionID string) error {
+	return pauseExecLoopRunFor(ctx, st, sessionID, "budget_exhausted")
+}
+
+// pauseExecLoopRunFor pauses the session with reason in session.paused (budget_exhausted or hook_stop).
+func pauseExecLoopRunFor(ctx context.Context, st *store.Store, sessionID, reason string) error {
 	w, err := st.NewEventWriter(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("loop pause writer: %w", err)
 	}
 	defer func() { _ = w.Close() }()
-	return w.Pause(ctx, store.PauseInfo{Reason: "budget_exhausted", NextSafeOp: "session run " + sessionID})
+	return w.Pause(ctx, store.PauseInfo{Reason: reason, NextSafeOp: "session run " + sessionID})
 }
 
 // completeExecLoopRun appends the terminal turn.end event and marks

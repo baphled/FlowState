@@ -289,6 +289,8 @@ func classifyCoordinatorStop(ctx context.Context, err error) (status, reason str
 		return SwarmExecFailed, CodeMaxTurns, nil
 	case errors.Is(err, ErrOutputTruncated):
 		return SwarmExecFailed, CodeOutputTruncated, nil
+	case errors.Is(err, ErrHookStop):
+		return SwarmExecFailed, CodeHookStop, nil
 	}
 	return SwarmExecFailed, clipRunes(err.Error(), swarmReasonMaxChars), nil
 }
