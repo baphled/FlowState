@@ -105,7 +105,9 @@ func RecoverCrashedSession(ctx context.Context, st *store.Store, sessionID strin
 		return fmt.Errorf("crash recovery detection: crash detection replay: %w", rerr)
 	}
 	crashed := crashedFromEvents(events)
-	// Only an active session is answered: a paused writer refuses appends.
+	// Only an active session is answered: a paused session is resumed before its calls are, and a crash
+	// answer belongs to a run that was active. (EventWriter.Append has no paused check: hook events are
+	// written to a paused session before the resume, ADR-012.)
 	sess, gerr := st.GetSession(ctx, sessionID)
 	if gerr != nil {
 		return fmt.Errorf("crash recovery session: %w", gerr)

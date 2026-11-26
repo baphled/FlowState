@@ -84,10 +84,13 @@ func (g *hookGate) Before(ctx context.Context, name string, args json.RawMessage
 // invoke records hook.invoked, runs one hook and records hook.result.
 func (g *hookGate) invoke(ctx context.Context, h Hook, stdin []byte, inputErr error) (bool, error) {
 	sum := sha256.Sum256(stdin)
-	if err := g.append(ctx, TypeHookInvoked, map[string]any{
+	invoked := map[string]any{
 		"point": string(h.Point), "id": h.ID, "kind": string(h.Kind), "input_sha256": hex.EncodeToString(sum[:]),
-		"tool_call_id": g.input.callID,
-	}); err != nil {
+	}
+	if g.input.callID != "" {
+		invoked["tool_call_id"] = g.input.callID
+	}
+	if err := g.append(ctx, TypeHookInvoked, invoked); err != nil {
 		return false, err
 	}
 	res := g.run(ctx, h, stdin, inputErr)
@@ -147,8 +150,11 @@ func hookMatches(h Hook, name string) bool {
 func hookResultPayload(h Hook, r tool.HookResult, callID string) map[string]any {
 	payload := map[string]any{
 		"point": string(h.Point), "id": h.ID, "decision": hookDecisionName(r.Verdict),
-		"duration_ms": r.Duration.Milliseconds(), "exit_code": r.ExitCode, "tool_call_id": callID,
+		"duration_ms": r.Duration.Milliseconds(), "exit_code": r.ExitCode,
 		"stdout": truncateText(r.Stdout, hookStreamCap), "stderr": truncateText(r.Stderr, hookStreamCap),
+	}
+	if callID != "" {
+		payload["tool_call_id"] = callID
 	}
 	if r.Reason != "" {
 		payload["reason"] = r.Reason
@@ -196,18 +202,18 @@ func bindRunHooks(ctx context.Context, st *store.Store, sessionID string, req Se
 	if err != nil || !loaded {
 		return set, err
 	}
-	return set, recordHooksLoaded(ctx, st, sessionID, set)
+	return set, recordHooksLoaded(ctx, st, sessionID, set, nil)
 }
 
 // recordHooksLoaded writes hooks.loaded, the record of the set a root run applies, through a writer of its own.
-func recordHooksLoaded(ctx context.Context, st *store.Store, sessionID string, set HookSet) error {
+func recordHooksLoaded(ctx context.Context, st *store.Store, sessionID string, set HookSet, inert []string) error {
 	l, _ := set.(LoadedHooks)
 	w, err := st.NewEventWriter(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("hooks.loaded writer: %w", err)
 	}
 	defer func() { _ = w.Close() }()
-	if _, err := w.Append(ctx, session.ActorEngine, TypeHooksLoaded, hooksLoadedPayload(l)); err != nil {
+	if _, err := w.Append(ctx, session.ActorEngine, TypeHooksLoaded, hooksLoadedPayload(l, inert)); err != nil {
 		return fmt.Errorf("record hooks.loaded: %w", err)
 	}
 	return nil
@@ -215,8 +221,9 @@ func recordHooksLoaded(ctx context.Context, st *store.Store, sessionID string, s
 
 // hooksLoadedPayload is the hooks.loaded payload: the scope, the set digest, the ids, and per hook its
 // source, declaring file, resolved executable and the executable's sha256. skipped and inert are the lists
-// of ADR-012; both are empty until profile hooks and run-level points exist.
-func hooksLoadedPayload(l LoadedHooks) map[string]any {
+// of ADR-012: skipped stays empty until profile hooks exist, and inert names the hooks whose point does not
+// exist on the run's path (the text-only turn has no tool, turn or compaction point).
+func hooksLoadedPayload(l LoadedHooks, inert []string) map[string]any {
 	ids, hooks := make([]string, 0, len(l.Hooks)), make([]map[string]any, 0, len(l.Hooks))
 	for _, h := range l.Hooks {
 		ids = append(ids, h.ID)
@@ -224,7 +231,7 @@ func hooksLoadedPayload(l LoadedHooks) map[string]any {
 			"path": h.Executable, "sha256": fileSHA256(h.Executable)})
 	}
 	return map[string]any{"scope": string(l.Scope), "set_sha256": l.Digest(), "ids": ids, "hooks": hooks,
-		"skipped": []any{}, "inert": []any{}}
+		"skipped": []any{}, "inert": append([]string{}, inert...)}
 }
 
 // fileSHA256 is the hex sha256 of a file, or "" when it cannot be read.

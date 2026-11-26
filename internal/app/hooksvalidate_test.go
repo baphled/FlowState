@@ -101,9 +101,22 @@ var _ = Describe("Hook document validation", func() {
 		Entry("refuses a point outside the set", HookAccepted{Points: []HookPoint{HookToolBefore}}, "tool.after", ""),
 		Entry("refuses tool.after when the set is the production one", AcceptedHooks(), "tool.after", ""),
 		Entry("refuses turn.after when the set is the production one", AcceptedHooks(), "turn.after", ""),
-		Entry("refuses a run-level point when the set is the production one", AcceptedHooks(), "user.prompt", ""),
+		Entry("refuses compaction.before when the set is the production one", AcceptedHooks(), "compaction.before", ""),
+		Entry("refuses compaction.after when the set is the production one", AcceptedHooks(), "compaction.after", ""),
 		Entry("refuses transform: true when the set is the production one", AcceptedHooks(), "tool.before", `"transform":true,`),
 		Entry("refuses transform: true before it is accepted", HookAccepted{Points: []HookPoint{HookToolBefore}}, "tool.before", `"transform":true,`),
+	)
+
+	DescribeTable("the run-level points the production set accepts (packet 4a)",
+		func(point string) {
+			ctx.accepted = AcceptedHooks()
+			hooks, err := parseHookDocument(doc(cmdHook("a", point, "")), ctx)
+			mustHook(err)
+			Expect(string(hooks[0].Point)).To(Equal(point))
+		},
+		Entry("user.prompt", "user.prompt"),
+		Entry("session.start", "session.start"),
+		Entry("session.end", "session.end"),
 	)
 
 	It("accepts transform: true once it is accepted", func() {
