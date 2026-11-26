@@ -75,11 +75,15 @@ func (l *Loop) Invoke(ctx context.Context, name string, args json.RawMessage) (a
 	if !l.Allowed(name) {
 		return nil, l.recordDeny(ctx, actor, name)
 	}
-	if _, err := l.writer.Append(ctx, actor, TypeToolCall, map[string]any{
-		"tool": name,
-		"args": args,
-	}); err != nil {
-		return nil, fmt.Errorf("%w: tool.call: %w", ErrEventAppend, err)
+	denied, err := l.gateCall(ctx, actor, name, args)
+	if err != nil {
+		return nil, err
+	}
+	if denied != nil {
+		return nil, denied
+	}
+	if err := l.recordCall(ctx, actor, name, args); err != nil {
+		return nil, err
 	}
 	result, invokeErr := t.Invoke(ctx, args)
 	if invokeErr != nil {
@@ -106,6 +110,46 @@ func (l *Loop) Invoke(ctx context.Context, name string, args json.RawMessage) (a
 		return nil, fmt.Errorf("%w: tool.result: %w", ErrEventAppend, aerr)
 	}
 	return result, nil
+}
+
+// WithGate sets the tool.before gate of the loop and returns the loop; a nil gate means no hooks.
+func (l *Loop) WithGate(gate CallGate) *Loop {
+	l.gate = gate
+	return l
+}
+
+// Error is the text the model sees for a hook denial: the hook id and nothing else.
+func (e *HookDeniedError) Error() string { return "denied by hook " + e.HookID }
+
+// recordCall writes the tool.call event with the model's own arguments.
+func (l *Loop) recordCall(ctx context.Context, actor, name string, args json.RawMessage) error {
+	if _, err := l.writer.Append(ctx, actor, TypeToolCall, map[string]any{"tool": name, "args": args}); err != nil {
+		return fmt.Errorf("%w: tool.call: %w", ErrEventAppend, err)
+	}
+	return nil
+}
+
+// gateCall runs the tool.before gate. A denial is recorded as the model's tool.call and a hook_denied
+// tool.result, so it replays as a call with an answer (ADR-012 D10), and is returned as *HookDeniedError.
+func (l *Loop) gateCall(ctx context.Context, actor, name string, args json.RawMessage) (*HookDeniedError, error) {
+	if l.gate == nil {
+		return nil, nil
+	}
+	id, err := l.gate.Before(ctx, name, args)
+	if err != nil || id == "" {
+		return nil, err
+	}
+	denial := &HookDeniedError{HookID: id}
+	if err := l.recordCall(ctx, actor, name, args); err != nil {
+		return nil, err
+	}
+	if _, err := l.writer.Append(ctx, actor, TypeToolResult, map[string]any{
+		"tool": name, "ok": false,
+		"error": map[string]any{"code": HookDeniedCode, "message": denial.Error()},
+	}); err != nil {
+		return nil, fmt.Errorf("%w: tool.result: %w", ErrEventAppend, err)
+	}
+	return denial, nil
 }
 
 // ErrToolExecuted wraps errors returned by an allowlisted tool's own

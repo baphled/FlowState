@@ -57,6 +57,10 @@ func RunSessionExecLoop(ctx context.Context, st *store.Store, dbPath string, ses
 	if err := ensureDefaultWorkdir(req, workdir); err != nil {
 		return nil, err
 	}
+	hooks, err := bindRunHooks(ctx, st, sess.ID, req)
+	if err != nil {
+		return nil, err
+	}
 	registry, err := NewSessionToolRegistry(workdir)
 	if err != nil {
 		return nil, err
@@ -71,19 +75,14 @@ func RunSessionExecLoop(ctx context.Context, st *store.Store, dbPath string, ses
 		MaxTokens:  req.MaxTokens,
 		Compaction: req.Compaction,
 		Lease:      req.Lease,
-		Hooks:      emptyHookSet(req.Hooks),
+		Hooks:      hooks,
+		Workdir:    workdir,
 	}
 	if err := bindRunBudget(ctx, st, sess, req.Budget, &cfg); err != nil {
 		return nil, err
 	}
-	if req.Agents != "" {
-		err = registry.Register(NewDelegateTool(DelegateToolConfig{
-			Store: st, Parent: sess, Streamer: streamer, Pool: cfg.Pool, Workdir: workdir, Profiles: profiles,
-			Compaction: req.Compaction, Hooks: emptyHookSet(req.Hooks),
-		}))
-		if err != nil {
-			return nil, err
-		}
+	if err := registerSessionDelegate(st, sess, streamer, &cfg, workdir, profiles, req); err != nil {
+		return nil, err
 	}
 	res, err := RunExecLoop(ctx, cfg)
 	if err != nil {
@@ -93,6 +92,19 @@ func RunSessionExecLoop(ctx context.Context, st *store.Store, dbPath string, ses
 		return res, err
 	}
 	return res, nil
+}
+
+// registerSessionDelegate gives a run that offers agents its delegate tool, which hands the run's hook set to
+// every child.
+func registerSessionDelegate(st *store.Store, sess *store.Session, streamer provider.Streamer, cfg *ExecLoopConfig,
+	workdir string, profiles []agent.Profile, req SessionExecLoopRequest) error {
+	if req.Agents == "" {
+		return nil
+	}
+	return cfg.Registry.Register(NewDelegateTool(DelegateToolConfig{
+		Store: st, Parent: sess, Streamer: streamer, Pool: cfg.Pool, Workdir: workdir, Profiles: profiles,
+		Compaction: req.Compaction, Hooks: cfg.Hooks,
+	}))
 }
 
 // projectRoot is where project profiles are found: --workdir when given,

@@ -296,6 +296,10 @@ func appendResult(ctx context.Context, loop *tool.Loop, call provider.ToolCall, 
 		if errors.Is(ierr, tool.ErrEventAppend) || errors.Is(ierr, ErrCallEventSticky) {
 			return results, ierr // infrastructure failure: terminate the run
 		}
+		var denied *tool.HookDeniedError
+		if errors.As(ierr, &denied) {
+			return failed(liveDenialText(denied)), nil
+		}
 		return failed(fmt.Sprintf("error: %s", ierr)), nil
 	}
 	encoded, merr := json.Marshal(outcome)
@@ -303,6 +307,18 @@ func appendResult(ctx context.Context, loop *tool.Loop, call provider.ToolCall, 
 		return failed("error: unserialisable result"), nil
 	}
 	return failed(string(encoded)), nil
+}
+
+// liveDenialText is the tool message of a hook denial: the recorded tool.result payload rendered by the one
+// function the rebuild uses, so the live and the rebuilt message cannot differ (ADR-012 D10).
+func liveDenialText(denied *tool.HookDeniedError) string {
+	payload, err := json.Marshal(map[string]any{"ok": false,
+		"error": map[string]any{"code": tool.HookDeniedCode, "message": denied.Error()}})
+	if err != nil { // unreachable: strings only
+		panic(err)
+	}
+	text, _ := hookDenialText(string(payload))
+	return text
 }
 
 func answeredResultIDs(events []store.RecordedEvent) map[string]bool { // ids with a persisted correlated tool.result
@@ -388,7 +404,11 @@ func runCall(ctx context.Context, cfg ExecLoopConfig, w tool.EventSink, call pro
 		if serr != nil {
 			return nil, serr
 		}
-		return tool.NewLoop(cfg.Registry, sink, cfg.Allowlist)
+		gated, gerr := tool.NewLoop(cfg.Registry, sink, cfg.Allowlist)
+		if gerr != nil {
+			return nil, gerr
+		}
+		return gated.WithGate(newHookGate(cfg, call, w)), nil
 	}()
 	if lerr != nil {
 		return nil, lerr

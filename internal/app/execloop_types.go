@@ -51,8 +51,13 @@ type ExecLoopConfig struct {
 	// ProfileWindow is the context_window of the profile the session runs under (a
 	// delegated child, the swarm coordinator); 0 for a plain root session.
 	ProfileWindow int
-	// Hooks is the loaded root hook set (ADR-012 D22); nil is the empty set. Nothing fires it yet.
+	// Hooks is the loaded root hook set (ADR-012 D22); nil is the empty set. The loop fires its tool.before
+	// hooks as a gate before every allowed call.
 	Hooks HookSet
+	// Workdir, Agent (the profile of a child or the coordinator, empty for a root) and Depth (0 for a root
+	// and the coordinator) are what a hook's stdin document tells it about the run.
+	Workdir, Agent string
+	Depth          int
 }
 
 // compactRun is the run-scoped state of the automatic trigger (ADR-010 "When"): the baseline

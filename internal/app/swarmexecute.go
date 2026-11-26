@@ -99,13 +99,19 @@ func ExecuteSwarm(ctx context.Context, st *Store, cfg ExecuteSwarmConfig) (Execu
 // error), packets are admitted by the hash-checking swarm.AdmissionLog, and the
 // gates run in cfg.Workdir through swarm.NewGateRunnerIn. cfg.Manifest,
 // cfg.Admitter and cfg.Gates are ignored. It is the seam cmd uses, as cmd does
-// not import the swarm package.
+// not import the swarm package. It also loads the hook set of cfg.HooksScope under cfg.ProjectRoot, unless
+// cfg already carries one, before anything is written: a hook file that does not load fails the run as
+// config_invalid. A swarm run writes no hooks.loaded (ADR-012, known gap 8).
 func ExecuteSwarmFile(ctx context.Context, st *Store, manifestPath string, cfg ExecuteSwarmConfig) (ExecuteSwarmResult, error) {
 	m, err := swarm.LoadManifest(manifestPath)
 	if err != nil {
 		return ExecuteSwarmResult{}, fmt.Errorf("%w: %v", ErrUsage, err)
 	}
-	cfg.Hooks = emptyHookSet(cfg.Hooks)
+	hooks, _, err := loadRunHooks(cfg.Hooks, cfg.HooksScope, cfg.ProjectRoot)
+	if err != nil {
+		return ExecuteSwarmResult{}, err
+	}
+	cfg.Hooks = hooks
 	cfg.Manifest, cfg.Admitter, cfg.Gates = m, swarm.NewAdmissionLog(), swarm.NewGateRunnerIn(cfg.Workdir)
 	return ExecuteSwarm(ctx, st, cfg)
 }
@@ -201,7 +207,7 @@ func coordinatorLoopConfig(st *Store, sess *store.Session, coord agent.Profile, 
 		Store: st, Session: sess, Streamer: cfg.Streamer, Registry: registry, Allowlist: coord.Tools,
 		MaxTurns: maxTurns, MaxTokens: cfg.MaxTokens,
 		SystemPrompt: coord.Body, Compaction: cfg.Compaction, ProfileWindow: coord.ContextWindow,
-		Hooks: emptyHookSet(cfg.Hooks),
+		Hooks: emptyHookSet(cfg.Hooks), Workdir: cfg.Workdir, Agent: coord.Name,
 	}
 }
 

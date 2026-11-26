@@ -1,6 +1,9 @@
 package app
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,10 +15,10 @@ import (
 // fireable yet or transform before it lands.
 var ErrHookPointUnsupported = errors.New("hook_point_unsupported")
 
-// AcceptedHooks is the set of points this build fires: ADR-012 packet 1 fires
-// none, so every hook file that names a point fails to load until a later
-// packet adds the point here.
-func AcceptedHooks() HookAccepted { return HookAccepted{} }
+// AcceptedHooks is the set of points this build fires: ADR-012 packet 3a fires tool.before as a gate
+// (runCall builds its hookGate), so only that point loads. A file that names any other point, or sets
+// "transform": true, fails to load until the packet that fires it adds it here.
+func AcceptedHooks() HookAccepted { return HookAccepted{Points: []HookPoint{HookToolBefore}} }
 
 // ErrHookScopeInvalid is returned by LoadHooks for a scope outside user,
 // project, both and none. The empty scope is invalid too: it means the caller
@@ -86,6 +89,22 @@ func LoadHooks(req HooksRequest) (LoadedHooks, error) {
 		return LoadedHooks{}, err
 	}
 	return out, nil
+}
+
+// Digest is the hex SHA-256 of the effective set, the composition pin hooks.loaded records (ADR-012): the
+// canonical JSON of every hook in firing order, which names its id, point, matchers, kind, argv, resolved
+// executable path, environment names, timeout and failure policy. The scope is recorded beside it, not in it.
+func (l LoadedHooks) Digest() string {
+	hooks := l.Hooks
+	if hooks == nil {
+		hooks = []Hook{}
+	}
+	encoded, err := json.Marshal(hooks)
+	if err != nil { // unreachable: Hook holds only strings, numbers and bools
+		panic(err)
+	}
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:])
 }
 
 // appendFileHooks reads one hook file, if it exists, and appends its hooks.
