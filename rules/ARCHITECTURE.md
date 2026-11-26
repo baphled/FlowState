@@ -18,6 +18,7 @@ for this backend.
 | `internal/store` | Persistence adapters | No application, CLI or engine lifecycle dependency |
 | `internal/provider/*`, `internal/oauth` | External transports/authentication | Implement ports; no application, CLI or lifecycle ownership |
 | `internal/agent` | Agent profile files: strict parsing and filesystem loading (ADR-009) | Adapter: no application, runtime or CLI dependency; standard library and YAML; tool names are passed in by `internal/app` |
+| `internal/skill` | Skill directories: strict parsing and filesystem loading on `os.OpenRoot` (ADR-013) | Adapter: no application, runtime or CLI dependency; standard library and YAML |
 | `internal/server` | HTTP transport adapter (ratified ahead of implementation) | Standard library incl. `net/http`; no application, runtime or CLI dependency; cmd may import it, cmd production files ban the `net/http` subtree |
 
 `internal/config` no longer exists (removed in #391): provider settings come from the environment, read where the

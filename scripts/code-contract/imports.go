@@ -69,7 +69,7 @@ func isDomain(path string) bool {
 }
 
 func isAdapter(path string) bool {
-	return withinAny(path, []string{"internal/store", "internal/oauth", "internal/server", "internal/agent"}) || strings.HasPrefix(path, "internal/provider/")
+	return withinAny(path, []string{"internal/store", "internal/oauth", "internal/server", "internal/agent", "internal/skill"}) || strings.HasPrefix(path, "internal/provider/")
 }
 
 func withinAny(path string, owners []string) bool {
