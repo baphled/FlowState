@@ -1,10 +1,49 @@
 package provider
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 )
+
+// IsTruncatedObject reports whether args is empty or a proper prefix of a JSON
+// object that a continuation could complete, which is what an output-cap cut
+// leaves behind. A cut of an object call always begins with `{`, so a cut
+// scalar such as `nul` or `1e` is corrupt, not truncation. Corrupt input (bad syntax, trailing bytes, a non-object, or a
+// complete value) is not truncation and returns false, so callers keep the
+// protocol error for it.
+func IsTruncatedObject(args []byte) bool {
+	trimmed := bytes.TrimSpace(args)
+	if len(trimmed) == 0 {
+		return true
+	}
+	if trimmed[0] != '{' {
+		return false
+	}
+	dec := json.NewDecoder(bytes.NewReader(args))
+	depth := 0
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
+		}
+		delim, isDelim := tok.(json.Delim)
+		if depth == 0 && (!isDelim || delim != '{') {
+			return false
+		}
+		if isDelim && (delim == '{' || delim == '[') {
+			depth++
+		} else if isDelim {
+			depth--
+		}
+		if depth == 0 {
+			return false
+		}
+	}
+}
 
 func validIdentifier(value string) bool {
 	if len(value) == 0 || len(value) > 128 {

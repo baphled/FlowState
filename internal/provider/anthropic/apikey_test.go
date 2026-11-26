@@ -202,6 +202,26 @@ var _ = Describe("APIKey", func() {
 			return events
 		}
 
+		Describe("a call cut by the output cap", func() {
+			cut := func(args, stop string) string {
+				return `data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_01","name":"echo","input":{}}}` + "\n\n" +
+					`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":` + strconv.Quote(args) + `}}` + "\n\n" +
+					`data: {"type":"content_block_stop","index":0}` + "\n\n" +
+					`data: {"type":"message_delta","delta":{"stop_reason":"` + stop + `"}}` + "\n\n" + `data: {"type":"message_stop"}` + "\n\n"
+			}
+			It("drops the partial call and finishes with length on max_tokens", func() {
+				Expect(streamTool(cut(`{"message":"unfin`, "max_tokens"))).To(Equal([]provider.StreamEvent{{Kind: provider.StreamEventFinish, FinishReason: "length"}}))
+			})
+			It("delivers a complete call and finishes with length on max_tokens", func() {
+				Expect(streamTool(cut(`{"message":"hi"}`, "max_tokens"))).To(Equal([]provider.StreamEvent{
+					{Kind: provider.StreamEventToolCall, ToolCall: &echoCall}, {Kind: provider.StreamEventFinish, FinishReason: "length"}}))
+			})
+			It("keeps the protocol error for a partial call with a tool_use stop", func() {
+				events := streamTool(cut(`{"message":"unfin`, "tool_use"))
+				Expect(events[len(events)-1].Err).To(MatchError(ContainSubstring("tool arguments must be a JSON object")))
+			})
+		})
+
 		It("sends the tools with name, description and input_schema", func() {
 			Expect(bodyJSON(request(toolRequest()), "tools")).To(MatchJSON(
 				`[{"name":"echo","description":"Echo a message","input_schema":` +

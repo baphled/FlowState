@@ -510,7 +510,9 @@ compaction off for the rest of the run), and the run continues; a `no_cut` gives
 larger than the reserve (or `--max-tokens`) never compacts: raise the window or lower the reserve or `max_tokens`.
 Without `--max-tokens` a run sends the model's maximum output from the registry table, capped at 32768 (an unknown
 model: 8192), and a known model's line is `window - max(reserve, that value)`, the value limited to a quarter of the
-window (an unknown model's line is the reserve alone). An explicit `--max-tokens` is not limited. A delegate or swarm
+window (an unknown model's line is the reserve alone). An explicit `--max-tokens` is not limited. A stream cut by
+the output cap drops the partial tool call instead of failing the run; today the loop completes that turn with the cut-off
+text and a warning. A delegate or swarm
 child sends its own model's default, not the parent's explicit cap (passing it down is a follow-up). With
 `compaction.enabled` false the larger default cap shrinks the input headroom, and the reactive overflow retry below is
 the only net. In `swarm run --execute` the coordinator and its children, nested ones included, compact by the same

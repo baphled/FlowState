@@ -149,8 +149,16 @@ func (s *anthropicStream) toolEvent(ctx context.Context, ev anthropicEvent, out 
 	case ev.Type == "content_block_stop" && s.pending[ev.Index] != nil:
 		pend := s.pending[ev.Index]
 		delete(s.pending, ev.Index)
+		if s.held != nil {
+			return true, nil
+		}
 		call, err := newToolCall(pend.call.ID, pend.call.Name, json.RawMessage(pend.args), s.names)
 		if err != nil {
+			if len(pend.args) > 0 && provider.IsTruncatedObject(pend.args) {
+				// Possibly cut by the output cap: the stop reason decides at message_stop.
+				s.held = err
+				return true, nil
+			}
 			return true, err
 		}
 		return true, sendAnthropic(ctx, out, provider.StreamEvent{Kind: provider.StreamEventToolCall, ToolCall: &call})
@@ -159,8 +167,12 @@ func (s *anthropicStream) toolEvent(ctx context.Context, ev anthropicEvent, out 
 }
 
 // unfinished is an error when the message ends with a tool_use that never got
-// its content_block_stop, unless the model ran out of tokens.
+// its content_block_stop, or with a held malformed call, unless the model ran
+// out of tokens (then the partial call is dropped, complete earlier calls stand).
 func (s *anthropicStream) unfinished() error {
+	if s.held != nil && s.stop != "max_tokens" {
+		return s.held
+	}
 	if len(s.pending) > 0 && s.stop != "max_tokens" {
 		return &ToolProtocolError{Reason: "message ended with an unfinished tool_use"}
 	}
