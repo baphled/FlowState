@@ -47,7 +47,7 @@ func NewFSEdit(workdir string, opts ...FSOption) Tool {
 	for _, opt := range opts {
 		opt(&o)
 	}
-	return &fsEditTool{workdir: workdir, max: o.maxEdit}
+	return &fsEditTool{workdir: workdir, max: o.maxEdit, protect: o.protect}
 }
 
 // Name implements Tool for fs.edit.
@@ -84,6 +84,9 @@ func (t *fsEditTool) Invoke(_ context.Context, args json.RawMessage) (any, error
 		return nil, err
 	}
 	defer func() { _ = root.Close() }()
+	if err := checkProtected(root, t.workdir, a.Path, t.protect); err != nil {
+		return nil, err
+	}
 	b, err := readBounded(root, a.Path, t.max)
 	if err != nil {
 		return nil, err
