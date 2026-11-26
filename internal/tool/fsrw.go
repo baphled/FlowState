@@ -31,6 +31,8 @@ const (
 	ErrCodeNotFound = "fs_not_found"
 	// ErrCodeOversize maps ErrOversize.
 	ErrCodeOversize = "fs_oversize"
+	// ErrCodePathProtected maps ErrPathProtected.
+	ErrCodePathProtected = "fs_path_protected"
 )
 
 // Byte caps for reads (memory) and writes (pre-touch).
@@ -57,6 +59,8 @@ func errorCodeFor(err error) string {
 	switch {
 	case errors.Is(err, ErrPathOutsideWorkdir):
 		return ErrCodePathOutsideWorkdir
+	case errors.Is(err, ErrPathProtected):
+		return ErrCodePathProtected
 	case errors.Is(err, ErrFileNotFound):
 		return ErrCodeNotFound
 	case errors.Is(err, ErrOversize):
@@ -219,7 +223,7 @@ func NewFSWrite(workdir string, opts ...FSOption) Tool {
 	for _, opt := range opts {
 		opt(&o)
 	}
-	return &fsWriteTool{workdir: workdir, max: o.maxWrite}
+	return &fsWriteTool{workdir: workdir, max: o.maxWrite, protect: o.protect}
 }
 
 // Name implements Tool for fs.write.
@@ -243,6 +247,9 @@ func (t *fsWriteTool) Invoke(_ context.Context, args json.RawMessage) (any, erro
 		return nil, err
 	}
 	defer func() { _ = root.Close() }()
+	if err := checkProtected(root, t.workdir, a.Path, t.protect); err != nil {
+		return nil, err
+	}
 	if err := root.MkdirAll(parentOf(a.Path), 0o750); err != nil {
 		return nil, mapRootErr(err)
 	}
