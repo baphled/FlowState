@@ -76,16 +76,12 @@ func (state *codingAssembly) complete(ctx context.Context, out chan<- provider.S
 	if state.finish == "" {
 		return &ToolProtocolError{Reason: "missing finish reason"}
 	}
-	if (len(state.calls) > 0) != (state.finish == "tool_calls") {
+	if state.finish != provider.FinishLength && (len(state.calls) > 0) != (state.finish == "tool_calls") {
 		return &ToolProtocolError{Reason: "finish reason contradicts tool calls"}
 	}
-	calls := make([]provider.ToolCall, 0, len(state.calls))
-	for _, wire := range state.calls {
-		call := provider.ToolCall{ID: wire.ID, Name: wire.Function.Name, Arguments: json.RawMessage(wire.Function.Arguments)}
-		if err := call.Validate(); err != nil {
-			return &ToolProtocolError{Reason: err.Error()}
-		}
-		calls = append(calls, call)
+	calls, err := state.deliverable()
+	if err != nil {
+		return err
 	}
 	for _, call := range calls {
 		if !codingSend(ctx, out, provider.StreamEvent{Kind: provider.StreamEventToolCall, ToolCall: &call}) {
@@ -94,6 +90,25 @@ func (state *codingAssembly) complete(ctx context.Context, out chan<- provider.S
 	}
 	codingSend(ctx, out, provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: state.finish, Usage: state.usage})
 	return nil
+}
+
+// deliverable validates the assembled calls. On a "length" finish the output
+// cap cut the stream, so the first call whose arguments are empty or a cut-off JSON
+// object prefix (and everything after it) is dropped; corrupt arguments, every other invalid call, and any
+// invalid call on another finish reason, stays a protocol error.
+func (state *codingAssembly) deliverable() ([]provider.ToolCall, error) {
+	calls := make([]provider.ToolCall, 0, len(state.calls))
+	for _, wire := range state.calls {
+		call := provider.ToolCall{ID: wire.ID, Name: wire.Function.Name, Arguments: json.RawMessage(wire.Function.Arguments)}
+		if state.finish == provider.FinishLength && provider.IsTruncatedObject(call.Arguments) {
+			break
+		}
+		if err := call.Validate(); err != nil {
+			return nil, &ToolProtocolError{Reason: err.Error()}
+		}
+		calls = append(calls, call)
+	}
+	return calls, nil
 }
 
 // wireFinishReason maps an OpenAI-wire finish_reason to the neutral reason:

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -115,5 +116,50 @@ var _ = Describe("coding plain stream finish reason", func() {
 			}
 		}
 		Expect(rejected).NotTo(HaveOccurred())
+	})
+	Describe("a stream cut by the output cap", func() {
+		frag := func(index int, id, args, finish string) string {
+			delta := fmt.Sprintf(`{"index":%d,"id":%q,"type":"function","function":{"name":"read","arguments":%q}}`, index, id, args)
+			if id == "" {
+				delta = fmt.Sprintf(`{"index":%d,"function":{"arguments":%q}}`, index, args)
+			}
+			reason := ""
+			if finish != "" {
+				reason = fmt.Sprintf(`,"finish_reason":%q`, finish)
+			}
+			return `data: {"choices":[{"delta":{"tool_calls":[` + delta + `]}` + reason + `}]}` + "\n"
+		}
+		finish := func(reason string) string {
+			return `data: {"choices":[{"delta":{},"finish_reason":"` + reason + `"}]}` + "\n" + done
+		}
+		call := func(id, args string) provider.StreamEvent {
+			return provider.StreamEvent{Kind: provider.StreamEventToolCall, ToolCall: &provider.ToolCall{ID: id, Name: "read", Arguments: json.RawMessage(args)}}
+		}
+		fin := func(reason string) provider.StreamEvent {
+			return provider.StreamEvent{Kind: provider.StreamEventFinish, FinishReason: reason}
+		}
+		DescribeTable("drops the partial call and delivers the length finish", func(sse string, want []provider.StreamEvent) {
+			Expect(toolEvents(toolFixture(sse), toolRequest())).To(Equal(want))
+		},
+			Entry("one partial call", frag(0, "a", `{"path":"x`, "")+finish("length"), []provider.StreamEvent{fin("length")}),
+			Entry("empty arguments cut before any byte", frag(0, "a", "", "")+finish("length"), []provider.StreamEvent{fin("length")}),
+			Entry("complete call then a partial one", frag(0, "a", `{"p":1}`, "")+frag(1, "b", `{"p":`, "")+finish("length"),
+				[]provider.StreamEvent{call("a", `{"p":1}`), fin("length")}),
+			Entry("complete call cut before the next", frag(0, "a", `{"p":1}`, "")+finish("length"),
+				[]provider.StreamEvent{call("a", `{"p":1}`), fin("length")}),
+			Entry("complete empty object", frag(0, "a", `{}`, "")+finish("length"), []provider.StreamEvent{call("a", `{}`), fin("length")}),
+		)
+		DescribeTable("keeps the protocol error", func(sse, want string) {
+			events := toolEvents(toolFixture(sse), toolRequest())
+			Expect(events[len(events)-1].Err).To(MatchError(ContainSubstring(want)))
+		},
+			Entry("cut call with a stop finish", frag(0, "a", `{"path":"x`, "")+finish("stop"), "finish reason contradicts tool calls"),
+			Entry("cut call with a tool_calls finish", frag(0, "a", `{"path":"x`, "")+finish("tool_calls"), "tool arguments must be a JSON object"),
+			Entry("complete non-object with a length finish", frag(0, "a", `[1]`, "")+finish("length"), "tool arguments must be a JSON object"),
+			Entry("corrupt arguments with a length finish", frag(0, "a", `{bad`, "")+finish("length"), "tool arguments must be a JSON object"),
+			Entry("two objects with a length finish", frag(0, "a", `{"a":1}{"b":2}`, "")+finish("length"), "tool arguments must be a JSON object"),
+			Entry("cut scalar with a length finish", frag(0, "a", `nul`, "")+finish("length"), "tool arguments must be a JSON object"),
+			Entry("trailing garbage with a length finish", frag(0, "a", `{"a":1} x`, "")+finish("length"), "tool arguments must be a JSON object"),
+		)
 	})
 })

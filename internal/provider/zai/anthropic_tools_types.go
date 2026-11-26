@@ -38,6 +38,9 @@ type anthropicStream struct {
 	pending map[int]*pendingToolUse
 	ids     map[string]bool
 	names   *toolNames
+	// held is the first tool call with malformed JSON arguments; it is dropped
+	// on a max_tokens stop and fatal on any other.
+	held error
 }
 
 // toolNames maps the wire tool names of one request to the neutral names.

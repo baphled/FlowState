@@ -163,3 +163,41 @@ var _ = Describe("Usage.Validate", func() {
 		Expect(Usage{InputTokens: MaxUsageTokens, CacheWriteTokens: 5}.Validate()).To(Succeed())
 	})
 })
+
+var _ = Describe("IsTruncatedObject", func() {
+	DescribeTable("tells a cut-off object from corrupt input", func(args string, want bool) {
+		Expect(IsTruncatedObject([]byte(args))).To(Equal(want))
+	},
+		Entry("empty", ``, true),
+		Entry("cut inside a string value", `{"path":"x`, true),
+		Entry("only the opening brace", `{`, true),
+		Entry("cut after a colon", `{"a":`, true),
+		Entry("cut after a comma", `{"a":1,`, true),
+		Entry("cut inside a literal", `{"a":tru`, true),
+		Entry("cut inside an escape", `{"a":"b\`, true),
+		Entry("cut inside a nested array", `{"a":[1,`, true),
+		Entry("cut inside an exponent", `{"a":1e`, true),
+		Entry("whitespace only", " \n\t", true),
+		Entry("cut null", `nul`, false),
+		Entry("cut true", `tru`, false),
+		Entry("lone minus", `-`, false),
+		Entry("cut fraction", `1.`, false),
+		Entry("cut exponent scalar", `1e`, false),
+		Entry("cut signed exponent scalar", `1e+`, false),
+		Entry("cut string scalar", `"abc`, false),
+		Entry("lone quote", `"`, false),
+		Entry("lone open bracket", `[`, false),
+		Entry("open bracket then brace", `[{`, false),
+		Entry("bad syntax", `{bad`, false),
+		Entry("extra closing brace", `{"a":1}}`, false),
+		Entry("lone closing brace", `}`, false),
+		Entry("two objects", `{"a":1}{"b":2}`, false),
+		Entry("trailing garbage", `{"a":1} x`, false),
+		Entry("cut array", `[1`, false),
+		Entry("missing colon", `{"a" 1`, false),
+		Entry("trailing comma", `{"a":1,}`, false),
+		Entry("complete object", `{"a":1}`, false),
+		Entry("complete array", `[1]`, false),
+		Entry("complete number", `1`, false),
+	)
+})
