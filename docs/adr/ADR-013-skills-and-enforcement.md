@@ -5,7 +5,7 @@ type: adr
 status: proposed
 adr_group: Go CLI
 created: 2026-11-25
-modified: 2026-11-26T10:00
+modified: 2026-11-26T22:30
 deciders:
   - Engineering Team
 consulted:
@@ -34,7 +34,10 @@ aliases:
 **Proposed** — 2026-11-25, revised 2026-11-26 after review. Decision only: no code changes with this ADR. Code facts
 were read at `473fe294` (`origin/next` after `git fetch`, re-cited by grep);
 Pi facts from its `docs/skills.md` and `dist/core/skills.js`. The hooks ADR
-is ADR-012 (proposed), written in parallel; it may not be merged, so every reference to it here is conditional.
+is ADR-012, written in parallel and now accepted; its file-tool refusal (packets 2c1 to 2c3, #492 and #503) is merged
+and was re-read at `6932c953`, and its `tool.before` gate (#494) is merged too. Every code cite is as read at
+`473fe294` and was not refreshed, except the ones that name the protected-directory option (the registry in the
+code-facts list and in the packet 3 row), which were read at `6932c953`.
 
 ## Context
 
@@ -66,7 +69,7 @@ What the other harnesses do:
 - **OpenCode** (recalled): `SKILL.md` discovered from config and project directories, offered to the model through a
   skill tool whose description lists the available skills; permissions can allow, deny or ask per skill.
 
-What FlowState has today (all read at `473fe294`):
+What FlowState has today (read at `473fe294`, except the registry cites noted in the Status):
 
 - **Profiles** are markdown with strictly parsed YAML frontmatter. The parser decodes into `yaml.Node`, rejects
   explicit tags, unknown and duplicate keys, block scalars, and control, format and separator characters in
@@ -82,8 +85,9 @@ What FlowState has today (all read at `473fe294`):
   so a changed profile refuses the resume; the root session has no profile and nothing equivalent.
 - **The tool catalog** a profile may name is `echo`, `fs.read`, `fs.write`, `fs.edit`, `exec.run` and the reserved
   `delegate` (`AgentToolNames`, `internal/app/agents.go:19-21`). `exec.run` is registered only when its environment
-  opt-in is set (`internal/app/agenttools.go:19-27`). File tools are confined to the workdir through `os.Root`
-  (`internal/tool/fsrw.go:4`). `NewSessionToolRegistry(workdir)` (`agenttools.go:18`) builds the registry.
+  opt-in is set (`internal/app/agenttools.go:44-46`). File tools are confined to the workdir through `os.Root`
+  (`internal/tool/fsrw.go:4`). `NewSessionToolRegistry(workdir, opts ...tool.FSOption)` (`agenttools.go:40`) builds the
+  registry.
 - **Result caps**: there is **no general tool-result cap**. `fs.read` caps a file at 1 MiB (`fsrw.go:38-39`); the
   `delegate` result is cut at 50 KiB or 2000 lines (`delegateTextMaxBytes`, `delegateTextMaxLines`,
   `internal/app/delegatetool.go:21-22`, `:254-272`). `skill.load` therefore sets its own limit (below).
@@ -144,12 +148,15 @@ and how "this packet must have read skill X" becomes something the engine checks
   Other format characters (ZWJ, ZWNJ for emoji) stay allowed. A body that contains the closing fence line of the
   load result (see "The `skill.load` tool") is **refused at discovery**; a supporting file that contains it is
   refused at load.
-- **Locations, by scope** (`--skills user|project|both`, default `user`, the same rule as `--agents`):
+- **Locations, by scope** (`--skills user|project|both|none`, default `user`; `none` is as for `--hooks`, and
+  unlike `--agents` the project directory never follows `--workdir`):
   - user: `os.UserConfigDir()/flowstate/skills`;
-  - project: `<workdir>/.flowstate/skills`, read **only** when the scope asks. There is no walk up to ancestors and
-    no `.agents/skills` discovery: both widen what a repository can inject and neither is needed. A concrete case:
-    a third-party collection of 1,332 entries sits at `/home/baphled/Projects/FlowState.git/.agents/skills`, above
-    every worktree and referenced nowhere in the repo; Pi's ancestor walk would load it into every worktree;
+  - project: `<project root>/.flowstate/skills` (the directory the command was started in, never `--workdir`, as for
+    hooks), read **only** when the scope asks (`--skills none` loads no scope directory). There is no walk up to
+    ancestors and no `.agents/skills` discovery: both widen what a repository can inject and neither is needed. A
+    concrete case: a third-party collection of 1,332 entries sits at
+    `/home/baphled/Projects/FlowState.git/.agents/skills`, above every worktree and referenced nowhere in the repo;
+    Pi's ancestor walk would load it into every worktree;
   - explicit directories: `--skills-path <absolute dir>`, repeatable, or `skills_paths` (a list of absolute
     directories) in an explicit `--config` file. See "Where the settings live" for why these are never read from the
     ambient `flowstate.json`.
@@ -402,10 +409,10 @@ copying, with those 8 reported by `validate`. The eight need a header fix; FlowS
   must have read X" at the packet, and a profile that must be safe wherever it
   is used carries its own `requires_skills`. A parent that wants a child to have a skill sets it on the child's
   profile or packet; it does not pass a flag in the brief, which would be unverifiable.
-- **Hooks (ADR-012, proposed)**: skill checks are not implemented as user-configurable `tool.before` hooks. Hooks
+- **Hooks (ADR-012)**: skill checks are not implemented as user-configurable `tool.before` hooks. Hooks
   are the extension point and may fail open or be absent; a requirement that exists to be trusted is built into the
-  loop, ahead of hooks, and a hook sees a refused call like any other tool error. If ADR-012 chooses an in-engine
-  `tool.before` stage, the check becomes the first built-in handler there without changing this ADR's rule.
+  loop, ahead of hooks, and a hook sees a refused call like any other tool error. ADR-012 built `tool.before` as a
+  gate in the tool loop (#494); the skill check stays ahead of it, as this rule says.
 
 ### Security
 
@@ -427,14 +434,17 @@ copying, with those 8 reported by `validate`. The eight need a header fix; FlowS
   not on the allowlist, `exec.go:75`); `git commit` runs the repository's hooks; and
   `fs.write` followed by `make` (or `go test`) runs what the model just wrote. All are arbitrary commands. Project
   content is already trusted by the operator running there; the ADR does not close this.
-- **Project skills are writable by the model, disclosed.** `<workdir>/.flowstate/skills` is inside the workdir, so
-  `fs.write` and `fs.edit` can change a project skill. The hash binds the bytes that were read, not who wrote them.
+- **Project skills were writable by the model, disclosed.** `<project root>/.flowstate/skills` is inside the workdir
+  whenever the workdir sits at or above the project root, so `fs.write` and `fs.edit` could change a project skill;
+  they cannot under `.flowstate` since ADR-012 packets 2c1 to 2c3 merged, but `--skills-path` roots, `exec.run`,
+  `make` and `git checkout` are outside that refusal. The hash binds the bytes that were read, not who wrote them.
   Project skills are opt-in only (`--skills project|both`), which already marks them untrusted. A model that writes
-  a same-name or an invalid project skill mid-run can brick its own session: the required skill becomes duplicate
+  a same-name or an invalid project skill mid-run (now only through one of those routes) can brick its own
+  session: the required skill becomes duplicate
   or invalid, so the requirement stays unmet and the session ends in `skill_required` or `max_turns`. That is an
   availability effect on its own session, not a security issue. **Decision:** refusing writes under the skill roots
-  is not part of v1; it is the file-tool refusal (`fs_path_protected` for `<workdir>/.flowstate/`) in ADR-012
-  (proposed)'s new packet, and this ADR depends on it only for that hardening.
+  is not part of this ADR: it is the file-tool refusal (`fs_path_protected` for any `.flowstate` path component) of
+  ADR-012, merged in packets 2c1 to 2c3, and this ADR depends on it only for that hardening.
 - **Hashing and size**: the SHA-256 of every loaded file is in the log, for audit and for the resume check above.
   `skills validate` prints no hash: there is no pin to compare against.
 - **Terminal and invisible text**: names and descriptions pass the profile rules (no control, format or separator
@@ -473,7 +483,7 @@ device name refused. Specs that create names with characters Windows cannot hold
 |---|---|
 | D1 | A skill is an Agent Skills directory: `SKILL.md` with required `name` and `description`, optional supporting files. `license`, `compatibility`, `metadata` are accepted and ignored; **any other key is ignored with a `validate` warning, never an error**. |
 | D2 | Strict parsing as `internal/agent`: `yaml.Node`, caps (32 KiB / 1000 lines file, 64-character name, 500-character description), no control/format characters in values, no bidi or tag characters in bodies; name equals directory (stricter than Pi, by choice). A bad skill is not loaded and never blocks the others. |
-| D3 | Locations: user `flowstate/skills`, project `.flowstate/skills` only on `--skills project\|both`, `--skills-path` or `skills_paths` in an explicit `--config`. No ancestor walk, no `.agents/skills`, no recursion. |
+| D3 | Locations: user `flowstate/skills`, project `<project root>/.flowstate/skills` (never `--workdir`, as for hooks) only on `--skills project\|both` (`none` loads no scope directory), `--skills-path` or `skills_paths` in an explicit `--config`. No ancestor walk, no `.agents/skills`, no recursion. |
 | D4 | Duplicate names across roots are an error naming both paths, not first-wins. |
 | D5 | `flowstate skills list\|validate` mirrors `agents list\|validate` (`--json` accepted and ignored); no hashes printed. |
 | D6 | A profile offers skills through `skills: [names or prefix*]`; none by default. The root session uses `skills_default`. |
@@ -532,8 +542,8 @@ Sizes are estimates.
 | # | Packet | Size | Negative oracle (a spec fails if…) |
 |---|---|---|---|
 | 1 | `internal/skill`: type, loader, validator on `os.OpenRoot`; `flowstate skills list\|validate` (diagnostics, counts, no hashes, `--json` ignored like `agents`) | about 550 lines | a symlink out of the root, a name that differs from its directory, a duplicate, an over-cap file, a bidi or tag character, or a closing-fence line loads; an unknown key is an error instead of a warning |
-| 2 | Config: `--skills-path`, `--skills-default`, `--skills` scope, `skills_paths`/`skills_default` on `cliConfig`, composition-hash change (non-empty only); project content refused without opt-in | about 350 lines | the ambient `flowstate.json` with these keys is accepted; a relative path is accepted; an empty setting changes the existing hash; a project skill loads under the default scope |
-| 3 | `skill.load` tool in the catalog; `NewSessionToolRegistry(workdir, opts ...)` gains the skill roots as a variadic option (its 5 production callers `delegate.go`, `delegate_types.go`, `execloop_session.go`, `swarmexecute.go`, `toolrun.go` compile unchanged; `delegate.go:164` wraps it because `NewRegistry` at `delegate_types.go:88` is a non-variadic func type); the result fence and size refusal; `skill.loaded` written after the result with `tool_call_id`; `history.go` accepts `skill.loaded` only after its completed `skill.load` call (`execreplay.go` keeps ignoring it) | about 600 lines, 12 to 14 paths with paired tests | `{file}` leaves the skill directory; an oversize file is truncated instead of refused; `skill.loaded` is written before the result or for a failed load; a stray `skill.loaded` passes the history validator |
+| 2 | Config: `--skills-path`, `--skills-default`, `--skills` scope (`user\|project\|both\|none`; the project directory is under the project root, never `--workdir`), `skills_paths`/`skills_default` on `cliConfig` (an ambient `flowstate.json` naming either key in any case is refused), composition-hash change (non-empty only); project content refused without opt-in | about 350 lines | the ambient `flowstate.json` with these keys is accepted; a relative path is accepted; an empty setting changes the existing hash; a project skill loads under the default scope |
+| 3 | `skill.load` tool in the catalog; `NewSessionToolRegistry` already takes `opts ...tool.FSOption` (#492, #503) and every production caller (`execloop_session.go:69`, `swarmexecute.go:237`, `toolrun.go:129`, `delegate.go:169`) already passes `tool.WithProtectedDirs`: packet 3 adds the skill roots as a sibling option beside it (`NewRegistry` at `delegate_types.go:91` is variadic and `delegate.go:167` assigns the builder directly, so no wrapper is needed); the result fence and size refusal; `skill.loaded` written after the result with `tool_call_id`; `history.go` accepts `skill.loaded` only after its completed `skill.load` call (`execreplay.go` keeps ignoring it) | about 600 lines, 12 to 14 paths with paired tests | `{file}` leaves the skill directory; an oversize file is truncated instead of refused; `skill.loaded` is written before the result or for a failed load; a stray `skill.loaded` passes the history validator |
 | 4 | Profile `skills` key and `skills_default`; the prompt block (frame, escaping, preamble, 8 KiB rule); validation that a profile or root offering skills lists `skill.load` (needs packet 3's catalog entry and packet 2's settings) | about 500 lines | the block exceeds 8 KiB, shows a path, offers a skill outside the profile set, or the `*` listing over the 177-skill fixture differs from 37 full, 48 name-only, 92 not shown at 8,141 bytes written; the required line is counted inside the 8 KiB; or a description containing `ignore the above`, `</available_skills>` or an XML special is not inert and escaped; a profile offering skills without `skill.load` validates |
 | 5a | Profile `requires_skills` (exact names, `MaxRequiredSkills = 16`): parser, validation at start and resume (missing or invalid refuses; changed is unmet), discovery re-read per provider turn (cached by path, mtime, size), the 64 KiB aggregate bound, the loop gate after the allowlist with the `skill.load` exemption, `skill_required` call and error result, the "Required before" line, the compaction summary sentence | about 450 lines | a tool runs without a `skill.loaded` whose hash matches the current discovery, in its own session; a parent's load satisfies a child; `skill.load` is refused (deadlock); a changed required skill refuses a resume instead of being unmet; a missing one resumes; the gate runs before the allowlist; a 17th name, a `*` pattern, or more than 64 KiB of required skills validates; discovery re-hashes an unchanged file each turn |
 | 5c | The text-only reminder event and its projections: `skill.reminder` (actor `engine`, payload `{names}`, user-role message), the engine turn that gives it once ("given" = a reminder after the most recent `turn.start`), in `history.go`, `execreplay.go`, `compactcut.go` and `compact.go` `spanEntries` (`delegateresume.go` unchanged) | about 450 lines | a resume, a compaction or a `LoadSessionHistory` round trip drops the reminder; a resumed session reminds twice; the reminder turn does not count against `max_turns` or draw a pool unit; a bare `skill.reminder` from actor `user` validates |
@@ -545,10 +555,9 @@ Order is 1, 2, 3, 4, 5a, 5c, 5d, 5b, 6. The reminder and the terminal failure we
 (event and projections) and 5d (terminal code and error contract). Dependencies: 3 needs 1 (the loader) and 2 (the
 roots and scope); 4 needs 2 and 3; 5a needs 3 (the event) and 4 (the offer set); 5c needs 5a; 5d needs 5c; 5b needs
 5a (the gate and `skill_required`) and 5d (the error contract it verifies).
-The ADR-012 (proposed) hooks work does
-not block any packet. Owners of the cross-cutting changes: replay and history handling of `skill.loaded` is
-packet 3; the composition-hash change is packet 2; the roots in `NewSessionToolRegistry` are packet 3; the `validate`
-output is packet 1.
+The ADR-012 hooks work (accepted, in progress) does not block any packet. Owners of the cross-cutting changes: replay
+and history handling of `skill.loaded` is packet 3; the composition-hash change is packet 2; the roots in
+`NewSessionToolRegistry` are packet 3; the `validate` output is packet 1.
 
 ## Cross-links
 
@@ -557,6 +566,7 @@ output is packet 1.
 - ADR-006 and ADR-010 (replay, compaction): the system prompt is request-time and never an event; the loaded-skill
   record is a log event that compaction does not remove; D13 of ADR-010 is the stance toward untrusted text.
 - ADR-009 (delegation): profiles, a child sees its brief and its profile; children load their own skills.
-- ADR-012 (hooks, proposed): enforcement is built into the loop ahead of hooks; its file-tool refusal
-  (`fs_path_protected` for `<workdir>/.flowstate/`) is what would stop a model writing skills under the roots.
+- ADR-012 (hooks, accepted): enforcement is built into the loop ahead of hooks; its file-tool refusal
+  (`fs_path_protected` for any `.flowstate` path component) stops `fs.write` and `fs.edit` writing project skills
+  under `.flowstate`; `--skills-path` roots and `exec.run` are outside it.
 - Pi's documentation: `docs/skills.md`; the Agent Skills specification (agentskills.io).
