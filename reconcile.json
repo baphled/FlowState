@@ -1,21 +1,7 @@
 {
-  "repo": "baphled/FlowState",
-  "remote": {"name": "origin", "url": "git@github.com:baphled/FlowState.git"},
-  "integration_branch": "next",
-  "release_branch": "main",
-  "resolve_modes": {"hook": ["ls-remote", "api"], "ci": ["ls-remote", "api"], "runner": ["api"], "merge_script": ["api"]},
-  "ttl_seconds": 900,
-  "retry": 1,
-  "plan_approval_public_key": "",
   "activation_ref": "",
-  "system_one_model": "",
-  "release_sensitive_paths": [
-    ".github/workflows/release.yml",
-    "go.mod",
-    "go.sum",
-    "scripts/admission_service.py",
-    "scripts/requirements-admission.txt"
-  ],
+  "integration_branch": "next",
+  "plan_approval_public_key": "6fb1f441896777336a174db186520ca585e29d95968851c708a19c667a2f8f15",
   "protected_globs": [
     ".github/**",
     ".githooks/**",
@@ -33,5 +19,37 @@
     "scripts/tests/test_reconcile_*.py",
     "scripts/tests/test_admission_*.py",
     "scripts/tests/test_base_checkers.py"
-  ]
+  ],
+  "release_branch": "main",
+  "release_sensitive_paths": [
+    ".github/workflows/release.yml",
+    "go.mod",
+    "go.sum",
+    "scripts/admission_service.py",
+    "scripts/requirements-admission.txt"
+  ],
+  "remote": {
+    "name": "origin",
+    "url": "git@github.com:baphled/FlowState.git"
+  },
+  "repo": "baphled/FlowState",
+  "resolve_modes": {
+    "ci": [
+      "ls-remote",
+      "api"
+    ],
+    "hook": [
+      "ls-remote",
+      "api"
+    ],
+    "merge_script": [
+      "api"
+    ],
+    "runner": [
+      "api"
+    ]
+  },
+  "retry": 1,
+  "system_one_model": "",
+  "ttl_seconds": 900
 }

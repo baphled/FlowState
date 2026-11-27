@@ -198,7 +198,8 @@ class LoadConfigTest(unittest.TestCase):
         config = load_config(os.path.join(root, "reconcile.json"))
         self.assertEqual((config.plan_approval_public_key, config.activation_ref, config.system_one_model,
                           config.release_sensitive_paths, config.protected_globs),
-                         ("", "", "", tuple(SENSITIVE), tuple(GLOBS)))
+                         ("6fb1f441896777336a174db186520ca585e29d95968851c708a19c667a2f8f15", "", "",
+                          tuple(SENSITIVE), tuple(GLOBS)))
 
 
 if __name__ == "__main__":
