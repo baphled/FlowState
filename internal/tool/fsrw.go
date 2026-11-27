@@ -56,6 +56,9 @@ var (
 // errorCodeFor maps a tool error to its tool.result error.code;
 // unmapped errors keep the generic tool_error code.
 func errorCodeFor(err error) string {
+	if code, ok := skillErrorCode(err); ok {
+		return code
+	}
 	switch {
 	case errors.Is(err, ErrPathOutsideWorkdir):
 		return ErrCodePathOutsideWorkdir

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"path/filepath"
@@ -161,6 +162,78 @@ var _ = Describe("Bounded session history", func() {
 	}, Entry("start", "turn.start"), Entry("end", "turn.end"), Entry("error", "provider.error"),
 		Entry("pause", "session.paused"), Entry("resume", "session.resumed"), Entry("cancel", "session.cancelled"), Entry("checkpoint", "turn.checkpoint"),
 		Entry("hooks loaded", "hooks.loaded"), Entry("hook invoked", "hook.invoked"), Entry("hook result", "hook.result"))
+
+	const hash = "abababababababababababababababababababababababababababababababab" // the sha256 of the file every skillCall frame and skillLoaded record carry
+	// skillCall is an announced, started and answered skill.load call of the skill name: its tool.result is the payload tail given, or a success over its frame.
+	skillCall := func(name, tail string) []store.RecordedEvent {
+		actor := store.RecordedEvent{Type: "tool.call", Actor: "tool:skill.load", PayloadJSON: `{"tool":"skill.load","tool_call_id":"k","args":{"name":"` + name + `"}}`}
+		frame := `<<<skill name="` + name + `" sha256="` + hash + `" file="">>>` + "\n"
+		result := store.RecordedEvent{Type: "tool.result", Actor: "tool:skill.load", PayloadJSON: `{"tool":"skill.load","tool_call_id":"k",` +
+			cmp.Or(tail, `"ok":true,"result":`+string(must(json.Marshal(frame)))) + `}`}
+		return []store.RecordedEvent{historyRow("assistant.message", `{"content":"working","tool_calls":[{"id":"k","name":"skill.load","arguments":{"name":"`+name+`"}}]}`), actor, result}
+	}
+	// skillLoaded is the skill.loaded record of the skill name for the call id, under hash, or the payload given.
+	skillLoaded := func(name, id, extra string) store.RecordedEvent {
+		payload := `{"name":"` + name + `","file":"","sha256":"` + hash + `","path":"` + name + `/SKILL.md","bytes":10,"tool_call_id":"` + id + `"}`
+		if extra != "" {
+			payload = extra
+		}
+		return store.RecordedEvent{Type: "skill.loaded", Actor: "engine", PayloadJSON: payload}
+	}
+
+	It("accepts skill.loaded after its completed skill.load call and adds no message", func() {
+		base := append(historyBatch()[:1], skillCall("tdd", "")...)
+		with := append(base, skillLoaded("tdd", "k", "")) // written past base's end, which stays intact
+		Expect(must(replaySessionHistory(with, limits))).To(Equal(must(replaySessionHistory(base, limits))))
+	})
+
+	It("accepts skill.loaded after the tool.after hooks of its call", func() {
+		events := append(append(historyBatch()[:1], skillCall("tdd", "")...), historyRow("hook.invoked", `{"id":"after"}`), historyRow("hook.result", `{"id":"after"}`), skillLoaded("tdd", "k", ""))
+		Expect(must(replaySessionHistory(events, limits))).To(HaveLen(3))
+	})
+
+	DescribeTable("accepts skill.loaded for a skill named after a Windows device word (such a directory loads on Unix)",
+		func(name string) {
+			events := append(append(historyBatch()[:1], skillCall(name, "")...), skillLoaded(name, "k", ""))
+			Expect(must(replaySessionHistory(events, limits))).To(HaveLen(3))
+		},
+		Entry("nul", "nul"), Entry("aux", "aux"), Entry("con", "con"), Entry("prn", "prn"), Entry("com1", "com1"), Entry("lpt9", "lpt9"))
+
+	DescribeTable("rejects a skill.loaded that is not the record of its completed skill.load call", func(events []store.RecordedEvent) {
+		_, err := replaySessionHistory(events, limits)
+		Expect(err).To(MatchError(ErrInvalidHistory))
+	},
+		Entry("stray, with no call", []store.RecordedEvent{skillLoaded("tdd", "k", "")}),
+		Entry("after another tool's completed call", []store.RecordedEvent{historyBatch()[0], historyBatch()[1], historyStart(), historyResult(), skillLoaded("tdd", "c", "")}),
+		Entry("after a failed load", append(append(historyBatch()[:1], skillCall("tdd", `"ok":false,"error":{"code":"skill_refused","message":"no"}`)...), skillLoaded("tdd", "k", ""))),
+		Entry("before the result", []store.RecordedEvent{historyBatch()[0], historyBatch()[1], skillCall("tdd", "")[1], skillLoaded("tdd", "k", "")}),
+		Entry("for another call id", append(append(historyBatch()[:1], skillCall("tdd", "")...), skillLoaded("tdd", "other", ""))),
+		Entry("from an actor other than the engine", func() []store.RecordedEvent {
+			events := append(historyBatch()[:1], skillCall("tdd", "")...)
+			last := skillLoaded("tdd", "k", "")
+			last.Actor = "user"
+			return append(events, last)
+		}()),
+		Entry("twice for one call", append(append(historyBatch()[:1], skillCall("tdd", "")...), skillLoaded("tdd", "k", ""), skillLoaded("tdd", "k", ""))),
+		Entry("after the conversation moved on", append(append(historyBatch()[:1], skillCall("tdd", "")...), historyRow("assistant.message", `{"content":"done"}`), skillLoaded("tdd", "k", ""))),
+		Entry("with no name", append(append(historyBatch()[:1], skillCall("tdd", "")...), skillLoaded("tdd", "k", `{"file":"","sha256":"`+hash+`","path":"tdd/SKILL.md","bytes":10,"tool_call_id":"k"}`))),
+		Entry("with no hash", append(append(historyBatch()[:1], skillCall("tdd", "")...), skillLoaded("tdd", "k", `{"name":"tdd","file":"","path":"tdd/SKILL.md","bytes":10,"tool_call_id":"k"}`))),
+		Entry("with no path", append(append(historyBatch()[:1], skillCall("tdd", "")...), skillLoaded("tdd", "k", `{"name":"tdd","file":"","sha256":"`+hash+`","bytes":10,"tool_call_id":"k"}`))),
+		Entry("with zero bytes", append(append(historyBatch()[:1], skillCall("tdd", "")...), skillLoaded("tdd", "k", `{"name":"tdd","file":"","sha256":"`+hash+`","path":"tdd/SKILL.md","bytes":0,"tool_call_id":"k"}`))),
+		Entry("with a hash that is not hex", append(append(historyBatch()[:1], skillCall("tdd", "")...), skillLoaded("tdd", "k", `{"name":"tdd","file":"","sha256":"`+strings.Repeat("zz", 32)+`","path":"tdd/SKILL.md","bytes":10,"tool_call_id":"k"}`))),
+		Entry("with an uppercase hash", append(append(historyBatch()[:1], skillCall("tdd", "")...), skillLoaded("tdd", "k", `{"name":"tdd","file":"","sha256":"`+strings.ToUpper(hash)+`","path":"tdd/SKILL.md","bytes":10,"tool_call_id":"k"}`))),
+		Entry("with more bytes than a skill file may hold", append(append(historyBatch()[:1], skillCall("tdd", "")...), skillLoaded("tdd", "k", `{"name":"tdd","file":"","sha256":"`+hash+`","path":"tdd/SKILL.md","bytes":99999999,"tool_call_id":"k"}`))),
+		Entry("with an unknown field", append(append(historyBatch()[:1], skillCall("tdd", "")...), skillLoaded("tdd", "k", `{"name":"tdd","file":"","sha256":"`+hash+`","path":"tdd/SKILL.md","bytes":10,"tool_call_id":"k","root":"/home/u"}`))),
+		Entry("with a path outside the skills root", append(append(historyBatch()[:1], skillCall("tdd", "")...), skillLoaded("tdd", "k", `{"name":"..","file":"","sha256":"`+hash+`","path":"../../etc/passwd","bytes":10,"tool_call_id":"k"}`))),
+		Entry("with a path under another name than the skill's", append(append(historyBatch()[:1], skillCall("tdd", "")...), skillLoaded("tdd", "k", `{"name":"tdd","file":"","sha256":"`+hash+`","path":"other/SKILL.md","bytes":10,"tool_call_id":"k"}`))),
+		Entry("with a name outside the loader's rule", append(append(historyBatch()[:1], skillCall("tdd", "")...), skillLoaded("tdd", "k", `{"name":"Tdd","file":"","sha256":"`+hash+`","path":"Tdd/SKILL.md","bytes":10,"tool_call_id":"k"}`))),
+		Entry("whose path names another file than its file field", append(append(historyBatch()[:1], skillCall("tdd", "")...), skillLoaded("tdd", "k", `{"name":"tdd","file":"reference/guide.md","sha256":"`+hash+`","path":"tdd/SKILL.md","bytes":10,"tool_call_id":"k"}`))),
+		Entry("whose path names a file though none is recorded", append(append(historyBatch()[:1], skillCall("tdd", "")...), skillLoaded("tdd", "k", `{"name":"tdd","file":"","sha256":"`+hash+`","path":"tdd/reference/guide.md","bytes":10,"tool_call_id":"k"}`))),
+		Entry("with no call id", append(append(historyBatch()[:1], skillCall("tdd", "")...), skillLoaded("tdd", "k", `{"name":"tdd","file":"","sha256":"`+hash+`","path":"tdd/SKILL.md","bytes":10}`))),
+		Entry("whose frame carries another hash than the record", append(append(historyBatch()[:1], skillCall("tdd", `"ok":true,"result":`+string(must(json.Marshal(`<<<skill name="tdd" sha256="`+strings.Repeat("cd", 32)+`" file="">>>`+"\n"))))...), skillLoaded("tdd", "k", ""))),
+		Entry("whose frame names another skill than the record", append(append(historyBatch()[:1], skillCall("other", "")...), skillLoaded("tdd", "k", ""))),
+		Entry("whose frame names another file than the record", append(append(historyBatch()[:1], skillCall("tdd", "")...), skillLoaded("tdd", "k", `{"name":"tdd","file":"reference/guide.md","sha256":"`+hash+`","path":"tdd/reference/guide.md","bytes":10,"tool_call_id":"k"}`))),
+		Entry("after a result that is not a frame", append(append(historyBatch()[:1], skillCall("tdd", `"ok":true,"result":"hello"`)...), skillLoaded("tdd", "k", ""))))
 	It("projects a hook denial as the shared error text, as the rebuild does", func() {
 		events := []store.RecordedEvent{
 			historyRow("user.message", `{"content":"request"}`),

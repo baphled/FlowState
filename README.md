@@ -456,9 +456,19 @@ directory, the project directory `.flowstate/skills` under the project root (the
 in, never `--workdir`), both, or neither. A project skill is read only under `project` or `both`: a repository
 cannot make its skills load by existing. `--skills-path <absolute dir>` (repeatable) adds a directory, and
 `--skills-default <list>` (repeatable; a value may be a comma-separated list) names the skills, or `*`-suffixed
-prefixes, the root session is offered. Today these flags are parsed, validated and carried to the run; nothing
-loads skills in a run yet, so they have no effect on it. `skills list` and `skills validate` use the scope and the
-paths to decide what to list, and check `--skills-default` for its shape only.
+prefixes, the root session is offered. `skills list` and `skills validate` use the scope and the paths to decide
+what to list, and check `--skills-default` for its shape only.
+
+**`skill.load`:** a run whose `--skills-default` names a skill one of its directories holds registers the `skill.load`
+tool, and offers it to the model when `skill.load` is on the tool allowlist (with nothing offered, a usage error
+names the cause). `{name}` returns the skill's `SKILL.md` body (so does `{name, file: "SKILL.md"}`); `{name, file}`
+a supporting file below its directory, read through `os.OpenRoot` (no `..`, no absolute path, no symlink out), at
+most 32 KiB and 1000 lines, refused rather than truncated; an empty or missing file is `skill_not_found`. The
+result is fenced (`<<<skill name="…" sha256="…" file="…">>>` to `<<<end skill>>>`) and carries no path, and neither
+does any error. After a successful load the engine writes a `skill.loaded` event `{name, file, sha256, path, bytes,
+tool_call_id}` after the `tool.result`, never for a refused one; the hash is of the whole file as read. Not built
+yet: the prompt block listing the offered skills, the profile `skills:` key (so a child offers no skill) and any
+requirement to load a skill.
 
 `skills list`, `skills validate` and `session run` take these flags; every other command, `serve` and
 `swarm run --execute` included, refuses them with a usage error (exit 2), as does an unknown scope, a relative

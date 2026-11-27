@@ -1,7 +1,9 @@
 package app
 
 import (
+	"cmp"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +11,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/session"
+	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/store"
 	"github.com/baphled/flowstate/internal/tool"
 )
@@ -54,14 +58,18 @@ func replaySessionHistory(events []store.RecordedEvent, limits HistoryLimits) ([
 func (h *historyState) accept(event store.RecordedEvent) error {
 	switch event.Type {
 	case TypeUserMessage, TypeAssistantMessage:
+		h.loaded = ""
 		return h.message(event)
 	case tool.TypeToolCall, tool.TypeToolResult:
 		return h.toolEvent(event)
+	case TypeSkillLoaded:
+		return h.skillLoaded(event)
 	case TypeAssistantDelta:
 		var payload historyMessagePayload
 		if historyDecode(event.PayloadJSON, &payload) != nil || payload.Delta == nil || len(h.pending) != 0 || !historyAssistantActor(event.Actor) {
 			return ErrInvalidHistory
 		}
+		h.loaded = ""
 		h.streaming = true
 	case "turn.start", TypeTurnEnd, TypeProviderError, "session.cancelled", "session.paused", "session.resumed", "turn.checkpoint",
 		"hooks.loaded", "hook.invoked", "hook.result":
@@ -102,6 +110,7 @@ func historyAssistantActor(actor string) bool {
 }
 
 func (h *historyState) toolEvent(event store.RecordedEvent) error {
+	h.loaded = ""
 	var payload historyToolPayload
 	if historyDecode(event.PayloadJSON, &payload) != nil {
 		return ErrInvalidHistory
@@ -131,6 +140,10 @@ func (h *historyState) toolEvent(event store.RecordedEvent) error {
 		return err
 	}
 	delete(h.pending, id)
+	if call.call.Name == tool.SkillLoadName && *payload.OK {
+		h.loaded, h.loadedFrame = id, ""                   // the one call a skill.loaded may follow, bound to the result the model received
+		_ = json.Unmarshal(payload.Result, &h.loadedFrame) // a result that is not a frame leaves nothing to bind the record to
+	}
 	return h.add(provider.Message{Role: "tool", ToolCallID: id, Content: content})
 }
 
@@ -168,6 +181,28 @@ func validHistoryResult(payload historyToolPayload, started bool) bool {
 		Message *string `json:"message"`
 	}
 	return payload.Result == nil && historyDecode(string(payload.Error), &failure) == nil && failure.Code != "" && failure.Message != nil && (started || failure.Code == "tool_denied")
+}
+
+// skillLoaded accepts the skill.loaded record of the skill.load call whose successful result it follows: engine actor,
+// that call id, exactly the name, lowercase sha256 and file of the frame the model received in that result (so the record
+// cannot claim bytes the model never got), a size of at most skill.MaxFileBytes, no unknown field, and the file's path under
+// the skill (a Windows device word is a valid name: such a directory loads on Unix); anything else fails closed (ADR-013 D9).
+func (h *historyState) skillLoaded(event store.RecordedEvent) error {
+	var payload historySkillPayload
+	dec := json.NewDecoder(strings.NewReader(event.PayloadJSON)) // strict where historyDecode is lenient: the record has a fixed shape
+	dec.DisallowUnknownFields()
+	if h.loaded == "" || event.Actor != session.ActorEngine || historyDecode(event.PayloadJSON, &payload) != nil || dec.Decode(&payload) != nil {
+		return ErrInvalidHistory
+	}
+	sum, hexerr := hex.DecodeString(payload.SHA256)
+	file := cmp.Or(payload.File, skill.FileName)
+	if payload.ToolCallID != h.loaded || hexerr != nil || len(sum) != 32 || hex.EncodeToString(sum) != payload.SHA256 || // the frame's form: lowercase
+		!skill.ValidName(payload.Name) || payload.Bytes <= 0 || payload.Bytes > skill.MaxFileBytes || payload.Path != payload.Name+"/"+file ||
+		skill.ValidSupportPath(file) != nil || !strings.HasPrefix(h.loadedFrame, tool.SkillFrameHeader(payload.Name, payload.SHA256, payload.File)+"\n") {
+		return ErrInvalidHistory
+	}
+	h.loaded = ""
+	return nil
 }
 
 func (h *historyState) add(message provider.Message) error {

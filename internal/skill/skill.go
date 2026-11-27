@@ -20,6 +20,10 @@ var ErrInvalidSkill = errors.New("skill: invalid skill")
 
 var nameRE = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
+// ValidName reports whether name follows the loader's rule: lowercase words joined by single hyphens, at most
+// MaxNameChars. A Windows device word (nul, aux...) is a valid name: a skill directory so named loads on Unix.
+func ValidName(name string) bool { return nameRE.MatchString(name) && len(name) <= MaxNameChars }
+
 // reservedRE matches a Windows device name, with or without an extension.
 var reservedRE = regexp.MustCompile(`(?i)^(con|prn|aux|nul|com\d|lpt\d)(\..*)?$`)
 
@@ -36,7 +40,7 @@ var acceptedKey = map[string]bool{"license": true, "compatibility": true, "metad
 // control, format or separator character. Any other key is dropped and returned
 // in ignored (sorted); it is never an error. The file is at most MaxFileBytes
 // and MaxFileLines, and its JSON-marshalled body fits MaxResultBytes. The body
-// is UTF-8 without NUL, ESC, DEL, C1, bidirectional controls or Unicode tag
+// is UTF-8 without control characters but tab, newline and carriage return, without bidi controls or Unicode tag
 // characters, and does not contain CloseFence. Path and Source are set by the
 // loader; the name is checked against the directory there.
 func Parse(data []byte) (s Skill, ignored []string, err error) {
@@ -47,7 +51,7 @@ func Parse(data []byte) (s Skill, ignored []string, err error) {
 	if err != nil {
 		return Skill{}, nil, err
 	}
-	if cerr := checkText(body, "the body"); cerr != nil {
+	if cerr := ValidText(body, "the body"); cerr != nil {
 		return Skill{}, nil, cerr
 	}
 	if bytes.Contains(body, []byte(CloseFence)) {
@@ -63,7 +67,7 @@ func Parse(data []byte) (s Skill, ignored []string, err error) {
 	if s.Name, err = required(fields, "name"); err != nil {
 		return Skill{}, nil, err
 	}
-	if !nameRE.MatchString(s.Name) || len(s.Name) > MaxNameChars {
+	if !ValidName(s.Name) {
 		return Skill{}, nil, fmt.Errorf("%w: name must match %s and be at most %d characters", ErrInvalidSkill, nameRE, MaxNameChars)
 	}
 	if s.Description, err = required(fields, "description"); err != nil {
@@ -74,6 +78,13 @@ func Parse(data []byte) (s Skill, ignored []string, err error) {
 	}
 	s.Body = strings.TrimSpace(string(body))
 	return s, ignored, nil
+}
+
+// Body validates a freshly read SKILL.md exactly as Parse does, refusing what Parse refuses, and returns the
+// name (for skill.load to hold against the skill it was asked for) and the body without the frontmatter.
+func Body(data []byte) (name, body string, err error) {
+	s, _, err := Parse(data)
+	return s.Name, s.Body, err
 }
 
 // lineCount counts lines; a final line without a newline still counts.
@@ -117,10 +128,10 @@ func hidden(s string) bool {
 	return false
 }
 
-// checkText refuses text that is not UTF-8, or holds NUL, ESC, DEL, a C1
-// control, a bidirectional control or a Unicode tag character. Other format
-// characters (ZWJ, ZWNJ) stay allowed: emoji text uses them.
-func checkText(text []byte, what string) error {
+// ValidText refuses text that is not UTF-8, or holds a control character other than tab, newline and carriage return,
+// a bidirectional control or a Unicode tag character: the rule Parse holds a body to and skill.load a supporting file.
+// Other format characters (ZWJ, ZWNJ) stay allowed: emoji text uses them. what names the text in the error.
+func ValidText(text []byte, what string) error {
 	if !utf8.Valid(text) {
 		return fmt.Errorf("%w: %s is not valid UTF-8", ErrInvalidSkill, what)
 	}
@@ -132,11 +143,10 @@ func checkText(text []byte, what string) error {
 	return nil
 }
 
-// refused reports whether r is a control, bidirectional or tag character.
+// refused reports whether r is a control other than tab, newline and carriage return, a bidi control or a tag character.
 func refused(r rune) bool {
-	return r == 0 || r == 0x1b || r == 0x7f || (r >= 0x80 && r <= 0x9f) ||
-		r == 0x61c || r == 0x200e || r == 0x200f || (r >= 0x202a && r <= 0x202e) ||
-		(r >= 0x2066 && r <= 0x2069) || (r >= 0xe0000 && r <= 0xe007f)
+	return (unicode.IsControl(r) && r != '\t' && r != '\n' && r != '\r') || r == 0x61c || r == 0x200e || r == 0x200f ||
+		(r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069) || (r >= 0xe0000 && r <= 0xe007f)
 }
 
 // decodeHeader parses the frontmatter into its top-level value nodes and the
@@ -219,16 +229,17 @@ func split(data []byte) (header, body []byte, err error) {
 // separated, every segment from [A-Za-z0-9._-], none empty, none starting with
 // a dot (so no "." or ".."), none ending in a dot or being a Windows device
 // name (CON, NUL, COM1... with any extension), because the value is written into a fence header.
+// The message echoes at most 128 runes of rel.
 func ValidSupportPath(rel string) error {
 	if rel == "" {
 		return fmt.Errorf("%w: the file path is empty", ErrInvalidSkill)
 	}
 	for _, seg := range strings.Split(rel, "/") {
 		if !segmentRE.MatchString(seg) {
-			return fmt.Errorf("%w: %q: a path segment must match %s", ErrInvalidSkill, rel, segmentRE)
+			return fmt.Errorf("%w: %.128q: a path segment must match %s", ErrInvalidSkill, rel, segmentRE)
 		}
 		if strings.HasSuffix(seg, ".") || reservedRE.MatchString(seg) {
-			return fmt.Errorf("%w: %q: a path segment is a Windows reserved name or ends with a dot", ErrInvalidSkill, rel)
+			return fmt.Errorf("%w: %.128q: a path segment is a Windows reserved name or ends with a dot", ErrInvalidSkill, rel)
 		}
 	}
 	return nil
