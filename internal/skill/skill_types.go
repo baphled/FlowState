@@ -15,6 +15,8 @@ type Severity string
 const (
 	// SourceUser marks the per-user skills directory.
 	SourceUser Source = "user"
+	// SourceProject marks the project skills directory below the project root.
+	SourceProject Source = "project"
 	// SourcePath marks an explicitly named directory.
 	SourcePath Source = "path"
 

@@ -133,7 +133,7 @@ func serveCreate(ctx context.Context, st *app.Store, fl *flags, req server.Creat
 	if strings.TrimSpace(req.Task) == "" {
 		return server.Session{}, fmt.Errorf("%w: task must not be empty", app.ErrUsage)
 	}
-	sha, cerr := compositionSHA256(provider, model, cfl.db, cfl.configSource, effectiveAllowlist(&cfl))
+	sha, cerr := compositionSHA256(provider, model, cfl.db, cfl.configSource, effectiveAllowlist(&cfl), effectiveSkills(&cfl))
 	if cerr != nil {
 		return server.Session{}, cerr
 	}

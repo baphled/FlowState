@@ -31,7 +31,7 @@ func cmdNew(ctx context.Context, st *app.Store, fl *flags, stdout, stderr *os.Fi
 		writeError(stderr, fmt.Errorf("%w: --task must not be empty", app.ErrUsage))
 		return exitUsage
 	}
-	sha, cerr := compositionSHA256(provider, model, fl.db, fl.configSource, effectiveAllowlist(fl))
+	sha, cerr := compositionSHA256(provider, model, fl.db, fl.configSource, effectiveAllowlist(fl), effectiveSkills(fl))
 	if cerr != nil {
 		writeError(stderr, cerr)
 		return exitCodeFor(cerr)

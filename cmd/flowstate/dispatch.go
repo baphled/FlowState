@@ -47,8 +47,7 @@ func dispatchContexted(ctx context.Context, args []string, stdout, stderr *os.Fi
 	if isMetaCommand(args[0], stdout) {
 		return exitOK
 	}
-	if givesHooksFlag(args) && !acceptsHooks(args) {
-		refuseHooks(commandName(args), stderr)
+	if refuseInapplicableFlag(args, stderr) {
 		return exitUsage
 	}
 	if code, routed := routeReplay(ctx, args, stdout, stderr); routed {
@@ -216,7 +215,7 @@ func parseFlags(args []string) (*flags, []string, error) {
 				return nil, nil, serr
 			}
 		case strings.HasPrefix(a, "--tool"), a == "--allow", a == "--allow-file", a == "--workdir", strings.HasPrefix(a, "--agents"),
-			a == "--hooks", strings.HasPrefix(a, "--hooks="):
+			a == "--hooks", strings.HasPrefix(a, "--hooks="), isSkillsFlag(a):
 			if serr := fl.setToolFlag(a, take); serr != nil {
 				return nil, nil, serr
 			}
@@ -271,10 +270,10 @@ func (f *flags) setString(name string, take func() (string, error)) error {
 	return nil
 }
 
-// setToolFlag assigns one tool-related flag (--tool, --tool-arg,
-// --allow, --allow-file, --workdir), resolving `--flag value` or
-// `--flag=value`. Prefix order matters: --tool-arg and --allow-file
-// must be matched before --tool and --allow.
+// setToolFlag assigns one run-shaping flag (--tool, --tool-arg, --allow,
+// --allow-file, --workdir, --agents, --hooks and the skills settings),
+// resolving `--flag value` or `--flag=value`. Prefix order matters: --tool-arg
+// and --allow-file must be matched before --tool and --allow.
 func (f *flags) setToolFlag(name string, take func() (string, error)) error {
 	v, err := flagValue(name, take)
 	if err != nil {
@@ -296,6 +295,8 @@ func (f *flags) setToolFlag(name string, take func() (string, error)) error {
 		f.agents = v
 	case strings.HasPrefix(name, "--hooks"):
 		return f.setHooks(v)
+	case isSkillsFlag(name):
+		return f.setSkillsFlag(name, v)
 	default:
 		f.workdir = v
 	}
@@ -379,8 +380,13 @@ session message <id> --from <parent> --body <text|@file> [--db path]
 session list   [--status <s>] [--db path]
 session run    <id> [--budget <n>] [--max-tokens <n>] [--max-turns <n>] [--allow <name>]... [--allow-file <manifest>] [--workdir <path>]
                [--agents user|project|both] [--hooks user|project|both|none] [--db path]
+               [--skills user|project|both|none] [--skills-path <abs dir>]... [--skills-default <list>]...
                (--hooks picks which lifecycle hook files apply, default user; none runs no hook;
                the project hook file is found under the project root, never --workdir;
+               --skills picks which skills directories a run reads, default user; --skills-path adds an absolute
+               directory and --skills-default names the skills the root session is offered; both also come from an
+               explicit --config file, never the ambient flowstate.json; the project skills directory is found under
+               the project root, never --workdir; --skills-path replaces skills_paths, --skills-default skills_default;
                --allow/--allow-file replace the config tool_allowlist; --workdir only sets where tools
                run and needs an allowlist from --allow, --allow-file or tool_allowlist; --agents loads agent
                profiles for the delegate tool, which must also be allowlisted: --allow delegate;
@@ -400,7 +406,8 @@ session tool   <id> --tool <name> [--tool-arg <json>] [--allow <name>]... [--all
 store info [--db path]
 agents list [--agents user|project|both] [--workdir path]
 agents validate <file...>
-skills list [dir...]       (no dir: the user skills directory; always JSON, --json is ignored)
+skills list [dir...]       (no dir: the --skills scope's directories, default user, and each --skills-path;
+                           a dir replaces them; always JSON, --json is ignored)
 skills validate [dir...]   (every diagnostic and the counts; exit 4 when a skill failed)
 
 common flags: --db <path> (default ./flowstate.db), --config <path> (default ./flowstate.json), --json
@@ -490,6 +497,17 @@ func commandName(args []string) string {
 	return strings.Join(words, " ")
 }
 
+// refuseInapplicableFlag writes the usage error for --hooks or a skills flag the command cannot take.
+func refuseInapplicableFlag(args []string, stderr *os.File) bool {
+	if givesHooksFlag(args) && !acceptsHooks(args) {
+		return refuseHooks(commandName(args), stderr)
+	}
+	if givesSkillsFlag(args) && !acceptsSkillsSettings(args) {
+		return refuseSkillsSettings(commandName(args), stderr)
+	}
+	return false
+}
+
 // refuseHooks writes the usage error for --hooks on a command that cannot run
 // hooks and returns true.
 func refuseHooks(command string, stderr *os.File) bool {
@@ -502,6 +520,91 @@ func refuseHooks(command string, stderr *os.File) bool {
 func givesHooksFlag(args []string) bool {
 	for _, a := range args {
 		if a == "--hooks" || strings.HasPrefix(a, "--hooks=") {
+			return true
+		}
+	}
+	return false
+}
+
+// isSkillsFlag reports whether a is --skills, --skills-path or --skills-default, in either spelling.
+func isSkillsFlag(a string) bool {
+	name, _, _ := strings.Cut(a, "=")
+	switch name {
+	case "--skills", "--skills-path", "--skills-default":
+		return true
+	}
+	return false
+}
+
+// setSkillsFlag assigns one skills flag its resolved value, checking each entry rule as it is added.
+func (f *flags) setSkillsFlag(a, v string) error {
+	name, _, _ := strings.Cut(a, "=")
+	switch name {
+	case "--skills":
+		return f.setSkills(v)
+	case "--skills-path":
+		next := append(append([]string{}, f.skillsPaths...), v)
+		if perr := checkSkillsPaths("--skills-path", next); perr != nil {
+			return perr
+		}
+		f.skillsPaths = next
+	default:
+		next := append(append([]string{}, f.skillsDefault...), strings.Split(v, ",")...)
+		if nerr := checkSkillsDefault("--skills-default", next); nerr != nil {
+			return nerr
+		}
+		f.skillsDefault = next
+	}
+	return nil
+}
+
+// setSkills assigns --skills; an empty value or an unknown scope is a usage error.
+func (f *flags) setSkills(v string) error {
+	if v == "" {
+		return fmt.Errorf("flag --skills requires user, project, both or none")
+	}
+	scope, perr := app.ParseSkillsScope(v)
+	if perr != nil {
+		return fmt.Errorf("%s", strings.TrimPrefix(perr.Error(), app.ErrUsage.Error()+": "))
+	}
+	f.skills, f.skillsSet = scope, true
+	return nil
+}
+
+// skillsScope is the effective --skills scope: user unless the flag was given.
+func skillsScope(fl *flags) app.SkillsScope {
+	if fl.skills == "" {
+		return app.SkillsScopeUser
+	}
+	return fl.skills
+}
+
+// acceptsSkillsSettings reports whether the command in args takes the skills
+// settings: skills list, skills validate and session run. Everything else
+// refuses them; serve and swarm run join when a later packet adds their flags.
+func acceptsSkillsSettings(args []string) bool {
+	switch args[0] {
+	case "skills":
+		return len(args) > 1 && (args[1] == "list" || args[1] == "validate")
+	case "session":
+		return len(args) > 1 && args[1] == "run"
+	}
+	return false
+}
+
+// refuseSkillsSettings writes the usage error for the skills settings flags on
+// a command that cannot take them and returns true.
+func refuseSkillsSettings(command string, stderr *os.File) bool {
+	writeError(stderr, fmt.Errorf("%w: --skills, --skills-path and --skills-default do not apply to `%s`: they apply to "+
+		"`skills list`, `skills validate` and `session run`", errUsageCmd, command))
+	return true
+}
+
+// givesSkillsFlag reports whether args carry a skills settings flag, in either
+// spelling.
+func givesSkillsFlag(args []string) bool {
+	for _, a := range args {
+		if isSkillsFlag(a) {
 			return true
 		}
 	}

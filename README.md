@@ -135,7 +135,7 @@ on stderr. Flags that do not apply (`--budget`, `--model` and the like) are refu
 | Command | Purpose |
 | --- | --- |
 | `session new` | Create a session: `--provider`, `--model`, `--task <text\|@file>`, `--parent`, `--reserve` |
-| `session run <id>` | One turn or tool loop: `--budget`, `--max-tokens`, `--max-turns`, `--allow`, `--allow-file`, `--workdir`, `--agents`, `--hooks` |
+| `session run <id>` | One turn or tool loop: `--budget`, `--max-tokens`, `--max-turns`, `--allow`, `--allow-file`, `--workdir`, `--agents`, `--hooks`, `--skills`, `--skills-path`, `--skills-default` |
 | `session compact <id>` | Compact a tool-loop session's context by hand: `--instructions <text>`; see [Compaction](#compaction) |
 | `session unlock <id>` | Report, or with `--force` delete, a lease row that cannot be judged; see [Unlocking a lease](#unlocking-a-lease) |
 | `session list [--status <s>]` | List sessions |
@@ -153,7 +153,7 @@ on stderr. Flags that do not apply (`--budget`, `--model` and the like) are refu
 | `store info` | Database facts; the file is not modified (WAL sidecars may appear): schema, journal mode, foreign keys |
 | `agents list` | List agent profiles as a JSON array: `--agents user\|project\|both` (default `user`), `--workdir` |
 | `agents validate <file...>` | Validate profile files: one `{path, ok, error?}` per file; exit 4 if any is invalid |
-| `skills list [dir...]` | List skills (ADR-013) from the user directory, or from each `dir`, as JSON with counts; no hashes |
+| `skills list [dir...]` | List skills (ADR-013) from the `--skills` scope's directories (default `user`) and each `--skills-path`, or from each `dir`, as JSON with counts; no hashes |
 | `skills validate [dir...]` | Print every skill diagnostic and the counts; exit 4 if any skill failed to load |
 | `serve` | Start the HTTP API: `--addr`, `--db`, `--config`, `--hooks` |
 
@@ -448,6 +448,29 @@ neither). A `user.prompt` hook that failed under `on_failure: deny` refuses the 
 the log: the doctor strips control, format and line-separator characters from them and bounds them (a reason
 to 1 KiB) before the CLI or the HTTP body prints them, so a hand-written or older log cannot paint the terminal.
 
+### Skills settings
+
+`--skills user|project|both|none` (default `user`) picks which skills directories a run reads
+([ADR-013](docs/adr/ADR-013-skills-and-enforcement.md)): the user directory `flowstate/skills` in the OS config
+directory, the project directory `.flowstate/skills` under the project root (the directory the command was started
+in, never `--workdir`), both, or neither. A project skill is read only under `project` or `both`: a repository
+cannot make its skills load by existing. `--skills-path <absolute dir>` (repeatable) adds a directory, and
+`--skills-default <list>` (repeatable; a value may be a comma-separated list) names the skills, or `*`-suffixed
+prefixes, the root session is offered. Today these flags are parsed, validated and carried to the run; nothing
+loads skills in a run yet, so they have no effect on it. `skills list` and `skills validate` use the scope and the
+paths to decide what to list, and check `--skills-default` for its shape only.
+
+`skills list`, `skills validate` and `session run` take these flags; every other command, `serve` and
+`swarm run --execute` included, refuses them with a usage error (exit 2), as does an unknown scope, a relative
+`--skills-path` or a blank `--skills-default` entry. On `skills list|validate` a positional directory replaces the
+scope and the paths, so the two cannot be mixed.
+
+The same settings can come from an **explicit** `--config <path>` file as the flat keys `skills_paths` (a list of
+absolute directories) and `skills_default`; a flag replaces the key it names. The ambient `./flowstate.json` may
+not set them: a repository could otherwise commit the file and choose which skills its sessions load. Such a file
+is `config_invalid` (exit 4), and so is a relative `skills_paths` entry. Both keys join the session's
+`config_sha256` only when non-empty, so every hash recorded before they existed is unchanged.
+
 ### Running a swarm
 
 `swarm run <manifest> --execute` runs a swarm for real. The manifest names a `coordinator:` profile and gives each
@@ -585,6 +608,9 @@ env file through XDG, but it does read `$HOME/.config/go/env` through the forwar
 `enabled` is a boolean, `reserve` and `keep_recent` are counts of tokens of at least 1, and `context_window` is
 1 to 100000000. Config only: there is no flag or environment override, an unknown key inside it is rejected, keys
 match case-insensitively and a repeated key takes its last value.
+
+`skills_paths` and `skills_default` are accepted from an explicit `--config` file only: the ambient `./flowstate.json`
+refuses them (exit 4), see [Skills settings](#skills-settings).
 
 **Automatic compaction.** In the tool loop (`session run` with a tool surface, and the `delegate` children it starts)
 the engine measures the context before each provider request: the last reported turn context plus an estimate (bytes /
