@@ -381,8 +381,36 @@ flowstate session run "$id" --budget 200 --agents user --allow delegate --workdi
 ([ADR-012](docs/adr/ADR-012-lifecycle-hooks.md)). It is accepted by `session run`, `serve` and
 `swarm run --execute`; every other command refuses it with a usage error (exit 2), as does an unknown value. The
 project hook file is found under the project root (the directory the command was started in), never under
-`--workdir`. The flag is parsed and carried to the run today; hooks themselves are not loaded or run yet, so it has
-no effect on a run.
+`--workdir`. A root run loads its hook set once, writes `hooks.loaded` (scope, set digest, each hook's id, source, file,
+resolved executable and its sha256) and fires the points below; children, nested children and swarm packet children
+inherit the loaded set, and a replay never runs a hook. Only `session run` and `serve` root runs write `hooks.loaded`
+and fire the run-level points (`user.prompt`, `session.start`, `session.end`); a `swarm run --execute` coordinator
+loads the set for its own loop-level points and its packet children but writes no `hooks.loaded` and fires no
+run-level point (ADR-012 gap 8). Hooks run with your permissions: project hooks execute code from the repository, so
+enable `--hooks project|both` only for repositories you trust.
+
+Hook files are `hooks.json` (user: the `flowstate` directory under the OS user config directory; project: the
+`.flowstate` directory under the project root), never `flowstate.json`. Only command hooks exist today: argv, no
+shell, a JSON document on stdin, a scrubbed environment (no provider keys), a deadline (10 s by default, 60 s at most)
+and caps on stdin (256 KiB) and stdout (64 KiB). Exit 0 with empty stdout allows. Otherwise stdout must be one JSON
+object whose fields are all optional: `decision` (`allow` or `deny`), `reason` and, where the point permits them,
+`args` (a hook with `transform: true`, at `tool.before`) or `stop` (at `turn.after`); a `deny` needs a reason. A
+`context` field is the failure `context_unsupported`, a field the point does not permit is `field_not_permitted`, and
+any other invalid stdout is `invalid_output`. Exit 2 denies with stderr as the reason, and any other exit status is a
+failure. A failure follows the hook's `on_failure`: `tool.before` and `user.prompt` default to `deny`, every other
+point defaults to `allow` and refuses `on_failure: deny` at load.
+
+| Point | Fires | A hook may |
+|---|---|---|
+| `user.prompt` | once per root run, after crash recovery, before the resume writes | refuse the run: `hook_refused`, exit 2, HTTP 422 |
+| `session.start`, `session.end` | around a root run, `session.end` also when it fails | observe |
+| `tool.before` | before a tool call is recorded (after the registry and allowlist checks) | deny it, or (`transform: true`) rewrite its arguments |
+| `tool.after` | after the result is recorded | observe |
+| `turn.after` | after every provider turn of an exec loop | stop the run (below) |
+
+A denied call is recorded as the model's call plus an error result with the code `hook_denied`; the model sees only
+`error: denied by hook <id>`, the reason stays in `hook.result`. Not built yet: `hook.context`, compaction points, the
+System One `decision` hooks, hooks in profile frontmatter and the Windows job object.
 
 **The protected hook tree.** `fs.write` and `fs.edit` refuse a write into the hook directories with the tool error
 `fs_path_protected`, whatever `--hooks` says and in every run that builds the file tools: `session run`, `serve`,

@@ -5,7 +5,7 @@ type: adr
 status: accepted
 adr_group: Go CLI
 created: 2026-11-25
-modified: 2026-11-26T09:00
+modified: 2026-11-26T21:35
 deciders:
   - Engineering Team
 consulted:
@@ -33,8 +33,10 @@ aliases:
 ## Status
 
 **Accepted** — 2026-11-25. Decision only: no code changes with this ADR. The code facts below were read at
-`c4d86929` (`origin/next`, after #479), and every line number below was re-checked by grep at that commit. Against
-the earlier base `9dfddbb6` only `internal/tool/exec.go` differs (#481); every other cited file is unchanged.
+`c4d86929` (`origin/next`, after #479), and every line number below was re-checked by grep at that commit. The
+D20 amendment and the merged-packet notes were re-read at `f6234d1d` (`origin/next`, after #504); the line cites of
+the design body (before the packet table) are dated to `c4d86929` and not refreshed. Against the
+earlier base `9dfddbb6` only `internal/tool/exec.go` differs (#481); every other cited file is unchanged.
 Pi's behaviour is quoted from its installed documentation (`docs/extensions.md`,
 `docs/compaction.md`). Claude Code's and OpenCode's hook behaviour is **recalled** from memory, with no documentation
 at hand, and is marked as such; nothing in the decisions depends on a recalled detail being exact. This ADR is the
@@ -142,8 +144,8 @@ a hook file never names a point the engine does not know (unknown points fail th
 it refuses with the config error `hook_point_unsupported` any point **this build cannot fire** there, which is two
 cases with one code: a point no packet has made fireable yet (the accepted set grows packet by packet), and a point
 that can never fire where the hook sits (a run-level point in a profile's `hooks:`, Which runs fire which points). It
-also refuses `"transform": true` until packet 3b lands, so a deny guard on a point nothing fires can never be accepted
-and silently not run. The accepted set is one list owned by the firing code, and each packet that adds a firing point
+also refuses `"transform": true` on any point but `tool.before` (a plain config error; transform is accepted
+since packet 3b, #498). The accepted set is one list owned by the firing code, and each packet that adds a firing point
 adds it there (Packets). `turn.after` is named differently from the existing `turn.end` event on purpose: `turn.end`
 is the run-completion event in the log (ADR-002), while the hook point fires after each provider turn. What I left
 out, and why:
@@ -199,8 +201,8 @@ preamble: lease, crash recovery, resume, steering drain (`sessionrun.go:193-216`
   and `turn.after` fire in every exec-loop run: the root, a delegated child (the inherited root set plus the profile's
   own hooks) and a swarm coordinator. The **run-level** points (`hooks.loaded`, `session.start`, `user.prompt`,
   `session.end`) fire on a root `session run` or `serve` run only, on both of its paths. A child and a coordinator
-  bypass the session-run preamble: `RunExecLoop` is called directly from `internal/app/delegate.go:93` and
-  `internal/app/swarmexecute.go:231`, so no lease, recovery or `hooks.loaded` step runs there. Consequences: a child
+  bypass the session-run preamble: `RunExecLoop` is called directly from `internal/app/delegate.go:94` and
+  `internal/app/swarmexecute.go:260`, so no lease, recovery or `hooks.loaded` step runs there. Consequences: a child
   writes no `hooks.loaded` (the root's names the set the children inherit) and records only `hook.invoked` and
   `hook.result` for its own calls; a swarm run writes no `hooks.loaded` either; a profile `hooks:` entry that names a
   run-level point fails the profile load with `hook_point_unsupported`, because it could never fire. Run-level points
@@ -267,7 +269,7 @@ Hooks live in dedicated files, not in `flowstate.json`, and in agent profiles:
   the same directory family as user agent profiles (ADR-009).
 - **Project file** `.flowstate/hooks.json`, beside project profiles. It is found under the **project root**
   (`SessionExecLoopRequest.ProjectRoot`; empty is the process's current directory), never under the per-run
-  `--workdir` when the two differ. Note the discrepancy this settles: `projectRoot` (`execloop_session.go:97-105`)
+  `--workdir` when the two differ. Note the discrepancy this settles: `projectRoot` (`execloop_session.go:118-123`)
   returns `--workdir` when given, so project **profiles** resolve there today; hooks do not follow it, and this ADR does
   not change profile resolution (ADR-009). `serve` resolves the file against the **server's** configured root
   (`cmd/flowstate` sets no `ProjectRoot` today, so the directory the server was started in), never the per-session
@@ -406,7 +408,8 @@ undo an earlier guard, which is the reason for the split here.
 - **Deny.** At `tool.before` the call does not run. The model receives a tool message with one fixed text,
   `error: denied by hook <id>`, naming the hook id and nothing else: the **reason never reaches the model**. The reason
   (bounded to 1 KiB, stripped of control, format and line-separator characters, the class `swarm.Brief` refuses, per
-  ADR-009) is kept in the log (`hook.result`) and shown to the operator (`session doctor`, events). At `user.prompt`
+  ADR-009) is kept in the log (`hook.result`) and shown to the operator (`events`, and the last denial in
+  `session doctor`). At `user.prompt`
   the run is **refused** before any provider request. Decision: a new closed error code `hook_refused`, exit **2**,
   HTTP **422** on `POST /sessions/{id}/run`. Exit 2 is shared with `usage` because in both the caller must change
   something before retrying, but the code is its own: a policy refusal is not argument misuse (`CodeUsage`,
@@ -414,9 +417,9 @@ undo an earlier guard, which is the reason for the split here.
   body `code` tells them apart. The error names the hook id. This **amends an external contract**, as ADR-011 D11 did
   for `session_busy`: `errors.go:10-11` and `internal/server/errors.go` say the code set is closed per
   `specs/CLI-AND-API-CONTRACT.md` section 2, a file outside this repository that I could not read, and the server maps
-  an unknown code to 500 `internal`. The owner amends that section (or accepts the amendment with this ADR) before the
-  packet that adds the code starts (packet 3c); `errors.go` in `app` and in `server`, `cli.go` and the README
-  exit-code table change with it. Exit 2 and 422 reuse existing numbers, so no new exit number is needed. **What a
+  an unknown code to 500 `internal`. The owner amended that section, or accepted the amendment with this ADR, before
+  packet 3c started (#490); `errors.go` in `app` and in `server`, `cli.go` and the README
+  exit-code table changed with it. Exit 2 and 422 reuse existing numbers, so no new exit number is needed. **What a
   refused run writes:** any recovery marker (crash recovery repairs a crash independently of the prompt and may append
   `session.interrupted`), `hooks.loaded`, `hook.invoked` and `hook.result`, and nothing else: no `session.resumed`, no
   status change (a `paused` session stays `paused`), no `user.message`, no `session.start`; the lease is released.
@@ -457,20 +460,20 @@ undo an earlier guard, which is the reason for the split here.
   `budget_exceeded`), HTTP **409** like `budget_exceeded`, amending the external contract exactly as `hook_refused`
   does (packet 3c). A script keyed on exit 5 tells a hook stop from a budget stop by the body `code` and by the
   `session.paused` reason: `hook_stop`, against `budget_exhausted` for the loop's budget stop
-  (`execloop_session.go:127-153`, which gets a `hook_stop` arm beside `ErrExecLoopBudget`). That adds a cause to
+  (`execloop_session.go:145-171`, which got a `hook_stop` arm beside `ErrExecLoopBudget`). That added a cause to
   ADR-002's `paused` row, as ADR-009 D13 added `max_turns` to `failed`. A root run ends `paused`, resumable. `stop` is
   not `failed` for a root, because a policy stop is not a fault, and not `cancelled`, which means a signal.
   - **A child** has nothing to resume to: any non-nil loop error, `ErrExecLoopBudget` included, ends a delegated child
-    `failed` (`delegate.go:361-369`; terminal, ADR-009 D8). So a stop in a child is a **failed child with reason
-    `hook_stop`** (set beside the `max_turns` special case, `delegate.go:363-365`), and the delegate result carries
-    `status: failed`, `reason: hook_stop`. **`delegateFailureIsChild` (`delegate.go:379-387`) must include the
-    hook-stop error**: it lists only provider errors, `ErrExecLoopBudget`, `ErrMaxTurns` and a deadline, and an unlisted
-    error is re-appended as an infrastructure error (`delegate.go:367-369`), so `RunDelegatedChild` would return an
-    error and `delegatetool.go:127-134` would hand the parent the raw joined error instead of
-    `delegateFailureSummary(res)`. This is a named change of packet 4a2.
-  - **A swarm coordinator:** `classifyCoordinatorStop` (`internal/app/swarmexecute.go:255-266`) would record the
-    raw error text; it gets a `hook_stop` arm and the swarm ends `SwarmExecFailed` with reason `hook_stop`.
-  Oracles are in packet 4a.
+    `failed` (`delegate.go:368-374`; terminal, ADR-009 D8). So a stop in a child is a **failed child with reason
+    `hook_stop`** (set beside the `max_turns` special case, `delegate.go:384-393`), and the delegate result carries
+    `status: failed`, `reason: hook_stop`. **`delegateFailureIsChild` (`delegate.go:401-404`) had to include the
+    hook-stop error**: at base it listed only provider errors, `ErrExecLoopBudget`, `ErrMaxTurns` and a deadline, and
+    an unlisted error is re-appended as an infrastructure error (`delegate.go:372-374`), so `RunDelegatedChild` would
+    have returned an error and `delegatetool.go:128-134` would have handed the parent the raw joined error instead
+    of `delegateFailureSummary(res)`. Packet 4a2 (#499) added the hook-stop error to it.
+  - **A swarm coordinator:** `classifyCoordinatorStop` (`internal/app/swarmexecute.go:286-299`) would have recorded
+    the raw error text; packet 4a2 (#499) gave it a `hook_stop` arm and the swarm ends `SwarmExecFailed` with reason
+    `hook_stop`. Oracles are in packet 4a.
 
 What a hook **cannot** do:
 
@@ -497,21 +500,21 @@ For a `decision` hook, `hook.result` also carries the System One fields below.
 **A denied call appears in replayed history as a call and an error result, with the same text live and replayed.**
 `tool.before` deny writes, in order: `hook.invoked`, `hook.result` (deny, with the reason), then `tool.call` and
 `tool.result` with `{ok:false, error:{code:"hook_denied", message:"denied by hook <id>"}}` and the same `tool_call_id`
-as the model's call, through the correlated sink (`NewCallEventSink`). Today the two paths do **not** agree on text:
-the live loop sends `fmt.Sprintf("error: %s", ierr)` (`execloop.go:274`, `appendResult`), while the rebuild sends the
-recorded `result`, or the recorded `error` JSON when the result is null (`execreplay.go:97-110`, `result()`), and
-`execreplay.go:30-35` documents that difference. Decision: the text sent to the model for a denial is **one fixed
-form**, `error: denied by hook <id>`, produced by **one function that live and rebuild share**; packet 3a2 adds the
-function and changes `result()` to call it, and packet 3a changes `appendResult` to call it, so they agree for
-`hook_denied` (other known differences in `execreplay.go:30-35` are unchanged). Two more sites render the same result
-and must agree with the rebuilt message: `resultText` (`compactcut.go:129-135`, behind `replayedBytes`, so the keep
-point counts the right bytes) and `spanEntries` (`compact.go:325-353`, the summariser's transcript); packet 3a2 moves
-both onto the shared function. Oracles: the live tool message and the rebuilt one are compared for a denied call, and
-`replayedBytes` and the summariser transcript for that call match the rebuilt message. A third projection exists:
-`LoadSessionHistory` turns a tool message into the whole event payload JSON, not the error JSON `result()` produces.
-It has no production caller at base; packet 3a2 **aligns** it with the shared function rather than leaving a test-only
-divergence. This is deliberately **unlike** an allowlist refusal, which records no id and vanishes on replay; a hook
-denial is a decision the model must keep seeing.
+as the model's call, through the correlated sink (`NewCallEventSink`). At the design base the two paths did **not**
+agree on text: the live loop sent `fmt.Sprintf("error: %s", ierr)`, while the rebuild sent the recorded `result`, or
+the recorded `error` JSON when the result was null. Decision: the text sent to the model for a denial is **one fixed
+form**, `error: denied by hook <id>`, produced by **one function that live and rebuild share**: packet 3a2 (#487)
+added `hookDenialText` (`hookdenial.go`) and moved the rebuild onto it, and packet 3a (#494) moved the live loop
+(`liveDenialText`, `execloop.go`) onto it, so they agree for `hook_denied` (`execreplay.go:34-39` names the
+differences that remain). Two more sites render the same result and must agree with the rebuilt message: `resultText`
+(`compactcut.go:135`, behind `replayedBytes`, so the keep point counts the right bytes) and `spanEntries`
+(`compact.go:325`, the summariser's transcript); packet 3a2 (#487) moved both onto the shared function. Oracles: the
+live tool message and the rebuilt one are compared for a denied call, and `replayedBytes` and the summariser
+transcript for that call match the rebuilt message. A third projection exists: `LoadSessionHistory` turns a tool
+message into the whole event payload JSON, not the error JSON `result()` produces. It has no production caller;
+packet 3a2 (#487) **aligned** it with the shared function (`historyResultText`, `history.go`) rather than leaving a
+test-only divergence. This is deliberately **unlike** an allowlist refusal, which records no id and vanishes on
+replay; a hook denial is a decision the model must keep seeing.
 
 `tool.call` records the model's **original** arguments and the rewrite goes to `hook.result`, for two reasons. The live
 history holds the model's own call (`execloop.go:84`), and replay must equal it. And the correlated sink rejects a
@@ -535,13 +538,14 @@ through the **parent writer** the loop already holds (`withParentEvents`, `execl
 
 Two consecutive user messages are what this produces after a user prompt; Consequences records what was checked and
 decides the builders' rule. `rebuildHistory` ignores an unknown type (its switch has no default); `LoadSessionHistory`
-does not (`history.go:68-69`), so packet 3a2, which lands before the packet that writes `hooks.loaded`, `hook.invoked`
-and `hook.result` (3a), adds those three to its metadata case, and the packet that introduces `hook.context` (4b) adds
-its user-message projection. Both are code changes the ADR names, not makes.
+does not (its default case fails closed, `history.go:69`), so packet 3a2 (merged in #487, before 3a wrote
+`hooks.loaded`, `hook.invoked` and `hook.result`) added those three to its metadata case (`history.go:67-68`), and the
+packet that introduces `hook.context` (4b, not merged) adds its user-message projection. Both are code changes
+the ADR named, not made.
 
 **Crash recovery.** A crash after `hook.invoked` and before `hook.result` leaves an unmatched invoked: the hook may have
 had side effects. Recovery appends nothing for it (ADR-006's `session.interrupted` and the dangling-call rule are
-unchanged), `session doctor` lists unmatched invocations, and the resume does **not** re-run the hook, because the
+unchanged), `session doctor` lists it (packet 4d, #504), and the resume does **not** re-run the hook, because the
 dangling call is skipped, never re-issued (ADR-009 D8, `execreplay.go:18-22`). A crash between `hook.result` and
 `tool.call` is the same dangling case. Hook events are not run activity for the ADR-006 predicate, like
 `context.compacted` (ADR-010).
@@ -599,7 +603,7 @@ code that runs with the engine's permissions.
   any CLI or API prints them, so a hook cannot paint the operator's terminal.
 - **Delegation.** The root run's loaded user and project hooks apply to every session of its tree: a child inherits
   them and cannot turn them off, because its hook set is the inherited set plus its own profile's, never a subset. The
-  inheritance plumbing ships **before** any packet that can fire a deny gate (D22; packets 3a1 and 3a1b precede 3a),
+  inheritance plumbing shipped **before** any packet that could fire a deny gate (D22; 3a1 and 3a1b, #491, precede 3a),
   so delegating never bypasses a gate. A profile's `hooks:` apply to that agent's own tool calls and loop-level points
   only, and a project-source profile's hooks need `--hooks project|both` (Where hooks are configured); they do not
   apply to its parent or its siblings. A child's tool calls trigger `tool.before` with `depth` and `agent` in the
@@ -616,7 +620,7 @@ code that runs with the engine's permissions.
   "a hook cannot".
 - **The protected trees (D20).** `fs.write` and `fs.edit` **refuse** a target with the new tool error code
   `fs_path_protected` when **any** of three rules holds; `fs.read` and other reads stay allowed. Without this a model
-  holding `fs.write` could author a hook file (`fs.write` creates 0600 files, `fsrw.go:249`) whose `argv` the next run
+  holding `fs.write` could author a hook file (`fs.write` creates 0600 files, `fsrw.go:256`) whose `argv` the next run
   executes, or write project skills (ADR-013). The protection is **by identity, not by `<workdir>` prefix**, because
   the hook files are found under the project root and the user config directory, which `--workdir` can sit above
   (`--workdir /home/me` from `/home/me/repo` puts the loaded `/home/me/repo/.flowstate/hooks.json` at a nested
@@ -633,10 +637,13 @@ code that runs with the engine's permissions.
     fails.
     **A protected directory that does not exist yet.** The user directory is `os.UserConfigDir()/flowstate`, which has
     no dot-name, so rule (a) never applies to it, and `fs.write` creates missing parents (`root.MkdirAll`,
-    `fsrw.go:246`): with `--workdir ~` and no `~/.config/flowstate` yet, `.config/flowstate/hooks.json` would be
+    `fsrw.go:253`): with `--workdir ~` and no `~/.config/flowstate` yet, `.config/flowstate/hooks.json` would be
     written, and the default scope `--hooks user` runs it next time. So the walk is not limited to what exists: the
-    tool resolves the **deepest existing ancestor** of the target and of each protected directory physically
-    (`filepath.EvalSymlinks`, outside the root; the result is a comparison key only, never used to open anything),
+    tool resolves the target's deepest existing ancestor and each protected directory physically, hop by hop from the
+    root (`resolvePath`: `Lstat` and `Readlink` per component, at most 40 hops, so a dangling ancestor link is followed,
+    as `EvalSymlinks` cannot; the result is a comparison key only, never used to open the target; a protected
+    directory's resolved path is
+    passed to `filepath.WalkDir` to list it),
     appends the remaining components, and refuses when the target's resolved path equals or lies under a protected
     directory's resolved path, whether or not that directory exists yet. I ran a scratch program under `go1.26.11`
     for the resolution of a symlinked ancestor; the `--workdir ~` flow itself is reasoned, not run.
@@ -651,26 +658,39 @@ code that runs with the engine's permissions.
     the workdir level, so rules (a) and (b) and a lexical rule all pass). None of these has a `.flowstate` component and
     a cloned repository can ship them (git stores symlinks). `Root` refuses an **absolute** symlink target outright
     (`path escapes from parent`, run with a target inside the workdir too); that is its own confinement, not this rule.
-    The decision is simple and fail-closed, with **no link resolution at all**:
+    The decision is fail-closed. **Amended in packet 2c1 rounds 4 and 5:** links inside the protected directories are
+    resolved (item 3, gap 12); the final-component rule stays:
     1. `Root.Lstat` the final component. If it is a **symlink**, refuse (`fs_path_protected`), whatever it points to,
        and whether or not the target exists. **The cost:** a legitimate edit of a symlinked file in the workdir is
        refused; git-tracked symlinks are rare, and the refusal message says that symlinked files are not writable by
-       the file tools. There is no readlink, no hop count and no lexical join.
-    2. Otherwise, if the target exists and is a regular file with **more than one link** (`Nlink > 1` on Unix, the file
-       index on Windows), refuse when `os.SameFile` holds with **any file under a protected directory**. The tool lists
+       the file tools.
+    2. Otherwise, if the target exists and is a regular file with **more than one link** (`Nlink > 1` on Unix; on
+       every non-Unix platform every existing regular-file target takes the listing and the `SameFile` comparison,
+       which fails closed at the cost of one listing per write, and a Windows link count via
+       `GetFileInformationByHandle` is a possible later optimisation), refuse when `os.SameFile` holds with **any
+       file under a protected directory**. The tool lists
        each protected directory itself (outside the root, since the user directory can lie outside the workdir),
-       **recursively** (the example hook lives at `.flowstate/scripts/guard-migrations`), at most 1024 files per
-       directory. **Beyond the cap it fails closed**: when a protected directory holds more than 1024 files and the
-       target has `Nlink > 1`, the write is refused. An ordinary single-link edit never lists anything, so it pays
-       nothing; only a multiply-linked target pays for the walk. A hard link to a script (`.flowstate/scripts/t`) is
-       caught by the same listing; I confirmed that a write and the read-then-write of `fs.edit` both write through it.
+       **recursively** (the example hook lives at `.flowstate/scripts/guard-migrations`), at most 1024 files and
+       as many directories. **Beyond the cap it fails closed**: when a protected directory holds more than 1024 files
+       or directories and the target has `Nlink > 1`, the write is refused. A hard link to a script
+       (`.flowstate/scripts/t`) is caught by the same listing; I confirmed that a write and the read-then-write of
+       `fs.edit` both write through it.
+    3. **Symlinks inside a protected directory** are collected by a separate pass that is not subject to the 1024
+       file cap; it has its own bound of 65536 entries and beyond it every write is refused. Each link is resolved
+       by hand (`resolveLink`, `Readlink` hop by hop, at most 40 hops; not `EvalSymlinks`), and a target equal to or
+       under what it names is refused. A link to a directory has that directory scanned for links too, each resolved
+       directory once, within the same bound. A link that cannot be resolved, other than a loop,
+       refuses writes under the deepest
+       directory reached. The pass runs on every write, so a single-link edit is no longer free.
   - **All three rules are needed.** (a) sees a name, never where a link lands; (b) sees where a directory path lands,
     including a directory that is not there yet; (c) sees the final component: any symlink, and a hard link, which
     carries no marker and is found only by identity.
-  - **Where links come from.** The file tools never create links: a `grep` for `Symlink`, `Link` and `Rename` in the
-    non-test sources of `internal/tool` finds only `EvalSymlinks` in `exec.go`, so links come from `git` (a clone),
-    `exec.run` or a human, never from `fs.write` or `fs.edit`. `fs.write` does create **directories** (`MkdirAll`,
-    `fsrw.go:246`), which is why rule (b) must handle a protected directory that does not exist yet.
+  - **Where links come from.** The file tools never create links: a `grep` for `os.Symlink`, `os.Link` and `os.Rename`
+    in the non-test sources of `internal/tool` finds none (the only link reads are `EvalSymlinks` in `exec.go`, in
+    `canonical` in `fsprotect_resolve.go` on Windows, and the `Lstat`/`Readlink` of the protected-tree rules), so
+    links come from `git` (a clone), `exec.run` or a human, never from `fs.write` or `fs.edit`. `fs.write` does
+    create **directories** (`MkdirAll`, `fsrw.go:253`), which is why rule (b) must handle a protected directory
+    that does not exist yet.
   - **Residual race, named.** The walk and the write are separate calls, so a concurrent process (a background
     `exec.run` child) can swap a directory for a symlink, or create the dangling link, between them. The final
     authority is `os.Root`'s own confinement of the workdir, which holds under that race; the protected-tree rules are
@@ -679,8 +699,10 @@ code that runs with the engine's permissions.
   - **Windows, a named known gap.** The name rule compares the cleaned component, so an 8.3 short name (`FLOWST~1`)
     and a name with trailing dots or spaces (`.flowstate.`) are not matched by (a); `SameFile` in (b) and (c) covers a
     directory or file that **exists**, and the resolved-prefix comparison in (b) covers the rest only as far as
-    `EvalSymlinks` agrees with the filesystem's naming. I could not test Windows.
-  - **Oracles** (packet 2c1, each run against both `fs.write` and `fs.edit`): `.flowstate/../.flowstate/x`;
+    `resolvePath` agrees with the filesystem's naming. I could not test Windows.
+  - **Oracles** (packet 2c1, each run against both `fs.write` and `fs.edit`;
+    those that describe a bug, such as "is written through", are the **superseded earlier design**, kept as the
+    record of what the rounds fixed): `.flowstate/../.flowstate/x`;
     `lnk/../.flowstate/x`; a symlink named other than `.flowstate` that points into it; `lnk/hooks.json` where `lnk`
     -> `.flowstate`; a case variant `.FlowState/x`; a nested `repo/.flowstate/hooks.json` under an ancestor
     `--workdir`; `--workdir ~` with the user file `~/.config/flowstate/hooks.json`, and with **no**
@@ -789,7 +811,7 @@ System One model; hooks on swarm gates beyond the coordinator's `turn.after`.
 | D9 | The log records `hooks.loaded`, `hook.invoked`, `hook.result` and `hook.context`, all bounded; replay reads them as data and never re-runs a hook. |
 | D10 | A hook denial is recorded as a correlated `tool.call` (the model's original arguments) and an error `tool.result` (`hook_denied`), so it replays as a call and a result, unlike an allowlist refusal; live and rebuilt tool messages share one function and one text. |
 | D11 | Added context is one fenced, labelled, untrusted user-role message, written as `hook.context` (actor `user`), persistent in the live history like a user message, projected by both readers and every compaction site packet 4b names, merged into the open user message where the wire would otherwise put two user messages together, placed after the turn's tool results. |
-| D12 | Crash recovery appends nothing for an unmatched `hook.invoked`; `session doctor` lists it; resume does not re-run it. |
+| D12 | Crash recovery appends nothing for an unmatched `hook.invoked`; `session doctor` lists it (packet 4d, #504); resume does not re-run it. |
 | D13 | A hook process gets `PATH` (plus `SYSTEMROOT`, `USERPROFILE` on Windows) and operator-listed env names that do not match the secret pattern; input, output and time capped; stopped by process group (TERM, then KILL after a grace) or job object (escapees are not reached; hooks must not background); no lease descriptor inherited; no confinement is claimed; no engine handle is given. |
 | D14 | Children inherit the root's loaded hooks and cannot remove them; a profile's `hooks:` apply to that agent only; a project-source profile's hooks run only under `--hooks project\|both`, and `none` disables profile hooks of every source. |
 | D15 | System One is a local HTTP client with no key; loopback is enforced at dial time (no redirects, no proxy, no userinfo, `http` only); default timeout 10 s; `choice` and `noul` only in v1 (`score` fails the load until verified); thresholds are the operator's rules; the unreachable case is the hook's failure policy. |
@@ -797,7 +819,7 @@ System One model; hooks on swarm gates beyond the coordinator's `turn.after`.
 | D17 | The engine asks System One nothing by itself in v1: decision hooks only, where configured. |
 | D18 | Not now: in-process plugins, a marketplace, background hooks, hooks that call a model, dynamic registration, UI prompts, result and request rewriting. |
 | D19 | `session.start`, `user.prompt`, `session.end` and `hooks.loaded` cover both run paths (loop and text-only turn); `user.prompt` fires once per run with the run's task, before the resume writes; tool points exist only in the loop and never fire for an unregistered name; a hook on a point the path lacks is listed as `inert`; until packet 4b a `context` output is the failure `context_unsupported`, and on the text-only path always (so on the subscription route, which only takes that path, no point can add context); `turn.after` fires after every provider turn including the last, and before the max-turns check (a last-turn `stop` wins: `paused`/`hook_stop`, not `failed`/`max_turns`). |
-| D20 | The file tools refuse writes (`fs.write`, `fs.edit`) with `fs_path_protected` by identity, not `<workdir>` prefix, when (a) any path component is named `.flowstate` (case-folded) or (b) the target's resolved path (the deepest existing ancestor resolved physically, plus the remaining components; `Root.Lstat`/`Stat`, `os.SameFile`, `EvalSymlinks` as a comparison key) equals or lies under `<projectRoot>/.flowstate` or the user hook directory (`os.UserConfigDir()/flowstate`), even when that directory does not exist yet, or (c) the final component is a symlink (refused whatever it points to; a legitimate symlinked-file edit is refused; no link resolution) or a multiply-linked existing target is `SameFile` with any file under a protected directory (recursive listing, 1024 files per directory, refused beyond the cap); reads stay allowed; the walk and the write are two calls, so the rules are best-effort against a concurrent actor and `os.Root` stays the final authority; Windows 8.3 and trailing-dot names are a named gap; `exec.run`, `make`, `git checkout` and a human are outside this protection; shared with ADR-013's project skills (ADR-013's `<workdir>/.flowstate/` wording is superseded by this identity rule). |
+| D20 | The file tools refuse writes (`fs.write`, `fs.edit`) with `fs_path_protected` by identity, not `<workdir>` prefix, when (a) any path component is named `.flowstate` (case-folded) or (b) the target's resolved path (the deepest existing ancestor resolved physically, plus the remaining components; `Root.Lstat`/`Stat`, `os.SameFile`, and a hop-by-hop `Lstat`/`Readlink` resolution of the whole path as a comparison key, dangling ancestor links included) equals or lies under `<projectRoot>/.flowstate` or the user hook directory (`os.UserConfigDir()/flowstate`), even when that directory does not exist yet, or (c) the final component is a symlink (refused whatever it points to; a legitimate symlinked-file edit is refused; links inside protected directories are resolved, dangling ones hop by hop) or a multiply-linked existing target is `SameFile` with any file under a protected directory (recursive listing, 1024 files and as many directories, refused beyond the cap; symlinks inside are collected by a separate pass bounded at 65536 entries, refusing every write beyond it); reads stay allowed; the walk and the write are two calls, so the rules are best-effort against a concurrent actor and `os.Root` stays the final authority; Windows 8.3 and trailing-dot names are a named gap; `exec.run`, `make`, `git checkout` and a human are outside this protection; shared with ADR-013's project skills (ADR-013's `<workdir>/.flowstate/` wording is superseded by this identity rule). |
 | D21 | Context from `session.start` and `user.prompt` is added once per session, deduplicated by sha256 of the text per hook id; context over 4 KiB is truncated at a character boundary and recorded; a stdin document over the cap is `input_too_large` in `hook.result`; a relative executable in a profile hook resolves against the profile file's directory; children and a swarm coordinator fire the loop-level points only (`tool.before`, `tool.after`, `turn.after`: the root set plus a profile's own hooks); the run-level points fire on a root `session run`/`serve` run only, and `hooks.loaded` is written once per root run; child and coordinator run-level points are a known gap with no packet. |
 | D22 | The inherited root hook set is plumbed into children, nested children, resumed children and the swarm coordinator **before** any packet can fire a deny gate (3a1 and 3a1b precede 3a), so delegating never bypasses a gate; a child's resume baseline is the profile sha256 plus a new `hooks_sha256` in the child's own `session.delegated` payload (read by `loadResumableChild` from the child's replay; a legacy payload without it is not compared): the hash of the child's effective own hooks after scope skipping, so a scope change between pause and resume is detected for a child (a root resume compares nothing: its new `hooks.loaded` shows the set); packet 6 adds only the profile's own hooks. |
 
@@ -807,9 +829,9 @@ System One model; hooks on swarm gates beyond the coordinator's `turn.after`.
   contract, and the engine keeps no extension surface other than argv and JSON. Cost: a process spawn per invocation
   on the hot path of every matching tool call; the matcher and the point list keep that to the hooks that ask for it.
 - **Determinism is kept by recording, not by repeating.** Replay and crash recovery need no knowledge of hooks beyond
-  four new event types; ADR-006's and ADR-010's rules are unchanged. The price is the readers to update
-  (`LoadSessionHistory`, the rebuild and the compaction sites of packet 4b), a shared denial-text function and a
-  `hook.context` position rule.
+  four new event types; ADR-006's and ADR-010's rules are unchanged. The price was the shared denial-text function
+  (built by packet 3a2, #487) and is the readers to update (`LoadSessionHistory`, the rebuild and the compaction
+  sites of packet 4b) and a `hook.context` position rule.
 - **Fail-closed by default can stop a run.** A broken guard script stops every matching call, with the error shown to
   the model. That is intended; the operator sets `on_failure: "allow"` for an advisory hook.
 - **No confinement for hooks.** Operator code is operator code. The mitigations (scope flag, scrubbed environment,
@@ -850,18 +872,27 @@ System One model; hooks on swarm gates beyond the coordinator's `turn.after`.
   executable inside `--workdir` can be overwritten (keep it outside). (6) A permanently
   refused session (a deterministic `user.prompt` hook that always denies) can be left with `session cancel`; the
   refused run changes no status, so nothing else ends it. (7) A paused session accepts hook events (a 4a spec pins
-  it), although `session_recovery.go:108` still reads "a paused writer refuses appends"; that comment is stale for the
-  writer and is updated with 4a. (8) Run-level points (`hooks.loaded`, `session.start`, `user.prompt`, `session.end`)
+  it); the `session_recovery.go:108` comment ("a paused writer refuses appends") was rewritten with 4a
+  (#497). (8) Run-level points (`hooks.loaded`, `session.start`, `user.prompt`, `session.end`)
   do not fire for a delegated child or a swarm coordinator, and a swarm run records no `hooks.loaded` pin: both call
-  `RunExecLoop` directly (`delegate.go:93`, `swarmexecute.go:231`), bypassing the session-run preamble. No packet; a
+  `RunExecLoop` directly (`delegate.go:94`, `swarmexecute.go:260`), bypassing the session-run preamble. No packet; a
   later ADR amendment decides it. (9) A `turn.after` `stop` on the final turn can never end `completed`: the session
   is paused, and a resume re-requests the final turn (`rebuildHistory` drops a trailing assistant message), so a
   deterministic hook costs a provider call per retry. (10) The D20 walk and the write are separate calls: a
   concurrent actor can swap a directory for a symlink between them; `os.Root` confinement of the workdir is the final
   authority and the protected-tree rules are best-effort against it. (11) On Windows, 8.3 short names (`FLOWST~1`)
   and trailing dots or spaces are not matched by the name rule, and `SameFile` covers only what exists (the
-  resolved-prefix comparison covers the rest only as far as `EvalSymlinks`
-  agrees); untested.
+  resolved-prefix comparison covers the rest only as far as the link resolution agrees, and the existing prefix
+  of the resolved path is canonicalised with `EvalSymlinks` on Windows, `canonical`); untested.
+  (12) An entry that cannot be read inside a protected directory or a link-target directory (for
+  instance a mode 0 subdirectory) refuses every write in every workdir (fail closed), and the scan of a symlinked
+  directory's target refuses a multiply-linked target past 2048 entries (links: item 3 of rule (c)). Case folding
+  over-refuses `FlowState/x` on a case-sensitive filesystem when the workdir is the user config directory (in a plain
+  workdir it is allowed; `.FlowState/x` is refused by rule (a)), a link to an ancestor (`.flowstate/up` -> `..`)
+  refuses every write in the workdir (a later change to the hook loader should refuse at load time a symlink in a hook
+  directory that points to an ancestor), any path component named `.flowstate` at any depth is refused, including this
+  repository's `docs/examples/swarm/.flowstate` (a documented over-refusal; those example files are edited by humans
+  or `exec.run`, not the file tools), and the walk costs about 1 ms per write for 1000 files.
 
 ## Alternatives rejected
 
@@ -908,26 +939,26 @@ Each packet is at most 10 paths; the exact list is in the packet's pull request.
 
 | # | Packet | Size (lines) | Negative oracles (a spec fails when…) |
 |---|---|---|---|
-| 1 | Hook registry types, file parsing, validation, `--hooks` scope parsing and the scope matrix, executable checks, `hooks.loaded` hash (no execution); the loader takes the accepted-point set from the firing code, which is **empty** in production until 3a, so a file naming any point fails with `hook_point_unsupported`, and `transform: true` fails likewise (specs pass a test set). It is library code with no production caller until 2b and 3a; the repo lint accepts that: I ran the pinned `golangci-lint` with the repo's `.golangci.yml` on a scratch package, and `unused` flagged an unexported unused function and not an exported one (exported identifiers still need doc comments, `revive`), and the packet's specs call the API | about 550 | a point outside the accepted set loads (`hook_point_unsupported`); `transform: true` loads before 3b; a project file loads without `--hooks project`; a secret-looking key, an unknown field or a duplicate id loads; `both` with a duplicate id across files loads; a symlinked or writable executable loads; a relative executable outside the hook file's directory loads; `on_failure: deny` is accepted on `tool.after`; the project file is found under the per-run `--workdir` when it differs from the project root; a relative executable in a profile hook resolves against anything but the profile file's directory. Docs path: `docs/adr/ADR-COMPARISON.md:78` ("no hooks in the Go CLI yet") is updated |
-| 2a | Command runner, Unix: argv exec, own process group stopped with SIGTERM then SIGKILL after a grace (`isolateGate` reused or copied), stdin cap and deadline, caps, env scrub, close-on-exec lease fd, exit/JSON contract | about 500 | the child sees a provider key; output over the cap is accepted; exit 2 is treated as failure or exit 1 as deny; a hung hook or a member of its group outlives the timeout; a group member that ignores SIGTERM survives the grace; a child inherits the lease descriptor |
-| 2b | Windows termination (job object with kill-on-close through `golang.org/x/sys`: new code, no precedent, not runnable on the Linux dev host) and `--hooks` plumbing into `session run`, `serve` and `swarm run --execute`, project file resolved under the project root | about 450 (checkpoint at 600 lines) | a Windows hook's descendant outlives the job; `swarm run --execute` ignores `--hooks`; `serve` resolves project hooks against the per-session workdir |
-| 2c1 | File-tool refusal by identity (D20), tool side: `fs.write` and `fs.edit` refuse with `fs_path_protected` a target that breaks rule (a) (a `.flowstate` component, case-folded), (b) (ancestors walked with `Root.Lstat`/`Stat` and `os.SameFile` land in a protected directory) or (c) (the final component is a symlink, refused whatever it points to; or an existing multiply-linked target is `SameFile` with any file under a protected directory, recursive listing, 1024 files per directory, refused beyond the cap); rule (b) resolves the deepest existing ancestor with `EvalSymlinks` so a protected directory that does not exist yet is covered. The protected directories arrive through a **new `FSOption`** (`NewFSWrite(workdir, opts...)` and `NewFSEdit(workdir, opts...)` take only the workdir today: `fsrw.go:217`, `fsedit.go:45`). Paths: `fsprotect.go` (the helper), `fsrw.go`, `fsedit.go`, `fsrw_types.go` (the option), `fsprotect_test.go`, `fsrw_test.go`, `fsedit_test.go` and the tool error-code list (about 8). Reads stay allowed; shared with ADR-013's project skills | about 400 | a write lands in `.flowstate/` through `.flowstate/../.flowstate/x`, `lnk/../.flowstate/x`, `lnk/hooks.json` (`lnk` -> `.flowstate`) or a symlink not named `.flowstate`; **`flink.json` -> `.flowstate/hooks.json` is written through; `d/l` with `sub/lnkdir -> ../.flowstate`, `sub/deep/l -> ../lnkdir/hooks.json`, `d -> sub/deep` is written through; a hard link `hl.json` to the hook file, or to `.flowstate/scripts/t`, is written through; a dangling `dang.json` -> `.flowstate/new.json` created before the write creates `new.json`; a multiply-linked target is written when a protected directory holds more than 1024 files** (each of these for both `fs.write` and `fs.edit`); `.FlowState/x` is writable; a nested `repo/.flowstate/hooks.json` under an ancestor `--workdir` is writable; `--workdir ~` lets `~/.config/flowstate/hooks.json` be written, also when `~/.config/flowstate` does not exist yet; an ordinary single-link edit lists a protected directory; `fs.read` of a hook file is refused; a write to an ordinary path is refused |
-| 2c2 | The wiring for a root run: `NewSessionToolRegistry(workdir)` (`agenttools.go:18-20`, which builds the two tools with the workdir only) gains the protected-directory option, filled with the project root (`projectRoot`/`ProjectRoot`, never `--workdir` when they differ) and the user config directory (`os.UserConfigDir()/flowstate`), at its callers `execloop_session.go:60` (`session run`, `serve`) and `toolrun.go:127`. Paths: `agenttools.go`, `execloop_session.go`, `toolrun.go` and their paired tests (about 6); needs 2c1 | about 200 | a root run's registry accepts a write under the project root's `.flowstate` when `--workdir` differs; the user directory is not protected; `serve` protects against the per-session workdir instead of the server's root |
-| 2c3 | The same wiring for children and a swarm: `childRegistry` (`delegate.go:157`, whether it builds with `req.NewRegistry` or the default), `planResume` (`delegateresume.go:138`), a nested child (`bindNestedDelegate`, `delegatenest.go:126`) and the swarm coordinator's registry (`swarmexecute.go:201`) carry the directories through the delegate request and tool config. Paths (more than 10 is likely: the swarm side splits off as 2c3b under the same rule): `delegate.go`, `delegateresume.go`, `delegatenest.go`, `delegatetool.go`, the request and tool-config types files and their paired tests; needs 2c2 | about 250 | a delegated child, a nested child, a resumed child or a swarm packet child writes into `.flowstate/` that the root run could not; a custom `NewRegistry` builder drops the protection |
-| 3a2 | Replay and compaction projection of the denial text, landing **before** 3a: the shared denial-text function (`hookdenial.go`), `result()` (`execreplay.go`), the `LoadSessionHistory` tool projection and metadata case for `hooks.loaded`/`hook.invoked`/`hook.result` (`history.go`), `resultText` (`compactcut.go`) and `spanEntries` (`compact.go`); hand-built logs, no hook runs yet. Paths: `hookdenial.go`, `execreplay.go`, `history.go`, `compactcut.go`, `compact.go` and their five paired tests (10) | about 300 | the rebuild projects a denial other than the shared text; `LoadSessionHistory` projects it differently or fails closed on a `hook.*` event; `replayedBytes` or the summariser transcript for a denial disagrees with the rebuilt message |
-| 3a1 | Inherited hook-set plumbing, **before any gate fires** (D22): `ExecLoopConfig` gains the loaded root set (empty in production until 3a); `delegateLoopConfig` and `runAndSettleDelegated` (`delegate.go:78-93,309`), `bindNestedDelegate` (`delegatenest.go:126`), the delegate tool config (`delegatetool.go`) and `planResume` (`delegateresume.go:138`) carry it to a child, a nested child and a resumed child. Paths: `execloop_types.go`, `delegate_types.go`, `delegate.go`, `delegatenest.go`, `delegatetool.go`, `delegateresume.go` and their paired tests (the exact list is in the PR; if it passes 10 paths the resumed-child path splits off first); needs nothing | about 250 | a delegated child's loop config lacks the root set; a nested child's lacks it; a resumed child's lacks it; a child can replace or empty the inherited set |
-| 3a1b | The same plumbing for a swarm: the coordinator's loop config (`swarmexecute.go:201-231`) and the delegate tool config it registers (`swarmexecute.go:218`), so a swarm packet child inherits too. Paths: `swarmexecute.go`, its types file and paired spec; needs 3a1 | about 120 | the coordinator's loop config lacks the root set; a swarm packet child lacks it |
-| 3a | `tool.before` as a gate (no transform phase) in the tool loop, `hooks.loaded`/`hook.invoked`/`hook.result` through the parent writer (loop path), `appendResult` calling the shared denial function, the `context_unsupported` failure; adds `tool.before` to the accepted set (a `tool.after` point or `transform: true` still fails the load); needs 3a2, 3a1 and 3a1b (**no packet that makes a deny gate fireable ships without the inheritance**: 3a1 and 3a1b merge first, or 3a merges only together with them). Paths: `loop.go`, `execloop.go`, `execloop_types.go`, a hook-event writer file and their four paired tests (at most 8) | about 350 | a denied call vanishes on replay; live and rebuilt tool messages for a denial differ; the reason reaches the model; replay re-runs a hook; **a deny hook on `fs.write` does not apply to a delegated child, to a nested child, or to a swarm packet child (and to the swarm coordinator)**; an allowlist-denied tool reaches a hook; a hook fires for an allowed-but-unregistered tool name; a hook that returns `context` is accepted, or does not fail closed under `on_failure: deny`; a `tool.after`, `turn.after` or run-level point still loads here; `transform: true` loads |
-| 3b | `tool.before` transform phase (`args` rewrite) and `tool.after`; adds `tool.after` and `transform: true` to the accepted set | about 450 | `transform: true` or `tool.after` still fails the load after 3b; a rewritten call replays with the rewritten arguments in the model's call; a gate sees pre-transform arguments; a rewrite renames the tool; a non-transform hook may return `args`; a `tool.after` hook changes the result |
-| 3c | The error contract: codes `hook_refused` (exit 2, HTTP 422) and `hook_stop` (exit 5, HTTP 409) in `internal/app/errors.go`, `internal/server/errors.go`, `cmd/flowstate/cli.go`, README and OVERVIEW, and ADR-002's status table (the `paused` row gains the `hook_stop` cause). **Prerequisite: the owner amends `specs/CLI-AND-API-CONTRACT.md` section 2** or accepts the amendment with this ADR, as for ADR-011 D11 | about 250 | the server maps either code to `internal` or 500; the server spec expects other than 422 `hook_refused` or 409 `hook_stop`; `cli_test.go` pins other than exit 2 and exit 5 |
-| 4a | run points on both paths of a **root** run: `hooks.loaded`, `user.prompt` (refusal), `session.start`, `session.end` on `session run` and `serve`, loop and text-only turn; adds those points to the accepted set; a child and a swarm coordinator fire none of them (known gap 8); the paused-writer spec and the stale `session_recovery.go:108` comment; needs 3a and 3c | about 450 | a text-only run skips a `user.prompt` deny hook; `hooks.loaded` is missing on the text-only path or is written after a hook; `--hooks` on a run with no tool surface skips the non-tool points; a refused prompt sends a provider request, writes `session.resumed` or `user.message`, changes the status of a `paused` session, or reports other than `hook_refused`/exit 2/HTTP 422; a refused run fires `session.start` or `session.end`; a resumed run does not fire `user.prompt` with the stored task; a paused session rejects the hook events (hook events on a paused session are pinned here); `context` from the text-only path is accepted; a delegated child or a swarm coordinator writes `hooks.loaded` or fires a run-level point |
-| 4a2 | `turn.after` with `stop`, after every provider turn including the last and before the max-turns check; adds `turn.after` to the accepted set; the root `paused`/`hook_stop` arm (`execloop_session.go:127-153`); the child mapping (`delegate.go` reason and **`delegateFailureIsChild`**) and the swarm arm (`classifyCoordinatorStop`); needs 4a and 3c | about 450 (checkpoint and split at 600 lines; the swarm arm splits off first) | `stop` ends a root run `failed`, exits other than 5, reports other than `hook_stop` or lacks reason `hook_stop` in `session.paused`; a stop on the final no-call turn is ignored; a `stop` on the last allowed turn (`res.Turns == MaxTurns`) ends `failed`/`max_turns` instead of `paused`/`hook_stop`; a child stopped by a hook ends other than `failed` with reason `hook_stop` (delegate result and child status), or the parent receives the raw joined error instead of the child failure summary; a swarm coordinator stop records other than `SwarmExecFailed`/`hook_stop`; a budget stop reports `hook_stop` |
+| 1 | Merged in #488. Hook registry types, file parsing, validation, `--hooks` scope parsing and the scope matrix, executable checks, `hooks.loaded` hash (no execution); the loader takes the accepted-point set from the firing code, which is **empty** in production until 3a, so a file naming any point fails with `hook_point_unsupported`, and `transform: true` fails likewise (specs pass a test set). It is library code with no production caller until 2b and 3a; the repo lint accepts that: I ran the pinned `golangci-lint` with the repo's `.golangci.yml` on a scratch package, and `unused` flagged an unexported unused function and not an exported one (exported identifiers still need doc comments, `revive`), and the packet's specs call the API | about 550 | a point outside the accepted set loads (`hook_point_unsupported`); `transform: true` loads before 3b; a project file loads without `--hooks project`; a secret-looking key, an unknown field or a duplicate id loads; `both` with a duplicate id across files loads; a symlinked or writable executable loads; a relative executable outside the hook file's directory loads; `on_failure: deny` is accepted on `tool.after`; the project file is found under the per-run `--workdir` when it differs from the project root; a relative executable in a profile hook resolves against anything but the profile file's directory. Docs path: `docs/adr/ADR-COMPARISON.md:78` ("no hooks in the Go CLI yet") is updated by this amendment (#502) |
+| 2a | Merged in #489. Command runner, Unix: argv exec, own process group stopped with SIGTERM then SIGKILL after a grace (`isolateGate` reused or copied), stdin cap and deadline, caps, env scrub, close-on-exec lease fd, exit/JSON contract | about 500 | the child sees a provider key; output over the cap is accepted; exit 2 is treated as failure or exit 1 as deny; a hung hook or a member of its group outlives the timeout; a group member that ignores SIGTERM survives the grace; a child inherits the lease descriptor |
+| 2b | The `--hooks` plumbing half merged in #493; the Windows job-object half is not built. Windows termination (job object with kill-on-close through `golang.org/x/sys`: new code, no precedent, not runnable on the Linux dev host) and `--hooks` plumbing into `session run`, `serve` and `swarm run --execute`, project file resolved under the project root | about 450 (checkpoint at 600 lines) | a Windows hook's descendant outlives the job; `swarm run --execute` ignores `--hooks`; `serve` resolves project hooks against the per-session workdir |
+| 2c1 | Merged in #492. File-tool refusal by identity (D20), tool side (the oracles below that describe bugs are the superseded earlier design; rounds 4 and 5 resolve links inside protected directories, see D20 and known gap 12): `fs.write` and `fs.edit` refuse with `fs_path_protected` a target that breaks rule (a) (a `.flowstate` component, case-folded), (b) (ancestors walked with `Root.Lstat`/`Stat` and `os.SameFile` land in a protected directory) or (c) (the final component is a symlink, refused whatever it points to; or an existing multiply-linked target is `SameFile` with any file under a protected directory, recursive listing, 1024 files and as many directories, refused beyond the cap); rule (b) resolves the deepest existing ancestor's absolute path hop by hop (`resolvePath`, round 8: a dangling link on an ancestor is followed) and appends the missing remainder so a protected directory that does not exist yet is covered. The protected directories arrive through a **new `FSOption`** (`NewFSWrite(workdir, opts...)` and `NewFSEdit(workdir, opts...)` took only the workdir before this packet: `fsrw.go:221`, `fsedit.go:45`). Paths: `fsprotect.go` (the helper), `fsrw.go`, `fsedit.go`, `fsrw_types.go` (the option), `fsprotect_resolve.go`, `fsprotect_unix.go`, `fsprotect_other.go`, `fsprotect_test.go`. Reads stay allowed; shared with ADR-013's project skills | about 1200 (tests included; the packet exceeded its first estimate) | a write lands in `.flowstate/` through `.flowstate/../.flowstate/x`, `lnk/../.flowstate/x`, `lnk/hooks.json` (`lnk` -> `.flowstate`) or a symlink not named `.flowstate`; **`flink.json` -> `.flowstate/hooks.json` is written through; `d/l` with `sub/lnkdir -> ../.flowstate`, `sub/deep/l -> ../lnkdir/hooks.json`, `d -> sub/deep` is written through; a hard link `hl.json` to the hook file, or to `.flowstate/scripts/t`, is written through; a dangling `dang.json` -> `.flowstate/new.json` created before the write creates `new.json`; a multiply-linked target is written when a protected directory holds more than 1024 files** (each of these for both `fs.write` and `fs.edit`); `.FlowState/x` is writable; a nested `repo/.flowstate/hooks.json` under an ancestor `--workdir` is writable; `--workdir ~` lets `~/.config/flowstate/hooks.json` be written, also when `~/.config/flowstate` does not exist yet; `fs.read` of a hook file is refused; a write to an ordinary path is refused |
+| 2c2 | The wiring for a root run, merged in #503 together with 2c3: `ProtectedHookDirs(projectRoot)` (`agenttools.go:24`) derives the protected directories from the loader's own paths (`filepath.Dir` of `ProjectHooksPath` and `UserHooksPath`), and `NewSessionToolRegistry` became variadic (`agenttools.go:40`, `NewSessionToolRegistry(workdir string, opts ...tool.FSOption)`), so a run passes `tool.WithProtectedDirs(protected...)` to it: `RunSessionExecLoop` fills the directories from `HooksProjectRoot(req)` (`execloop_session.go:68-69`, the project root, never `--workdir` when they differ) and `session tool` from the process's current directory (`toolrun.go:129`). Paths in #503: `agenttools.go`, `execloop_session.go`, `toolrun.go`, `README.md` and their paired tests; needed 2c1 | about 200 (with 2c3 the PR added 515 lines over 15 paths) | a root run's registry accepts a write under the project root's `.flowstate` when `--workdir` differs; the user directory is not protected; `serve` protects against the per-session workdir instead of the server's root |
+| 2c3 | The same wiring for children and a swarm, merged in #503: the directories travel as `ProtectedDirs` on `DelegateToolConfig` (`delegatetool_types.go:46`) and `DelegateRequest` (`delegate_types.go:109`), so `childRegistry` (`delegate.go:160`) builds the child's registry with `tool.WithProtectedDirs(req.ProtectedDirs...)`, handing the options to a custom `req.NewRegistry` builder too, `bindNestedDelegate` (`delegatenest.go:127`) copies `req.ProtectedDirs` into the nested request, `planResume` (`delegateresume.go:138`) builds through `childRegistry`, and the coordinator's registry (`swarmexecute.go:236-237`) and `coordinatorToolConfig` (`swarmexecute.go:221`) carry `ProtectedHookDirs(cfg.ProjectRoot)`. Paths in #503: `delegate.go`, `delegate_types.go`, `delegatetool_types.go`, `delegatenest.go`, `swarmexecute.go` and `fsprotect_resolve.go` with `delegate_test.go` and `swarmexecute_test.go` (no 2c3b split: one PR, 15 paths); needed 2c2 | about 250 (merged with 2c2 in #503) | a delegated child, a nested child, a resumed child or a swarm packet child writes into `.flowstate/` that the root run could not; a custom `NewRegistry` builder drops the protection |
+| 3a2 | Merged in #487. Replay and compaction projection of the denial text, landing **before** 3a: the shared denial-text function (`hookdenial.go`), `result()` (`execreplay.go`), the `LoadSessionHistory` tool projection and metadata case for `hooks.loaded`/`hook.invoked`/`hook.result` (`history.go`), `resultText` (`compactcut.go`) and `spanEntries` (`compact.go`); hand-built logs, no hook runs yet. Paths: `hookdenial.go`, `execreplay.go`, `history.go`, `compactcut.go`, `compact.go` and their five paired tests (10) | about 300 | the rebuild projects a denial other than the shared text; `LoadSessionHistory` projects it differently or fails closed on a `hook.*` event; `replayedBytes` or the summariser transcript for a denial disagrees with the rebuilt message |
+| 3a1 | Merged in #491 with 3a1b. Inherited hook-set plumbing, **before any gate fires** (D22): `ExecLoopConfig` gains the loaded root set (empty in production until 3a); `delegateLoopConfig` and `runAndSettleDelegated` (`delegate.go:79-94,312`), `bindNestedDelegate` (`delegatenest.go:127`), the delegate tool config (`delegatetool.go`) and `planResume` (`delegateresume.go:138`) carry it to a child, a nested child and a resumed child. Paths: `execloop_types.go`, `delegate_types.go`, `delegate.go`, `delegatenest.go`, `delegatetool.go`, `delegateresume.go` and their paired tests (the exact list is in the PR; if it passes 10 paths the resumed-child path splits off first); needs nothing | about 250 | a delegated child's loop config lacks the root set; a nested child's lacks it; a resumed child's lacks it; a child can replace or empty the inherited set |
+| 3a1b | Merged in #491 with 3a1. The same plumbing for a swarm: the coordinator's loop config (`coordinatorLoopConfig`, `swarmexecute.go:204-212`) and the delegate tool config it registers (`coordinatorToolConfig`, `swarmexecute.go:216`), so a swarm packet child inherits too. Paths: `swarmexecute.go`, its types file and paired spec; needs 3a1 | about 120 | the coordinator's loop config lacks the root set; a swarm packet child lacks it |
+| 3a | Merged in #494. `tool.before` as a gate (no transform phase) in the tool loop, `hooks.loaded`/`hook.invoked`/`hook.result` through the parent writer (loop path), `appendResult` calling the shared denial function, the `context_unsupported` failure; adds `tool.before` to the accepted set (a `tool.after` point or `transform: true` still fails the load); needs 3a2, 3a1 and 3a1b (**no packet that makes a deny gate fireable ships without the inheritance**: 3a1 and 3a1b merge first, or 3a merges only together with them). Paths: `loop.go`, `execloop.go`, `execloop_types.go`, a hook-event writer file and their four paired tests (at most 8) | about 350 | a denied call vanishes on replay; live and rebuilt tool messages for a denial differ; the reason reaches the model; replay re-runs a hook; **a deny hook on `fs.write` does not apply to a delegated child, to a nested child, or to a swarm packet child (and to the swarm coordinator)**; an allowlist-denied tool reaches a hook; a hook fires for an allowed-but-unregistered tool name; a hook that returns `context` is accepted, or does not fail closed under `on_failure: deny`; a `tool.after`, `turn.after` or run-level point still loads here; `transform: true` loads |
+| 3b | Merged in #498. `tool.before` transform phase (`args` rewrite) and `tool.after`; adds `tool.after` and `transform: true` to the accepted set | about 450 | `transform: true` or `tool.after` still fails the load after 3b; a rewritten call replays with the rewritten arguments in the model's call; a gate sees pre-transform arguments; a rewrite renames the tool; a non-transform hook may return `args`; a `tool.after` hook changes the result |
+| 3c | Merged in #490. The error contract: codes `hook_refused` (exit 2, HTTP 422) and `hook_stop` (exit 5, HTTP 409) in `internal/app/errors.go`, `internal/server/errors.go`, `cmd/flowstate/cli.go`, README and OVERVIEW, and ADR-002's status table (the `paused` row gains the `hook_stop` cause). **Prerequisite: the owner amends `specs/CLI-AND-API-CONTRACT.md` section 2** or accepts the amendment with this ADR, as for ADR-011 D11 | about 250 | the server maps either code to `internal` or 500; the server spec expects other than 422 `hook_refused` or 409 `hook_stop`; `cli_test.go` pins other than exit 2 and exit 5 |
+| 4a | Merged in #497: run points on both paths of a **root** run: `hooks.loaded`, `user.prompt` (refusal), `session.start`, `session.end` on `session run` and `serve`, loop and text-only turn; adds those points to the accepted set; a child and a swarm coordinator fire none of them (known gap 8); the paused-writer spec and the `session_recovery.go:108` comment (rewritten in #497); needs 3a and 3c | about 450 | a text-only run skips a `user.prompt` deny hook; `hooks.loaded` is missing on the text-only path or is written after a hook; `--hooks` on a run with no tool surface skips the non-tool points; a refused prompt sends a provider request, writes `session.resumed` or `user.message`, changes the status of a `paused` session, or reports other than `hook_refused`/exit 2/HTTP 422; a refused run fires `session.start` or `session.end`; a resumed run does not fire `user.prompt` with the stored task; a paused session rejects the hook events (hook events on a paused session are pinned here); `context` from the text-only path is accepted; a delegated child or a swarm coordinator writes `hooks.loaded` or fires a run-level point |
+| 4a2 | Merged in #499. `turn.after` with `stop`, after every provider turn including the last and before the max-turns check; adds `turn.after` to the accepted set; the root `paused`/`hook_stop` arm (`execloop_session.go:145-171`); the child mapping (`delegate.go` reason and **`delegateFailureIsChild`**) and the swarm arm (`classifyCoordinatorStop`); needs 4a and 3c | about 450 (checkpoint and split at 600 lines; the swarm arm splits off first) | `stop` ends a root run `failed`, exits other than 5, reports other than `hook_stop` or lacks reason `hook_stop` in `session.paused`; a stop on the final no-call turn is ignored; a `stop` on the last allowed turn (`res.Turns == MaxTurns`) ends `failed`/`max_turns` instead of `paused`/`hook_stop`; a child stopped by a hook ends other than `failed` with reason `hook_stop` (delegate result and child status), or the parent receives the raw joined error instead of the child failure summary; a swarm coordinator stop records other than `SwarmExecFailed`/`hook_stop`; a budget stop reports `hook_stop` |
 | 4b | `hook.context`: the event, its writer in the loop, the user-role projection in `LoadSessionHistory` and `rebuildHistory`, and the compaction sites (`replayedType`, `replayedBytes`, `cutEligible`, `spanEntries`); the builders' adjacency rule (append `hook.context` as a text block to an open user message: `anthropic_tools.go`, `coding_tools.go` and their builder unit tests), which lands **before** the `context_unsupported` rule is removed for the loop; the once-per-session dedupe and the 4 KiB truncation. Needs 4a2. If over 10 paths or 600 lines the builder rule splits off first and lands first | about 600 (checkpoint and split at 600 lines) | context lands between a call and its result; the two readers project `hook.context` differently; `replayedBytes` or `replayedType` disagrees with the rebuild for it (a spec compares them); its bytes are missing from the keep point or from `summarisable`; it is missing from the summariser's transcript; it is a cut point; it is lost on resume or a later turn; a closing-fence line in hook text is accepted; a builder emits two adjacent user messages for hook context (Anthropic tool result then context, user then context, OpenAI-style route); a resume re-adds an identical `session.start` or `user.prompt` context; context over 4 KiB is rejected or cut inside a character |
 | 4c | `compaction.before`/`compaction.after` hooks, added to the accepted set; the `countTurns` spec | about 300 | a manual or overflow compaction is denied; `compaction.after` runs inside the summary request; `countTurns` counts `hook.context` as a turn |
-| 4d | `session doctor`: unmatched `hook.invoked` list and the `hooks.loaded` scope, skipped and inert lists | about 250 | an unmatched invocation is missing from the doctor text; `skipped` or `inert` ids are missing |
+| 4d | Merged in #504. `session doctor`: unmatched `hook.invoked` list and the `hooks.loaded` scope, skipped and inert lists | about 250 | an unmatched invocation is missing from the doctor text; `skipped` or `inert` ids are missing |
 | 5 | System One client and `decision` hooks | about 550 (checkpoint at 600 lines) | a non-loopback `base_url` loads; a hosts entry or a redirect to a non-loopback address is dialled; a proxy variable is honoured; URL userinfo loads; a `score` question loads; the state holds a value for a secret-named key or file contents; replay re-asks the model; an unreachable endpoint allows under `deny` policy |
 | 6 | The profile's **own** hooks in frontmatter (loop-level points only; the root set's inheritance is already plumbed by 3a1 and 3a1b), source-scope rule, `hooks_sha256` in the child's `session.delegated` payload (`delegatedPayload`) and its comparison in `loadResumableChild` on a child resume (D22; the payload-writing and reading sites are `sessioncmd.go` and `delegateresume.go`); a profile hook naming a run-level point fails the profile load (`hook_point_unsupported`) | about 400 | a child drops an inherited hook; a child writes `hooks.loaded` or fires `session.start`; a profile hook on a run-level point loads; a child inheriting a root `turn.after` stop hook ends other than `failed` with reason `hook_stop`; a profile's hook runs for its parent; a changed hook set of the child profile resumes a child; a child resume after a `--hooks` scope change (profile file unchanged) is accepted, or the child's `session.delegated` lacks `hooks_sha256`; a legacy `session.delegated` without it is compared; a project-source profile's hook runs without `--hooks project\|both`; `--hooks none` still runs a profile hook; a skipped profile hook is missing from `hooks.loaded` |
-| 7 | `docs/examples/hooks`, operator guide | about 300 (docs) | an example fails to load under the real loader |
+| 7 | Not merged (in review as #508). `docs/examples/hooks`, operator guide | about 300 (docs) | an example fails to load under the real loader |
 
 Packets 4a and 4a2 must not wrap a hook error with `ErrProvider` or `ErrSessionCancelled`: `finishRun` checks
 cancellation, budget, usage and provider before `exitCodeFor`, so a wrapped `ErrHookStop` would exit 3 or 130
