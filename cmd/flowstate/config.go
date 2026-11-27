@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
+	"unicode"
 
 	"github.com/baphled/flowstate/internal/app"
 )
@@ -36,7 +38,8 @@ var secretKeyPattern = regexp.MustCompile(`(?i)key|token|secret|password`)
 // path must exist; otherwise ./flowstate.json applies when present;
 // otherwise the zero config applies. Unreadable file, invalid JSON,
 // unknown fields, secret-looking keys and invalid values are
-// config_invalid errors.
+// config_invalid errors, as are skills_paths and skills_default in the
+// ambient file.
 func loadConfig(explicit string) (cliConfig, string, error) {
 	path, source := "", configSourceNone
 	if explicit != "" {
@@ -54,23 +57,34 @@ func loadConfig(explicit string) (cliConfig, string, error) {
 	if rerr != nil {
 		return cliConfig{}, "", fmt.Errorf("%w: cannot read config %q: %v", app.ErrConfigInvalid, path, rerr)
 	}
-	cfg, perr := parseConfig([]byte(data))
+	cfg, perr := decodeConfig([]byte(data), source == configSourceDefault)
 	if perr != nil {
 		return cliConfig{}, "", perr
 	}
 	return cfg, source, nil
 }
 
-// parseConfig strictly decodes one config document: a secret-key
-// scan at any depth runs before the DisallowUnknownFields decode,
-// and value validation runs after it.
+// parseConfig strictly decodes one explicit config document: a secret-key
+// scan at any depth runs before the DisallowUnknownFields decode, and value
+// validation runs after it.
 func parseConfig(data []byte) (cliConfig, error) {
+	return decodeConfig(data, false)
+}
+
+// decodeConfig is parseConfig with the ambient rule applied: a config discovered as ./flowstate.json, rather
+// than named by --config, must not set skills_paths or skills_default (ADR-013 D16), or a repository could choose
+// which skills its sessions load. Naming either key, in any spelling the decoder matches, is config_invalid: the
+// key scan folds case as encoding/json does, and the decoded fields are checked after the strict decode too.
+func decodeConfig(data []byte, ambient bool) (cliConfig, error) {
 	var raw any
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return cliConfig{}, fmt.Errorf("%w: config is not valid JSON: %v", app.ErrConfigInvalid, err)
 	}
 	if serr := rejectSecretKeys(raw); serr != nil {
 		return cliConfig{}, serr
+	}
+	if ambient && namesSkillsKeys(raw) {
+		return cliConfig{}, errAmbientSkills()
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
@@ -81,10 +95,36 @@ func parseConfig(data []byte) (cliConfig, error) {
 	if terr := dec.Decode(&struct{}{}); !errors.Is(terr, io.EOF) {
 		return cliConfig{}, fmt.Errorf("%w: config carries trailing content", app.ErrConfigInvalid)
 	}
+	if ambient && (cfg.SkillsPaths != nil || cfg.SkillsDefault != nil) {
+		return cliConfig{}, errAmbientSkills()
+	}
 	if verr := cfg.validate(); verr != nil {
 		return cliConfig{}, verr
 	}
 	return cfg, nil
+}
+
+// errAmbientSkills is the config_invalid error for an ambient flowstate.json
+// that names a skills key.
+func errAmbientSkills() error {
+	return fmt.Errorf("%w: the ambient %s cannot set skills_paths or skills_default: "+
+		"pass them with --skills-path and --skills-default, or in an explicit --config file", app.ErrConfigInvalid, ambientConfigPath)
+}
+
+// namesSkillsKeys reports whether a decoded config document names a skills key at the top level, whatever its
+// value. Keys are compared with strings.EqualFold because that is how encoding/json matches them (it folds the
+// long s and the Kelvin sign; strings.ToLower does not), so an exact lookup would let those spellings through.
+func namesSkillsKeys(raw any) bool {
+	top, ok := raw.(map[string]any)
+	if !ok {
+		return false
+	}
+	for key := range top {
+		if strings.EqualFold(key, "skills_paths") || strings.EqualFold(key, "skills_default") {
+			return true
+		}
+	}
+	return false
 }
 
 // rejectSecretKeys walks a decoded config document and rejects any
@@ -132,7 +172,75 @@ func (c cliConfig) validate() error {
 		}
 		seen[name] = true
 	}
+	return c.validateSkills()
+}
+
+// validateSkills applies the skills key rules (ADR-013 D16): the entry rules
+// of checkSkillsPaths and checkSkillsDefault, each a config_invalid here.
+func (c cliConfig) validateSkills() error {
+	if err := checkSkillsPaths("skills_paths", c.SkillsPaths); err != nil {
+		return fmt.Errorf("%w: %v", app.ErrConfigInvalid, err)
+	}
+	if err := checkSkillsDefault("skills_default", c.SkillsDefault); err != nil {
+		return fmt.Errorf("%w: %v", app.ErrConfigInvalid, err)
+	}
 	return nil
+}
+
+// checkSkillsPaths returns the first rule a list of skills directories breaks,
+// naming it by label (the config key or the flag): an empty entry, a duplicate,
+// or a relative path. A relative path is refused because it would resolve
+// against whatever directory the command runs in.
+func checkSkillsPaths(label string, paths []string) error {
+	seen := make(map[string]bool, len(paths))
+	for _, p := range paths {
+		if p == "" {
+			return fmt.Errorf("%s entries must not be empty", label)
+		}
+		if seen[filepath.Clean(p)] {
+			return fmt.Errorf("duplicate %s entry %q", label, p)
+		}
+		if !filepath.IsAbs(p) {
+			return fmt.Errorf("%s entries must be absolute directories, got %q", label, p)
+		}
+		seen[filepath.Clean(p)] = true
+	}
+	return nil
+}
+
+// checkSkillsDefault returns the first rule a list of offered skill names or
+// `*`-suffixed prefixes breaks, naming it by label: an empty or blank entry,
+// inner whitespace, or a duplicate. Whether a name or prefix matches a loaded
+// skill is the profile validation's question, not the config's.
+func checkSkillsDefault(label string, names []string) error {
+	seen := make(map[string]bool, len(names))
+	for _, n := range names {
+		if strings.TrimSpace(n) == "" {
+			return fmt.Errorf("%s entries must not be empty", label)
+		}
+		if strings.ContainsFunc(n, unicode.IsSpace) {
+			return fmt.Errorf("%s entries must not contain whitespace, got %q", label, n)
+		}
+		if seen[n] {
+			return fmt.Errorf("duplicate %s entry %q", label, n)
+		}
+		seen[n] = true
+	}
+	return nil
+}
+
+// effectiveSkills resolves the skills settings (ADR-013 D16): each flag
+// replaces the config key it names, as ADR-005 orders flags over config; a key
+// with no flag keeps its config value. --skills itself selects no paths.
+func effectiveSkills(fl *flags) skillsSettings {
+	sk := skillsSettings{Paths: fl.config.SkillsPaths, Default: fl.config.SkillsDefault}
+	if len(fl.skillsPaths) > 0 {
+		sk.Paths = fl.skillsPaths
+	}
+	if len(fl.skillsDefault) > 0 {
+		sk.Default = fl.skillsDefault
+	}
+	return sk
 }
 
 // applySessionConfig loads the effective config for one invocation,
@@ -185,28 +293,53 @@ func effectiveAllowlist(fl *flags) []string {
 // canonicalComposition renders the effective session composition as
 // its pinned canonical form: one JSON object with sorted keys and no
 // insignificant whitespace. The allowlist is lexicographically
-// sorted; db_path is the effective path after filepath.Clean.
-func canonicalComposition(provider, model, harness, dbPath, source string, allow []string) ([]byte, error) {
+// sorted; db_path is the effective path after filepath.Clean. The skills
+// settings join when given and non-empty only (ADR-013 D16): skills_paths
+// cleaned then sorted, skills_default sorted, so every hash recorded before
+// the keys existed is still reproduced.
+func canonicalComposition(provider, model, harness, dbPath, source string, allow []string, skills ...skillsSettings) ([]byte, error) {
 	sorted := append([]string(nil), allow...)
 	if sorted == nil {
 		sorted = []string{}
 	}
 	sort.Strings(sorted)
-	return json.Marshal(map[string]any{
+	composition := map[string]any{
 		"config_source":  source,
 		"db_path":        filepath.Clean(dbPath),
 		"harness":        harness,
 		"model":          model,
 		"provider":       provider,
 		"tool_allowlist": sorted,
-	})
+	}
+	if len(skills) > 0 {
+		addSkillsComposition(composition, skills[0])
+	}
+	return json.Marshal(composition)
+}
+
+// addSkillsComposition adds each skills key to the composition when its list
+// is non-empty.
+func addSkillsComposition(composition map[string]any, sk skillsSettings) {
+	if len(sk.Paths) > 0 {
+		paths := make([]string, len(sk.Paths))
+		for i, p := range sk.Paths {
+			paths[i] = filepath.Clean(p)
+		}
+		sort.Strings(paths)
+		composition["skills_paths"] = paths
+	}
+	if len(sk.Default) > 0 {
+		names := append([]string(nil), sk.Default...)
+		sort.Strings(names)
+		composition["skills_default"] = names
+	}
 }
 
 // compositionSHA256 returns the hex sha256 of the canonical
 // composition, persisted per session as config_sha256 so identical
 // effective composition pins identical wiring.
-func compositionSHA256(provider, model, dbPath, source string, allow []string) (string, error) {
-	body, err := canonicalComposition(provider, model, app.DefaultHarness, dbPath, source, allow)
+func compositionSHA256(provider, model, dbPath, source string, allow []string, skills ...skillsSettings) (string, error) {
+	body, err := canonicalComposition(provider, model, app.DefaultHarness, dbPath, source, allow, skills...)
 	if err != nil {
 		return "", fmt.Errorf("canonical composition: %w", err)
 	}

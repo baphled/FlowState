@@ -424,6 +424,7 @@ func noteTruncation(res *app.TurnResult, stderr *os.File) {
 // running with no tools.
 func runTurnOrLoop(ctx context.Context, st *app.Store, sess *app.Session, s app.Streamer, fl *flags, lease app.ExecLease, hk *app.RootRunHooks) (*app.TurnResult, error) {
 	allow := effectiveAllowlist(fl)
+	sk := effectiveSkills(fl)
 	if !hasToolSurface(fl) {
 		return app.TurnWithOptions(ctx, st, sess, s, app.TurnOptions{
 			Budget:    fl.budget,
@@ -438,6 +439,9 @@ func runTurnOrLoop(ctx context.Context, st *app.Store, sess *app.Session, s app.
 		Agents:           fl.agents,
 		HooksScope:       hooksScope(fl),
 		Hooks:            hk.Set(),
+		SkillsScope:      skillsScope(fl),
+		SkillsPaths:      sk.Paths,
+		SkillsDefault:    sk.Default,
 		Budget:           fl.budget,
 		MaxTokens:        fl.maxTokens,
 		MaxTurns:         fl.maxTurns,

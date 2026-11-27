@@ -40,6 +40,11 @@ type flags struct {
 	agents    string        // --agents scope: user, project or both; empty offers no delegation
 	hooks     app.HookScope // --hooks scope as parsed; empty means not given, see hooksScope
 	hooksSet  bool          // --hooks was supplied explicitly
+	// skills settings (ADR-013 D16)
+	skills        app.SkillsScope // --skills scope as parsed; empty means not given, see skillsScope
+	skillsSet     bool            // --skills was supplied explicitly
+	skillsPaths   []string        // --skills-path, repeatable, absolute
+	skillsDefault []string        // --skills-default, repeatable; a value may be a comma-separated list
 	// session unlock
 	force bool // --force: delete the lease row instead of reporting it
 	// session compact
@@ -62,6 +67,20 @@ type cliConfig struct {
 	ToolAllowlist   []string `json:"tool_allowlist"`
 	// Compaction is the optional compaction object (ADR-010, D7).
 	Compaction app.CompactionConfig `json:"compaction"`
+	// SkillsPaths and SkillsDefault are the skills settings (ADR-013 D16):
+	// absolute directories, and the root session's offered skill names or
+	// `*`-suffixed prefixes. An ambient flowstate.json may not set them; an
+	// explicit --config file may.
+	SkillsPaths   []string `json:"skills_paths"`
+	SkillsDefault []string `json:"skills_default"`
+}
+
+// skillsSettings is the effective skills settings of one invocation: the
+// --skills-path and --skills-default flags, else the config keys. Both join the
+// composition hash only when non-empty.
+type skillsSettings struct {
+	Paths   []string
+	Default []string
 }
 
 // usageSentinel satisfies errors.Is against app.ErrUsage while

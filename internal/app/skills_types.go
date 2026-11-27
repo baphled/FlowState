@@ -2,6 +2,37 @@ package app
 
 import "github.com/baphled/flowstate/internal/skill"
 
+// SkillsScope is the --skills value: which skills directories a load reads.
+type SkillsScope string
+
+// The --skills scopes; SkillsScopeUser is the default the CLI applies.
+const (
+	// SkillsScopeUser reads the user directory only.
+	SkillsScopeUser SkillsScope = "user"
+	// SkillsScopeProject reads the project directory only.
+	SkillsScopeProject SkillsScope = "project"
+	// SkillsScopeBoth reads the user directory, then the project directory.
+	SkillsScopeBoth SkillsScope = "both"
+	// SkillsScopeNone reads neither.
+	SkillsScopeNone SkillsScope = "none"
+)
+
+// SkillsRequest names the skills directories one load reads (ADR-013 D3, D16).
+type SkillsRequest struct {
+	// Scope is the already-parsed --skills scope. The zero value is invalid, so a
+	// request that never parsed the flag loads nothing rather than the user
+	// directory (fail closed); the CLI applies its default, user, itself.
+	Scope SkillsScope
+	// ProjectRoot is where the project skills directory is found; empty is the
+	// process current directory. It is never the per-run workdir, as for the
+	// project hook file.
+	ProjectRoot string
+	// Paths are the explicit directories, absolute, in the order given: the
+	// --skills-path flags, else the skills_paths config key. They are read
+	// after the scope's directories.
+	Paths []string
+}
+
 // SkillCounts summarises a skills load.
 type SkillCounts struct {
 	// Roots is the number of directories scanned.

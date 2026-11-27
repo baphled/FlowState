@@ -144,6 +144,18 @@ type SessionExecLoopRequest struct {
 	// It is carried but not yet acted on: the loader wiring is the follow-up, which
 	// finds the project file under HooksProjectRoot(req), never under Workdir.
 	HooksScope HookScope
+	// SkillsScope is the already-parsed --skills scope (ADR-013). As for hooks,
+	// the zero value means not set and must never load the user skills directory:
+	// the CLI applies its default, user, itself. It is carried, not yet acted on:
+	// the packet that wires the loader resolves the roots with app.SkillsRoots,
+	// whose project directory lies under ProjectRoot, never under Workdir.
+	SkillsScope SkillsScope
+	// SkillsPaths are the explicit skills directories, absolute, and
+	// SkillsDefault the root session's offered skill names or `*`-suffixed
+	// prefixes: the flags, else the config keys. Both are carried, not yet acted
+	// on.
+	SkillsPaths   []string
+	SkillsDefault []string
 	// Budget is the total loop budget pool; <= 0 means unlimited turns.
 	Budget int64
 	// MaxTokens caps each provider response; <= 0 uses the model-table default (ResolveMaxOutput).
