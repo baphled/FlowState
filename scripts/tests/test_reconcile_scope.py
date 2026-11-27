@@ -14,9 +14,12 @@ from scripts.reconcile_protect import MINIMUM
 from scripts.reconcile_scope import Live, check_changes, check_dependencies, check_duplicates, check_packet
 from scripts.review_signature import canonical_payload
 
-PLAN = "dropbox:/FlowState/Knowledge/Plans/PLAN-SDLC-001-r11-continuous-reconciliation.md"
-IDS = ("PLAN-SDLC-001", "PLAN-SDLC-001/SCOPE1", "PLAN-SDLC-001/APPROVAL1")
-PLAN_BYTES = b"# PLAN-SDLC-001\n\nSCOPE1 plan text\n"
+# The dependency is approved under the previous plan revision; the current one no longer restates its packet heading.
+PLAN, CANDIDATE_PLAN = ["dropbox:/FlowState/Knowledge/Plans/PLAN-SDLC-001-r%d-continuous-reconciliation.md" % revision
+                        for revision in (11, 12)]
+IDS = ("PLAN-SDLC-001", "PLAN-SDLC-001/SCOPE1")
+DROPBOX = (["Metadata/**"], ["Metadata/attempts/2026-11-26-sdlc-reconcile-approval/summary.md"])
+TREE = {"scripts": "040000", "scripts/reconcile_scope.py": "100644", "Makefile": "100644", "docs": "040000"}
 ATTEMPT = "dropbox:/FlowState/Metadata/attempts/2026-11-26-sdlc-reconcile-approval/"
 PACKET_REF, APPROVAL_REF, DELIVERY_REF, ADMISSION_REF = [ATTEMPT + name for name in ("packet.json", "plan-approval.json", "delivery.json", "admission.json")]
 TRAILER = "Project-Metadata: " + ADMISSION_REF
@@ -26,6 +29,16 @@ PATHS = ["scripts/reconcile_scope.py", "scripts/reconcile_protect.py", "scripts/
 COMMIT, TIP, ADVANCED = "c" * 40, "a" * 40, "b" * 40
 PRIVATE, OTHER = Ed25519PrivateKey.generate(), Ed25519PrivateKey.generate()
 PUBLIC = PRIVATE.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+
+
+def plan_bytes(text, headings="### SCOPE1 \u2014 Scope\n\n### APPROVAL1 \u2014 Approval\n\n"):
+    """Plan bytes the gate's id parser accepts: a front-matter id, then a packet section holding `headings`."""
+    return ("---\nid: PLAN-SDLC-001\n---\n\n## 9. Delivery packets\n\n" + headings + "## 10. Acceptance\n\n"
+            + text).encode()
+
+
+PLAN_BYTES = plan_bytes("r11 plan text\n")
+CANDIDATE_BYTES = plan_bytes("r12 plan text\n", "### SCOPE1 \u2014 Scope\n\n")
 
 
 def raw(record):
@@ -59,9 +72,21 @@ def delivery(**extra):
                 "packet_sha256": DEP_DIGEST, "commit": COMMIT, **extra})
 
 
+def undelivered(paths=DROPBOX, key=PRIVATE, **signed):
+    """Stored bytes of a dependency whose delivery note carries no commit: a packet declaring `paths` as its allowed and
+    new paths, the approval `key` signed for exactly those bytes with `signed` applied, and a delivery note with no commit."""
+    record = packet("PLAN-SDLC-001/APPROVAL1", paths[0], protected_paths=[], deliverables_new=paths[1])
+    digest = hashlib.sha256(raw(record)).hexdigest()
+    return {PACKET_REF: raw(record),
+            APPROVAL_REF: approval(key=key, **dict([("packet_sha256", digest), ("protected_paths_approved", [])],
+                                               **signed)),
+            DELIVERY_REF: delivery(packet_sha256=digest, commit="")}
+
+
 DEP = packet("PLAN-SDLC-001/APPROVAL1", ["scripts/reconcile_approval.py"])
 DEP_BYTES, DEP_DIGEST = raw(DEP), hashlib.sha256(raw(DEP)).hexdigest()
-STORED = {PACKET_REF: DEP_BYTES, APPROVAL_REF: approval(), DELIVERY_REF: delivery(), ADMISSION_REF: raw({"packet_sha256": DEP_DIGEST})}
+STORED = {PLAN: PLAN_BYTES, CANDIDATE_PLAN: CANDIDATE_BYTES, PACKET_REF: DEP_BYTES, APPROVAL_REF: approval(),
+          DELIVERY_REF: delivery(), ADMISSION_REF: raw({"packet_sha256": DEP_DIGEST})}
 
 
 class World:
@@ -91,14 +116,21 @@ class World:
 
 
 def live(tip=TIP, **changes):
-    """A `Live` over a `World` whose defaults satisfy the dependency rule for `COMMIT` reachable from `tip`."""
+    """A `Live` over a `World` whose defaults satisfy the dependency rule for `COMMIT` reachable from `tip`; the plan bytes
+    it carries are the candidate's, so a dependency is never verified against them."""
     world = World(**changes)
-    return Live(tip, world, world.read, PLAN_BYTES, PUBLIC, IDS)
+    return Live(tip, world, world.read, CANDIDATE_BYTES, PUBLIC, IDS)
 
 
-PACKET = packet("PLAN-SDLC-001/SCOPE1", PATHS)
+def candidate(packet_id, **extra):
+    """A work-packet record of the candidate: it owns `PATHS` and is approved under the current plan revision."""
+    return packet(packet_id, PATHS, plan_ref=CANDIDATE_PLAN, plan_sha256=hashlib.sha256(CANDIDATE_BYTES).hexdigest(), **extra)
+
+
+PACKET = candidate("PLAN-SDLC-001/SCOPE1")
 RECEIPT = {"protected_paths_approved": PATHS}
-DECIDER = packet("PLAN-SDLC-001/SCOPE1", PATHS, dependencies=[{"packet_id": DEP["packet_id"], "packet_ref": PACKET_REF, "delivery_ref": DELIVERY_REF}])
+DEPENDENCY = {"packet_id": DEP["packet_id"], "packet_ref": PACKET_REF, "delivery_ref": DELIVERY_REF}
+DECIDER = candidate("PLAN-SDLC-001/SCOPE1", dependencies=[DEPENDENCY])
 ADDED = [Change(path, "A", "100644", "000000") for path in PATHS]
 
 
@@ -153,6 +185,18 @@ class DependencyTest(unittest.TestCase):
         self.assertIsNone(check_dependencies(DECIDER, live(tip=ADVANCED)))
         self.assertIsNone(check_dependencies(PACKET, live()))
 
+    def test_a_dependency_approved_under_an_earlier_plan_revision_is_verified_against_that_revision(self):
+        """`DEP` is approved under r11 and the candidate under r12, which no longer lists it: the bytes and ids at the
+        dependency's own `plan_ref` decide, never the candidate's."""
+        self.assertIsNone(check_dependencies(DECIDER, live(files={CANDIDATE_PLAN: KeyError(CANDIDATE_PLAN)})))
+        later = approval(plan_ref=CANDIDATE_PLAN, plan_sha256=hashlib.sha256(CANDIDATE_BYTES).hexdigest())
+        rows = (("approval bound to the candidate's revision", {APPROVAL_REF: later}, "plan digest"),
+                ("plan without ids", {PLAN: b"# no front-matter id or packet section\n"}, "no front-matter id"),
+                ("plan holding the candidate's bytes", {PLAN: CANDIDATE_BYTES}, "packet_id is invalid"))
+        for name, stored, refusal in rows:
+            with self.subTest(name=name), self.assertRaisesRegex(ReconcileError, refusal):
+                check_dependencies(DECIDER, live(files=stored))
+
     def test_an_unverified_approval_or_a_malformed_stored_record_leaves_the_dependency_unsatisfied(self):
         reject = raw(dict(json.loads(approval()), verdict="REJECT"))
         for reference, bad in ((APPROVAL_REF, approval(key=OTHER)), (APPROVAL_REF, reject), (APPROVAL_REF, KeyError(APPROVAL_REF)),
@@ -202,11 +246,62 @@ class DependencyTest(unittest.TestCase):
         self.assertIsNone(check_dependencies(DECIDER, live(files={APPROVAL_REF: named, ADMISSION_REF: KeyError(ADMISSION_REF)})))
 
     def test_any_other_lookup_error_blocks(self):
-        failures = [{"files": {reference: OSError("unreadable")}} for reference in (PACKET_REF, APPROVAL_REF, DELIVERY_REF)]
+        unreadable = {reference: OSError("unreadable") for reference in (PACKET_REF, PLAN, APPROVAL_REF, DELIVERY_REF)}
+        failures = [{"files": {reference: error}} for reference, error in unreadable.items()]
         failures.append({"ancestry": {TIP: OSError("down")}})
         for changes in failures:
             with self.subTest(changes=changes), self.assertRaises(ReconcileError):
                 check_dependencies(DECIDER, live(**changes))
+
+
+class CommitlessDependencyTest(unittest.TestCase):
+    """Section 6: a delivery note with an empty commit is satisfied by its verified approval alone, only when that approval
+    names no delivered commit and the dependency declares nothing in this repository."""
+
+    def ruled(self, files, tree=None, refusal=None):
+        """Run the dependency rule over stored `files` and the target `tree`: satisfied, or refused naming `refusal`."""
+        if refusal is None:
+            self.assertIsNone(check_dependencies(DECIDER, live(files=files, tree=tree)))
+        else:
+            with self.assertRaisesRegex(ReconcileError, refusal):
+                check_dependencies(DECIDER, live(files=files, tree=tree))
+
+    def test_no_commit_no_delivered_commit_and_nothing_in_the_repository_is_satisfied(self):
+        for tree in (None, TREE):
+            with self.subTest(tree=tree):
+                self.ruled(undelivered(paths=([], [])), tree)
+
+    def test_a_deliverable_under_a_dropbox_path_is_satisfied_against_the_repository_tree(self):
+        self.ruled(undelivered(), TREE)
+
+    def test_an_approval_naming_a_commit_refuses_a_delivery_note_that_carries_none(self):
+        for named in (COMMIT, "f" * 40):
+            with self.subTest(named=named):
+                self.ruled(undelivered(delivered_commit=named), None, "approval names one")
+
+    def test_a_path_in_the_repository_is_refused_with_or_without_the_file_in_the_tree(self):
+        """A deliverable in the tree, one under a top-level directory such as `scripts` or `docs` without the file in the
+        tree, one named only by `deliverables_new`, and an all-new-files code packet whose record omits its new
+        paths from `deliverables_new` are all refused."""
+        in_tree = (["scripts/reconcile_approval.py"], ["scripts/reconcile_approval.py"])
+        for paths, tree in ((in_tree, {"scripts": "040000", "scripts/reconcile_approval.py": "100644"}),
+                            ((["docs/guide.md"], ["docs/guide.md"]), {"docs": "040000"}),
+                            ((DROPBOX[0], ["docs/guide.md"]), {"docs": "040000"}),
+                            ((["internal/app/*.go"], []), {"internal": "040000"}),
+                            ((in_tree[0], []), {"scripts/reconcile_approval.py": "100644"})):
+            with self.subTest(paths=paths, tree=tree):
+                self.ruled(undelivered(paths), tree, "declares")
+
+    def test_the_approval_alone_carries_a_commit_less_delivery_so_its_defects_are_refused(self):
+        """An unverified approval, one for another digest, a missing approval, a delivery note for another packet and a
+        missing delivery note each leave the dependency unsatisfied."""
+        for name, stored in (("unverified", undelivered(key=OTHER)),
+                             ("another digest", undelivered(packet_sha256="ab" * 32)),
+                             ("no approval", {APPROVAL_REF: KeyError(APPROVAL_REF)}),
+                             ("note for another packet", {DELIVERY_REF: delivery(commit="")}),
+                             ("no delivery note", {DELIVERY_REF: KeyError(DELIVERY_REF)})):
+            with self.subTest(name=name), self.assertRaises(ReconcileError):
+                check_dependencies(DECIDER, live(files={**undelivered(), **stored}))
 
 
 class DuplicateWorkTest(unittest.TestCase):

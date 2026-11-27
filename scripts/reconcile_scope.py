@@ -9,8 +9,9 @@ exhausted matcher budget included, is re-raised as `ReconcileError` naming only 
 rule; `check_packet` runs them in the plan's fixed order.
 """
 import hashlib
+import re
 from dataclasses import dataclass
-from scripts.admission_metadata import DIGEST, SHA, AdmissionError, metadata_reference
+from scripts.admission_metadata import DIGEST, AdmissionError, metadata_reference
 from scripts.admission_transport import strict_json
 from scripts.reconcile_approval import verify_approval
 from scripts.reconcile_changes import fail_closed
@@ -19,18 +20,24 @@ from scripts.reconcile_disposition import validate_disposition
 from scripts.reconcile_glob import match
 from scripts.reconcile_paths import Work
 from scripts.reconcile_protect import effective_globs, protects
-from scripts.reconcile_records import DEPENDENCY_ID
+from scripts.reconcile_records import COMMIT, DEPENDENCY_ID, PLAN_REF, load_packet
 
 MAX_BYTES = 128 * 1024
 APPROVAL = "plan-approval.json"
 DELIVERY_TYPE = "flowstate-packet-delivery-v1"
 LISTED = ("the packet's protected_paths", "the approval receipt")
+# A plan's packet ids, as `reconcile_gate.packet_ids` reads them: the front-matter id, then `<plan id>/<heading id>`
+# for each heading of the packet section.
+FRONT_MATTER = re.compile(r"(?m)^id: (PLAN-[A-Z][A-Z0-9-]*-[0-9]{3})$")
+PACKET_SECTION = re.compile(r"(?ms)^## 9\. .*(?=^## 10\. )")
+HEADING = re.compile(r"^### ([A-Z][A-Z0-9]*[0-9]+[a-z]?(?:\.[0-9]+)?) \u2014 ", re.M)
 
 
 @dataclass(frozen=True)
 class Live:
-    """The caller's live facts: the tip SHA, a `reconcile_changes` source, a Dropbox byte reader, the plan bytes read
-    live, the pinned plan-approval public key and the packet ids the plan bytes hold."""
+    """The caller's live facts: the tip SHA, a `reconcile_changes` source, a Dropbox byte reader and the pinned
+    plan-approval public key. `plan_raw` and `packet_ids` are the candidate's plan bytes and ids, which the gate
+    passes positionally; no dependency is ever verified against them."""
     tip: str
     source: object
     read: object
@@ -45,7 +52,7 @@ def _text(pattern):
 
 
 DELIVERY = {"record_type": lambda value: value == DELIVERY_TYPE, "packet_id": _text(DEPENDENCY_ID),
-            "packet_sha256": _text(DIGEST), "commit": _text(SHA)}
+            "packet_sha256": _text(DIGEST), "commit": _text(COMMIT)}
 
 
 def _decode(raw, label):
@@ -109,23 +116,41 @@ def _refuse(failed, reason):
         raise ReconcileError("dependency refused: " + reason)
 
 
-def _check_dependency(entry, live):
-    """Apply the section 6 dependency rule to one dependency. Its signed approval, stored as `plan-approval.json`
-    beside its `packet_ref`, verifies; `delivery_ref` names a delivery note in that directory with the dependency's
-    packet id and the approved packet digest; the named commit is reachable from the tip; that commit's single
-    `Project-Metadata` trailer resolves into that directory; and the admission record the trailer names binds the
-    same packet digest or the signed approval names the commit as `delivered_commit`."""
-    directory = entry["packet_ref"].rpartition("/")[0]
-    _refuse(entry["delivery_ref"].rpartition("/")[0] != directory, "delivery_ref is outside the directory of packet_ref")
+def _packet_ids(plan_raw):
+    """The packet ids of plan bytes: the front-matter id, then `<plan id>/<heading id>` per heading of the packet section."""
+    text = plan_raw.decode("utf-8")
+    plan, section = FRONT_MATTER.search(text), PACKET_SECTION.search(text)
+    if not (plan and section):
+        raise ReconcileError("plan bytes carry no front-matter id or no packet section")
+    return (plan[1],) + tuple(plan[1] + "/" + name for name in HEADING.findall(section[0]))
+
+
+def _approval_of(entry, live):
+    """The dependency's packet bytes, the packet ids of its plan and its verified approval. The plan and the ids come
+    from the dependency itself: the plan bytes are read at the `plan_ref` its own packet names, never the candidate's."""
     packet_raw = live.read(entry["packet_ref"])
-    approval = verify_approval(live.read(directory + "/" + APPROVAL), packet_raw, live.plan_raw, live.public_key,
-                               live.packet_ids)
+    plan_ref = _decode(packet_raw, "work-packet record").get("plan_ref")
+    _refuse(not _text(PLAN_REF)(plan_ref), "the packet record names no grammatical plan_ref")
+    plan_raw = live.read(plan_ref)
+    ids = _packet_ids(plan_raw)
+    approval = verify_approval(live.read(entry["packet_ref"].rpartition("/")[0] + "/" + APPROVAL), packet_raw,
+                               plan_raw, live.public_key, ids)
+    return packet_raw, ids, approval
+
+
+def _delivered(entry, packet_raw, receipt, live):
+    """The commit of the dependency's delivery note, once it names the dependency's packet id and the approved digest."""
     delivery = _load(live.read(entry["delivery_ref"]), "delivery note", DELIVERY)
-    digest = hashlib.sha256(packet_raw).hexdigest()
-    identified = (approval["packet_id"], delivery["packet_id"], delivery["packet_sha256"])
-    _refuse(identified != (entry["packet_id"], entry["packet_id"], digest),
+    identified = (receipt["packet_id"], delivery["packet_id"], delivery["packet_sha256"])
+    _refuse(identified != (entry["packet_id"], entry["packet_id"], hashlib.sha256(packet_raw).hexdigest()),
              "the approval or the delivery note does not name the dependency's packet and packet digest")
-    commit = delivery["commit"]
+    return delivery["commit"]
+
+
+def _check_commit(commit, directory, digest, receipt, live):
+    """The rule for a delivery note naming a commit: it is reachable from the tip; its single `Project-Metadata` trailer
+    resolves into the dependency's directory; and the admission record the trailer names binds the same packet digest or
+    the signed approval names the commit as `delivered_commit`."""
     _refuse(not live.source.is_ancestor(commit, live.tip), "the delivery commit is not reachable from the live tip")
     try:
         trailer = metadata_reference(live.source.commit_message(commit))
@@ -133,9 +158,42 @@ def _check_dependency(entry, live):
         raise ReconcileError("dependency refused: the delivery commit has no single valid Project-Metadata trailer: %s"
                              % error) from None
     _refuse(trailer.rpartition("/")[0] != directory, "the delivery commit's Project-Metadata trailer resolves elsewhere")
-    named = approval["delivered_commit"] == commit  # signed evidence on its own: then no admission record is read
+    named = receipt["delivered_commit"] == commit  # signed evidence on its own: then no admission record is read
     _refuse(not named and _decode(live.read(trailer), "admission record").get("packet_sha256") != digest,
             "neither the admission record binds the packet digest nor the approval names the commit")
+
+
+def _declares_nothing(packet, entries):
+    """True when the dependency's packet declares nothing in the tree of the live tip: no allowed or new path has a
+    first segment that is a top-level entry of `entries`, and no `allowed_paths` pattern matches a path of it."""
+    top = {path for path in entries if "/" not in path}
+    paths = packet["allowed_paths"] + packet["deliverables_new"]
+    outside = top.isdisjoint(path.partition("/")[0] for path in paths)
+    return outside and not any(match(pattern, path) for pattern in packet["allowed_paths"] for path in entries)
+
+
+def _check_commitless(packet, receipt, live):
+    """The rule for a delivery note whose commit is empty: the approval alone satisfies the dependency only when it names
+    no `delivered_commit` and the packet declares nothing in this repository, so it proves what its reviewer saw at
+    approval time and no later work. Any tree lookup error blocks."""
+    _refuse(receipt["delivered_commit"] != "", "the delivery note carries no commit but the approval names one")
+    _refuse(not _declares_nothing(packet, live.source.tree_entries(live.tip)),
+            "the delivery note carries no commit but the dependency declares paths in this repository")
+
+
+def _check_dependency(entry, live):
+    """Apply the section 6 dependency rules to one dependency. Its signed approval, stored as `plan-approval.json` beside
+    its `packet_ref`, verifies against the plan its own packet names; `delivery_ref` names a delivery note in that
+    directory with the dependency's packet id and the approved packet digest. A note naming a commit must then satisfy
+    `_check_commit`; a note with an empty commit must satisfy `_check_commitless`."""
+    directory = entry["packet_ref"].rpartition("/")[0]
+    _refuse(entry["delivery_ref"].rpartition("/")[0] != directory, "delivery_ref is outside the directory of packet_ref")
+    packet_raw, ids, receipt = _approval_of(entry, live)
+    commit = _delivered(entry, packet_raw, receipt, live)
+    if commit == "":
+        _check_commitless(load_packet(packet_raw, ids), receipt, live)
+    else:
+        _check_commit(commit, directory, hashlib.sha256(packet_raw).hexdigest(), receipt, live)
 
 
 @fail_closed
