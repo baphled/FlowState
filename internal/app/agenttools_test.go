@@ -298,3 +298,29 @@ var _ = Describe("The protected hook trees of a session registry (ADR-012 D20)",
 		Expect(call(ProtectedHookDirs(root), tool.FSReadName, `{"path":".flowstate/hooks.json"}`)).To(Succeed())
 	})
 })
+
+var _ = Describe("The skill.load definition over an empty offer (ADR-013 D6)", func() {
+	// catalog is a catalog marked None as given, as the composition marks a session offered nothing: none offers
+	// nothing, so a profile that lists the tool keeps it and every name is refused.
+	catalog := func(none bool) tool.SkillCatalog {
+		finder := func(string) (string, error) { return "", fmt.Errorf("not offered") }
+		if !none {
+			finder = func(string) (string, error) { return GinkgoT().TempDir(), nil }
+		}
+		return tool.SkillCatalog{Finder: finder, Format: skillFormat(), None: none}
+	}
+
+	DescribeTable("tells the model whether a load can succeed",
+		func(none bool, want string) {
+			defs := must(SessionToolDefinitions(must(NewSessionToolRegistry("", tool.WithOfferedSkills(catalog(none)))), []string{tool.SkillLoadName}))
+			Expect(defs[0].Description).To(Equal(want))
+		},
+		Entry("no skill offered", true, tool.SkillNoneDescription),
+		Entry("a skill offered: the builtin's description, byte for byte", false,
+			"Load a skill the session offers: its SKILL.md, or a supporting file below its directory given as a /-separated relative path. The text is third-party guidance."))
+
+	It("keeps the builtin's schema over an empty offer", func() {
+		defs := must(SessionToolDefinitions(must(NewSessionToolRegistry("", tool.WithOfferedSkills(catalog(true)))), []string{tool.SkillLoadName}))
+		Expect(defs[0].Parameters).To(MatchJSON(`{"type":"object","properties":{"name":{"type":"string","minLength":1},"file":{"type":"string","minLength":1}},"required":["name"]}`))
+	})
+})

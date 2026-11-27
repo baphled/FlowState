@@ -25,7 +25,8 @@ const TypeSkillLoaded = "skill.loaded"
 
 // runSkills is the run's loaded skills, read once when a run starts and handed to every session it starts, so each
 // offers its own selection over the same roots (ADR-013 D3, D6, D12): skills_default for the root, a profile's
-// skills for its sessions. Every profile is held to them first (checkProfileSkills). Nothing offered loads nothing,
+// skills for its sessions, and for a swarm run, which has no root, the coordinator's and its roles'. Every profile it
+// is given is held to them first (checkProfileSkills). Nothing offered loads nothing,
 // so a run that names no skill never reads a skills directory; an unset scope with something offered is
 // config_invalid, before any event is written (the zero scope never loads the user directory). The roots are the
 // request's scope and paths, the project directory under the project root and never the workdir (as for hooks).
@@ -125,8 +126,9 @@ func checkProfileSkills(profiles []agent.Profile, loaded []skill.Skill) ([]strin
 
 // skillCatalog is the skill.load catalog of an offer: each offered skill resolves to the skills root holding it
 // and opens through it, never directly, so any other name is not offered and no message carries a path. An empty
-// offer refuses every name as not offered: a profile that lists skill.load keeps the tool whatever it is offered
-// (childRegistry), while the root, offered nothing, registers none (rootRegistry).
+// offer refuses every name as not offered and is marked None, so the tool's definition says so: a profile that lists
+// skill.load keeps the tool whatever it is offered (childRegistry), while the root, offered nothing, registers none
+// (rootRegistry).
 func skillCatalog(loaded []skill.Skill, offered []SkillEntry) tool.SkillCatalog {
 	byName := make(map[string]skill.Skill, len(loaded))
 	for _, s := range loaded {
@@ -138,7 +140,7 @@ func skillCatalog(loaded []skill.Skill, offered []SkillEntry) tool.SkillCatalog 
 			roots[e.Name] = filepath.Dir(filepath.Dir(s.Path)) // the directory above the skill's own: os.OpenRoot follows a symlink in its argument
 		}
 	}
-	return tool.SkillCatalog{Finder: skillFinder(roots), Format: skillFormat()}
+	return tool.SkillCatalog{Finder: skillFinder(roots), Format: skillFormat(), None: len(offered) == 0}
 }
 
 // skillFinder resolves an offered name to the skills root holding it, so each skill is opened through its own root;

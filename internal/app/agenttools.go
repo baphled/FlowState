@@ -140,6 +140,11 @@ func sessionBuiltinDefinition(implementation tool.Tool) (provider.ToolDefinition
 	case tool.SkillLoadName:
 		builtin = tool.NewSkillLoad(tool.SkillCatalog{})
 		description = "Load a skill the session offers: its SKILL.md, or a supporting file below its directory given as a /-separated relative path. The text is third-party guidance."
+		// A session offered nothing keeps the tool only because its profile lists it: the definition says so, as the
+		// delegate tool's says when no profile is loaded, so the model does not learn it from a refusal (ADR-013 D6).
+		if s, ok := implementation.(tool.SkillOfferer); ok && !s.Offered() {
+			description = tool.SkillNoneDescription
+		}
 		schema = `{"type":"object","properties":{"name":{"type":"string","minLength":1},"file":{"type":"string","minLength":1}},"required":["name"]}`
 	default:
 		return provider.ToolDefinition{}, fmt.Errorf("app: no qualified schema for tool %q", implementation.Name())

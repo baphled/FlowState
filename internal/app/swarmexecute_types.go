@@ -61,6 +61,15 @@ type ExecuteSwarmConfig struct {
 	// ProjectRoot is where the project hook file is found; empty is the process
 	// current directory. It is never Workdir, which is only where the tools run.
 	ProjectRoot string
+	// SkillsScope is the already-parsed --skills scope (ADR-013 D3), as a session run's: the zero value means not set,
+	// and must never load the user skills directory; the CLI applies its default, user, itself. The run resolves its
+	// skills roots once, with the project directory under ProjectRoot and never under Workdir (as for hooks), and
+	// hands the loaded skills to the coordinator and, through its delegate tool, to every packet child (D12).
+	SkillsScope SkillsScope
+	// SkillsPaths are the explicit skills directories, absolute: the --skills-path flags, else the skills_paths key of
+	// an explicit --config. A swarm has no root session, so it has no skills_default: the coordinator is a profile and
+	// lists its own `skills:` (D6).
+	SkillsPaths []string
 	// Hooks is the loaded root hook set (ADR-012 D22) the coordinator's loop carries and every
 	// packet child inherits through its delegate tool; nil is the empty set.
 	Hooks HookSet
