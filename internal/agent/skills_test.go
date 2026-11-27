@@ -112,3 +112,71 @@ var _ = Describe("skills field", func() {
 		Expect(agent.SkillLoadTool).To(Equal("skill.load"))
 	})
 })
+
+// requiring builds a profile named a whose frontmatter lines are given, in the order a profile writes them.
+func requiring(name, header string) string {
+	return "---\nname: " + name + "\ndescription: d\n" + header + "---\nDo it.\n"
+}
+
+// requiredList is the YAML of a requires_skills list.
+func requiredList(names ...string) string {
+	return "requires_skills: [" + strings.Join(names, ", ") + "]\n"
+}
+
+// sixtyFour is a skill name of the longest kind, 64 characters.
+const sixtyFour = "sxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+var _ = Describe("requires_skills field (ADR-013 D10)", func() {
+	It("reads the listed names in order", func() {
+		p, err := agent.Parse([]byte(requiring("a", skillTools+entryList("tdd", "code-review")+requiredList("code-review", "tdd"))), skillKnown)
+		if err != nil {
+			panic(err)
+		}
+		Expect(p.RequiresSkills).To(Equal([]string{"code-review", "tdd"}))
+	})
+
+	DescribeTable("requires nothing when the key is",
+		func(tail string) {
+			p, err := agent.Parse([]byte(requiring("a", skillTools+entryList("tdd")+tail)), skillKnown)
+			if err != nil {
+				panic(err)
+			}
+			Expect(p.RequiresSkills).To(BeNil())
+		},
+		Entry("absent", ""),
+		Entry("null", "requires_skills:\n"),
+		Entry("empty", "requires_skills: []\n"))
+
+	It("accepts a name the profile is offered through a prefix", func() {
+		p, err := agent.Parse([]byte(requiring("a", skillTools+entryList("code-*")+requiredList("code-review"))), skillKnown)
+		if err != nil {
+			panic(err)
+		}
+		Expect(p.RequiresSkills).To(Equal([]string{"code-review"}))
+	})
+
+	It("accepts the largest list: 16 names", func() {
+		names := manyEntries(16)
+		p, err := agent.Parse([]byte(requiring("a", skillTools+entryList("\"*\"")+requiredList(names...))), skillKnown)
+		if err != nil {
+			panic(err)
+		}
+		Expect(p.RequiresSkills).To(HaveLen(16))
+	})
+
+	DescribeTable("refuses",
+		func(header, reason string) {
+			_, err := agent.Parse([]byte(requiring("a", header)), skillKnown)
+			Expect(err).To(MatchError(ContainSubstring(reason)))
+		},
+		Entry("a list over the cap: 17 names", skillTools+entryList("\"*\"")+requiredList(manyEntries(17)...),
+			"requires_skills lists more than 16 entries"),
+		Entry("a star pattern", skillTools+entryList("code-*")+requiredList("code-*"), "an exact skill name"),
+		Entry("a name outside the offer set", skillTools+entryList("tdd")+requiredList("code-review"),
+			`requires_skills lists "code-review", which the profile's skills do not offer`),
+		Entry("a list without skill.load in tools", "tools: [fs.read]\n"+requiredList("tdd"), "requires_skills needs skill.load in tools"),
+		Entry("a duplicate", skillTools+entryList("tdd")+requiredList("tdd", "tdd"), `lists "tdd" twice`),
+		Entry("a name of 65 characters", skillTools+entryList("\"*\"")+requiredList(sixtyFour+"s"), "an exact skill name"),
+		Entry("a null entry", skillTools+entryList("tdd")+requiredList("tdd", "null"), "must be a string"),
+		Entry("a scalar", skillTools+entryList("tdd")+"requires_skills: tdd\n", "requires_skills must be a list"))
+})

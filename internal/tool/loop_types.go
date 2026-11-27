@@ -21,6 +21,27 @@ type Loop struct {
 	writer    EventSink
 	allowlist map[string]bool
 	gate      CallGate
+	required  SkillRequirement
+}
+
+// SkillRequirement is the seam of ADR-013 D10: after the registry and allowlist checks and before any hook, the
+// loop asks it whether the session may run a tool other than skill.load, which is exempt so the model can always
+// meet the requirement. It is implemented by the app package, which owns the session log and the discovery.
+type SkillRequirement interface {
+	// Unmet returns the name of the first required skill the session has not loaded at its current hash, or ""
+	// when every one is loaded.
+	Unmet() string
+}
+
+// SkillRequiredCode is the tool.result error code of a call the skill requirement refused (ADR-013 D10). It is
+// a per-call code: the terminal reason of a session that ends unmet is a later packet.
+const SkillRequiredCode = "skill_required"
+
+// SkillRequiredError is returned by Loop.Invoke for a call the skill requirement refused. The loop has already
+// recorded the call and its skill_required result; Name is the unmet skill, and Error is what the model reads.
+type SkillRequiredError struct {
+	// Name is the required skill that was not loaded.
+	Name string
 }
 
 // CallGate is the hook seam of ADR-012: the loop asks Before after the registry and allowlist checks and

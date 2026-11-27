@@ -1,6 +1,8 @@
 package skill
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -17,10 +19,16 @@ import (
 // any roots, is an error naming every path, and none of the copies is loaded:
 // a silent shadow of a skill that enforcement may name would be a hole.
 func Load(roots []Root) Result {
+	return LoadCached(roots, nil)
+}
+
+// LoadCached is Load through a Cache (ADR-013 D17): a SKILL.md whose path, mtime and size are remembered is
+// neither re-read nor re-hashed, its cached conclusions returned. A nil cache reads everything, as Load does.
+func LoadCached(roots []Root, cache *Cache) Result {
 	res := Result{Skills: []Skill{}, Diagnostics: []Diagnostic{}}
 	byName := map[string][]Skill{}
 	for _, root := range roots {
-		found, diags := loadRoot(root)
+		found, diags := loadRoot(root, cache)
 		res.Diagnostics = append(res.Diagnostics, diags...)
 		for _, s := range found {
 			byName[s.Name] = append(byName[s.Name], s)
@@ -53,7 +61,7 @@ func diag(sev Severity, path, format string, args ...any) Diagnostic {
 }
 
 // loadRoot validates every skill directory directly inside one root.
-func loadRoot(root Root) ([]Skill, []Diagnostic) {
+func loadRoot(root Root, cache *Cache) ([]Skill, []Diagnostic) {
 	// Stat first: opening a FIFO as the root would block.
 	info, err := os.Stat(root.Dir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -90,7 +98,7 @@ func loadRoot(root Root) ([]Skill, []Diagnostic) {
 		if !info.IsDir() {
 			continue
 		}
-		s, found, derr := loadOne(r, root, name)
+		s, found, derr := loadCached(r, root, name, cache)
 		diags = append(diags, found...)
 		if derr != nil {
 			diags = append(diags, diag(SeverityError, filepath.Join(path, FileName), "%s", strings.TrimPrefix(derr.Error(), ErrInvalidSkill.Error()+": ")))
@@ -116,6 +124,53 @@ func readEntries(r *os.Root) ([]fs.DirEntry, error) {
 	return entries, nil
 }
 
+// loadCached loads the skill directory name below r through the cache: a SKILL.md whose path, mtime and size
+// are remembered is not re-read, its skill, warnings or failure returned as concluded; anything else is loaded and
+// remembered. A missing or non-regular SKILL.md is loadOne's error and is not remembered.
+func loadCached(r *os.Root, root Root, name string, cache *Cache) (Skill, []Diagnostic, error) {
+	path := filepath.Join(root.Dir, name, FileName)
+	info, err := r.Stat(filepath.Join(name, FileName))
+	if err != nil || !info.Mode().IsRegular() {
+		return loadOne(r, root, name)
+	}
+	if cache != nil {
+		if e, ok := cache.entries[path]; ok && e.size == info.Size() && e.mtime.Equal(info.ModTime()) {
+			return e.skill, e.diags, e.failed
+		}
+	}
+	s, diags, err := loadOne(r, root, name)
+	if cache != nil {
+		if cache.entries == nil {
+			cache.entries = map[string]cacheEntry{}
+		}
+		cache.entries[path] = cacheEntry{mtime: info.ModTime(), size: info.Size(), skill: s, diags: diags, failed: err}
+	}
+	return s, diags, err
+}
+
+// Current is the skill as its SKILL.md is now, through the cache: the per-turn refresh of a required skill
+// (ADR-013 D17); ok is false when it is gone, not regular, or no longer valid. An unchanged file costs one stat.
+func (c *Cache) Current(s Skill) (Skill, bool) {
+	if s.Path == "" {
+		return Skill{}, false
+	}
+	root := Root{Dir: filepath.Dir(filepath.Dir(s.Path)), Source: s.Source}
+	r, err := os.OpenRoot(root.Dir)
+	if err != nil {
+		return Skill{}, false
+	}
+	defer func() { _ = r.Close() }()
+	now, _, err := loadCached(r, root, filepath.Base(filepath.Dir(s.Path)), c)
+	return now, err == nil
+}
+
+// Fresh is Current read again whatever the cache remembers, and remembered in its place: what a session asks of a
+// skill whose cached hash is apart from a load's, as after a same-size rewrite under the old mtime, so both converge.
+func (c *Cache) Fresh(s Skill) (Skill, bool) {
+	delete(c.entries, s.Path) // entries are keyed by the path, as the lookup above is
+	return c.Current(s)
+}
+
 // loadOne validates the skill directory name below r; the warnings it found
 // are returned even when the skill fails.
 func loadOne(r *os.Root, root Root, name string) (Skill, []Diagnostic, error) {
@@ -131,7 +186,8 @@ func loadOne(r *os.Root, root Root, name string) (Skill, []Diagnostic, error) {
 	if s.Name != name {
 		return Skill{}, nil, fmt.Errorf("%w: name %q does not match its directory %q", ErrInvalidSkill, s.Name, name)
 	}
-	s.Source, s.Path = root.Source, path
+	sum := sha256.Sum256(data)
+	s.Source, s.Path, s.SHA256, s.Bytes = root.Source, path, hex.EncodeToString(sum[:]), len(data)
 	var diags []Diagnostic
 	if len(ignored) > 0 {
 		diags = append(diags, diag(SeverityWarning, path, "ignored, not supported: %s", strings.Join(ignored, ", ")))

@@ -45,6 +45,12 @@ const (
 	// length, never exceed it. A prefix, or `*`, is one entry and may offer more, which is why the number of
 	// skills a profile is offered is warned on separately.
 	MaxProfileSkills = 64
+	// MaxRequiredSkills is the most names a profile's requires_skills list may hold (ADR-013 D10), as MaxDelegates
+	// bounds delegates: the line that names them in the prompt is at most 1092 bytes because of it.
+	MaxRequiredSkills = 16
+	// MaxRequiredSkillBytes is the most raw SKILL.md bytes a profile's required skills may add up to (ADR-013
+	// D10), 512 KiB otherwise. Checked where the bytes are known, never by the parser.
+	MaxRequiredSkillBytes = 64 << 10
 	// MaxDescriptionChars is the longest description a profile may set.
 	MaxDescriptionChars = 500
 	// MaxContextWindow is the largest context_window, in tokens, a profile or the config may set.
@@ -72,6 +78,11 @@ type Profile struct {
 	// checked by the run, which knows the skills directories. In the YAML a lone star is an
 	// alias, so every skill is written `"*"`.
 	Skills []string `json:"skills,omitempty"`
+	// RequiresSkills lists the skills, by exact name, the session must load before any tool but skill.load runs
+	// (ADR-013 D10): at most MaxRequiredSkills, no duplicate, each offered by Skills. It is non-empty only when
+	// Tools holds SkillLoadTool, and nil (left out of `agents list`) when none is declared. Whether a required
+	// skill is loaded, and how many bytes the required ones come to, is checked where the loaded set is known.
+	RequiresSkills []string `json:"requires_skills,omitempty"`
 	// Model is a model name, or InheritModel for the parent's.
 	Model string `json:"model"`
 	// MaxTurns bounds the child's provider turns, 1..MaxTurnsLimit.

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Event types emitted by the loop (DATA-MODEL §2 examples).
@@ -55,6 +56,8 @@ func (l *Loop) Allowed(name string) bool {
 //   - unknown tool (not in registry): ErrUnknownTool, no events
 //   - not allowlisted: ErrDenied plus a tool.result error event with
 //     error.code=tool_denied
+//   - allowlisted, a required skill not loaded (ADR-013 D10; skill.load is exempt): *SkillRequiredError plus a
+//     tool.call and a tool.result error event with code skill_required; no hook runs and the tool does not
 //   - allowlisted, tool returns error: the error, plus tool.result
 //     error event with error.code=tool_error
 //   - success: the tool's result, plus tool.result ok event
@@ -77,6 +80,10 @@ func (l *Loop) Invoke(ctx context.Context, name string, args json.RawMessage) (a
 	}
 	if !l.Allowed(name) {
 		return nil, l.recordDeny(ctx, actor, name)
+	}
+	// The skill requirement is checked second, after the allowlist, and ahead of every hook (ADR-013 D10, D13).
+	if unmet := l.unmet(name); unmet != "" {
+		return nil, l.recordSkillRequired(ctx, actor, name, args, unmet)
 	}
 	denied, execArgs, err := l.gateCall(ctx, actor, name, args)
 	if err != nil {
@@ -138,6 +145,49 @@ func (l *Loop) observe(ctx context.Context, name string, args json.RawMessage, o
 func (l *Loop) WithGate(gate CallGate) *Loop {
 	l.gate = gate
 	return l
+}
+
+// WithRequirement sets the skill requirement of the loop (ADR-013 D10) and returns it; nil means none.
+func (l *Loop) WithRequirement(r SkillRequirement) *Loop {
+	l.required = r
+	return l
+}
+
+// Error is the message the model is told: which skill to load first.
+func (e *SkillRequiredError) Error() string {
+	return fmt.Sprintf("skill %q must be loaded with %s first", e.Name, SkillLoadName)
+}
+
+// unmet is the first required skill not loaded at its current hash, "" when the call may run: skill.load is
+// exempt, so a requirement can always be met and never deadlocks the session.
+func (l *Loop) unmet(name string) string {
+	if l.required == nil || name == SkillLoadName {
+		return ""
+	}
+	return l.required.Unmet()
+}
+
+// IsSkillDoc reports whether a skill.load file argument is the skill's own SKILL.md: none, or its name in any case,
+// as readSkillFile reads it. The requirement counts such a load as the skill; a supporting file is not it.
+func IsSkillDoc(file string) bool { return file == "" || strings.EqualFold(file, skillDocFile) }
+
+// recordSkillRequired records a call the skill requirement refused: the model's tool.call, then a tool.result
+// error with code skill_required, so the history stays paired; the tool does not run and no hook sees the call.
+func (l *Loop) recordSkillRequired(ctx context.Context, actor, name string, args json.RawMessage, unmet string) error {
+	if err := l.recordCall(ctx, actor, name, args); err != nil {
+		return err
+	}
+	if _, aerr := l.writer.Append(ctx, actor, TypeToolResult, map[string]any{
+		"tool": name,
+		"ok":   false,
+		"error": map[string]any{
+			"code":    SkillRequiredCode,
+			"message": (&SkillRequiredError{Name: unmet}).Error(),
+		},
+	}); aerr != nil {
+		return fmt.Errorf("%w: tool.result: %w", ErrEventAppend, aerr)
+	}
+	return &SkillRequiredError{Name: unmet}
 }
 
 // Error is the text the model sees for a hook denial: the hook id and nothing else.

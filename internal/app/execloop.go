@@ -92,6 +92,9 @@ func runExecTurns(ctx context.Context, cfg *ExecLoopConfig) (*ExecLoopResult, er
 	if err := replayInto(ctx, cfg.Store, cfg.Session.ID, &history); err != nil {
 		return nil, err
 	}
+	if err := cfg.Skills.seedLog(ctx, cfg.Store, cfg.Session.ID); err != nil { // nil when nothing is required
+		return nil, err
+	}
 	for res.Turns < cfg.MaxTurns {
 		if ctx.Err() != nil {
 			return res, ctx.Err()
@@ -102,6 +105,7 @@ func runExecTurns(ctx context.Context, cfg *ExecLoopConfig) (*ExecLoopResult, er
 		if err := beginExecRequest(ctx, cfg, res); err != nil {
 			return res, err
 		}
+		cfg.Skills.refresh() // the required skills as they are now, for this turn's gate (ADR-013 D17)
 		turn, terr := meter.request(ctx, cfg, definitions, &history, res)
 		if terr != nil {
 			return res, terr
@@ -292,8 +296,10 @@ func executeCall(ctx context.Context, cfg ExecLoopConfig, call provider.ToolCall
 }
 
 // appendResult appends one call outcome: the result of a delivered skill file is followed by its skill.loaded record,
-// through the same writer, after the tool.result the loop wrote; persistence failures terminate the run
-func appendResult(ctx context.Context, w tool.EventSink, loop *tool.Loop, call provider.ToolCall, results []provider.Message) ([]provider.Message, error) {
+// through the same writer, after the tool.result the loop wrote, and a required skill's load is noted for the
+// gate (skills); persistence failures terminate the run.
+func appendResult(ctx context.Context, w tool.EventSink, loop *tool.Loop, call provider.ToolCall, results []provider.Message,
+	skills *sessionSkills) ([]provider.Message, error) {
 	failed := func(content string) []provider.Message {
 		return append(results, provider.Message{Role: "tool", ToolCallID: call.ID, Content: content})
 	}
@@ -311,6 +317,9 @@ func appendResult(ctx context.Context, w tool.EventSink, loop *tool.Loop, call p
 	if loaded, ok := outcome.(tool.SkillResult); ok {
 		if serr := recordSkillLoaded(ctx, w, call.ID, loaded); serr != nil {
 			return results, serr
+		}
+		if skills != nil {
+			skills.record(loaded.LoadedSkill)
 		}
 	}
 	encoded, merr := json.Marshal(outcome)
@@ -404,18 +413,18 @@ func payloadFieldRaw(payloadJSON, field string) string {
 	return string(encoded)
 }
 
-// runCall invokes one call via the plain writer (denied) or the correlated adapter (allowlisted).
+// runCall invokes one call via the plain writer (denied) or the correlated adapter (allowlisted, with hooks).
 func runCall(ctx context.Context, cfg ExecLoopConfig, w tool.EventSink, call provider.ToolCall, allowed map[string]bool, results []provider.Message) ([]provider.Message, error) {
 	ctx = withParentEvents(ctx, w) // the one writer the loop holds, for tools that record their own events
 	loop, lerr := func() (*tool.Loop, error) {
 		if !allowed[call.Name] {
-			return tool.NewLoop(cfg.Registry, w, cfg.Allowlist)
+			return loopWith(cfg, w)
 		}
 		sink, serr := NewCallEventSink(w, call)
 		if serr != nil {
 			return nil, serr
 		}
-		gated, gerr := tool.NewLoop(cfg.Registry, sink, cfg.Allowlist)
+		gated, gerr := loopWith(cfg, sink)
 		if gerr != nil {
 			return nil, gerr
 		}
@@ -424,5 +433,15 @@ func runCall(ctx context.Context, cfg ExecLoopConfig, w tool.EventSink, call pro
 	if lerr != nil {
 		return nil, lerr
 	}
-	return appendResult(ctx, w, loop, call, results)
+	return appendResult(ctx, w, loop, call, results, cfg.Skills)
+}
+
+// loopWith is the loop of one call over sink, carrying the skill requirement (never a typed nil, which the
+// loop's interface would not read as none).
+func loopWith(cfg ExecLoopConfig, sink tool.EventSink) (*tool.Loop, error) {
+	loop, err := tool.NewLoop(cfg.Registry, sink, cfg.Allowlist)
+	if err == nil && cfg.Skills != nil {
+		loop.WithRequirement(cfg.Skills)
+	}
+	return loop, err
 }

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -12,6 +13,7 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/skill"
+	"github.com/baphled/flowstate/internal/store"
 	"github.com/baphled/flowstate/internal/tool"
 )
 
@@ -26,12 +28,12 @@ const TypeSkillLoaded = "skill.loaded"
 // runSkills is the run's loaded skills, read once when a run starts and handed to every session it starts, so each
 // offers its own selection over the same roots (ADR-013 D3, D6, D12): skills_default for the root, a profile's
 // skills for its sessions, and for a swarm run, which has no root, the coordinator's and its roles'. Every profile it
-// is given is held to them first (checkProfileSkills). Nothing offered loads nothing,
+// is given is held to them first (checkProfileSkills), its requires_skills included. Nothing offered loads nothing,
 // so a run that names no skill never reads a skills directory; an unset scope with something offered is
 // config_invalid, before any event is written (the zero scope never loads the user directory). The roots are the
 // request's scope and paths, the project directory under the project root and never the workdir (as for hooks).
-// Discovery is not re-read within a run in this packet: a skill directory edited mid-run changes the next run's
-// offer and listing (the per-turn re-read is the requires_skills packet, D17).
+// This is the one read of the directories the run makes: a skill directory edited mid-run changes the next
+// run's listing, while a session that requires a skill re-reads that file before each turn (sessionSkills, D17).
 func runSkills(req SessionExecLoopRequest, profiles []agent.Profile) ([]skill.Skill, error) {
 	offers := len(req.SkillsDefault) > 0 || slices.ContainsFunc(profiles, func(p agent.Profile) bool { return len(p.Skills) > 0 })
 	if !offers {
@@ -97,11 +99,11 @@ func selectSkills(loaded []skill.Skill, entries []string, byName bool) (offered 
 	return offered, missing, empty
 }
 
-// checkProfileSkills holds every profile that offers skills to the run's loaded skills (ADR-013 D6), where that
-// set is known: the run, before any event is written, and a child's start and resume. An exact name that matches
-// no loaded skill is config_invalid for the profile, as a delegates entry naming no profile is; a prefix that
-// matches nothing is a warning, and so is a profile offered more than skillWarnVisible skills (D7). The warnings
-// are for `agents validate` to print; a run drops them.
+// checkProfileSkills holds every profile that offers or requires skills to the run's loaded skills (ADR-013 D6,
+// D10, D17), where that set is known: the run, before any event is written, and a child's start and resume. An
+// exact skills name that matches no loaded skill is config_invalid for the profile, as a delegates entry naming no
+// profile is, and so is every rule of checkRequiredSkills. A prefix that matches nothing is a warning, and so is
+// a profile offered more than skillWarnVisible skills (D7). The warnings are for `agents validate`; a run drops them.
 func checkProfileSkills(profiles []agent.Profile, loaded []skill.Skill) ([]string, error) {
 	var warnings []string
 	for _, p := range profiles {
@@ -120,8 +122,139 @@ func checkProfileSkills(profiles []agent.Profile, loaded []skill.Skill) ([]strin
 			warnings = append(warnings, fmt.Sprintf("profile %q is offered %d skills: more than %d leave most of them out of its listing; name a narrower set",
 				p.Name, len(offered), skillWarnVisible))
 		}
+		if err := checkRequiredSkills(p, loaded); err != nil {
+			return nil, err
+		}
 	}
 	return warnings, nil
+}
+
+// checkRequiredSkills holds a profile's requires_skills to a loaded set (the run's at start, the required files as
+// they are now at a child's start or resume; ADR-013 D10, D17): every name must be in the set and from a directory,
+// and together at most agent.MaxRequiredSkillBytes of raw SKILL.md. Nothing required checks nothing.
+func checkRequiredSkills(p agent.Profile, loaded []skill.Skill) error {
+	if len(p.RequiresSkills) == 0 {
+		return nil
+	}
+	byName := make(map[string]skill.Skill, len(loaded))
+	for _, s := range loaded {
+		byName[s.Name] = s
+	}
+	total := 0
+	for _, name := range p.RequiresSkills {
+		s, ok := byName[name]
+		switch {
+		case !ok:
+			return fmt.Errorf("%w: profile %q requires skill %q, which matches no skill loaded under the run's skills scope",
+				ErrConfigInvalid, p.Name, name)
+		case s.Path == "":
+			return fmt.Errorf("%w: profile %q requires skill %q, which the run did not read from a skills directory",
+				ErrConfigInvalid, p.Name, name)
+		}
+		total += s.Bytes
+	}
+	if total > agent.MaxRequiredSkillBytes {
+		return fmt.Errorf("%w: profile %q requires %d bytes of skills, over the %d allowed", ErrConfigInvalid, p.Name, total, agent.MaxRequiredSkillBytes)
+	}
+	return nil
+}
+
+// checkRequiredFresh reads each required skill of the profile now, as the loop's gate will before each turn: one
+// deleted or broken since the run loaded it refuses a child's start or resume (config_invalid) rather than gating
+// every call, and the bytes as they are now are held to the bound again; a changed one is valid, merely unmet (D17).
+func checkRequiredFresh(p agent.Profile, loaded []skill.Skill) error {
+	if len(p.RequiresSkills) == 0 {
+		return nil
+	}
+	cache, fresh := &skill.Cache{}, []skill.Skill{}
+	for _, s := range loaded {
+		if slices.Contains(p.RequiresSkills, s.Name) {
+			now, ok := cache.Current(s)
+			if !ok {
+				return fmt.Errorf("%w: profile %q requires skill %q, which is missing or no longer valid under the run's skills scope",
+					ErrConfigInvalid, p.Name, s.Name)
+			}
+			fresh = append(fresh, now)
+		}
+	}
+	return checkRequiredSkills(p, fresh)
+}
+
+// newSessionSkills is the requirement of a session whose profile requires required over the run's loaded skills;
+// nil when nothing is required, so a session without a requirement never pays for one.
+func newSessionSkills(loaded []skill.Skill, required []string) *sessionSkills {
+	if len(required) == 0 {
+		return nil
+	}
+	return &sessionSkills{required: required, loaded: loaded, cache: &skill.Cache{}, log: map[string]skill.Skill{}}
+}
+
+// seedLog records the SKILL.md loads the session's own log holds so far, by the engine and at the hash each
+// recorded (a load naming SKILL.md included, as the tool delivers it): an earlier run of a resumed session counts,
+// a parent's never does (ADR-013 D12); once, when the loop starts. A nil sessionSkills seeds nothing.
+func (s *sessionSkills) seedLog(ctx context.Context, st *store.Store, sessionID string) error {
+	if s == nil {
+		return nil
+	}
+	events, err := st.Replay(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	for _, e := range events {
+		if e.Type != TypeSkillLoaded || e.Actor != session.ActorEngine {
+			continue
+		}
+		var p struct {
+			Name   string `json:"name"`
+			File   string `json:"file"`
+			SHA256 string `json:"sha256"`
+		}
+		if json.Unmarshal([]byte(e.PayloadJSON), &p) == nil && tool.IsSkillDoc(p.File) {
+			s.log[p.Name] = skill.Skill{Name: p.Name, SHA256: p.SHA256}
+		}
+	}
+	return nil
+}
+
+// record notes a SKILL.md the session just loaded, as skill.loaded records it; a supporting file is not a skill.
+func (s *sessionSkills) record(loaded tool.LoadedSkill) {
+	if tool.IsSkillDoc(loaded.File) {
+		s.log[loaded.Name] = skill.Skill{Name: loaded.Name, SHA256: loaded.SHA256}
+	}
+}
+
+// refresh reads each required skill again through the cache before a provider request (ADR-013 D17), the current
+// turn's view: a hash apart from the logged one (not loaded yet, or changed) is read once more, uncached, since
+// skill.load reads fresh and a same-size rewrite under the old mtime is the one change the cache cannot see.
+// A nil one refreshes nothing.
+func (s *sessionSkills) refresh() {
+	if s == nil {
+		return
+	}
+	s.current = make(map[string]skill.Skill, len(s.required))
+	for _, l := range s.loaded {
+		if !slices.Contains(s.required, l.Name) {
+			continue
+		}
+		now, ok := s.cache.Current(l)
+		if ok && now.SHA256 != s.log[l.Name].SHA256 {
+			now, ok = s.cache.Fresh(l)
+		}
+		if ok {
+			s.current[l.Name] = now
+		}
+	}
+}
+
+// Unmet implements tool.SkillRequirement: the first required skill, in the profile's order, not loaded at the
+// hash it has now; missing or invalid at this turn is unmet.
+func (s *sessionSkills) Unmet() string {
+	for _, name := range s.required {
+		if now, ok := s.current[name]; !ok || s.log[name].SHA256 != now.SHA256 {
+			return name
+		}
+	}
+	return ""
 }
 
 // skillCatalog is the skill.load catalog of an offer: each offered skill resolves to the skills root holding it
@@ -193,18 +326,26 @@ const (
 	skillListingReserve = 30
 	// skillListingCountDigits is the digit count the reserve covers.
 	skillListingCountDigits = 3
+	// skillRequiredPrefix opens the line that names the required skills, after the preamble and outside the listing
+	// budget (ADR-013 D7): 37 bytes, then the names joined by ", " and a newline, 1,092 bytes at most for 16 names of
+	// 64, so the whole block is at most 9,284 bytes.
+	skillRequiredPrefix = "Required before any other tool call: "
 )
 
 // xmlEscaper replaces the five characters Pi's escapeXml does, so a description can neither close an element nor
 // open one.
 var xmlEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;", "'", "&apos;")
 
-// withSkillListing is the system prompt of a session offered skills: the listing block after the session's own
-// prompt, a blank line between, or the block alone when it has none (the root). Like the prompt it is sent per
-// request and never persisted or replayed. The requires_skills line (ADR-013 packet 5a) will be the block's, between
-// its preamble and its frame, and outside the listing budget; nothing names a required skill yet.
+// withSkillListing is the system prompt of a session offered skills and requiring none: its listing block after
+// the session's own prompt (a session that requires skills joins its own block with withSkillBlock). Like the
+// prompt it is sent per request and never persisted or replayed.
 func withSkillListing(prompt string, offered []SkillEntry) string {
-	block := skillListingBlock(offered)
+	return withSkillBlock(prompt, skillListingBlock(offered, nil))
+}
+
+// withSkillBlock is the system prompt of a session offered skills: the listing block after the session's own
+// prompt, a blank line between, or the block alone when it has none (the root). Nothing offered is no block.
+func withSkillBlock(prompt, block string) string {
 	switch {
 	case block == "":
 		return prompt
@@ -214,9 +355,19 @@ func withSkillListing(prompt string, offered []SkillEntry) string {
 	return prompt + "\n\n" + block
 }
 
-// skillListingBlock is the listing of a session's offered skills, in order (ADR-013 D7): the preamble, the framed
-// entries and, when any is left out, the count line after the closing tag. No entry carries a path. Nothing offered
-// is no block.
+// skillRequiredLine is the line of the listing block that names the required skills, in the profile's order;
+// nothing when none is required.
+func skillRequiredLine(required []string) string {
+	if len(required) == 0 {
+		return ""
+	}
+	return skillRequiredPrefix + strings.Join(required, ", ") + "\n"
+}
+
+// skillListingBlock is the listing of a session's offered skills, in order (ADR-013 D7): the preamble, the line
+// naming the required skills when there are any, the framed entries and, when any is left out, the count line
+// after the closing tag. No entry carries a path. Nothing offered is no block. The required line is outside the
+// budget: the walk below measures the listing as if it were not there, so a required skill is never dropped.
 //
 // The walk is the ADR's, every size in bytes. The total starts at 204: the framing and the count-line reserve, held
 // whether or not the line is written. An entry is written in full while total plus its full line is at most 6144;
@@ -226,7 +377,7 @@ func withSkillListing(prompt string, offered []SkillEntry) string {
 // refinement: a tree of a thousand skills or more can count four digits, which the reserve does not cover, so there
 // the name-only bound is tighter by the extra digits, and the cap holds where the ADR's own arithmetic would write
 // 8193. Name and description are XML-escaped before they are measured.
-func skillListingBlock(offered []SkillEntry) string {
+func skillListingBlock(offered []SkillEntry, required []string) string {
 	if len(offered) == 0 {
 		return ""
 	}
@@ -235,6 +386,7 @@ func skillListingBlock(offered []SkillEntry) string {
 	count := func(n int) string { return fmt.Sprintf("%d more skills are not shown\n", n) }
 	var b strings.Builder
 	b.WriteString(skillListingPreamble)
+	b.WriteString(skillRequiredLine(required))
 	b.WriteString(skillListingOpen)
 	full := true
 	for i, e := range offered {

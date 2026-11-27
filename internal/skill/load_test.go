@@ -1,10 +1,14 @@
 package skill_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -241,4 +245,125 @@ var _ = Describe("Load", func() {
 			Expect(warningsOf(load(root))).To(BeEmpty())
 		})
 	}
+})
+
+// uncached loads dirs as `skills list` does.
+func uncached(dirs ...string) skill.Result {
+	roots := make([]skill.Root, len(dirs))
+	for i, d := range dirs {
+		roots[i] = skill.Root{Dir: d, Source: skill.SourcePath}
+	}
+	return skill.Load(roots)
+}
+
+// cached loads dirs through one cache.
+func cached(c *skill.Cache, dirs ...string) skill.Result {
+	roots := make([]skill.Root, len(dirs))
+	for i, d := range dirs {
+		roots[i] = skill.Root{Dir: d, Source: skill.SourcePath}
+	}
+	return skill.LoadCached(roots, c)
+}
+
+// withBody is the tdd skill with the given body.
+func withBody(body string) string {
+	return "---\nname: tdd\ndescription: About tdd\n---\n" + body + "\n"
+}
+
+// fileHash is the hex sha256 of the file at path.
+func fileHash(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		panic(err)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+var _ = Describe("the hash and the size a load records (ADR-013 D17)", func() {
+	var root string
+
+	BeforeEach(func() { root = GinkgoT().TempDir() })
+
+	It("records the sha256 and the byte size of the whole SKILL.md as read, frontmatter and ignored keys included", func() {
+		data := named("tdd", "tier: 2\n")
+		path := put(root, "tdd/SKILL.md", data)
+		s := uncached(root).Skills[0]
+		Expect([]string{s.SHA256, strconv.Itoa(s.Bytes)}).To(Equal([]string{fileHash(path), strconv.Itoa(len(data))}))
+	})
+
+	It("prints neither in the JSON a report carries", func() {
+		put(root, "tdd/SKILL.md", named("tdd", ""))
+		encoded, err := json.Marshal(uncached(root).Skills[0])
+		if err != nil {
+			panic(err)
+		}
+		Expect(string(encoded)).NotTo(ContainSubstring("sha256"))
+	})
+})
+
+var _ = Describe("the cache (ADR-013 D17: keyed by path, mtime and size)", func() {
+	var (
+		root string
+		path string
+	)
+
+	BeforeEach(func() {
+		root = GinkgoT().TempDir()
+		path = put(root, "tdd/SKILL.md", named("tdd", ""))
+	})
+
+	// A rewrite of the same byte length under the mtime it had is the one change a (path, mtime, size) cache cannot see.
+	Describe("a same-size rewrite under the old mtime", func() {
+		var (
+			c     *skill.Cache
+			first skill.Skill
+		)
+		BeforeEach(func() {
+			c = &skill.Cache{}
+			first = cached(c, root).Skills[0]
+			info, err := os.Stat(path)
+			if err != nil {
+				panic(err)
+			}
+			put(root, "tdd/SKILL.md", withBody("Body of tXX."))
+			if err := os.Chtimes(path, info.ModTime(), info.ModTime()); err != nil {
+				panic(err)
+			}
+		})
+		It("is not re-read through the cache: the skill stays the one first loaded", func() {
+			Expect(cached(c, root).Skills[0]).To(Equal(first))
+		})
+		It("is on disk: an uncached load reads it", func() {
+			Expect(uncached(root).Skills[0].Body).To(Equal("Body of tXX."))
+		})
+		It("is read by Fresh, which remembers it for the cache's next answer", func() {
+			now, _ := c.Fresh(first) // a false ok would leave the zero Skill, whose Body is not this one's
+			Expect([]string{now.Body, cached(c, root).Skills[0].Body}).To(Equal([]string{"Body of tXX.", "Body of tXX."}))
+		})
+	})
+
+	Describe("Current", func() {
+		It("follows a change: the new hash and size", func() {
+			s := uncached(root).Skills[0]
+			put(root, "tdd/SKILL.md", withBody("Body of tdd, longer now."))
+			now, _ := (&skill.Cache{}).Current(s) // a false ok would leave no hash
+			Expect([]string{now.SHA256, now.Body}).To(Equal([]string{fileHash(path), "Body of tdd, longer now."}))
+		})
+
+		DescribeTable("is false when the skill is no longer valid",
+			func(change func()) {
+				s := uncached(root).Skills[0]
+				change()
+				_, ok := (&skill.Cache{}).Current(s)
+				Expect(ok).To(BeFalse())
+			},
+			Entry("deleted", func() {
+				if err := os.Remove(path); err != nil {
+					panic(err)
+				}
+			}),
+			Entry("broken", func() { put(root, "tdd/SKILL.md", "no frontmatter here\n") }),
+			Entry("renamed to another skill", func() { put(root, "tdd/SKILL.md", named("other", "")) }))
+	})
 })
