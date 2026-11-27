@@ -5,6 +5,8 @@
 // supplies the root directories.
 package skill
 
+import "time"
+
 // Source names where a skill root came from.
 type Source string
 
@@ -66,6 +68,11 @@ type Skill struct {
 	Path string `json:"path"`
 	// Body is the markdown after the frontmatter, trimmed.
 	Body string `json:"-"`
+	// SHA256 is the hex sha256 of the whole SKILL.md as read (ADR-013 D17): what a skill.loaded record is held to
+	// and the cache keeps. It is never printed (`skills list` shows no hash), so it is left out of the JSON.
+	SHA256 string `json:"-"`
+	// Bytes is the size of the whole SKILL.md as read: what the 64 KiB bound on required skills counts.
+	Bytes int `json:"-"`
 }
 
 // Diagnostic is one finding about a skill directory.
@@ -86,4 +93,22 @@ type Result struct {
 	Skills []Skill `json:"skills"`
 	// Diagnostics are the errors and warnings found.
 	Diagnostics []Diagnostic `json:"diagnostics"`
+}
+
+// Cache remembers each SKILL.md a load read by its path, mtime and size, so a later load of the same roots
+// re-reads and re-hashes a file only when that triple changes (ADR-013 D17): an unchanged file costs one stat. It
+// holds what the load concluded, a failure included, with a skill's warnings. A rewrite that keeps the size and the
+// mtime is the one change it cannot see; skill.load still reads fresh, and Fresh reads past it. The zero Cache is ready; a nil one caches
+// nothing. It is not safe for concurrent use.
+type Cache struct {
+	entries map[string]cacheEntry // by SKILL.md path
+}
+
+// cacheEntry is what a load concluded of one SKILL.md at one (mtime, size).
+type cacheEntry struct {
+	mtime  time.Time
+	size   int64
+	skill  Skill
+	diags  []Diagnostic
+	failed error
 }

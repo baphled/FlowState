@@ -167,8 +167,12 @@ func childRegistry(req *DelegateRequest) (*tool.Registry, []SkillEntry, string, 
 		return nil, nil, "", err
 	}
 	// The offer is the profile's skills over the run's loaded skills, in the profile's order; an exact name that
-	// matches none refuses the child as it refuses the run.
+	// matches none refuses the child as it refuses the run, and so does a required skill the run does not hold,
+	// or one whose file is gone or broken now (ADR-013 D10, D17).
 	if _, err := checkProfileSkills([]agent.Profile{req.Profile}, req.LoadedSkills); err != nil {
+		return nil, nil, "", err
+	}
+	if err := checkRequiredFresh(req.Profile, req.LoadedSkills); err != nil {
 		return nil, nil, "", err
 	}
 	offered, _, _ := selectSkills(req.LoadedSkills, req.Profile.Skills, false)
@@ -323,6 +327,7 @@ func newDelegateOwner() (string, error) {
 // tools, prompt and turn cap, drawing one unit per turn from its grant. It runs under
 // the run's judged handle (run.lease), which the loop fences and never releases.
 // A profile that lists `delegate` gets its own tool, drawing from the same pool.
+// A profile with requires_skills gets the gate that holds the child to them, and its listing names them (ADR-013 D10).
 func delegateLoopConfig(ctx context.Context, req *DelegateRequest, run *delegateRun,
 	registry *tool.Registry) (ExecLoopConfig, error) {
 	child, grant := run.child, run.grant
@@ -332,9 +337,11 @@ func delegateLoopConfig(ctx context.Context, req *DelegateRequest, run *delegate
 	cfg := ExecLoopConfig{
 		Store: req.Store, Session: child, Streamer: req.Streamer, Registry: registry,
 		Allowlist: req.Profile.Tools,
-		MaxTurns:  grant, SystemPrompt: withSkillListing(req.Profile.Body, run.offered), // the profile's own order (ADR-013 D7), after the profile's body
+		// The listing follows the profile's body, in the profile's own order (ADR-013 D7), naming what it requires.
+		MaxTurns: grant, SystemPrompt: withSkillBlock(req.Profile.Body, skillListingBlock(run.offered, req.Profile.RequiresSkills)),
 		Compaction: req.Compaction, ProfileWindow: req.Profile.ContextWindow,
 		Hooks: emptyHookSet(req.Hooks), Workdir: run.workdir, Agent: req.Profile.Name, Depth: max(len(chain), 1),
+		Skills: newSessionSkills(req.LoadedSkills, req.Profile.RequiresSkills),
 	}
 	if run.lease != nil {
 		cfg.Lease = run.lease

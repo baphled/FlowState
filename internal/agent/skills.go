@@ -73,3 +73,68 @@ func validSkillEntry(entry string) bool {
 	}
 	return len(entry) <= maxSkillNameChars && skillNameRE.MatchString(entry)
 }
+
+// requiresList reads the requires_skills sequence of a profile (ADR-013 D10): the skills, by exact name, its
+// sessions must load before any tool but skill.load runs. Absent, null or empty is nil, which requires nothing.
+// A non-empty list needs SkillLoadTool in tools, as skills does; at most MaxRequiredSkills entries; every entry a
+// valid skill name with no `*` (patterns are for the offer list), no duplicate, and one the profile's own skills
+// list offers, exactly or through a prefix: a requirement the model cannot satisfy is a validation error naming it.
+func requiresList(n *yaml.Node, tools, skills []string) ([]string, error) {
+	if n == nil || n.Tag == "!!null" {
+		return nil, nil
+	}
+	if n.Kind != yaml.SequenceNode {
+		return nil, fmt.Errorf("%w: requires_skills must be a list", ErrInvalidProfile)
+	}
+	if len(n.Content) > MaxRequiredSkills {
+		return nil, fmt.Errorf("%w: requires_skills lists more than %d entries", ErrInvalidProfile, MaxRequiredSkills)
+	}
+	if len(n.Content) == 0 {
+		return nil, nil
+	}
+	if !hasTool(tools, SkillLoadTool) {
+		return nil, fmt.Errorf("%w: requires_skills needs %s in tools", ErrInvalidProfile, SkillLoadTool)
+	}
+	out := make([]string, 0, len(n.Content))
+	seen := make(map[string]bool, len(n.Content))
+	for _, item := range n.Content {
+		name, err := text(item, "a requires_skills entry")
+		if err != nil {
+			return nil, err
+		}
+		if item.Tag == "!!null" || !validSkillName(name) {
+			return nil, fmt.Errorf("%w: a requires_skills entry must be a string that is an exact skill name: %+q", ErrInvalidProfile, name)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("%w: requires_skills lists %q twice", ErrInvalidProfile, name)
+		}
+		if !offers(skills, name) {
+			return nil, fmt.Errorf("%w: requires_skills lists %q, which the profile's skills do not offer", ErrInvalidProfile, name)
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out, nil
+}
+
+// validSkillName reports whether name is a skill name: the loader's rule, at most maxSkillNameChars, no star.
+func validSkillName(name string) bool {
+	return len(name) <= maxSkillNameChars && skillNameRE.MatchString(name)
+}
+
+// offers reports whether an offer list offers name: through an exact entry, or a `*` entry whose text before the
+// star is a prefix of it (a lone star offers every skill).
+func offers(entries []string, name string) bool {
+	for _, e := range entries {
+		if prefix, ok := strings.CutSuffix(e, "*"); ok {
+			if prefix == "" || strings.HasPrefix(name, prefix) {
+				return true
+			}
+			continue
+		}
+		if e == name {
+			return true
+		}
+	}
+	return false
+}

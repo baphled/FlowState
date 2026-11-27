@@ -508,11 +508,35 @@ is written in full while the total with its full line is at most 6144, and from 
 name-only while the total with that line is at most 8192; the rest is counted. So the block is at most 8192 bytes
 however many skills are offered (over 999 offered skills, where the count can have four digits, the name-only bound
 is tighter by the count's extra digits to keep that true). A wide offer therefore leaves skills unreachable: name a
-narrower set. The run reads its skills once, when it starts: a skill directory edited mid-run shows in the next run.
+narrower set. The run reads its skills once, when it starts: a skill directory edited mid-run shows in the next run's
+listing, except for a session that requires a skill, which re-reads that file before each of its turns (below).
 
-Not built yet: `requires_skills` (the `Required before any other tool call:` line and the engine gate that goes with
-it), reading the skills again between turns, `agents validate` checking a profile's names against the loaded set and
-printing the warnings, and the skills flags on `serve`.
+**`requires_skills`:** a profile names the skills its sessions must load before any other tool call with a
+`requires_skills:` list in its frontmatter: exact skill names only (no `*`; patterns are for `skills:`), at most 16,
+no duplicate, each one the profile's own `skills:` offers (exactly or through a prefix); a non-empty list needs
+`skill.load` in `tools`. An invalid list is `config_invalid` naming the name. A required skill must also be loaded
+under the run's scope, the required ones at most 64 KiB of `SKILL.md` in total, a bound and a validity each must
+still meet when a child starts or resumes: otherwise the run, the child's start or the resume is `config_invalid`
+before any provider request (a skill merely changed between a child's runs is not a refusal: it is unmet). The root
+session has no profile, so it has nothing to require. A session with a requirement lists it in its prompt block as a
+`Required before any other tool call: a, b` line between the preamble and `<available_skills>`, outside the 8 KiB
+(at most 1,092 bytes). The engine holds the session to it: a tool call other than `skill.load` is not run until the
+session's own log holds a `skill.loaded` for every required name at the hash the file has at that turn; otherwise
+the model gets `error: skill "a" must be loaded with skill.load first` (the first unmet name), recorded as its
+`tool.call` and a `tool.result` error `skill_required`, so the history stays paired. The check runs after the
+allowlist (a call outside it is `tool_denied`) and before any `tool.before` hook, which never sees a refused call.
+`skill.load` is exempt, so the requirement can always be met; a parent's load does not count for a child; a supporting
+file does not count as the skill, a load naming `SKILL.md` does. The required files are re-read before each provider
+request through a cache keyed by (path, mtime, size): a skill whose load matches costs one `stat` a turn, while one
+that is unmet (not loaded yet, or changed) is read once uncached, so a skill edited mid-run is unmet again until the
+model re-loads it and the re-load converges even after a same-size rewrite that kept the mtime, the one change the
+cache cannot see. A text-only turn that ends with an unmet requirement still **completes** the session: the reminder
+and the terminal `skill_required` code are not built yet (below).
+
+Not built yet: the text-only reminder (`skill.reminder`) and the terminal `skill_required` reason; the listing block
+rebuilt from a fresh read of the roots at request time (a changed description shows after a resume), with it the
+root's own refresh, and the swarm coordinator's own session being held to its `requires_skills` (its packet children
+are); `agents validate` checking names against the loaded set and printing the warnings; the skills flags on `serve`.
 
 `skills list`, `skills validate`, `session run` and `swarm run --execute` take `--skills` and `--skills-path`; every
 other command, `serve` included, refuses them with a usage error (exit 2), as does an unknown scope or a relative

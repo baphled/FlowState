@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/store"
 	"github.com/baphled/flowstate/internal/tool"
 )
@@ -54,6 +55,10 @@ type ExecLoopConfig struct {
 	// Hooks is the loaded root hook set (ADR-012 D22); nil is the empty set. The loop fires its tool.before
 	// hooks as a gate before every allowed call.
 	Hooks HookSet
+	// Skills is the requirement of a session whose profile lists requires_skills (ADR-013 D10, D17): nil when
+	// nothing is required, which is every root. The loop seeds it from the session's log, refreshes the required
+	// files before each provider request and hands it to the gate of every tool call, after the allowlist.
+	Skills *sessionSkills
 	// Workdir, Agent (the profile of a child or the coordinator, empty for a root) and Depth (0 for a root
 	// and the coordinator) are what a hook's stdin document tells it about the run.
 	Workdir, Agent string
@@ -78,6 +83,19 @@ type compactRun struct {
 type execOverflow struct {
 	// cause is the provider's own error; it wraps provider.ErrContextOverflow.
 	cause error
+}
+
+// sessionSkills is what the loop needs to hold a session to its profile's requires_skills (ADR-013 D10, D17):
+// the required names in the profile's order, the run's loaded skills (the files to re-read), the hashes the
+// session's own log records as loaded (seeded when the loop starts, then kept by the one writer of skill.loaded)
+// and the required skills as they are at the current turn: read again through the cache before each provider
+// request, uncached while its hash is apart from the log's, so a skill changed mid-run is unmet until re-loaded.
+type sessionSkills struct {
+	required []string
+	loaded   []skill.Skill
+	cache    *skill.Cache
+	log      map[string]skill.Skill // the SKILL.md loads the session's log holds, by name, as loaded
+	current  map[string]skill.Skill // the required skills as they are now, by name; a missing or invalid one is absent
 }
 
 // retryAfter says what the overflow retry follows: a provider error (cause) or, with no cause, a
