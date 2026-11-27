@@ -146,14 +146,15 @@ type SessionExecLoopRequest struct {
 	HooksScope HookScope
 	// SkillsScope is the already-parsed --skills scope (ADR-013). As for hooks,
 	// the zero value means not set and must never load the user skills directory:
-	// the CLI applies its default, user, itself. It is carried, not yet acted on:
-	// the packet that wires the loader resolves the roots with app.SkillsRoots,
-	// whose project directory lies under ProjectRoot, never under Workdir.
+	// the CLI applies its default, user, itself. The run resolves its roots with
+	// SkillsRoots, whose project directory lies under ProjectRoot, never under
+	// Workdir, and reads them once (loadRunSkills) for every session it starts.
 	SkillsScope SkillsScope
 	// SkillsPaths are the explicit skills directories, absolute, and
 	// SkillsDefault the root session's offered skill names or `*`-suffixed
-	// prefixes: the flags, else the config keys. Both are carried, not yet acted
-	// on.
+	// prefixes: the flags, else the config keys. They decide what the run loads
+	// and what the root is offered; a profile's own skills select what its
+	// sessions are offered from the same loaded set.
 	SkillsPaths   []string
 	SkillsDefault []string
 	// Budget is the total loop budget pool; <= 0 means unlimited turns.
@@ -172,6 +173,16 @@ type SessionExecLoopRequest struct {
 	// Hooks is the root hook set of the run (ADR-012 D22), set on the root's loop and on the
 	// root's own delegate tool so every child inherits it; nil is the empty set.
 	Hooks HookSet
+}
+
+// SkillEntry is one offered skill as a session's system prompt names it (ADR-013 D7): its name and its description,
+// in listing order. It carries no path: the model loads by name, and a path would put the home directory into every
+// request.
+type SkillEntry struct {
+	// Name is the skill name.
+	Name string
+	// Description is the skill's description, as loaded.
+	Description string
 }
 
 // UsageTotals sums the provider usage of the turns that reported it. A turn

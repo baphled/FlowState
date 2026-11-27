@@ -5,6 +5,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/store"
 	"github.com/baphled/flowstate/internal/tool"
 )
@@ -107,6 +108,10 @@ type DelegateRequest struct {
 	// list: the `.flowstate` name rule still applies, and only the identity rules are off. A profile cannot
 	// change it.
 	ProtectedDirs []string
+	// LoadedSkills is the root run's loaded skills (ADR-013 D3), read once when the run started: the set the child's
+	// profile `skills` selects from, so a child loads its own skills over the run's roots (D12). Nil is the empty set:
+	// a child whose profile names a skill is then refused. A profile cannot change it.
+	LoadedSkills []skill.Skill
 	// allow restricts which profiles the delegating profile may spawn or resume;
 	// nil allows every loaded profile (the root's own tool).
 	allow *profileAllowance
@@ -174,6 +179,9 @@ type delegateRun struct {
 	resumed bool
 	// workdir is the child's resolved directory, the root of its own children's.
 	workdir string
+	// offered is what the profile offers this child over the run's loaded skills (ADR-013 D6), in the profile's
+	// order: its listing, after its body (delegateLoopConfig). Nil is no block.
+	offered []SkillEntry
 	// pool is the child's loop pool, nil when the child is unlimited: its own
 	// turns and its descendants' grants are drawn from it.
 	pool *BudgetPool

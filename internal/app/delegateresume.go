@@ -148,11 +148,11 @@ func planResume(ctx context.Context, req *DelegateRequest, rr DelegateResumeRequ
 	if nerr := checkNestDepth(ctx, req.Store, req.Parent.ID, profile); nerr != nil {
 		return nil, nil, nerr
 	}
-	registry, workdir, err := childRegistry(req)
+	registry, offered, workdir, err := childRegistry(req)
 	if err != nil {
 		return nil, nil, err
 	}
-	run := &delegateRun{child: child, grant: remaining, prior: int64(profile.MaxTurns) - remaining, resumed: true, workdir: workdir}
+	run := &delegateRun{child: child, grant: remaining, prior: int64(profile.MaxTurns) - remaining, resumed: true, workdir: workdir, offered: offered}
 	return run, registry, nil
 }
 

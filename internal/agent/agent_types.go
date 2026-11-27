@@ -38,6 +38,13 @@ const (
 	MaxModelChars = 200
 	// MaxDelegates is the most profile names a delegates list may hold.
 	MaxDelegates = 32
+	// SkillLoadTool is the tool a profile must list in tools to be offered a skill (ADR-013 D6).
+	SkillLoadTool = "skill.load"
+	// MaxProfileSkills is the most entries a profile's skills list may hold. 64 is the ADR's warning threshold
+	// for skills visible to one profile (ADR-013 D7): a list of exact names can reach that warning by its
+	// length, never exceed it. A prefix, or `*`, is one entry and may offer more, which is why the number of
+	// skills a profile is offered is warned on separately.
+	MaxProfileSkills = 64
 	// MaxDescriptionChars is the longest description a profile may set.
 	MaxDescriptionChars = 500
 	// MaxContextWindow is the largest context_window, in tokens, a profile or the config may set.
@@ -58,6 +65,13 @@ type Profile struct {
 	// empty (never nil) when none is declared, which means nothing is allowed.
 	// Cycles between profiles are allowed; the delegation depth cap bounds them.
 	Delegates []string `json:"delegates"`
+	// Skills lists the skills the profile is offered (ADR-013 D6): skill names, or `*`-suffixed
+	// prefixes, in listing order; at most MaxProfileSkills, no duplicate. It is non-empty only
+	// when Tools holds SkillLoadTool, and nil (left out of `agents list`) when none is declared:
+	// a profile with no skills key is offered none. Whether an entry names a loaded skill is
+	// checked by the run, which knows the skills directories. In the YAML a lone star is an
+	// alias, so every skill is written `"*"`.
+	Skills []string `json:"skills,omitempty"`
 	// Model is a model name, or InheritModel for the parent's.
 	Model string `json:"model"`
 	// MaxTurns bounds the child's provider turns, 1..MaxTurnsLimit.
