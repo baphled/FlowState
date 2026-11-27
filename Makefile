@@ -5,6 +5,7 @@ export FLOWSTATE_PR_MAX_LINES
 
 .PHONY: all build run test test-e2e fmt lint check clean help ai-commit check-ai-attribution list-ai-commits install-tools check-pr-size check-size-live install-hooks check-python-contract
 .PHONY: check-admission-commits check-admission merge-pr preflight preflight-guard
+.PHONY: reconcile check-reconciliation
 .PHONY: package-admission-runner install-admission-runner admission-runner-start admission-runner-stop admission-runner-status
 
 package-admission-runner: ## Package committed admission runner and its pinned dependency manifest
@@ -21,6 +22,12 @@ check-admission-commits: ## Validate actual commit evidence before push (externa
 
 check-admission: ## Validate live exact-head PR review/evidence/Build; never publish a status
 	python3 -B -m scripts.admission_preflight --phase ready --repo baphled/FlowState --pr "$(PR)" --base "$(BASE_SHA)" --head "$(or $(HEAD_SHA),$(shell git rev-parse HEAD))"
+
+reconcile: ## Run the reconciliation gate for one admitted packet (CHECKPOINT=<name> PACKET=<id> [CANDIDATE_SHA=<sha>])
+	@python3 -B -m scripts.reconcile_gate --checkpoint "$(CHECKPOINT)" --packet "$(PACKET)" --candidate "$(or $(CANDIDATE_SHA),$(shell git rev-parse HEAD))"
+
+check-reconciliation: ## Run the reconciliation gate test suites
+	python3 -B -m unittest discover -s scripts/tests -p 'test_reconcile_*.py' -v
 
 merge-pr: ## Squash-merge an admitted PR carrying exactly one Project-Metadata trailer (PR=N [BASE=next] [DRY_RUN=1])
 	bash scripts/merge_pr.sh --pr "$(PR)" --base "$(BASE)" $(if $(DRY_RUN),--dry-run)
@@ -199,7 +206,7 @@ worktree-remove: ## Remove feature worktree (NAME=feature-name)
 # Development
 #
 
-session-start: admission-runner-start ## Start development session; fail when admission runner cannot start
+session-start: admission-runner-start reconcile ## Start development session; fail when the admission runner cannot start or the reconcile gate refuses
 	@echo "FlowState Development Session"
 	@echo "============================="
 	@echo ""
