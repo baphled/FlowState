@@ -1,6 +1,7 @@
 """Read-only local Dropbox adapter contract with no network access."""
 import hashlib
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -48,6 +49,17 @@ class LocalDropboxAdapter(unittest.TestCase):
                     LocalDropbox(str(root))
             finally:
                 os.chmod(root, 0o700)
+
+
+class TrustedClosure(unittest.TestCase):
+    """The gate file list is closed over imports; the byte reader must not drag in the runner's I/O."""
+
+    def test_the_byte_reader_does_not_import_the_runner_io_module(self):
+        source = Path(local_dropbox.__file__).read_text(encoding="utf-8")
+        imported = re.findall(r"^\s*(?:from|import)\s+(?:scripts\.)?([A-Za-z_][A-Za-z0-9_]*)", source, flags=re.M)
+        self.assertNotIn("admission_io", imported,
+                         "admission_local_dropbox must take REFERENCE from admission_metadata, not admission_io")
+        self.assertIs(local_dropbox.REFERENCE, __import__("scripts.admission_metadata", fromlist=["REFERENCE"]).REFERENCE)
 
 
 class ByteReader(unittest.TestCase):

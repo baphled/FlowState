@@ -4,7 +4,7 @@ import os
 import re
 import stat
 
-from scripts.admission_io import REFERENCE
+from scripts.admission_metadata import REFERENCE
 from scripts.admission_metadata import AdmissionError, REQUIRED_READS
 from scripts.admission_transport import strict_json
 
