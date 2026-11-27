@@ -109,6 +109,7 @@ func (t *DelegateTool) baseRequest() DelegateRequest {
 		Store: t.cfg.Store, Parent: t.cfg.Parent, Streamer: t.cfg.Streamer, Pool: t.cfg.Pool,
 		ParentWorkdir: t.cfg.Workdir, Profiles: t.cfg.Profiles, limiter: t.cfg.limiter, allow: t.allowance(),
 		Compaction: t.cfg.Compaction, Hooks: emptyHookSet(t.cfg.Hooks), ProtectedDirs: t.cfg.ProtectedDirs,
+		LoadedSkills: t.cfg.LoadedSkills,
 	}
 }
 
@@ -134,6 +135,7 @@ func bindNestedDelegate(ctx context.Context, req *DelegateRequest, run *delegate
 		Store: req.Store, Parent: run.child, Streamer: req.Streamer, Pool: run.pool, Workdir: run.workdir,
 		Profiles: req.Profiles, limiter: req.limiter, slot: run.slot, Compaction: req.Compaction, Hooks: req.Hooks,
 		ProtectedDirs:    req.ProtectedDirs,
+		LoadedSkills:     req.LoadedSkills,
 		DelegatorProfile: req.Profile.Name, AllowedProfiles: req.Profile.Delegates,
 	}))
 }

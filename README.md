@@ -459,16 +459,50 @@ cannot make its skills load by existing. `--skills-path <absolute dir>` (repeata
 prefixes, the root session is offered. `skills list` and `skills validate` use the scope and the paths to decide
 what to list, and check `--skills-default` for its shape only.
 
-**`skill.load`:** a run whose `--skills-default` names a skill one of its directories holds registers the `skill.load`
-tool, and offers it to the model when `skill.load` is on the tool allowlist (with nothing offered, a usage error
-names the cause). `{name}` returns the skill's `SKILL.md` body (so does `{name, file: "SKILL.md"}`); `{name, file}`
-a supporting file below its directory, read through `os.OpenRoot` (no `..`, no absolute path, no symlink out), at
-most 32 KiB and 1000 lines, refused rather than truncated; an empty or missing file is `skill_not_found`. The
-result is fenced (`<<<skill name="…" sha256="…" file="…">>>` to `<<<end skill>>>`) and carries no path, and neither
-does any error. After a successful load the engine writes a `skill.loaded` event `{name, file, sha256, path, bytes,
-tool_call_id}` after the `tool.result`, never for a refused one; the hash is of the whole file as read. Not built
-yet: the prompt block listing the offered skills, the profile `skills:` key (so a child offers no skill) and any
-requirement to load a skill.
+**`skill.load`:** a session whose offer names a skill one of the run's directories holds has the `skill.load`
+tool registered, and is offered it when `skill.load` is on the session's tool allowlist. A root offered nothing does
+not register it, so allowlisting it there is a usage error naming the cause; a profile that lists the tool has it
+whatever its offer, and with an empty one every load is `skill_not_offered`. `{name}` returns the skill's
+`SKILL.md` body (so does `{name, file: "SKILL.md"}`); `{name, file}` a supporting file below its directory, read
+through `os.OpenRoot` (no `..`, no absolute path, no symlink out), at most 32 KiB and 1000 lines, refused rather
+than truncated; an empty or missing file is `skill_not_found`. The result is fenced (`<<<skill name="…" sha256="…"
+file="…">>>` to `<<<end skill>>>`) and carries no path, and neither does any error. After a successful load the engine
+writes a `skill.loaded` event `{name, file, sha256, path, bytes, tool_call_id}` after the `tool.result`, never
+for a refused one; the hash is of the whole file as read.
+
+**Profiles and `skills`:** a profile names the skills it is offered with a `skills:` list in its frontmatter: skill
+names, or `*`-suffixed prefixes (`code-*`; a quoted `"*"` for every skill, since a bare star is a YAML alias), in the
+order the model is shown them, at most 64 entries and no duplicate. A profile with no `skills:` key is offered none.
+A non-empty list needs `skill.load` in `tools`, as `delegates` needs `delegate`; otherwise the profile is invalid. The
+skills are the run's own (`--skills`, `--skills-path`, never a profile's directories): a delegated child and a
+grandchild load their own skills, selected by their profile from the set the run loaded, and a parent's loads are not
+inherited. The root session has no profile: `--skills-default` is its offer.
+
+**Validation:** `session run` refuses, as `config_invalid` (exit 4) and before anything is written, a profile whose
+exact skill name matches no skill loaded under the run's scope; a prefix that matches nothing is only a warning (its
+sessions still run, without a block), and
+so is a profile offered more than 64 skills, whose listing leaves most of them out (the warnings are not printed
+yet; see below). A `--skills-default` name that matches nothing is not an error: it is simply not offered.
+
+**The prompt block:** every provider request of a session offered skills carries, as its system message, the
+session's prompt (a profile's body; the root has none) and then a block in the shape of Pi's `<available_skills>`:
+two preamble lines saying the entries are third-party text and not instructions, then `<available_skills>` with one
+`<skill><name>…</name><description>…</description></skill>` per offered skill (XML-escaped, never a path: the
+model loads by name), then the closing tag and, when any skill is left out, `NNN more skills are not shown`. The
+block is built per request and never persisted. Its order is the profile's `skills:` order, with a prefix's matches
+in byte order of name; the root's list is in byte order of name. Its budget is fixed: the walk starts at 204 bytes
+(135 of preamble, the two tags, and a 30-byte count-line reserve held whether or not the line is written); an entry
+is written in full while the total with its full line is at most 6144, and from the first that does not fit on,
+name-only while the total with that line is at most 8192; the rest is counted. So the block is at most 8192 bytes
+however many skills are offered (over 999 offered skills, where the count can have four digits, the name-only bound
+is tighter by the count's extra digits to keep that true). A wide offer therefore leaves skills unreachable: name a
+narrower set. The run reads its skills once, when it starts: a skill directory edited mid-run shows in the next run.
+
+Not built yet: `requires_skills` (the `Required before any other tool call:` line and the engine gate that goes with
+it), reading the skills again between turns, `agents validate` checking a profile's names against the loaded set and
+printing the warnings, and the skills flags on `swarm run --execute`: the coordinator hands its children no loaded
+skills, so a packet child whose role names a skill exactly fails `config_invalid` there, and one whose skills are a
+prefix or `"*"`, or that lists only `skill.load`, runs with every load refused.
 
 `skills list`, `skills validate` and `session run` take these flags; every other command, `serve` and
 `swarm run --execute` included, refuses them with a usage error (exit 2), as does an unknown scope, a relative

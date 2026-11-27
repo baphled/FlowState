@@ -37,7 +37,7 @@ import (
 // The child runs under ctx: a cancelled ctx cancels it with ctx's reason, and
 // the settlement runs on a detached context.
 func RunDelegatedChild(ctx context.Context, req DelegateRequest) (DelegateResult, error) {
-	plan, err := planDelegation(ctx, &req)
+	plan, offered, err := planDelegation(ctx, &req)
 	if err != nil {
 		return DelegateResult{}, err
 	}
@@ -67,7 +67,7 @@ func RunDelegatedChild(ctx context.Context, req DelegateRequest) (DelegateResult
 		unwindDelegateBudget(ctx, &req, childID, grant)
 		return DelegateResult{}, fmt.Errorf("app: delegate: create child: %w", err)
 	}
-	run := &delegateRun{owner: owner, child: child, grant: grant, workdir: plan.workdir, slot: slot}
+	run := &delegateRun{owner: owner, child: child, grant: grant, workdir: plan.workdir, slot: slot, offered: offered}
 	return runAndSettleDelegated(ctx, &req, run, plan.registry)
 }
 
@@ -130,51 +130,65 @@ func settleDelegatedPanic(ctx context.Context, req *DelegateRequest, run *delega
 }
 
 // planDelegation validates the request without writing anything and returns the
-// child's registry, model and working directory.
-func planDelegation(ctx context.Context, req *DelegateRequest) (*delegatePlan, error) {
+// child's registry, model and working directory, beside the skills its profile
+// offers the child, for its listing.
+func planDelegation(ctx context.Context, req *DelegateRequest) (*delegatePlan, []SkillEntry, error) {
 	if err := validateDelegateRequest(req); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	modelID := req.Parent.ModelID
 	if m := req.Profile.Model; m != "" && m != agent.InheritModel {
 		modelID = m // sent as ChatRequest.Model, which every provider passes through
 	}
 	if err := checkChildCreation(ctx, req.Store, req.Parent.ID, req.Parent.Provider, modelID, req.Task); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := checkNestDepth(ctx, req.Store, req.Parent.ID, req.Profile); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	registry, workdir, err := childRegistry(req)
+	registry, offered, workdir, err := childRegistry(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return &delegatePlan{registry: registry, modelID: modelID, workdir: workdir}, nil
+	return &delegatePlan{registry: registry, modelID: modelID, workdir: workdir}, offered, nil
 }
 
 // childRegistry builds the child's registry in its confined working directory, with the root run's protected
-// hook directories (ADR-012 D20), and checks that the profile's tools exist in it, apart from `delegate`, which
-// the run binds to the child once it exists. The protection travels as the options handed to the builder, so a
-// custom NewRegistry receives it too and must pass it on to the file tools it registers. It returns the
-// resolved directory.
-func childRegistry(req *DelegateRequest) (*tool.Registry, string, error) {
+// hook directories (ADR-012 D20) and the skills its profile offers over the run's loaded set (ADR-013 D6, D12),
+// and checks that the profile's tools exist in it, apart from `delegate`, which
+// the run binds to the child once it exists. A profile that lists skill.load has the tool whatever its offer: one
+// whose prefixes all match nothing, a warning rather than an error, still runs, and every load there is
+// skill_not_offered. The protection and the offer travel as the options handed to the
+// builder, so a custom NewRegistry receives them too and must pass them on. It returns the
+// registry, the offer (the child's listing, delegateLoopConfig) and the resolved directory.
+func childRegistry(req *DelegateRequest) (*tool.Registry, []SkillEntry, string, error) {
 	workdir, err := confineChildWorkdir(req.ParentWorkdir, req.Workdir)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
+	}
+	// The offer is the profile's skills over the run's loaded skills, in the profile's order; an exact name that
+	// matches none refuses the child as it refuses the run.
+	if _, err := checkProfileSkills([]agent.Profile{req.Profile}, req.LoadedSkills); err != nil {
+		return nil, nil, "", err
+	}
+	offered, _, _ := selectSkills(req.LoadedSkills, req.Profile.Skills, false)
+	opts := []tool.FSOption{tool.WithProtectedDirs(req.ProtectedDirs...)}
+	if slices.Contains(req.Profile.Tools, agent.SkillLoadTool) {
+		opts = append(opts, tool.WithOfferedSkills(skillCatalog(req.LoadedSkills, offered)))
 	}
 	build := req.NewRegistry
 	if build == nil {
 		build = NewSessionToolRegistry
 	}
-	registry, err := build(workdir, tool.WithProtectedDirs(req.ProtectedDirs...))
+	registry, err := build(workdir, opts...)
 	if err != nil {
-		return nil, "", fmt.Errorf("app: delegate: child registry: %w", err)
+		return nil, nil, "", fmt.Errorf("app: delegate: child registry: %w", err)
 	}
 	tools := slices.DeleteFunc(slices.Clone(req.Profile.Tools), func(n string) bool { return n == agent.DelegateTool })
 	if _, derr := SessionToolDefinitions(registry, tools); derr != nil {
-		return nil, "", fmt.Errorf("%w: profile %s tools: %v", ErrUsage, req.Profile.Name, derr)
+		return nil, nil, "", fmt.Errorf("%w: profile %s tools: %v", ErrUsage, req.Profile.Name, derr)
 	}
-	return registry, workdir, nil
+	return registry, offered, workdir, nil
 }
 
 // validateDelegateRequest rejects missing collaborators and a terminal parent.
@@ -318,7 +332,7 @@ func delegateLoopConfig(ctx context.Context, req *DelegateRequest, run *delegate
 	cfg := ExecLoopConfig{
 		Store: req.Store, Session: child, Streamer: req.Streamer, Registry: registry,
 		Allowlist: req.Profile.Tools,
-		MaxTurns:  grant, SystemPrompt: req.Profile.Body,
+		MaxTurns:  grant, SystemPrompt: withSkillListing(req.Profile.Body, run.offered), // the profile's own order (ADR-013 D7), after the profile's body
 		Compaction: req.Compaction, ProfileWindow: req.Profile.ContextWindow,
 		Hooks: emptyHookSet(req.Hooks), Workdir: run.workdir, Agent: req.Profile.Name, Depth: max(len(chain), 1),
 	}

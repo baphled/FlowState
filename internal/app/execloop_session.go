@@ -11,6 +11,7 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
+	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/store"
 	"github.com/baphled/flowstate/internal/tool"
 )
@@ -47,7 +48,7 @@ func RunSessionExecLoop(ctx context.Context, st *store.Store, dbPath string, ses
 	if workdir == "" {
 		workdir = sessionWorkdir(dbPath, sess.ID)
 	}
-	profiles, err := runProfiles(req.Agents, projectRoot(req), allowlist)
+	profiles, skills, err := runProfilesAndSkills(req, allowlist)
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +63,7 @@ func RunSessionExecLoop(ctx context.Context, st *store.Store, dbPath string, ses
 	// root, never Workdir), and handed to the root's registry and to its delegate tool, so every child's file
 	// tools refuse the same hook directories (ADR-012 D20).
 	protected := ProtectedHookDirs(HooksProjectRoot(req))
-	registry, err := sessionRegistry(workdir, req, protected)
+	registry, offered, err := rootRegistry(workdir, req, protected, skills)
 	if err != nil {
 		return nil, err
 	}
@@ -71,22 +72,24 @@ func RunSessionExecLoop(ctx context.Context, st *store.Store, dbPath string, ses
 		return nil, err
 	}
 	cfg := ExecLoopConfig{
-		Store:      st,
-		Session:    sess,
-		Streamer:   streamer,
-		Registry:   registry,
-		Allowlist:  allowlist,
-		MaxTurns:   sessionMaxTurns(req),
-		MaxTokens:  req.MaxTokens,
-		Compaction: req.Compaction,
-		Lease:      req.Lease,
-		Hooks:      hooks,
-		Workdir:    workdir,
+		Store:     st,
+		Session:   sess,
+		Streamer:  streamer,
+		Registry:  registry,
+		Allowlist: allowlist,
+		MaxTurns:  sessionMaxTurns(req),
+		MaxTokens: req.MaxTokens,
+		// The root has no profile body: its system message is the listing block, if any (ADR-013 D7).
+		SystemPrompt: withSkillListing("", offered),
+		Compaction:   req.Compaction,
+		Lease:        req.Lease,
+		Hooks:        hooks,
+		Workdir:      workdir,
 	}
 	if err := bindRunBudget(ctx, st, sess, req.Budget, &cfg); err != nil {
 		return nil, err
 	}
-	if err := registerSessionDelegate(st, sess, streamer, &cfg, workdir, profiles, req, protected); err != nil {
+	if err := registerSessionDelegate(st, sess, streamer, &cfg, workdir, profiles, req, protected, skills); err != nil {
 		return nil, err
 	}
 	res, err := RunExecLoop(ctx, cfg)
@@ -99,27 +102,41 @@ func RunSessionExecLoop(ctx context.Context, st *store.Store, dbPath string, ses
 	return res, nil
 }
 
-// sessionRegistry composes the root's registry with the protected hook directories and the skills the request offers,
-// so a run with none never has skill.load; an invalid scope is config_invalid before any event is written. Children are
-// offered none by this (ADR-013 D12): their registry is built apart, with the protection only.
-func sessionRegistry(workdir string, req SessionExecLoopRequest, protected []string) (*tool.Registry, error) {
-	offered, err := offeredSkills(req)
+// runProfilesAndSkills is what a run starts from besides its allowlist: its loaded profiles (runProfiles) and the
+// run's skills, read once with every profile's offer held to them, before anything is written (ADR-013 D6).
+func runProfilesAndSkills(req SessionExecLoopRequest, allowlist []string) ([]agent.Profile, []skill.Skill, error) {
+	profiles, err := runProfiles(req.Agents, projectRoot(req), allowlist)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return NewSessionToolRegistry(workdir, tool.WithProtectedDirs(protected...), tool.WithOfferedSkills(offered))
+	skills, err := runSkills(req, profiles)
+	return profiles, skills, err
 }
 
-// registerSessionDelegate gives a run that offers agents its delegate tool, which hands the run's hook set and
-// its protected hook directories to every child.
+// rootRegistry is the root's registry, with the protected hook directories and the skills the request offers, so a
+// run with none never has skill.load: offered nothing, the root registers no tool and a loop allowlisting it fails
+// with the cause named (a profile's sessions are offered theirs apart, from the same loaded set: childRegistry). It
+// also returns the root's offer, in byte order of name, for the root's listing.
+func rootRegistry(workdir string, req SessionExecLoopRequest, protected []string, skills []skill.Skill) (*tool.Registry, []SkillEntry, error) {
+	offered, _, _ := selectSkills(skills, req.SkillsDefault, true)
+	opts := []tool.FSOption{tool.WithProtectedDirs(protected...)}
+	if len(offered) > 0 {
+		opts = append(opts, tool.WithOfferedSkills(skillCatalog(skills, offered)))
+	}
+	registry, err := NewSessionToolRegistry(workdir, opts...)
+	return registry, offered, err
+}
+
+// registerSessionDelegate gives a run that offers agents its delegate tool, which hands the run's hook set, its
+// protected hook directories and its loaded skills to every child.
 func registerSessionDelegate(st *store.Store, sess *store.Session, streamer provider.Streamer, cfg *ExecLoopConfig,
-	workdir string, profiles []agent.Profile, req SessionExecLoopRequest, protected []string) error {
+	workdir string, profiles []agent.Profile, req SessionExecLoopRequest, protected []string, skills []skill.Skill) error {
 	if req.Agents == "" {
 		return nil
 	}
 	return cfg.Registry.Register(NewDelegateTool(DelegateToolConfig{
 		Store: st, Parent: sess, Streamer: streamer, Pool: cfg.Pool, Workdir: workdir, Profiles: profiles,
-		Compaction: req.Compaction, Hooks: cfg.Hooks, ProtectedDirs: protected,
+		Compaction: req.Compaction, Hooks: cfg.Hooks, ProtectedDirs: protected, LoadedSkills: skills,
 	}))
 }
 

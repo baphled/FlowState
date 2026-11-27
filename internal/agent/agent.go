@@ -31,7 +31,7 @@ var nameRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`)
 var decimalRE = regexp.MustCompile(`^(0|[1-9]\d*)$`)
 
 var knownField = map[string]bool{"name": true, "description": true, "tools": true, "model": true, "max_turns": true,
-	"delegates": true, "context_window": true}
+	"delegates": true, "skills": true, "context_window": true}
 
 // ParseScope reads a --agents value; the empty string is ScopeUser.
 func ParseScope(s string) (Scope, error) {
@@ -52,7 +52,8 @@ func ParseScope(s string) (Scope, error) {
 // single-line string carries a control, format or separator character other
 // than a tab (a name carries none), and none is a block scalar. A
 // tool not in known, a duplicate tool, an out-of-range max_turns, a bad name, a
-// missing description and an empty body each fail, and so does a body that is
+// missing description and an empty body each fail; a non-empty skills list needs
+// skill.load in tools and every entry a skill name or a `*`-suffixed prefix; and so does a body that is
 // not valid UTF-8 or holds a NUL, ESC, DEL or C1 character (newline, tab and CR
 // are allowed; format characters such as ZWJ stay allowed in prose). An empty body is a failure on
 // purpose: a profile with no instructions is a mistake. Surrounding whitespace
@@ -223,6 +224,9 @@ func build(fields map[string]*yaml.Node, known []string) (Profile, error) {
 		return Profile{}, err
 	}
 	if p.Delegates, err = delegateList(fields["delegates"], p.Name, p.Tools); err != nil {
+		return Profile{}, err
+	}
+	if p.Skills, err = skillsList(fields["skills"], p.Tools); err != nil {
 		return Profile{}, err
 	}
 	model, err := text(fields["model"], "model")

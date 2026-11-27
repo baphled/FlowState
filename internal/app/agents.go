@@ -13,11 +13,14 @@ import (
 var projectAgentsDir = filepath.Join(".flowstate", "agents")
 
 // AgentToolNames returns the tool names a profile may list: the session
-// catalog (echo, fs.read, fs.write, fs.edit, exec.run) plus the reserved
-// delegate name. Listing exec.run is valid whether or not its environment
-// opt-in is set; the opt-in is checked when a loop starts.
+// catalog (echo, fs.read, fs.write, fs.edit, exec.run, skill.load) plus the
+// reserved delegate name. Listing exec.run is valid whether or not its environment
+// opt-in is set; the opt-in is checked when a loop starts. A profile that lists
+// skill.load has the tool whatever its offer (with an empty one every load is
+// skill_not_offered); a root offered none does not register it, and a loop whose
+// allowlist names it then fails with a usage error naming the cause.
 func AgentToolNames() []string {
-	return []string{tool.Echo, tool.FSReadName, tool.FSWriteName, tool.FSEditName, tool.ExecRunName, agent.DelegateTool}
+	return []string{tool.Echo, tool.FSReadName, tool.FSWriteName, tool.FSEditName, tool.ExecRunName, agent.SkillLoadTool, agent.DelegateTool}
 }
 
 // LoadProfiles loads agent profiles. scope is user (also when empty), project
@@ -29,7 +32,8 @@ func AgentToolNames() []string {
 // project profiles are repository-controlled prompts that carry tools. A
 // profile that fails validation, or a name
 // found in both directories under scope both, or a delegates entry naming a
-// profile outside the loaded set, is config_invalid.
+// profile outside the loaded set, is config_invalid. Whether a profile's skills
+// name a loaded skill is checked where that set is known (checkProfileSkills).
 func LoadProfiles(scope, workdir string) ([]agent.Profile, error) {
 	sc, err := agent.ParseScope(scope)
 	if err != nil {

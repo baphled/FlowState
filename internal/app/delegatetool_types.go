@@ -6,6 +6,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/store"
 	"github.com/baphled/flowstate/internal/tool"
 )
@@ -44,6 +45,9 @@ type DelegateToolConfig struct {
 	// ProtectedDirs is the root run's protected hook directories (ADR-012 D20, ProtectedHookDirs) every child,
 	// nested child and resumed child of this tool inherits, so its file tools refuse them as the root's do.
 	ProtectedDirs []string
+	// LoadedSkills is the root run's loaded skills (ADR-013 D3) every child, nested child and resumed child of this
+	// tool inherits: what a profile's `skills` selects from, so a child loads its own skills (D12).
+	LoadedSkills []skill.Skill
 	// limiter is the cap shared down the tree and slot the descendant slot of the
 	// run this tool is bound to; both are nil for the root's own tool.
 	limiter *descendantLimiter
