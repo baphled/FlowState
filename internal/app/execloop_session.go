@@ -58,15 +58,15 @@ func RunSessionExecLoop(ctx context.Context, st *store.Store, dbPath string, ses
 	if err := ensureDefaultWorkdir(req, workdir); err != nil {
 		return nil, err
 	}
-	hooks, err := bindRunHooks(ctx, st, sess.ID, req)
-	if err != nil {
-		return nil, err
-	}
 	// The protected trees are computed once per run from the inputs the hook loader reads (the project
 	// root, never Workdir), and handed to the root's registry and to its delegate tool, so every child's file
 	// tools refuse the same hook directories (ADR-012 D20).
 	protected := ProtectedHookDirs(HooksProjectRoot(req))
-	registry, err := NewSessionToolRegistry(workdir, tool.WithProtectedDirs(protected...))
+	registry, err := sessionRegistry(workdir, req, protected)
+	if err != nil {
+		return nil, err
+	}
+	hooks, err := bindRunHooks(ctx, st, sess.ID, req)
 	if err != nil {
 		return nil, err
 	}
@@ -97,6 +97,17 @@ func RunSessionExecLoop(ctx context.Context, st *store.Store, dbPath string, ses
 		return res, err
 	}
 	return res, nil
+}
+
+// sessionRegistry composes the root's registry with the protected hook directories and the skills the request offers,
+// so a run with none never has skill.load; an invalid scope is config_invalid before any event is written. Children are
+// offered none by this (ADR-013 D12): their registry is built apart, with the protection only.
+func sessionRegistry(workdir string, req SessionExecLoopRequest, protected []string) (*tool.Registry, error) {
+	offered, err := offeredSkills(req)
+	if err != nil {
+		return nil, err
+	}
+	return NewSessionToolRegistry(workdir, tool.WithProtectedDirs(protected...), tool.WithOfferedSkills(offered))
 }
 
 // registerSessionDelegate gives a run that offers agents its delegate tool, which hands the run's hook set and

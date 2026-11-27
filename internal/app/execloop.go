@@ -291,7 +291,9 @@ func executeCall(ctx context.Context, cfg ExecLoopConfig, call provider.ToolCall
 	return runCall(ctx, cfg, w, call, allowed, results)
 }
 
-func appendResult(ctx context.Context, loop *tool.Loop, call provider.ToolCall, results []provider.Message) ([]provider.Message, error) { // appends one call outcome; persistence failures terminate the run
+// appendResult appends one call outcome: the result of a delivered skill file is followed by its skill.loaded record,
+// through the same writer, after the tool.result the loop wrote; persistence failures terminate the run
+func appendResult(ctx context.Context, w tool.EventSink, loop *tool.Loop, call provider.ToolCall, results []provider.Message) ([]provider.Message, error) {
 	failed := func(content string) []provider.Message {
 		return append(results, provider.Message{Role: "tool", ToolCallID: call.ID, Content: content})
 	}
@@ -305,6 +307,11 @@ func appendResult(ctx context.Context, loop *tool.Loop, call provider.ToolCall, 
 			return failed(liveDenialText(denied)), nil
 		}
 		return failed(fmt.Sprintf("error: %s", ierr)), nil
+	}
+	if loaded, ok := outcome.(tool.SkillResult); ok {
+		if serr := recordSkillLoaded(ctx, w, call.ID, loaded); serr != nil {
+			return results, serr
+		}
 	}
 	encoded, merr := json.Marshal(outcome)
 	if merr != nil {
@@ -417,5 +424,5 @@ func runCall(ctx context.Context, cfg ExecLoopConfig, w tool.EventSink, call pro
 	if lerr != nil {
 		return nil, lerr
 	}
-	return appendResult(ctx, loop, call, results)
+	return appendResult(ctx, w, loop, call, results)
 }

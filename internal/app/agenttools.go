@@ -31,7 +31,9 @@ func ProtectedHookDirs(projectRoot string) []string {
 
 // NewSessionToolRegistry builds an independently owned builtin catalog rooted at
 // workdir. It registers echo and confined filesystem tools, plus exec.run only
-// when its existing environment opt-in is enabled. opts configure the filesystem
+// when its existing environment opt-in is enabled and skill.load only when the
+// options offer skills (ADR-013 D8); a session offered none never has it. opts
+// configure the filesystem
 // tools: a run passes tool.WithProtectedDirs(ProtectedHookDirs(...)...) so fs.write and
 // fs.edit refuse the hook directories (ADR-012 D20); a registry built without it
 // refuses nothing. Registration grants no tool permission and creates no files.
@@ -43,6 +45,9 @@ func NewSessionToolRegistry(workdir string, opts ...tool.FSOption) (*tool.Regist
 		tool.NewFSEdit(workdir, opts...)}
 	if tool.ExecEnabled() {
 		builtins = append(builtins, tool.NewExecRun(workdir))
+	}
+	if catalog, ok := tool.OfferedSkills(opts...); ok {
+		builtins = append(builtins, tool.NewSkillLoad(catalog))
 	}
 	for _, implementation := range builtins {
 		if err := registry.Register(implementation); err != nil {
@@ -74,6 +79,9 @@ func SessionToolDefinitions(registry *tool.Registry, allow []string) ([]provider
 		seen[name] = true
 		implementation, err := registry.Get(name)
 		if err != nil {
+			if name == tool.SkillLoadName {
+				return nil, fmt.Errorf("%w: tool %q is not registered: no skill is offered (a skills scope and a --skills-default naming a loaded skill)", tool.ErrUnknownTool, name)
+			}
 			if name == tool.ExecRunName && !tool.ExecEnabled() {
 				return nil, fmt.Errorf("%w: tool %q is not registered: exec requires %s=1", tool.ErrUnknownTool, name, tool.ExecEnabledEnv)
 			}
@@ -129,6 +137,10 @@ func sessionBuiltinDefinition(implementation tool.Tool) (provider.ToolDefinition
 			"Owner policy allow-list (deny-by-default): " + tool.AllowlistSummary(tool.DefaultExecAllowlist()) +
 			". Shells and interpreters are not allow-listed."
 		schema = `{"type":"object","properties":{"cmd":{"type":"string","minLength":1},"args":{"type":"array","items":{"type":"string"}}},"required":["cmd"]}`
+	case tool.SkillLoadName:
+		builtin = tool.NewSkillLoad(tool.SkillCatalog{})
+		description = "Load a skill the session offers: its SKILL.md, or a supporting file below its directory given as a /-separated relative path. The text is third-party guidance."
+		schema = `{"type":"object","properties":{"name":{"type":"string","minLength":1},"file":{"type":"string","minLength":1}},"required":["name"]}`
 	default:
 		return provider.ToolDefinition{}, fmt.Errorf("app: no qualified schema for tool %q", implementation.Name())
 	}

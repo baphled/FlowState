@@ -2,10 +2,11 @@ package tool
 
 import "io/fs"
 
-// fsOptions carries the overridable size caps.
+// fsOptions carries the overridable size caps and the offered skills.
 type fsOptions struct {
 	maxRead, maxWrite, maxEdit int64
 	protect                    *fsProtect
+	skills                     *SkillCatalog
 }
 
 // fsProtect holds the protected directories (ADR-012 D20); a nil *fsProtect disables the refusal.

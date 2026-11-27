@@ -21,6 +21,9 @@ type historyState struct {
 	seen      map[string]bool
 	streaming bool
 	bytes     int
+	// loaded is the skill.load call whose successful result the next skill.loaded may record, and loadedFrame that result
+	// as the model received it (ADR-013 D9); an empty call when none is owed.
+	loaded, loadedFrame string
 }
 
 type historyCall struct {
@@ -47,4 +50,14 @@ type historyResultPreview struct {
 	Truncated     bool   `json:"truncated"`
 	OriginalBytes int    `json:"original_bytes"`
 	Preview       string `json:"preview"`
+}
+
+// historySkillPayload is the skill.loaded record of one delivered skill file.
+type historySkillPayload struct {
+	Name       string `json:"name"`
+	File       string `json:"file"`
+	SHA256     string `json:"sha256"`
+	Path       string `json:"path"`
+	Bytes      int    `json:"bytes"`
+	ToolCallID string `json:"tool_call_id"`
 }
