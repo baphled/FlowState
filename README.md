@@ -424,6 +424,9 @@ and a final component that is a symlink, whatever it points at. `fs.read` stays 
 symlinked file is never writable through the file tools (`CLAUDE.md -> AGENTS.md` is the common layout), and this
 repository's own `docs/examples/swarm/.flowstate/` is refused by the name rule: edit those files as a human or with
 `exec.run`. The protection does not reach `exec.run`, `make`, `git checkout` or a human editing the file.
+The file format, the points, the stdin and exit contract and the safety notes are in the
+[lifecycle hooks guide](docs/guides/LIFECYCLE-HOOKS.md), and a tested user file with its scripts is in
+[docs/examples/hooks](docs/examples/hooks/README.md).
 
 `turn.after` fires after every provider turn of an exec loop, the last no-call turn included, and before the turn
 limit is checked. A command hook on it may print `{"stop":true}`: a root run ends paused, resumable, with the
@@ -735,6 +738,7 @@ python3 -B scripts/security_gate.py --base "$BASE_SHA" --scanner bin/tools/gosec
 ## More documentation
 
 - [Architecture overview](docs/architecture/OVERVIEW.md): the current behaviour of every surface
+- [Lifecycle hooks guide](docs/guides/LIFECYCLE-HOOKS.md): hook files, points, the stdin and exit contract, safety
 - [Architecture decision records](docs/adr/README.md)
 - [Pull request budgets](docs/development/PR-BUDGETS.md) and [review handoff](docs/development/REVIEW-HANDOFF.md)
 - [Rules](rules/ARCHITECTURE.md): source ownership, tests, documentation, CI and merge admission

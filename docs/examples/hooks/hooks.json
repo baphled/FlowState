@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "hooks": [
+    {
+      "id": "guard-protected-paths",
+      "point": "tool.before",
+      "match": ["fs.write", "fs.edit"],
+      "kind": "command",
+      "argv": ["./scripts/guard-protected-paths.sh"],
+      "timeout_ms": 5000
+    },
+    {
+      "id": "audit-tool-calls",
+      "point": "tool.after",
+      "kind": "command",
+      "argv": ["./scripts/audit-tool-calls.sh"],
+      "env": ["HOME"]
+    },
+    {
+      "id": "stop-after-n-turns",
+      "point": "turn.after",
+      "kind": "command",
+      "argv": ["./scripts/stop-after-n-turns.sh", "5"],
+      "timeout_ms": 5000
+    },
+    {
+      "id": "refuse-secret-prompt",
+      "point": "user.prompt",
+      "kind": "command",
+      "argv": ["./scripts/refuse-secret-prompt.sh"],
+      "timeout_ms": 5000
+    },
+    {
+      "id": "log-session-start",
+      "point": "session.start",
+      "kind": "command",
+      "argv": ["./scripts/log-session.sh"],
+      "env": ["HOME"]
+    },
+    {
+      "id": "log-session-end",
+      "point": "session.end",
+      "kind": "command",
+      "argv": ["./scripts/log-session.sh"],
+      "env": ["HOME"]
+    }
+  ]
+}
