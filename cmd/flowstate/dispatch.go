@@ -370,9 +370,12 @@ serve [--addr <host:port>] [--db path] [--config <path>] [--hooks user|project|b
 
 swarm run      <manifest> --execute [--agents user|project|both] [--provider <p> --model <m>] [--budget <n>]
                [--hooks user|project|both|none] [--max-turns <n>] [--max-tokens <n>] [--workdir <path>] [--db path]
+               [--skills user|project|both|none] [--skills-path <abs dir>]...
                (a coordinator agent named by the manifest delegates the packets to role profiles; the engine
                runs the gates; exit 0 accepted, 8 not accepted or gate failed, 3/5/1 a failed coordinator,
-               130 cancelled; without --execute: swarm run <manifest> --parent <id> --budget <n>)
+               130 cancelled; without --execute: swarm run <manifest> --parent <id> --budget <n>;
+               --skills and --skills-path load the skills the coordinator's and the roles' skills lists offer, as for
+               session run; --skills-default is refused: the coordinator is a profile and names its own skills)
 session new    --provider <p> --model <m> --task <text|@file> [--parent <id>] [--reserve <n>] [--db path]
 session budget <id> [--db path]
 session doctor <id> [--db path]
@@ -497,13 +500,17 @@ func commandName(args []string) string {
 	return strings.Join(words, " ")
 }
 
-// refuseInapplicableFlag writes the usage error for --hooks or a skills flag the command cannot take.
+// refuseInapplicableFlag writes the usage error for --hooks, or for a skills flag the command cannot take: the
+// settings on a command that takes none of them, --skills-default on swarm run, which has no root session to offer.
 func refuseInapplicableFlag(args []string, stderr *os.File) bool {
 	if givesHooksFlag(args) && !acceptsHooks(args) {
 		return refuseHooks(commandName(args), stderr)
 	}
 	if givesSkillsFlag(args) && !acceptsSkillsSettings(args) {
 		return refuseSkillsSettings(commandName(args), stderr)
+	}
+	if givesSkillsDefaultFlag(args) && !acceptsSkillsDefault(args) {
+		return refuseSkillsDefault(commandName(args), stderr)
 	}
 	return false
 }
@@ -579,14 +586,17 @@ func skillsScope(fl *flags) app.SkillsScope {
 	return fl.skills
 }
 
-// acceptsSkillsSettings reports whether the command in args takes the skills
-// settings: skills list, skills validate and session run. Everything else
-// refuses them; serve and swarm run join when a later packet adds their flags.
+// acceptsSkillsSettings reports whether the command in args takes --skills and --skills-path: skills list,
+// skills validate, session run and swarm run (whose --execute runs the coordinator over the scope; without
+// --execute the flags are refused as execute-only). Everything else refuses them; serve joins when a later packet
+// adds its flags.
 func acceptsSkillsSettings(args []string) bool {
 	switch args[0] {
 	case "skills":
 		return len(args) > 1 && (args[1] == "list" || args[1] == "validate")
 	case "session":
+		return len(args) > 1 && args[1] == "run"
+	case "swarm":
 		return len(args) > 1 && args[1] == "run"
 	}
 	return false
@@ -595,8 +605,9 @@ func acceptsSkillsSettings(args []string) bool {
 // refuseSkillsSettings writes the usage error for the skills settings flags on
 // a command that cannot take them and returns true.
 func refuseSkillsSettings(command string, stderr *os.File) bool {
-	writeError(stderr, fmt.Errorf("%w: --skills, --skills-path and --skills-default do not apply to `%s`: they apply to "+
-		"`skills list`, `skills validate` and `session run`", errUsageCmd, command))
+	writeError(stderr, fmt.Errorf("%w: the skills settings do not apply to `%s`: --skills and --skills-path apply to "+
+		"`skills list`, `skills validate`, `session run` and `swarm run --execute`; --skills-default to `session run` "+
+		"(its shape is checked by `skills list` and `skills validate`)", errUsageCmd, command))
 	return true
 }
 
@@ -605,6 +616,32 @@ func refuseSkillsSettings(command string, stderr *os.File) bool {
 func givesSkillsFlag(args []string) bool {
 	for _, a := range args {
 		if isSkillsFlag(a) {
+			return true
+		}
+	}
+	return false
+}
+
+// acceptsSkillsDefault reports whether the command in args takes --skills-default: the commands that take the
+// skills settings except swarm run, whose coordinator is a profile and lists its own `skills:` (ADR-013 D6), and
+// which has no root session for skills_default to offer. skills list and skills validate take it for its shape only.
+func acceptsSkillsDefault(args []string) bool {
+	return acceptsSkillsSettings(args) && args[0] != "swarm"
+}
+
+// refuseSkillsDefault writes the usage error for --skills-default on a swarm run and returns true.
+func refuseSkillsDefault(command string, stderr *os.File) bool {
+	writeError(stderr, fmt.Errorf("%w: --skills-default does not apply to `%s`: the coordinator is a profile and lists its own "+
+		"`skills:`; skills_default is for the root session only, and a swarm has none. It applies to `skills list`, "+
+		"`skills validate` and `session run`", errUsageCmd, command))
+	return true
+}
+
+// givesSkillsDefaultFlag reports whether args carry --skills-default, in either spelling.
+func givesSkillsDefaultFlag(args []string) bool {
+	for _, a := range args {
+		name, _, _ := strings.Cut(a, "=")
+		if name == "--skills-default" {
 			return true
 		}
 	}

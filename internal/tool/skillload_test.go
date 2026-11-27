@@ -216,4 +216,26 @@ var _ = Describe("skill.load", func() {
 		_, err := skillF.load(`{"name":"` + strings.Repeat("é", 300) + `"}`)
 		Expect(err).To(MatchError(Equal(ErrSkillNotOffered.Error() + ": " + strings.Repeat("é", 128))))
 	})
+
+	Describe("an empty offer", func() {
+		// catalog is the fixture's catalog with None as given, as the composition marks a session offered nothing; it is
+		// built inside each spec, after the fixture's BeforeEach.
+		catalog := func(none bool) SkillCatalog {
+			c := skillF.catalog
+			c.None = none
+			return c
+		}
+
+		DescribeTable("reports whether the session offers a skill, so a definition can say so",
+			func(none, want bool) {
+				Expect(NewSkillLoad(catalog(none)).(SkillOfferer).Offered()).To(Equal(want))
+			},
+			Entry("no skill offered", true, false),
+			Entry("a skill offered", false, true))
+
+		It("leaves every name to the finder, which still refuses one it does not hold", func() {
+			_, err := NewSkillLoad(catalog(true)).Invoke(context.Background(), json.RawMessage(`{"name":"other"}`))
+			Expect(err).To(MatchError(ErrSkillNotOffered))
+		})
+	})
 })

@@ -77,6 +77,9 @@ func NewSkillLoad(c SkillCatalog) Tool { return skillLoadTool{catalog: c} }
 // Name implements Tool.
 func (skillLoadTool) Name() string { return SkillLoadName }
 
+// Offered implements SkillOfferer: the catalog's None flag, which the composition sets when the session's offer is empty.
+func (t skillLoadTool) Offered() bool { return !t.catalog.None }
+
 // Invoke implements Tool.
 func (t skillLoadTool) Invoke(_ context.Context, args json.RawMessage) (any, error) {
 	var a struct {

@@ -48,6 +48,17 @@ type SkillCatalog struct {
 	Finder SkillFinder
 	// Format is the skill format the tool enforces.
 	Format SkillFormat
+	// None marks a catalog that offers no skill (ADR-013 D6): a profile that lists skill.load keeps the tool over it,
+	// every load is ErrSkillNotOffered, and the definition the model reads says so (SkillOfferer, SkillNoneDescription)
+	// instead of describing a load that cannot succeed. The Finder still decides every name.
+	None bool
+}
+
+// SkillOfferer is implemented by the skill.load tool: Offered reports whether the session offers any skill, so a
+// composer of the tool definitions can tell the model when every load will be refused.
+type SkillOfferer interface {
+	// Offered reports whether the catalog offers at least one skill.
+	Offered() bool
 }
 
 // LoadedSkill is what one successful skill.load delivered: the fields of the engine's skill.loaded record.
@@ -74,3 +85,7 @@ type SkillResult struct {
 type skillLoadTool struct {
 	catalog SkillCatalog
 }
+
+// SkillNoneDescription is what the model reads of skill.load when the session offers no skill: it learns from the
+// definition, not from a refusal, that no load can succeed (ADR-013 D6).
+const SkillNoneDescription = "No skill is offered in this session: every load is refused."

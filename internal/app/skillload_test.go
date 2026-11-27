@@ -116,6 +116,33 @@ func (r *skillRun) childEvents() []store.RecordedEvent {
 	return must(r.st.Replay(context.Background(), r.childID()))
 }
 
+// grandchildID is the one session of the fixture that is neither the root's nor the root's child's.
+func (r *skillRun) grandchildID() string {
+	child := r.childID()
+	others := slices.DeleteFunc(must(r.st.ListSessions(context.Background(), "")), func(s store.Session) bool {
+		return s.ID == r.sess.ID || s.ID == child
+	})
+	return others[0].ID
+}
+
+// grandchildEvents are the replayed events of the grandchild.
+func (r *skillRun) grandchildEvents() []store.RecordedEvent {
+	return must(r.st.Replay(context.Background(), r.grandchildID()))
+}
+
+// callCode is the error.code of the tool.result of callID among events; "" when the call succeeded. A log holding
+// more than one result (a resumed child's) is read by its call ids.
+func callCode(events []store.RecordedEvent, callID string) string {
+	for _, e := range events {
+		if e.Type == tool.TypeToolResult && payloadFieldText(e.PayloadJSON, "tool_call_id") == callID {
+			failure, _ := payloadMap(e.PayloadJSON)["error"].(map[string]any)
+			code, _ := failure["code"].(string)
+			return code
+		}
+	}
+	panic("no tool.result for " + callID)
+}
+
 func (r *skillRun) fileHash(rel string) string {
 	data, err := os.ReadFile(filepath.Join(r.userSkills, "tdd", filepath.FromSlash(rel)))
 	if err != nil {
@@ -389,6 +416,16 @@ func systemMessage(r *provider.ChatRequest) string {
 	return ""
 }
 
+// toolDefinition is the definition of name among a provider request's tools; it panics when the request lacks it.
+func toolDefinition(r *provider.ChatRequest, name string) provider.ToolDefinition {
+	for _, d := range r.Tools {
+		if d.Name == name {
+			return d
+		}
+	}
+	panic("no tool " + name)
+}
+
 // listedNames are the skill names a system message lists, in order.
 func listedNames(message string) []string {
 	var names []string
@@ -603,6 +640,10 @@ var _ = Describe("the profile skills key and the prompt block (ADR-013 packet 4)
 			Expect(toolNames(run.streamer.reqs[1])).To(Equal([]string{tool.SkillLoadName}))
 		})
 
+		It("tells the model from its definition that no skill is offered", func() {
+			Expect(toolDefinition(run.streamer.reqs[1], tool.SkillLoadName).Description).To(Equal(tool.SkillNoneDescription))
+		})
+
 		It("answers the child's load with skill_not_offered", func() {
 			Expect(resultCodeOf(run.childEvents())).To(Equal(tool.ErrCodeSkillNotOffered))
 		})
@@ -626,6 +667,11 @@ var _ = Describe("the profile skills key and the prompt block (ADR-013 packet 4)
 
 		It("offers the child the tool", func() {
 			Expect(toolNames(run.streamer.reqs[1])).To(ContainElement(tool.SkillLoadName))
+		})
+
+		It("describes the load as the builtin does, byte for byte", func() {
+			Expect(toolDefinition(run.streamer.reqs[1], tool.SkillLoadName).Description).To(Equal("Load a skill the session offers: its SKILL.md, " +
+				"or a supporting file below its directory given as a /-separated relative path. The text is third-party guidance."))
 		})
 
 		It("sends the child its profile body, then the block in the profile's own order", func() {
@@ -652,6 +698,78 @@ var _ = Describe("the profile skills key and the prompt block (ADR-013 packet 4)
 		check(run.run(req, callTurn(delegateCall(`{"agent":"lead","task":"go"}`)), callTurn(delegateCall(`{"agent":"reviewer","task":"look"}`)),
 			finishText("grandchild says hi"), finishText("child says hi"), finishText("parent done")))
 		Expect(listedNames(systemMessage(run.streamer.reqs[2]))).To(Equal([]string{"code-review"}))
+	})
+
+	Context("with a grandchild whose profile lists skill.load but is offered no skill", func() {
+		// The turns run in call order: the root's first, the child's (lead delegates), the grandchild's two, the child's
+		// last, the root's last.
+		BeforeEach(func() {
+			putAgent(agentsDir, "coder.md", profileWith("coder", "tools: [skill.load]\nskills: [zz*]\n", "You code."))
+			putAgent(agentsDir, "lead.md", profileWith("lead", "tools: [delegate, skill.load]\ndelegates: [coder]\nskills: [tdd]\n", "You lead."))
+			req.Allow, req.Agents = []string{tool.SkillLoadName, "delegate"}, "user"
+			check(run.run(req, callTurn(delegateCall(`{"agent":"lead","task":"go"}`)), callTurn(delegateCall(`{"agent":"coder","task":"look"}`)),
+				callTurn(skillCall("g1", `{"name":"tdd"}`)), finishText("grandchild done"), finishText("child done"), finishText("parent done")))
+		})
+
+		It("offers the grandchild the tool its profile lists", func() {
+			Expect(toolNames(run.streamer.reqs[2])).To(Equal([]string{tool.SkillLoadName}))
+		})
+
+		It("sends the grandchild its body and no block", func() {
+			Expect(systemMessage(run.streamer.reqs[2])).To(Equal("You code."))
+		})
+
+		It("answers the grandchild's load with skill_not_offered", func() {
+			Expect(callCode(run.grandchildEvents(), "g1")).To(Equal(tool.ErrCodeSkillNotOffered))
+		})
+
+		It("records no skill.loaded in the grandchild", func() {
+			Expect(types(run.grandchildEvents())).NotTo(ContainElement(TypeSkillLoaded))
+		})
+	})
+
+	Describe("a resumed child (ADR-013 D12)", func() {
+		Context("whose profile lists skill.load but is offered no skill", func() {
+			var (
+				f      *delegateFixture
+				events []store.RecordedEvent
+			)
+			// The fixture's child ran one turn before its crash (seedChild); the resume runs two more: the load it is
+			// not offered, then its final text.
+			BeforeEach(func() {
+				f = newDelegateFixture(callTurn(skillCall("r1", `{"name":"tdd"}`)), finishText("resumed done"))
+				f.profile.Tools = []string{tool.SkillLoadName} // no skills key: offered nothing, the tool kept
+				child := f.seedChild(f.parent, 1)
+				must(ResumeDelegatedChild(context.Background(), f.resumeRequest(child.ID, "")))
+				events = must(f.st.Replay(context.Background(), child.ID))
+			})
+
+			It("offers the tool its profile lists", func() {
+				Expect(toolNames(f.streamer.reqs[0])).To(Equal([]string{tool.SkillLoadName}))
+			})
+
+			It("sends its body and no block", func() {
+				Expect(systemMessage(f.streamer.reqs[0])).To(Equal(delegateBodyPrompt))
+			})
+
+			It("answers its load with skill_not_offered", func() {
+				Expect(callCode(events, "r1")).To(Equal(tool.ErrCodeSkillNotOffered))
+			})
+
+			It("records no skill.loaded", func() {
+				Expect(types(events)).NotTo(ContainElement(TypeSkillLoaded))
+			})
+		})
+
+		It("is sent the block again, after its body, when its profile offers a skill of the run's loaded set", func() {
+			f := newDelegateFixture(finishText("resumed done"))
+			f.profile.Tools, f.profile.Skills = []string{tool.SkillLoadName}, []string{"tdd"}
+			child := f.seedChild(f.parent, 1)
+			rr := f.resumeRequest(child.ID, "")
+			rr.LoadedSkills = []skill.Skill{{Name: "tdd", Description: "About tdd"}}
+			must(ResumeDelegatedChild(context.Background(), rr))
+			Expect(systemMessage(f.streamer.reqs[0])).To(Equal(delegateBodyPrompt + "\n\n" + oracleListing([]SkillEntry{{Name: "tdd", Description: "About tdd"}})))
+		})
 	})
 
 	Describe("selectSkills", func() {
@@ -693,6 +811,17 @@ var _ = Describe("the profile skills key and the prompt block (ADR-013 packet 4)
 			},
 			Entry("64: no warning", 64, 0),
 			Entry("65: one", 65, 1))
+	})
+
+	Describe("skillCatalog", func() {
+		It("marks a catalog that offers nothing None, so the definition can say so", func() {
+			Expect(skillCatalog(threeSkills, nil).None).To(BeTrue())
+		})
+
+		It("leaves None unset when a skill is offered", func() {
+			offered, _, _ := selectSkills(threeSkills, []string{"tdd"}, false)
+			Expect(skillCatalog(threeSkills, offered).None).To(BeFalse())
+		})
 	})
 
 	Describe("the listing block", func() {

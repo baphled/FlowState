@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -14,6 +16,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/store"
 	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tool"
@@ -794,23 +797,162 @@ var _ = Describe("the swarm coordinator's hook set (ADR-012 D22)", func() {
 	BeforeEach(func() { cfg = ExecuteSwarmConfig{Hooks: stubHookSet("root")} })
 
 	It("carries the root set in the coordinator's loop config", func() {
-		loop := coordinatorLoopConfig(nil, &store.Session{}, agent.Profile{}, cfg, nil, 1)
+		loop := coordinatorLoopConfig(nil, &store.Session{}, agent.Profile{}, cfg, nil, nil, 1)
 		Expect(loop.Hooks).To(Equal(HookSet(stubHookSet("root"))))
 	})
 
 	It("carries the root set in the coordinator's delegate tool, so a packet child inherits it", func() {
-		tc := coordinatorToolConfig(nil, &store.Session{}, agent.Profile{}, cfg, nil, nil)
+		tc := coordinatorToolConfig(nil, &store.Session{}, agent.Profile{}, cfg, nil, nil, nil)
 		Expect(tc.Hooks).To(Equal(HookSet(stubHookSet("root"))))
 	})
 
 	It("keeps an empty set empty in the coordinator's loop config", func() {
-		loop := coordinatorLoopConfig(nil, &store.Session{}, agent.Profile{}, ExecuteSwarmConfig{}, nil, 1)
+		loop := coordinatorLoopConfig(nil, &store.Session{}, agent.Profile{}, ExecuteSwarmConfig{}, nil, nil, 1)
 		Expect(loop.Hooks).To(BeNil())
 	})
 
 	It("keeps an empty set empty in the coordinator's delegate tool", func() {
-		tc := coordinatorToolConfig(nil, &store.Session{}, agent.Profile{}, ExecuteSwarmConfig{}, nil, nil)
+		tc := coordinatorToolConfig(nil, &store.Session{}, agent.Profile{}, ExecuteSwarmConfig{}, nil, nil, nil)
 		Expect(tc.Hooks).To(BeNil())
+	})
+})
+
+// tddBlock is the listing of the one skill the user directory of the swarm skills specs holds.
+var tddBlock = oracleListing([]SkillEntry{{Name: "tdd", Description: "About tdd"}})
+
+var _ = Describe("The skills of a swarm (ADR-013 D6, D12)", func() {
+	var (
+		ctx      context.Context
+		f        *swarmExecFixture
+		res      ExecuteSwarmResult
+		rec      *registryRecorder
+		scripted *execLoopStreamer
+	)
+	// script is the provider, scripted in call order: the coordinator's turn, then a child's turns as its delegate
+	// call runs them, then the coordinator's next. (The fixture's own streamer keys a script by the whole system message,
+	// which now carries the block.)
+	script := func(turns ...[]provider.StreamEvent) {
+		scripted = &execLoopStreamer{turns: turns}
+		f.cfg.Streamer = scripted
+	}
+	// coord is the coordinator's first request.
+	coord := func() *provider.ChatRequest { return scripted.reqs[0] }
+	// writer is the child the coordinator delegated p1 to.
+	writer := func() ExecutedChild {
+		for _, c := range res.Children {
+			if c.Profile == "writer" {
+				return c
+			}
+		}
+		panic("no writer child")
+	}
+	BeforeEach(func() {
+		ctx = context.Background()
+		f = newSwarmExecFixture()
+		setUserConfigDir(GinkgoT(), GinkgoT().TempDir())
+		rec = recordRegistries()
+		putSkill(must(UserSkillsPath()), "tdd", tddBody)
+		f.cfg.SkillsScope = SkillsScopeUser
+		f.cfg.Profiles[0].Tools, f.cfg.Profiles[0].Skills = []string{"delegate", tool.SkillLoadName}, []string{"tdd"}
+	})
+
+	DescribeTable("refuses, before anything is written, a profile that names a skill the run's scope does not load",
+		func(mutate func(*swarmExecFixture), name string) {
+			mutate(f)
+			_, err := ExecuteSwarm(ctx, f.st, f.cfg)
+			Expect(err).To(MatchError(ContainSubstring(fmt.Sprintf(`profile %q lists skill "nope", which matches no skill loaded under the run's skills scope`, name))))
+		},
+		Entry("the coordinator", func(f *swarmExecFixture) { f.cfg.Profiles[0].Skills = []string{"nope"} }, "coord"),
+		Entry("a role", func(f *swarmExecFixture) {
+			f.cfg.Profiles[1].Tools, f.cfg.Profiles[1].Skills = []string{tool.SkillLoadName}, []string{"nope"}
+		}, "writer"))
+
+	It("writes nothing before refusing that profile", func() {
+		f.cfg.Profiles[0].Skills = []string{"nope"}
+		_, _ = ExecuteSwarm(ctx, f.st, f.cfg)
+		Expect(f.sessionCount()).To(BeZero())
+	})
+
+	It("refuses an unset scope, as config_invalid, when a profile offers skills", func() {
+		f.cfg.SkillsScope = ""
+		_, err := ExecuteSwarm(ctx, f.st, f.cfg)
+		Expect(err).To(MatchError(ErrConfigInvalid))
+	})
+
+	DescribeTable("finds a project skill under the project root, never under the workdir",
+		func(place func(project string), listed []string) {
+			project := GinkgoT().TempDir()
+			place(project)
+			f.cfg.SkillsScope, f.cfg.ProjectRoot = SkillsScopeProject, project
+			f.cfg.Profiles[0].Skills = []string{"td*"}
+			script(finishText("swarm done"))
+			res = f.execute(ctx)
+			Expect(listedNames(systemMessage(coord()))).To(Equal(listed))
+		},
+		Entry("a skill under the project root", func(p string) { putSkill(ProjectSkillsPath(p), "tdd", tddBody) }, []string{"tdd"}),
+		Entry("a skill only under the workdir", func(string) { putSkill(ProjectSkillsPath(f.cfg.Workdir), "tdd", tddBody) }, []string(nil)))
+
+	Describe("a coordinator whose profile offers a skill", func() {
+		BeforeEach(func() {
+			script(finishText("swarm done"))
+			res = f.execute(ctx)
+		})
+
+		It("is registered skill.load over the run's loaded skills", func() {
+			Expect(slices.Contains(rec.of(res.CoordinatorID), tool.SkillLoadName)).To(BeTrue())
+		})
+
+		It("is offered the tool", func() {
+			Expect(toolNames(coord())).To(ContainElement(tool.SkillLoadName))
+		})
+
+		It("is sent its body, then the block in its profile's order", func() {
+			Expect(systemMessage(coord())).To(Equal("coord-body\n\n" + tddBlock))
+		})
+	})
+
+	DescribeTable("keeps skill.load, registered and refusing, over an empty offer",
+		func(skills []string) {
+			f.cfg.Profiles[0].Skills = skills
+			script(finishText("swarm done"))
+			res = f.execute(ctx)
+			Expect(systemMessage(coord())).To(Equal("coord-body"))
+		},
+		Entry("a prefix that matches nothing", []string{"zz*"}),
+		Entry("no skills key", nil))
+
+	It("tells the coordinator from its definition that no skill is offered", func() {
+		f.cfg.Profiles[0].Skills = []string{"zz*"}
+		script(finishText("swarm done"))
+		res = f.execute(ctx)
+		Expect(toolDefinition(coord(), tool.SkillLoadName).Description).To(Equal(tool.SkillNoneDescription))
+	})
+
+	Describe("a packet child", func() {
+		BeforeEach(func() {
+			f.cfg.Profiles[1].Tools, f.cfg.Profiles[1].Skills = []string{tool.SkillLoadName}, []string{"tdd"}
+			script(callTurn(delegateCall(`{"agent":"writer","task":"[packet p1] write it"}`)),
+				callTurn(skillCall("w1", `{"name":"tdd"}`)), finishText("writer done"), finishText("swarm done"))
+			res = f.execute(ctx)
+		})
+
+		It("is offered its role's skill from the run's loaded set: its body, then the block", func() {
+			Expect(systemMessage(scripted.reqs[1])).To(Equal("writer-body\n\n" + tddBlock))
+		})
+
+		It("loads it: skill.loaded follows its tool.result", func() {
+			Expect(types(must(f.st.Replay(ctx, writer().ID)))).To(ContainElement(TypeSkillLoaded))
+		})
+	})
+
+	It("hands the run's loaded skills to the coordinator's delegate tool, so a packet child resolves its offer", func() {
+		tc := coordinatorToolConfig(nil, &store.Session{}, agent.Profile{}, f.cfg, nil, nil, []skill.Skill{{Name: "tdd"}})
+		Expect(tc.LoadedSkills).To(Equal([]skill.Skill{{Name: "tdd"}}))
+	})
+
+	It("follows the coordinator's body with the block of its offer", func() {
+		loop := coordinatorLoopConfig(nil, &store.Session{}, agent.Profile{Body: "b"}, f.cfg, nil, []SkillEntry{{Name: "tdd", Description: "d"}}, 1)
+		Expect(loop.SystemPrompt).To(Equal("b\n\n" + oracleListing([]SkillEntry{{Name: "tdd", Description: "d"}})))
 	})
 })
 

@@ -172,6 +172,97 @@ var _ = Describe("--hooks on swarm run --execute", func() {
 	})
 })
 
+var _ = Describe("--skills on swarm run --execute", func() {
+	for _, c := range []struct {
+		name  string
+		extra []string
+		want  app.SkillsScope
+	}{
+		{"defaults to user", nil, app.SkillsScopeUser},
+		{"carries project", []string{"--skills", "project"}, app.SkillsScopeProject},
+		{"carries both", []string{"--skills", "both"}, app.SkillsScopeBoth},
+		{"carries none in the = form", []string{"--skills=none"}, app.SkillsScopeNone},
+	} {
+		It(c.name, func() {
+			cfg, _ := runSwarmWith(c.extra...)
+			Expect(cfg.SkillsScope).To(Equal(c.want))
+		})
+	}
+
+	It("carries --skills-path, repeatable, in order", func() {
+		a, b := absDir("a"), absDir("b")
+		cfg, _ := runSwarmWith("--skills-path", a, "--skills-path", b)
+		Expect(cfg.SkillsPaths).To(Equal([]string{a, b}))
+	})
+
+	It("leaves ProjectRoot empty whatever --workdir is, so project skills never follow the workdir", func() {
+		cfg, _ := runSwarmWith("--skills", "project", "--workdir", absDir("elsewhere"))
+		Expect(cfg.ProjectRoot).To(BeEmpty())
+	})
+
+	DescribeTable("exits 2 for a bad flag value",
+		func(flag, value string) {
+			_, exit := runSwarmWith(flag, value)
+			Expect(exit).To(Equal(2))
+		},
+		Entry("an unknown scope", "--skills", "all"),
+		Entry("a relative --skills-path", "--skills-path", "skills"))
+
+	It("reads skills_paths from an explicit --config when the flag is absent", func() {
+		paths := absDir("a", "skills")
+		cfgFile := writeConfigFixture(fmt.Sprintf(`{"skills_paths":[%q]}`, paths))
+		cfg, _ := runSwarmWith("--config", cfgFile)
+		Expect(cfg.SkillsPaths).To(Equal([]string{paths}))
+	})
+
+	DescribeTable("is refused without --execute",
+		func(flag string) {
+			value := "user"
+			if flag == "--skills-path" {
+				value = absDir("skills") // absolute on every OS
+			}
+			manifest := filepath.Join(stageExampleSwarm(unedited), "review-swarm.yaml")
+			run := runArgv([]string{"swarm", "run", manifest, "--parent", "x", "--budget", "5", flag, value, "--db", dbFor()})
+			Expect(run.stderr).To(ContainSubstring(flag + " only applies to `swarm run --execute`"))
+		},
+		Entry("--skills", "--skills"),
+		Entry("--skills-path", "--skills-path"))
+
+	It("records a composition hash that includes skills_paths, as a session run's does", func() {
+		paths := absDir("a", "skills")
+		cfg, _ := runSwarmWith("--skills-path", paths)
+		want, err := compositionSHA256("z.ai", "glm-5.3", dbFor(), "none", nil, skillsSettings{Paths: []string{paths}})
+		if err != nil {
+			panic(err)
+		}
+		Expect(cfg.ConfigSHA).To(Equal(want))
+	})
+})
+
+var _ = Describe("--skills-default on swarm run", func() {
+	// A swarm has no root session to offer skills to: the coordinator is a profile and lists its own `skills:`, so the
+	// flag is refused whatever else the invocation carries, before anything is parsed or run.
+	for _, form := range [][]string{{"--skills-default", "tdd"}, {"--skills-default=tdd"}} {
+		for _, extra := range [][]string{nil, {"--execute"}} {
+			It("exits 2 for "+strings.Join(append([]string{"swarm run"}, extra...), " ")+" "+form[0], func() {
+				manifest := filepath.Join(stageExampleSwarm(unedited), "review-swarm.yaml")
+				run := runArgv(append(append([]string{"swarm", "run", manifest}, form...), append(extra, "--db", dbFor())...))
+				Expect(run.exit).To(Equal(2))
+			})
+		}
+	}
+
+	DescribeTable("names why",
+		func(extra []string) {
+			manifest := filepath.Join(stageExampleSwarm(unedited), "review-swarm.yaml")
+			run := runArgv(append([]string{"swarm", "run", manifest, "--skills-default", "tdd"}, append(extra, "--db", dbFor())...))
+			Expect(run.stderr).To(ContainSubstring("--skills-default does not apply to `swarm run`: the coordinator is a profile and lists its own `skills:`; " +
+				"skills_default is for the root session only, and a swarm has none"))
+		},
+		Entry("without --execute", nil),
+		Entry("with --execute", []string{"--execute"}))
+})
+
 var _ = Describe("--hooks on serve", func() {
 	for _, c := range []struct {
 		name  string
@@ -268,13 +359,14 @@ var _ = Describe("--hooks scope zero value", func() {
 	})
 })
 
-// skillsRefusedArgv is every command that cannot take the skills settings: those of hookRefusedArgv, plus serve
-// and swarm run, which take no skills settings until a later packet adds their flags. A command dispatch.go routes
-// must be listed here or in skillsAcceptedArgv: the specs below fail for an unlisted one.
-var skillsRefusedArgv = append(append([][]string{}, hookRefusedArgv...), []string{"serve"}, []string{"swarm", "run", "x"})
+// skillsRefusedArgv is every command that cannot take the skills settings: those of hookRefusedArgv, plus serve,
+// which takes none of them. A command dispatch.go routes must be listed here or in skillsAcceptedArgv: the specs
+// below fail for an unlisted one.
+var skillsRefusedArgv = append(append([][]string{}, hookRefusedArgv...), []string{"serve"})
 
-// skillsAcceptedArgv is every command that takes the skills settings today.
-var skillsAcceptedArgv = [][]string{{"skills", "list"}, {"skills", "validate"}, {"session", "run", "x"}}
+// skillsAcceptedArgv is every command that takes --skills and --skills-path today; --skills-default is refused on
+// swarm run, which has no root session to offer (see below).
+var skillsAcceptedArgv = [][]string{{"skills", "list"}, {"skills", "validate"}, {"session", "run", "x"}, {"swarm", "run", "x"}}
 
 var _ = Describe("The skills settings on commands that cannot take them", func() {
 	for _, argv := range skillsRefusedArgv {
@@ -292,7 +384,7 @@ var _ = Describe("The skills settings on commands that cannot take them", func()
 	}
 	It("names the commands that accept them", func() {
 		run := runArgv([]string{"session", "list", "--skills", "user", "--db", dbFor()})
-		Expect(run.stderr).To(ContainSubstring("`skills list`, `skills validate` and `session run`"))
+		Expect(run.stderr).To(ContainSubstring("`skills list`, `skills validate`, `session run` and `swarm run --execute`"))
 	})
 	It("lists every top-level command dispatch.go routes", func() {
 		src, err := os.ReadFile("dispatch.go")

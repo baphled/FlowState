@@ -18,7 +18,7 @@ var swarmExecutor = app.ExecuteSwarmFile
 // valueFlags are the flags that take the next argument as their value.
 var valueFlags = []string{"--db", "--status", "--provider", "--model", "--task", "--parent", "--config", "--manifest",
 	"--from", "--body", "--tool", "--allow", "--allow-file", "--workdir", "--agents", "--budget", "--max-tokens",
-	"--reserve", "--max-turns", "--hooks"}
+	"--reserve", "--max-turns", "--hooks", "--skills", "--skills-path", "--skills-default"}
 
 // withoutExecute drops every --execute from args and reports whether one was
 // given; the flag takes no value. An --execute straight after a flag that takes
@@ -40,14 +40,16 @@ func withoutExecute(args []string) ([]string, bool, error) {
 
 // refuseExecuteOnlyFlags is the usage check of a receipts-only `swarm run`: the
 // flags that only configure an executed swarm are refused instead of ignored.
-// The first given flag in this fixed order is the one named.
+// The first given flag in this fixed order is the one named. --skills-default is
+// refused earlier, at dispatch, whatever --execute says: no swarm takes it.
 func refuseExecuteOnlyFlags(fl *flags, stderr *os.File) (int, bool) {
 	for _, f := range []struct {
 		name  string
 		given bool
 	}{
 		{"--agents", fl.agents != ""}, {"--provider", fl.provider != ""}, {"--model", fl.model != ""},
-		{"--hooks", fl.hooksSet}, {"--workdir", fl.workdir != ""}, {"--max-turns", fl.maxTurns != 0}, {"--max-tokens", fl.maxTokens != 0},
+		{"--hooks", fl.hooksSet}, {"--skills", fl.skillsSet}, {"--skills-path", len(fl.skillsPaths) > 0},
+		{"--workdir", fl.workdir != ""}, {"--max-turns", fl.maxTurns != 0}, {"--max-tokens", fl.maxTokens != 0},
 	} {
 		if f.given {
 			writeError(stderr, fmt.Errorf("%w: %s only applies to `swarm run --execute`: add --execute", app.ErrUsage, f.name))
@@ -62,8 +64,13 @@ func refuseExecuteOnlyFlags(fl *flags, stderr *os.File) (int, bool) {
 // result is printed (schema swarm-run-execute). The provider and model resolve
 // as `session new` does (flags, then config defaults); --agents picks the
 // profile scope and --workdir (default: the current directory) is where the
-// coordinator's tools, the children and the engine's gates work. A coordinator
-// session is created by the engine, so --parent is refused.
+// coordinator's tools, the children and the engine's gates work. --skills and
+// --skills-path (else the skills_paths key of an explicit --config) are the
+// skills the run loads once, as for `session run`: the coordinator's and each
+// role's `skills:` select their offer from them. --skills-default is refused at
+// dispatch (a swarm has no root session) and --parent too (the engine creates
+// the coordinator). A role or the coordinator naming an exact skill the run did
+// not load fails config_invalid before anything is created.
 //
 // Exit codes reuse the existing table: 0 accepted; 8 not accepted (a gate
 // failed or a packet was not admitted, as in the receipts-only run); a failed
@@ -142,7 +149,10 @@ func executeConfig(fl *flags, manifestPath string, stderr *os.File) (app.Execute
 		writeError(stderr, err)
 		return app.ExecuteSwarmConfig{}, exitCodeFor(err), true
 	}
-	sha, err := compositionSHA256(provider, model, fl.db, fl.configSource, effectiveAllowlist(fl))
+	// The coordinator's composition joins skills_paths as any session's does (ADR-013 D16), and not skills_default:
+	// a swarm has no root session to offer, so the config key, when one is given, is no setting of this run.
+	skills := skillsSettings{Paths: effectiveSkills(fl).Paths}
+	sha, err := compositionSHA256(provider, model, fl.db, fl.configSource, effectiveAllowlist(fl), skills)
 	if err != nil {
 		writeError(stderr, err)
 		return app.ExecuteSwarmConfig{}, exitCodeFor(err), true
@@ -160,6 +170,7 @@ func executeConfig(fl *flags, manifestPath string, stderr *os.File) (app.Execute
 		Profiles: profiles, Streamer: s, Provider: provider, ModelID: model, Harness: app.DefaultHarness,
 		ConfigSHA: sha, Workdir: workdir, MaxTurns: fl.maxTurns, MaxTokens: fl.maxTokens, Budget: fl.budget,
 		Compaction: fl.config.Compaction, HooksScope: hooksScope(fl),
+		SkillsScope: skillsScope(fl), SkillsPaths: skills.Paths,
 	}, exitOK, false
 }
 

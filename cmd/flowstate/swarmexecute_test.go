@@ -406,10 +406,14 @@ var _ = Describe("swarm run --execute", func() {
 			withFakeZai(swarmScriptServer(work, true))
 			Expect(runSwarmExecute(work, "--workdir", link).exit).To(Equal(0))
 		})
-		It("names the flag that lacks a value when --execute follows it", func() {
-			argv := []string{"swarm", "run", "x.yaml", "--workdir", "--execute", "--db", dbFor()}
-			Expect(runArgv(argv).stderr).To(ContainSubstring("--workdir needs a value, found --execute"))
-		})
+		DescribeTable("names the flag that lacks a value when --execute follows it",
+			func(flag string) {
+				argv := []string{"swarm", "run", "x.yaml", flag, "--execute", "--db", dbFor()}
+				Expect(runArgv(argv).stderr).To(ContainSubstring(flag + " needs a value, found --execute"))
+			},
+			Entry("--workdir", "--workdir"),
+			Entry("--skills", "--skills"),
+			Entry("--skills-path", "--skills-path"))
 		It("exits 2 when --execute follows a flag that takes a value", func() {
 			argv := []string{"swarm", "run", "x.yaml", "--workdir", "--execute", "--db", dbFor()}
 			Expect(runArgv(argv).exit).To(Equal(2))
@@ -434,6 +438,9 @@ var _ = Describe("swarm run --execute", func() {
 
 	DescribeTable("exits 2 for an execute-only flag without --execute",
 		func(flag, value string) {
+			if value == "" {
+				value = absDir("skills") // --skills-path takes an absolute directory on every OS
+			}
 			argv := []string{"swarm", "run", "--db", dbFor(), "--parent", "p", "--budget", "100", flag, value, "x.yaml"}
 			Expect(runArgv(argv).exit).To(Equal(2))
 		},
@@ -443,6 +450,8 @@ var _ = Describe("swarm run --execute", func() {
 		Entry("--workdir", "--workdir", "."),
 		Entry("--max-turns", "--max-turns", "3"),
 		Entry("--max-tokens", "--max-tokens", "9"),
+		Entry("--skills", "--skills", "project"),
+		Entry("--skills-path", "--skills-path", ""),
 	)
 
 	It("names the first execute-only flag in the fixed order when several are given", func() {

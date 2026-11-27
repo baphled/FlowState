@@ -12,6 +12,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/session"
+	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/store"
 	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tool"
@@ -37,6 +38,12 @@ import (
 // gate (the engine, not the model, decides acceptance), a packet whose role is
 // the coordinator, and a gate runner whose Dir is not the Workdir. An empty
 // `delegates` list imposes no further limit: the manifest's roles apply.
+//
+// The skills of the run (SkillsScope, SkillsPaths) are read once after these
+// checks and before anything is written, and the coordinator and its roles are
+// held to the loaded set (ADR-013 D6, D12): an exact name the scope does not
+// load is config_invalid here, with the message a child gets. The coordinator is
+// offered its profile's skills, as a packet child is its role's.
 //
 // A child is attributed to a packet when its first task starts with the
 // marker `[packet <id>]` (swarm.PacketRef) naming a manifest packet, the
@@ -68,13 +75,20 @@ func ExecuteSwarm(ctx context.Context, st *Store, cfg ExecuteSwarmConfig) (Execu
 	if err != nil {
 		return ExecuteSwarmResult{}, err
 	}
+	// The run's skills are read once, before anything is written, with every profile the run starts a session under
+	// held to them (ADR-013 D6): an exact name the scope does not load is config_invalid here, for the coordinator
+	// as for a role, with the message a child gets. Nothing offered reads no directory.
+	skills, err := runSkills(swarmSkillsRequest(cfg), swarmSkillProfiles(cfg.Manifest, coord, cfg.Profiles))
+	if err != nil {
+		return ExecuteSwarmResult{}, err
+	}
 	m := cfg.Manifest
 	sess, err := CreateSession(ctx, st, cfg.Provider, cfg.ModelID, cfg.Harness, cfg.ConfigSHA, swarm.Brief(m))
 	if err != nil {
 		return ExecuteSwarmResult{}, fmt.Errorf("app: execute swarm: create the coordinator session: %w", err)
 	}
 	res := ExecuteSwarmResult{CoordinatorID: sess.ID, Manifest: m}
-	status, reason, cause, err := runSwarmCoordinator(ctx, st, sess, coord, cfg)
+	status, reason, cause, err := runSwarmCoordinator(ctx, st, sess, coord, cfg, skills)
 	if err != nil {
 		return res, err
 	}
@@ -199,26 +213,64 @@ func manifestRoles(m swarm.Manifest) []string {
 	return roles
 }
 
+// swarmSkillsRequest is the run's skills request as a session run's (runSkills): the scope and the explicit paths of
+// the config, and the project root, never the workdir, as for hooks. A swarm has no root session, so nothing is
+// offered by default: the coordinator is a profile and lists its own skills (ADR-013 D6), and skills_default is not
+// a swarm setting. An unset scope is config_invalid when anything is offered, as for a session run.
+func swarmSkillsRequest(cfg ExecuteSwarmConfig) SessionExecLoopRequest {
+	return SessionExecLoopRequest{SkillsScope: cfg.SkillsScope, SkillsPaths: cfg.SkillsPaths, ProjectRoot: cfg.ProjectRoot}
+}
+
+// swarmSkillProfiles are the profiles whose skills the run loads: the ones it starts a session under, its
+// coordinator and the profiles of the distinct roles its packets name. No other loaded profile is held to the
+// run's scope, since no session of the run uses it.
+func swarmSkillProfiles(m swarm.Manifest, coord agent.Profile, profiles []agent.Profile) []agent.Profile {
+	offers := []agent.Profile{coord}
+	for _, role := range manifestRoles(m) {
+		if i := slices.IndexFunc(profiles, func(p agent.Profile) bool { return p.Name == role }); i >= 0 {
+			offers = append(offers, profiles[i])
+		}
+	}
+	return offers
+}
+
+// coordinatorRegistry is the coordinator's registry, built as a child's is (childRegistry): the protected hook
+// directories, and skill.load over its profile's offer from the run's loaded skills when the profile lists the tool,
+// an empty offer included, so the tool is registered and refuses every load (ADR-013 D6, D12). A profile that does
+// not list it has no skill.load. It returns the offer, in the profile's order, for the coordinator's listing.
+func coordinatorRegistry(workdir string, coord agent.Profile, protected []string, skills []skill.Skill) (*tool.Registry, []SkillEntry, error) {
+	offered, _, _ := selectSkills(skills, coord.Skills, false)
+	opts := []tool.FSOption{tool.WithProtectedDirs(protected...)}
+	if slices.Contains(coord.Tools, agent.SkillLoadTool) {
+		opts = append(opts, tool.WithOfferedSkills(skillCatalog(skills, offered)))
+	}
+	registry, err := NewSessionToolRegistry(workdir, opts...)
+	return registry, offered, err
+}
+
 // coordinatorLoopConfig is the coordinator's loop: the profile's tools as the allowlist, its body as
-// the system prompt, and the run's root hook set (ADR-012 D22).
+// the system prompt followed by the listing of its offer (ADR-013 D7), and the run's root hook set (ADR-012 D22).
 func coordinatorLoopConfig(st *Store, sess *store.Session, coord agent.Profile, cfg ExecuteSwarmConfig,
-	registry *tool.Registry, maxTurns int64) ExecLoopConfig {
+	registry *tool.Registry, offered []SkillEntry, maxTurns int64) ExecLoopConfig {
 	return ExecLoopConfig{
 		Store: st, Session: sess, Streamer: cfg.Streamer, Registry: registry, Allowlist: coord.Tools,
 		MaxTurns: maxTurns, MaxTokens: cfg.MaxTokens,
-		SystemPrompt: coord.Body, Compaction: cfg.Compaction, ProfileWindow: coord.ContextWindow,
+		// The listing follows the profile's body, in the profile's own order, as a child's does (ADR-013 D7).
+		SystemPrompt: withSkillListing(coord.Body, offered),
+		Compaction:   cfg.Compaction, ProfileWindow: coord.ContextWindow,
 		Hooks: emptyHookSet(cfg.Hooks), Workdir: cfg.Workdir, Agent: coord.Name,
 	}
 }
 
-// coordinatorToolConfig is the coordinator's delegate tool; it hands the run's root hook set and its
-// protected hook directories to every packet child (ADR-012 D20, D22).
+// coordinatorToolConfig is the coordinator's delegate tool; it hands the run's root hook set, its
+// protected hook directories and its loaded skills to every packet child (ADR-012 D20, D22; ADR-013 D12), so each
+// role resolves its own offer over the run's roots.
 func coordinatorToolConfig(st *Store, sess *store.Session, coord agent.Profile, cfg ExecuteSwarmConfig,
-	pool *BudgetPool, protected []string) DelegateToolConfig {
+	pool *BudgetPool, protected []string, skills []skill.Skill) DelegateToolConfig {
 	return DelegateToolConfig{
 		Store: st, Parent: sess, Streamer: cfg.Streamer, Pool: pool, Workdir: cfg.Workdir, Profiles: cfg.Profiles,
 		DelegatorProfile: coord.Name, AllowedProfiles: swarmAllowlist(cfg.Manifest, coord), Compaction: cfg.Compaction,
-		Hooks: emptyHookSet(cfg.Hooks), ProtectedDirs: protected,
+		Hooks: emptyHookSet(cfg.Hooks), ProtectedDirs: protected, LoadedSkills: skills,
 	}
 }
 
@@ -229,12 +281,12 @@ func coordinatorToolConfig(st *Store, sess *store.Session, coord agent.Profile, 
 // otherwise failed or cancelled with the reason and the error that stopped the
 // loop (cause). The error is persistence only.
 func runSwarmCoordinator(ctx context.Context, st *Store, sess *store.Session, coord agent.Profile,
-	cfg ExecuteSwarmConfig) (status, reason string, cause, err error) {
+	cfg ExecuteSwarmConfig, skills []skill.Skill) (status, reason string, cause, err error) {
 	// The protected trees are computed once per run from the inputs the hook loader reads (the project root,
 	// never Workdir), and handed to the coordinator's registry and to its delegate tool, so every packet child's
-	// file tools refuse the same hook directories (ADR-012 D20).
+	// file tools refuse the same hook directories (ADR-012 D20). The run's loaded skills go the same way (ADR-013 D12).
 	protected := ProtectedHookDirs(cfg.ProjectRoot)
-	registry, err := NewSessionToolRegistry(cfg.Workdir, tool.WithProtectedDirs(protected...))
+	registry, offered, err := coordinatorRegistry(cfg.Workdir, coord, protected, skills)
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -242,11 +294,11 @@ func runSwarmCoordinator(ctx context.Context, st *Store, sess *store.Session, co
 	if maxTurns <= 0 {
 		maxTurns = int64(coord.MaxTurns)
 	}
-	loop := coordinatorLoopConfig(st, sess, coord, cfg, registry, maxTurns)
+	loop := coordinatorLoopConfig(st, sess, coord, cfg, registry, offered, maxTurns)
 	if err := bindRunBudget(ctx, st, sess, cfg.Budget, &loop); err != nil {
 		return "", "", nil, err
 	}
-	err = registry.Register(NewDelegateTool(coordinatorToolConfig(st, sess, coord, cfg, loop.Pool, protected)))
+	err = registry.Register(NewDelegateTool(coordinatorToolConfig(st, sess, coord, cfg, loop.Pool, protected, skills)))
 	if err != nil {
 		return "", "", nil, err
 	}

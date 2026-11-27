@@ -148,7 +148,7 @@ on stderr. Flags that do not apply (`--budget`, `--model` and the like) are refu
 | `session tool <id>` | Run one allowed tool directly (holds the session's run lease, so a live run refuses it) |
 | `swarm validate <manifest>` | Validate a swarm manifest (YAML) |
 | `swarm run <manifest>` | Run one: requires `--parent <id>` and `--budget <n>` |
-| `swarm run <manifest> --execute` | Run one with a coordinator agent that delegates the packets; see [Running a swarm](#running-a-swarm) |
+| `swarm run <manifest> --execute` | Run one with a coordinator agent that delegates the packets; `--skills`, `--skills-path` load the skills its profiles offer; see [Running a swarm](#running-a-swarm) |
 | `receipt validate <file...>` | Validate acceptance receipts against their schema |
 | `store info` | Database facts; the file is not modified (WAL sidecars may appear): schema, journal mode, foreign keys |
 | `agents list` | List agent profiles as a JSON array: `--agents user\|project\|both` (default `user`), `--workdir` |
@@ -478,6 +478,18 @@ skills are the run's own (`--skills`, `--skills-path`, never a profile's directo
 grandchild load their own skills, selected by their profile from the set the run loaded, and a parent's loads are not
 inherited. The root session has no profile: `--skills-default` is its offer.
 
+**In a swarm (`swarm run --execute`):** the run takes `--skills` and `--skills-path` (else the `skills_paths` key of an
+explicit `--config`; the project directory is under the project root, never `--workdir`) and reads its skills once, as a
+session run does, before the coordinator session is created. The coordinator is a profile: its `skills:` select its
+offer from that set, its request carries its body then the block, and it has `skill.load` when it lists the tool. Each
+packet child resolves its own offer from the same set by its role's `skills:`, and loads its own skills. The coordinator
+and every role are held to the loaded set at start, before any provider request: an exact name the scope does not load
+is `config_invalid` (exit 4) with the same message a child gets (`profile "x" lists skill "y", which matches no skill
+loaded under the run's skills scope`), where before this a role's miss failed the delegate call mid-run. A run whose
+profiles name no skill behaves as before. `--skills-default` is refused (exit 2): a swarm has no root session, and
+`skills_default` in a `--config` file is no setting of the run (the coordinator's `config_sha256` joins `skills_paths`
+only).
+
 **Validation:** `session run` refuses, as `config_invalid` (exit 4) and before anything is written, a profile whose
 exact skill name matches no skill loaded under the run's scope; a prefix that matches nothing is only a warning (its
 sessions still run, without a block), and
@@ -500,14 +512,14 @@ narrower set. The run reads its skills once, when it starts: a skill directory e
 
 Not built yet: `requires_skills` (the `Required before any other tool call:` line and the engine gate that goes with
 it), reading the skills again between turns, `agents validate` checking a profile's names against the loaded set and
-printing the warnings, and the skills flags on `swarm run --execute`: the coordinator hands its children no loaded
-skills, so a packet child whose role names a skill exactly fails `config_invalid` there, and one whose skills are a
-prefix or `"*"`, or that lists only `skill.load`, runs with every load refused.
+printing the warnings, and the skills flags on `serve`.
 
-`skills list`, `skills validate` and `session run` take these flags; every other command, `serve` and
-`swarm run --execute` included, refuses them with a usage error (exit 2), as does an unknown scope, a relative
-`--skills-path` or a blank `--skills-default` entry. On `skills list|validate` a positional directory replaces the
-scope and the paths, so the two cannot be mixed.
+`skills list`, `skills validate`, `session run` and `swarm run --execute` take `--skills` and `--skills-path`; every
+other command, `serve` included, refuses them with a usage error (exit 2), as does an unknown scope or a relative
+`--skills-path`. `--skills-default` is `session run`'s (`skills list|validate` check its shape only; a blank entry is
+refused with exit 2): `swarm run` refuses the flag itself with exit 2 and the reason, the coordinator being a profile
+with its own `skills:` and a swarm having no root session to offer. On `skills list|validate` a positional directory
+replaces the scope and the paths, so the two cannot be mixed.
 
 The same settings can come from an **explicit** `--config <path>` file as the flat keys `skills_paths` (a list of
 absolute directories) and `skills_default`; a flag replaces the key it names. The ambient `./flowstate.json` may
@@ -539,10 +551,11 @@ included.
   current directory) is where the coordinator's tools, the children and the gates all work, `--provider` and
   `--model` come from the flags or the config defaults as for `session new`, `--hooks` is the lifecycle-hook scope
   ([Hook scope](#hook-scope)), `--budget` is the coordinator's turn pool (0 means none), `--max-turns` bounds the
-  coordinator's loop (1 to 1000) and `--max-tokens` caps each response. No `--parent` is needed: the engine creates
-  the coordinator session. Without `--execute` these flags are usage errors (exit 2): the receipts-only `swarm run`
-  refuses them rather than ignoring them, and is otherwise unchanged. `--workdir` must be an existing directory (a
-  symlink to one is fine).
+  coordinator's loop (1 to 1000) and `--max-tokens` caps each response; `--skills` and `--skills-path` are the run's
+  skills roots ([Skills settings](#skills-settings)) and `--skills-default` is refused here. No `--parent` is needed:
+  the engine creates the coordinator session. Without `--execute` these flags are usage errors (exit 2): the
+  receipts-only `swarm run` refuses them rather than ignoring them, and is otherwise unchanged. `--workdir` must be an
+  existing directory (a symlink to one is fine).
 - Needs a provider that accepts tool calls (the z.ai coding route or the Anthropic API-key route). The manifest needs a
   coordinator, at least one packet with a role and at least one gate, and no packet may use the coordinator as its role.
   The coordinator may delegate only to the manifest's roles; if its profile lists `delegates`, only to the roles that
