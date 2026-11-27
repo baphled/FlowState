@@ -75,7 +75,7 @@ The Go CLI is not a port of the prototype: it is a greenfield CLI sharing the pr
 | FlowState Engine Boundary | Implemented (principle) | provider port/stream seam in `internal/provider` + `internal/app/turn.go` |
 | FlowState-Owned GitHub OAuth App | Implemented | admission runner uses app 5728089; see [[ADR - Merge Trailer Policy]] |
 | Hierarchical Session Navigation | M2 scope | child sessions ([[ADR - Hierarchical Session Navigation]]) |
-| Hook System | Partially implemented | [[ADR - Lifecycle Hooks and System One Decisions]]; hook file loading and validation in `internal/app`, nothing fires yet |
+| Hook System | Partially implemented | [[ADR - Lifecycle Hooks and System One Decisions]]; hook file loading and validation in `internal/app`, and `tool.before` (transform included), `tool.after`, `turn.after`, `user.prompt`, `session.start` and `session.end` fire on the runs that carry them; `session doctor` lists the hooks (#504); not built: compaction points, `decision` hooks, profile hooks |
 | MCP Tool Gating by Agent Manifest | Not applicable | no MCP surface in M1/M2 CLI |
 | Multi-Agent Orchestration | M2+ scope | swarm is fswt harness |
 | Multi-Agent Recall Context Sharing | Not applicable | no recall in the CLI |
